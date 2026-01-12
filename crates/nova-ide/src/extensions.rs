@@ -141,6 +141,7 @@ where
 pub struct FrameworkAnalyzerAdapterOnTextDb<A> {
     id: String,
     analyzer: A,
+    build_metadata_only: bool,
 }
 
 impl<A> FrameworkAnalyzerAdapterOnTextDb<A> {
@@ -148,7 +149,18 @@ impl<A> FrameworkAnalyzerAdapterOnTextDb<A> {
         Self {
             id: id.into(),
             analyzer,
+            build_metadata_only: false,
         }
+    }
+
+    /// Restrict this provider to projects that have authoritative build metadata (Maven/Gradle/Bazel).
+    ///
+    /// When enabled, the provider returns empty results for "simple" projects (directories without
+    /// a supported build system). This is useful when running the analyzer alongside Nova's legacy
+    /// `framework_cache` providers to avoid duplicate diagnostics/completions.
+    pub fn with_build_metadata_only(mut self) -> Self {
+        self.build_metadata_only = true;
+        self
     }
 
     pub fn into_arc(self) -> Arc<Self> {
@@ -387,10 +399,10 @@ where
     }
 }
 
-impl<A> DiagnosticProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A, DB> DiagnosticProvider<DB> for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         &self.id
@@ -398,15 +410,20 @@ where
 
     fn provide_diagnostics(
         &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
 
+        let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), params.file) {
+            return Vec::new();
+        }
+
         let Some(fw_db) =
-            crate::framework_db::framework_db_for_file(ctx.db.clone(), params.file, &ctx.cancel)
+            crate::framework_db::framework_db_for_file(host_db, params.file, &ctx.cancel)
         else {
             return Vec::new();
         };
@@ -425,10 +442,10 @@ where
     }
 }
 
-impl<A> CompletionProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A, DB> CompletionProvider<DB> for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         &self.id
@@ -436,15 +453,20 @@ where
 
     fn provide_completions(
         &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
 
+        let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), params.file) {
+            return Vec::new();
+        }
+
         let Some(fw_db) =
-            crate::framework_db::framework_db_for_file(ctx.db.clone(), params.file, &ctx.cancel)
+            crate::framework_db::framework_db_for_file(host_db, params.file, &ctx.cancel)
         else {
             return Vec::new();
         };
@@ -468,10 +490,10 @@ where
     }
 }
 
-impl<A> NavigationProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A, DB> NavigationProvider<DB> for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         &self.id
@@ -479,20 +501,31 @@ where
 
     fn provide_navigation(
         &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        ctx: ExtensionContext<DB>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
 
+        let host_db = ctx.db.clone().into_dyn_nova_db();
+
         let (fw_db, project, symbol) = match params.symbol {
             Symbol::File(file) => {
-                let Some(fw_db) =
-                    crate::framework_db::framework_db_for_file(ctx.db.clone(), file, &ctx.cancel)
-                else {
+                if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), file) {
+                    return Vec::new();
+                }
+                let Some(fw_db) = crate::framework_db::framework_db_for_file(
+                    Arc::clone(&host_db),
+                    file,
+                    &ctx.cancel,
+                ) else {
                     return Vec::new();
                 };
+
+                if ctx.cancel.is_cancelled() {
+                    return Vec::new();
+                }
 
                 let project = fw_db.project_of_file(file);
                 (fw_db, project, FrameworkSymbol::File(file))
@@ -510,13 +543,17 @@ where
                 // Limitation: the `ClassId` namespace used by `nova-ext` is not guaranteed to match
                 // the best-effort class ids produced by `framework_db`, so class navigation may
                 // return empty even when analyzers support it.
-                let seed_file = match ctx.db.all_file_ids().into_iter().next() {
+                let seed_file = match host_db.all_file_ids().into_iter().next() {
                     Some(file) => file,
                     None => return Vec::new(),
                 };
 
+                if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), seed_file) {
+                    return Vec::new();
+                }
+
                 let Some(seed_db) = crate::framework_db::framework_db_for_file(
-                    ctx.db.clone(),
+                    Arc::clone(&host_db),
                     seed_file,
                     &ctx.cancel,
                 ) else {
@@ -539,7 +576,7 @@ where
                     .unwrap_or(seed_file);
 
                 let Some(fw_db) = crate::framework_db::framework_db_for_file(
-                    ctx.db.clone(),
+                    host_db,
                     anchor_file,
                     &ctx.cancel,
                 ) else {
@@ -581,10 +618,10 @@ where
     }
 }
 
-impl<A> InlayHintProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A, DB> InlayHintProvider<DB> for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         &self.id
@@ -592,15 +629,20 @@ where
 
     fn provide_inlay_hints(
         &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        ctx: ExtensionContext<DB>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
 
+        let host_db = ctx.db.clone().into_dyn_nova_db();
+        if self.build_metadata_only && !has_build_metadata(host_db.as_ref(), params.file) {
+            return Vec::new();
+        }
+
         let Some(fw_db) =
-            crate::framework_db::framework_db_for_file(ctx.db.clone(), params.file, &ctx.cancel)
+            crate::framework_db::framework_db_for_file(host_db, params.file, &ctx.cancel)
         else {
             return Vec::new();
         };
@@ -947,7 +989,6 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
 impl<DB: ?Sized> IdeExtensions<DB>
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
-    FrameworkAnalyzerRegistryProvider: DiagnosticProvider<DB> + CompletionProvider<DB>,
 {
     pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
         let mut this = Self::new(db, config, project);
@@ -955,14 +996,15 @@ where
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
 
-        let fw_registry = nova_framework_builtins::builtin_registry();
-        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry))
-            .with_build_metadata_only()
-            .into_arc();
-        let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider.clone());
-        let _ = registry.register_navigation_provider(provider.clone());
-        let _ = registry.register_inlay_hint_provider(provider);
+        for builtin in nova_framework_builtins::builtin_analyzers_with_ids() {
+            let provider = FrameworkAnalyzerAdapterOnTextDb::new(builtin.id, builtin.analyzer)
+                .with_build_metadata_only()
+                .into_arc();
+            let _ = registry.register_diagnostic_provider(provider.clone());
+            let _ = registry.register_completion_provider(provider.clone());
+            let _ = registry.register_navigation_provider(provider.clone());
+            let _ = registry.register_inlay_hint_provider(provider);
+        }
         this
     }
 }

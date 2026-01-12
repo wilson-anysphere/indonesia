@@ -273,3 +273,148 @@ fn framework_analyzer_adapter_attempts_best_effort_class_navigation() {
     assert_eq!(targets[0].label, "fwClassNavTarget");
     assert_eq!(targets[0].span, Some(Span::new(2, 3)));
 }
+
+#[test]
+fn per_analyzer_providers_isolate_timeouts_and_panics() {
+    struct SlowOrPanickingAnalyzer;
+
+    impl FrameworkAnalyzer for SlowOrPanickingAnalyzer {
+        fn applies_to(&self, _db: &dyn FrameworkDatabase, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn FrameworkDatabase,
+            _file: nova_ext::FileId,
+            cancel: &CancellationToken,
+        ) -> Vec<nova_ext::Diagnostic> {
+            // Wait until the extension watchdog cancels us (triggering a timeout).
+            while !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            // If we cooperatively observe cancellation, return nothing. The provider invocation has
+            // already been timed out by the registry watchdog.
+            Vec::new()
+        }
+
+        fn completions_with_cancel(
+            &self,
+            _db: &dyn FrameworkDatabase,
+            _ctx: &nova_framework::CompletionContext,
+            _cancel: &CancellationToken,
+        ) -> Vec<nova_ext::CompletionItem> {
+            panic!("boom");
+        }
+    }
+
+    struct FastAnalyzer;
+
+    impl FrameworkAnalyzer for FastAnalyzer {
+        fn applies_to(&self, _db: &dyn FrameworkDatabase, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics(&self, _db: &dyn FrameworkDatabase, _file: nova_ext::FileId) -> Vec<nova_ext::Diagnostic> {
+            vec![nova_ext::Diagnostic::warning(
+                "FAST",
+                "fast diagnostic",
+                Some(Span::new(0, 1)),
+            )]
+        }
+
+        fn completions(
+            &self,
+            _db: &dyn FrameworkDatabase,
+            _ctx: &nova_framework::CompletionContext,
+        ) -> Vec<nova_ext::CompletionItem> {
+            vec![nova_ext::CompletionItem::new("fastCompletion")]
+        }
+    }
+
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/workspace/src/main/java/A.java"));
+    db.set_file_text(file, "class A {}".to_string());
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+
+    // Warm the `framework_db` cache so the fast analyzer doesn't occasionally hit the watchdog
+    // timeout due to first-use indexing overhead under parallel test execution.
+    let _ = nova_ide::framework_db::framework_db_for_file(Arc::clone(&db), file, &CancellationToken::new());
+
+    let slow = FrameworkAnalyzerAdapterOnTextDb::new("a.slow", SlowOrPanickingAnalyzer).into_arc();
+    let fast = FrameworkAnalyzerAdapterOnTextDb::new("b.fast", FastAnalyzer).into_arc();
+
+    let mut registry: ExtensionRegistry<dyn nova_db::Database + Send + Sync> =
+        ExtensionRegistry::default();
+    registry
+        .register_diagnostic_provider(slow.clone())
+        .expect("register slow diagnostic provider");
+    registry
+        .register_completion_provider(slow.clone())
+        .expect("register slow completion provider");
+    registry
+        .register_diagnostic_provider(fast.clone())
+        .expect("register fast diagnostic provider");
+    registry
+        .register_completion_provider(fast.clone())
+        .expect("register fast completion provider");
+
+    let ide = IdeExtensions::with_registry(
+        db,
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+        registry,
+    );
+
+    // Trigger enough timeouts to open the circuit breaker for the slow analyzer.
+    let mut last_diags = Vec::new();
+    for _ in 0..4 {
+        last_diags = ide.diagnostics(CancellationToken::new(), file);
+        assert_eq!(
+            last_diags.len(),
+            1,
+            "expected only the fast analyzer diagnostic to surface; got {last_diags:#?}"
+        );
+        assert_eq!(last_diags[0].code.as_ref(), "FAST");
+    }
+
+    let completions = ide.completions(CancellationToken::new(), file, 0);
+    assert_eq!(
+        completions.len(),
+        1,
+        "expected only the fast analyzer completions to surface; got {completions:#?}"
+    );
+    assert_eq!(completions[0].label, "fastCompletion");
+
+    let stats = ide.registry().stats();
+    let slow_diag = stats
+        .diagnostic
+        .get("a.slow")
+        .expect("stats for slow diagnostics provider");
+    assert_eq!(slow_diag.calls_total, 3, "expected 3 timed-out calls");
+    assert_eq!(slow_diag.timeouts_total, 3, "expected all calls to time out");
+    assert_eq!(slow_diag.skipped_total, 1, "expected provider to be skipped after circuit opens");
+
+    let fast_diag = stats
+        .diagnostic
+        .get("b.fast")
+        .expect("stats for fast diagnostics provider");
+    assert_eq!(fast_diag.calls_total, 4);
+    assert_eq!(fast_diag.timeouts_total, 0);
+    assert_eq!(fast_diag.panics_total, 0);
+
+    let slow_completion = stats
+        .completion
+        .get("a.slow")
+        .expect("stats for slow completion provider");
+    assert_eq!(slow_completion.calls_total, 1);
+    assert_eq!(slow_completion.panics_total, 1);
+
+    let fast_completion = stats
+        .completion
+        .get("b.fast")
+        .expect("stats for fast completion provider");
+    assert_eq!(fast_completion.calls_total, 1);
+    assert_eq!(fast_completion.panics_total, 0);
+}

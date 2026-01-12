@@ -76,7 +76,7 @@ fn analyzer_registry_provider_surfaces_diagnostics_and_completions() {
 }
 
 #[test]
-fn default_registry_registers_analyzer_registry_provider() {
+fn default_registry_registers_builtin_analyzers_as_individual_providers() {
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(PathBuf::from("/fw-default/src/Main.java"));
     db.set_file_text(file, "class Main {}".to_string());
@@ -91,18 +91,34 @@ fn default_registry_registers_analyzer_registry_provider() {
         ProjectId::new(0),
     );
     let stats_generic = ide_generic.registry().stats();
-    assert!(stats_generic
-        .diagnostic
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
-    assert!(stats_generic
-        .completion
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
-    assert!(stats_generic
-        .navigation
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
-    assert!(stats_generic
-        .inlay_hint
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
+    let builtin_ids: Vec<&'static str> = nova_framework_builtins::builtin_analyzers_with_ids()
+        .into_iter()
+        .map(|desc| desc.id)
+        .collect();
+    for id in &builtin_ids {
+        assert!(
+            stats_generic.diagnostic.contains_key(*id),
+            "expected default registry to register builtin analyzer diagnostic provider: {id}"
+        );
+        assert!(
+            stats_generic.completion.contains_key(*id),
+            "expected default registry to register builtin analyzer completion provider: {id}"
+        );
+        assert!(
+            stats_generic.navigation.contains_key(*id),
+            "expected default registry to register builtin analyzer navigation provider: {id}"
+        );
+        assert!(
+            stats_generic.inlay_hint.contains_key(*id),
+            "expected default registry to register builtin analyzer inlay hint provider: {id}"
+        );
+    }
+    assert!(
+        !stats_generic
+            .diagnostic
+            .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID),
+        "default registry should no longer register the aggregated framework analyzer registry provider"
+    );
 
     let ide_dyn = IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry(
         db_dyn,
@@ -110,18 +126,30 @@ fn default_registry_registers_analyzer_registry_provider() {
         ProjectId::new(0),
     );
     let stats_dyn = ide_dyn.registry().stats();
-    assert!(stats_dyn
-        .diagnostic
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
-    assert!(stats_dyn
-        .completion
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
-    assert!(stats_dyn
-        .navigation
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
-    assert!(stats_dyn
-        .inlay_hint
-        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
+    for id in &builtin_ids {
+        assert!(
+            stats_dyn.diagnostic.contains_key(*id),
+            "expected default registry to register builtin analyzer diagnostic provider: {id}"
+        );
+        assert!(
+            stats_dyn.completion.contains_key(*id),
+            "expected default registry to register builtin analyzer completion provider: {id}"
+        );
+        assert!(
+            stats_dyn.navigation.contains_key(*id),
+            "expected default registry to register builtin analyzer navigation provider: {id}"
+        );
+        assert!(
+            stats_dyn.inlay_hint.contains_key(*id),
+            "expected default registry to register builtin analyzer inlay hint provider: {id}"
+        );
+    }
+    assert!(
+        !stats_dyn
+            .diagnostic
+            .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID),
+        "default registry should no longer register the aggregated framework analyzer registry provider"
+    );
 
     // Sanity check: the file id is still usable in the concrete store (guards against accidental
     // test flakiness due to unused fixture).

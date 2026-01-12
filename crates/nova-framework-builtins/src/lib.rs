@@ -6,32 +6,70 @@
 
 use nova_framework::{AnalyzerRegistry, FrameworkAnalyzer};
 
-/// Construct the built-in framework analyzers.
+/// Descriptor for a built-in framework analyzer with a stable, namespaced id.
 ///
-/// This returns boxed trait objects so callers can introspect and/or register
-/// analyzers with a [`nova_framework::AnalyzerRegistry`].
-pub fn builtin_analyzers() -> Vec<Box<dyn FrameworkAnalyzer>> {
-    let mut analyzers: Vec<Box<dyn FrameworkAnalyzer>> = Vec::new();
+/// The id is intended to be used as the `nova-ext` provider id when registering the analyzer as an
+/// individual provider (per-analyzer timeouts/metrics/circuit breakers).
+pub struct BuiltinAnalyzerDescriptor {
+    pub id: &'static str,
+    pub analyzer: Box<dyn FrameworkAnalyzer>,
+}
 
-    analyzers.push(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
-    analyzers.push(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
-    analyzers.push(Box::new(nova_framework_mapstruct::MapStructAnalyzer::new()));
-    analyzers.push(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
-    analyzers.push(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
+/// Construct the built-in framework analyzers with stable ids.
+pub fn builtin_analyzers_with_ids() -> Vec<BuiltinAnalyzerDescriptor> {
+    let mut analyzers: Vec<BuiltinAnalyzerDescriptor> = Vec::new();
+
+    analyzers.push(BuiltinAnalyzerDescriptor {
+        id: "nova.framework.lombok",
+        analyzer: Box::new(nova_framework_lombok::LombokAnalyzer::new()),
+    });
+    analyzers.push(BuiltinAnalyzerDescriptor {
+        id: "nova.framework.dagger",
+        analyzer: Box::new(nova_framework_dagger::DaggerAnalyzer::default()),
+    });
+    analyzers.push(BuiltinAnalyzerDescriptor {
+        id: "nova.framework.mapstruct",
+        analyzer: Box::new(nova_framework_mapstruct::MapStructAnalyzer::new()),
+    });
+    analyzers.push(BuiltinAnalyzerDescriptor {
+        id: "nova.framework.micronaut",
+        analyzer: Box::new(nova_framework_micronaut::MicronautAnalyzer::new()),
+    });
+    analyzers.push(BuiltinAnalyzerDescriptor {
+        id: "nova.framework.quarkus",
+        analyzer: Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()),
+    });
 
     // Spring / JPA analyzers are feature-gated: they can be relatively expensive
     // and/or pull in heavier dependencies.
     #[cfg(feature = "spring")]
     {
-        analyzers.push(Box::new(nova_framework_spring::SpringAnalyzer::new()));
+        analyzers.push(BuiltinAnalyzerDescriptor {
+            id: "nova.framework.spring",
+            analyzer: Box::new(nova_framework_spring::SpringAnalyzer::new()),
+        });
     }
 
     #[cfg(feature = "jpa")]
     {
-        analyzers.push(Box::new(nova_framework_jpa::JpaAnalyzer::new()));
+        analyzers.push(BuiltinAnalyzerDescriptor {
+            id: "nova.framework.jpa",
+            analyzer: Box::new(nova_framework_jpa::JpaAnalyzer::new()),
+        });
     }
 
     analyzers
+}
+
+/// Construct the built-in framework analyzers.
+///
+/// This returns boxed trait objects so callers can introspect and/or register
+/// analyzers with a [`nova_framework::AnalyzerRegistry`].
+pub fn builtin_analyzers() -> Vec<Box<dyn FrameworkAnalyzer>> {
+    builtin_analyzers_with_ids()
+        .into_iter()
+        .map(|desc| desc.analyzer)
+        .collect()
 }
 
 /// Register Nova's built-in framework analyzers into an existing registry.

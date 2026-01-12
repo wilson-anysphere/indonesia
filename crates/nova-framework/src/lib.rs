@@ -516,6 +516,77 @@ pub trait FrameworkAnalyzer: Send + Sync {
     }
 }
 
+// Allow boxed analyzers (e.g. built-in analyzer lists) to be used as `FrameworkAnalyzer` values in
+// generic contexts (such as adapters that are generic over the analyzer type).
+impl<T> FrameworkAnalyzer for Box<T>
+where
+    T: FrameworkAnalyzer + ?Sized,
+{
+    fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
+        (**self).applies_to(db, project)
+    }
+
+    fn analyze_file(&self, db: &dyn Database, file: FileId) -> Option<FrameworkData> {
+        (**self).analyze_file(db, file)
+    }
+
+    fn diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+        (**self).diagnostics(db, file)
+    }
+
+    fn diagnostics_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<Diagnostic> {
+        (**self).diagnostics_with_cancel(db, file, cancel)
+    }
+
+    fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
+        (**self).completions(db, ctx)
+    }
+
+    fn completions_with_cancel(
+        &self,
+        db: &dyn Database,
+        ctx: &CompletionContext,
+        cancel: &CancellationToken,
+    ) -> Vec<CompletionItem> {
+        (**self).completions_with_cancel(db, ctx, cancel)
+    }
+
+    fn navigation(&self, db: &dyn Database, symbol: &Symbol) -> Vec<NavigationTarget> {
+        (**self).navigation(db, symbol)
+    }
+
+    fn navigation_with_cancel(
+        &self,
+        db: &dyn Database,
+        symbol: &Symbol,
+        cancel: &CancellationToken,
+    ) -> Vec<NavigationTarget> {
+        (**self).navigation_with_cancel(db, symbol, cancel)
+    }
+
+    fn virtual_members(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember> {
+        (**self).virtual_members(db, class)
+    }
+
+    fn inlay_hints(&self, db: &dyn Database, file: FileId) -> Vec<InlayHint> {
+        (**self).inlay_hints(db, file)
+    }
+
+    fn inlay_hints_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<InlayHint> {
+        (**self).inlay_hints_with_cancel(db, file, cancel)
+    }
+}
+
 #[derive(Default)]
 pub struct AnalyzerRegistry {
     analyzers: Vec<Box<dyn FrameworkAnalyzer>>,

@@ -4,7 +4,7 @@ use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::ProjectId;
 use nova_framework_quarkus::CDI_UNSATISFIED_CODE;
-use nova_ide::extensions::{IdeExtensions, FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID};
+use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use tempfile::TempDir;
 
@@ -84,9 +84,7 @@ fn default_registry_does_not_duplicate_quarkus_framework_diagnostics_when_projec
         "expected default registry to contain the legacy framework diagnostics provider id"
     );
     assert!(
-        stats
-            .diagnostic
-            .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID),
-        "expected default registry to contain the framework analyzer registry provider id"
+        stats.diagnostic.contains_key("nova.framework.quarkus"),
+        "expected default registry to contain the Quarkus analyzer provider id"
     );
 }
