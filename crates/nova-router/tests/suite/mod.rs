@@ -1,5 +1,6 @@
 mod cached_index_mismatch;
 mod duplicate_worker_rejected;
+mod distributed_cancellation_propagation;
 mod handshake_admission;
 mod insecure_tcp;
 mod ipc_permissions_unix;
