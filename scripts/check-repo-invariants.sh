@@ -205,8 +205,10 @@ fi
 #   cargo test ... --test=<name> <filter>
 # so we can keep the patterns in this script without self-matching.
 banned_test_target_patterns=(
-  # `nova-lsp` navigation tests were folded into `--test=stdio_server` (run with a test-name filter).
+  # `nova-lsp` navigation tests were folded into `--test=stdio` (run with a test-name filter).
   '--test(=|[[:space:]]+)navigation([^[:alnum:]_-]|$)'
+  # `nova-lsp` stdio server tests were folded into the `stdio` harness (a `[[test]]` target).
+  '--test(=|[[:space:]]+)stdio_server([^[:alnum:]_-]|$)'
   # `nova-format` formatter tests are consolidated into `--test=harness`.
   '--test(=|[[:space:]]+)format_fixtures([^[:alnum:]_-]|$)'
   '--test(=|[[:space:]]+)format_snapshots([^[:alnum:]_-]|$)'
