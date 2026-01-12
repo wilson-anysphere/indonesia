@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -82,6 +83,24 @@ pub(crate) fn javac_error_is_release_flag_unsupported(err: &CompileError) -> boo
     // - "javac: invalid flag: --release"
     // - "Unrecognized option: --release"
     msg.contains("invalid flag: --release") || msg.contains("unrecognized option: --release")
+}
+
+fn normalize_legacy_javac_source_target(value: &str) -> Cow<'_, str> {
+    // `javac` 8 expects "1.8" rather than "8" for `-source/-target`, while newer toolchains accept
+    // both. Normalize "8" (and lower) to the legacy "1.x" form so we can safely retry when
+    // compiling with a JDK 8 toolchain.
+    let trimmed = value.trim();
+    if trimmed.starts_with("1.") {
+        return Cow::Borrowed(trimmed);
+    }
+    let Ok(version) = trimmed.parse::<u32>() else {
+        return Cow::Borrowed(trimmed);
+    };
+    if version <= 8 {
+        Cow::Owned(format!("1.{version}"))
+    } else {
+        Cow::Borrowed(trimmed)
+    }
 }
 
 pub(crate) async fn resolve_vm_classpath(
@@ -177,7 +196,45 @@ pub(crate) async fn compile_java_for_hot_swap(
         CompileError::new(format!("failed to create hot swap output directory: {err}"))
     })?;
 
-    let result = compile_java_to_dir(cancel, javac, source_file, temp_dir.path()).await;
+    let result = match compile_java_to_dir(cancel, javac, source_file, temp_dir.path()).await {
+        Ok(classes) => Ok(classes),
+        Err(err) => {
+            // JDK 8's `javac` doesn't support `--release`. If the build config specifies a
+            // release level and the configured toolchain is JDK 8, retry with `-source/-target`.
+            let should_retry_without_release =
+                javac.release.is_some() && javac_error_is_release_flag_unsupported(&err);
+            if !should_retry_without_release {
+                Err(err)
+            } else {
+                let mut fallback = javac.clone();
+                if let Some(release) = fallback.release.take() {
+                    if fallback.source.is_none() {
+                        fallback.source = Some(release.clone());
+                    }
+                    if fallback.target.is_none() {
+                        fallback.target = Some(release);
+                    }
+                }
+
+                // Ensure a clean output directory so we don't accidentally pick up stale classes.
+                let _ = std::fs::remove_dir_all(temp_dir.path());
+                if let Err(err) = std::fs::create_dir_all(temp_dir.path()) {
+                    Err(CompileError::new(format!(
+                        "failed to recreate hot swap output directory {}: {err}",
+                        temp_dir.path().display()
+                    )))
+                } else {
+                    match compile_java_to_dir(cancel, &fallback, source_file, temp_dir.path()).await
+                    {
+                        Ok(classes) => Ok(classes),
+                        Err(err2) => Err(CompileError::new(format!(
+                            "{err}\n\nretry without `--release` failed:\n{err2}"
+                        ))),
+                    }
+                }
+            }
+        }
+    };
 
     if keep_hot_swap_temp_dir() {
         let path = temp_dir.keep();
@@ -222,11 +279,13 @@ pub(crate) async fn compile_java_to_dir(
     } else {
         if let Some(source) = javac.source.as_deref() {
             cmd.arg("-source");
-            cmd.arg(source);
+            let normalized = normalize_legacy_javac_source_target(source);
+            cmd.arg(normalized.as_ref());
         }
         if let Some(target) = javac.target.as_deref() {
             cmd.arg("-target");
-            cmd.arg(target);
+            let normalized = normalize_legacy_javac_source_target(target);
+            cmd.arg(normalized.as_ref());
         }
     }
     if javac.enable_preview {
@@ -371,6 +430,25 @@ mod tests {
     fn javac_error_is_release_flag_unsupported_does_not_match_other_errors() {
         let err = CompileError::new("some other javac error");
         assert!(!javac_error_is_release_flag_unsupported(&err));
+    }
+
+    #[test]
+    fn normalize_legacy_javac_source_target_converts_numeric_8_to_1_8() {
+        assert_eq!(
+            normalize_legacy_javac_source_target("8").as_ref(),
+            "1.8",
+            "expected legacy `javac`-compatible version string"
+        );
+    }
+
+    #[test]
+    fn normalize_legacy_javac_source_target_keeps_existing_legacy_form() {
+        assert_eq!(normalize_legacy_javac_source_target("1.8").as_ref(), "1.8");
+    }
+
+    #[test]
+    fn normalize_legacy_javac_source_target_does_not_rewrite_modern_versions() {
+        assert_eq!(normalize_legacy_javac_source_target("17").as_ref(), "17");
     }
 }
 

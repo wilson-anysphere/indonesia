@@ -18,7 +18,7 @@
 
 use std::{
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
@@ -446,6 +446,95 @@ public class NovaStreamDebugHelper {
         )));
     }
 
+    // Prefer `--release 8` so the helper class can load on older debuggee JVMs when attaching.
+    // If the host toolchain is JDK 8 (no `--release` support), retry with `-source/-target`.
+    let release_attempt = run_javac_attempt(
+        cancel,
+        javac,
+        &out_dir,
+        &src_path,
+        &["--release", "8"],
+    )
+    .await;
+    let status = match release_attempt {
+        Ok(status) => status,
+        Err(err) => {
+            let WireStreamDebugError::Compile(msg) = &err else {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(err);
+            };
+            let lower = msg.to_lowercase();
+            let is_release_flag_unsupported = lower.contains("invalid flag: --release")
+                || lower.contains("unrecognized option: --release");
+            if !is_release_flag_unsupported {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(err);
+            }
+
+            // Clean output dir before retrying to avoid stale classes.
+            let _ = std::fs::remove_dir_all(&out_dir);
+            if let Err(err) = std::fs::create_dir_all(&out_dir) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(WireStreamDebugError::Compile(format!(
+                    "failed to recreate temp output dir: {err}"
+                )));
+            }
+
+            let retry_attempt = run_javac_attempt(
+                cancel,
+                javac,
+                &out_dir,
+                &src_path,
+                &["-source", "1.8", "-target", "1.8"],
+            )
+            .await;
+            match retry_attempt {
+                Ok(status) => status,
+                Err(err2) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(match err2 {
+                        WireStreamDebugError::Compile(msg2) => WireStreamDebugError::Compile(
+                            format!("{msg}\n\nretry without `--release` failed:\n{msg2}"),
+                        ),
+                        other => other,
+                    });
+                }
+            }
+        }
+    };
+
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(WireStreamDebugError::Compile(
+            "javac reported failure status without diagnostics".to_string(),
+        ));
+    }
+
+    let class_file = out_dir.join(format!("{CLASS_NAME}.class"));
+    let bytecode = match std::fs::read(&class_file) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(WireStreamDebugError::Compile(format!(
+                "failed to read compiled helper class: {err}"
+            )));
+        }
+    };
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(CompiledHelperClass {
+        name: CLASS_NAME.to_string(),
+        bytecode,
+    })
+}
+
+async fn run_javac_attempt(
+    cancel: &CancellationToken,
+    javac: &str,
+    out_dir: &Path,
+    src_path: &Path,
+    extra_args: &[&str],
+) -> Result<std::process::ExitStatus, WireStreamDebugError> {
     let mut cmd = Command::new(javac);
     cmd.arg("-J-Xms16m");
     cmd.arg("-J-Xmx256m");
@@ -453,16 +542,19 @@ public class NovaStreamDebugHelper {
     cmd.arg("-g");
     cmd.arg("-encoding");
     cmd.arg("UTF-8");
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
     cmd.arg("-d");
-    cmd.arg(&out_dir);
-    cmd.arg(&src_path);
+    cmd.arg(out_dir);
+    cmd.arg(src_path);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|err| {
-        WireStreamDebugError::Compile(format!("failed to spawn {javac}: {err}"))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| WireStreamDebugError::Compile(format!("failed to spawn {javac}: {err}")))?;
 
     let mut stdout = child
         .stdout
@@ -490,7 +582,6 @@ public class NovaStreamDebugHelper {
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             stdout_task.abort();
             stderr_task.abort();
-            let _ = std::fs::remove_dir_all(&dir);
             return Err(WireStreamDebugError::Cancelled);
         }
         res = tokio::time::timeout(SETUP_TIMEOUT, child.wait()) => match res {
@@ -498,7 +589,6 @@ public class NovaStreamDebugHelper {
             Ok(Err(err)) => {
                 stdout_task.abort();
                 stderr_task.abort();
-                let _ = std::fs::remove_dir_all(&dir);
                 return Err(WireStreamDebugError::Compile(format!("javac failed: {err}")));
             }
             Err(_elapsed) => {
@@ -506,7 +596,6 @@ public class NovaStreamDebugHelper {
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                 stdout_task.abort();
                 stderr_task.abort();
-                let _ = std::fs::remove_dir_all(&dir);
                 return Err(WireStreamDebugError::SetupTimeout);
             }
         },
@@ -517,26 +606,10 @@ public class NovaStreamDebugHelper {
 
     if !status.success() {
         let message = format_javac_failure(&stdout, &stderr);
-        let _ = std::fs::remove_dir_all(&dir);
         return Err(WireStreamDebugError::Compile(message));
     }
 
-    let class_file = out_dir.join(format!("{CLASS_NAME}.class"));
-    let bytecode = match std::fs::read(&class_file) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(WireStreamDebugError::Compile(format!(
-                "failed to read compiled helper class: {err}"
-            )));
-        }
-    };
-
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(CompiledHelperClass {
-        name: CLASS_NAME.to_string(),
-        bytecode,
-    })
+    Ok(status)
 }
 
 fn stream_debug_temp_dir() -> std::io::Result<PathBuf> {
