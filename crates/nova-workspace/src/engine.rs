@@ -10,7 +10,7 @@ use async_channel::{Receiver, Sender};
 use crossbeam_channel as channel;
 use lsp_types::Position;
 use notify::{RecursiveMode, Watcher};
-use nova_cache::normalize_rel_path;
+use nova_cache::{normalize_rel_path, Fingerprint};
 use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
 use nova_db::persistence::PersistenceConfig;
@@ -18,7 +18,9 @@ use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
 use nova_memory::MemoryManager;
-use nova_project::{BuildSystem, JavaConfig, ProjectConfig, ProjectError, SourceRootOrigin};
+use nova_project::{
+    BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
+};
 use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
@@ -103,7 +105,9 @@ pub(crate) struct WorkspaceEngine {
 struct ProjectState {
     workspace_root: Option<PathBuf>,
     config: Arc<ProjectConfig>,
+    load_options: LoadOptions,
     source_roots: Vec<SourceRootEntry>,
+    classpath_fingerprint: Option<Fingerprint>,
     pending_build_changes: HashSet<PathBuf>,
     last_reload_started_at: Option<Instant>,
 }
@@ -133,7 +137,9 @@ impl Default for ProjectState {
                 dependencies: Vec::new(),
                 workspace_model: None,
             }),
+            load_options: LoadOptions::default(),
             source_roots: Vec::new(),
+            classpath_fingerprint: None,
             pending_build_changes: HashSet::new(),
             last_reload_started_at: None,
         }
@@ -199,12 +205,24 @@ impl WorkspaceEngine {
     pub fn set_workspace_root(&self, root: impl AsRef<Path>) -> Result<()> {
         let root = fs::canonicalize(root.as_ref())
             .with_context(|| format!("failed to canonicalize {}", root.as_ref().display()))?;
+        let (nova_config, nova_config_path) = nova_config::load_for_workspace(&root)
+            .with_context(|| format!("failed to load nova config for {}", root.display()))?;
         {
             let mut state = self
                 .project_state
                 .lock()
                 .expect("workspace project state mutex poisoned");
             state.workspace_root = Some(root.clone());
+            state.load_options = LoadOptions {
+                nova_config,
+                nova_config_path,
+                ..LoadOptions::default()
+            };
+            state.config = Arc::new(fallback_project_config(&root));
+            state.source_roots = build_source_roots(&state.config);
+            state.classpath_fingerprint = None;
+            state.pending_build_changes.clear();
+            state.last_reload_started_at = None;
         }
 
         // Load initial project state + file list.
@@ -1099,14 +1117,49 @@ fn fallback_project_config(workspace_root: &Path) -> ProjectConfig {
     }
 }
 
+fn classpath_fingerprint(config: &ProjectConfig) -> Fingerprint {
+    let mut bytes = Vec::new();
+    for entry in config.classpath.iter().chain(config.module_path.iter()) {
+        bytes.push(match entry.kind {
+            nova_project::ClasspathEntryKind::Directory => b'D',
+            nova_project::ClasspathEntryKind::Jar => b'J',
+        });
+        bytes.extend_from_slice(entry.path.to_string_lossy().as_bytes());
+        bytes.push(0);
+    }
+    Fingerprint::from_bytes(bytes)
+}
+
 fn reload_project_and_sync(
     workspace_root: &Path,
-    _changed_files: &[PathBuf],
+    changed_files: &[PathBuf],
     vfs: &Vfs<LocalFs>,
     query_db: &salsa::Database,
     project_state: &Arc<Mutex<ProjectState>>,
 ) -> Result<()> {
-    let loaded = match nova_project::load_project_with_workspace_config(workspace_root) {
+    let (previous_config, mut options, previous_classpath_fingerprint) = {
+        let state = project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        (
+            Arc::clone(&state.config),
+            state.load_options.clone(),
+            state.classpath_fingerprint.clone(),
+        )
+    };
+
+    let fallback_config = if previous_config.workspace_root.as_os_str().is_empty()
+        || previous_config.workspace_root.as_path() != workspace_root
+    {
+        Some(fallback_project_config(workspace_root))
+    } else {
+        None
+    };
+    let base_config = fallback_config
+        .as_ref()
+        .unwrap_or_else(|| previous_config.as_ref());
+
+    let loaded = match nova_project::reload_project(base_config, &mut options, changed_files) {
         Ok(config) => config,
         Err(ProjectError::UnknownProjectType { .. }) => fallback_project_config(workspace_root),
         Err(err) => {
@@ -1119,38 +1172,55 @@ fn reload_project_and_sync(
         }
     };
 
-    let config = Arc::new(loaded);
+    let had_classpath_fingerprint = previous_classpath_fingerprint.is_some();
+    let config_changed = &loaded != previous_config.as_ref();
+    let config = if config_changed {
+        Arc::new(loaded)
+    } else {
+        Arc::clone(&previous_config)
+    };
     let source_roots = build_source_roots(&config);
+    let next_classpath_fingerprint = classpath_fingerprint(&config);
+    let classpath_changed = match &previous_classpath_fingerprint {
+        Some(prev) => prev != &next_classpath_fingerprint,
+        None => true,
+    };
 
     {
         let mut state = project_state
             .lock()
             .expect("workspace project state mutex poisoned");
         state.config = Arc::clone(&config);
+        state.load_options = options;
         state.source_roots = source_roots.clone();
+        state.classpath_fingerprint = Some(next_classpath_fingerprint.clone());
     }
 
     let project = ProjectId::from_raw(0);
-    query_db.set_project_config(project, Arc::clone(&config));
+    if !had_classpath_fingerprint || config_changed {
+        query_db.set_project_config(project, Arc::clone(&config));
+    }
     query_db.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
 
-    // Best-effort classpath index. This can be expensive, so fall back to `None` if it fails.
-    let classpath_entries: Vec<nova_classpath::ClasspathEntry> = config
-        .classpath
-        .iter()
-        .chain(config.module_path.iter())
-        .map(nova_classpath::ClasspathEntry::from)
-        .collect();
-    if classpath_entries.is_empty() {
-        query_db.set_classpath_index(project, None);
-    } else {
-        let classpath_cache_dir = query_db.classpath_cache_dir();
-        match nova_classpath::ClasspathIndex::build(
-            &classpath_entries,
-            classpath_cache_dir.as_deref(),
-        ) {
-            Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
-            Err(_) => query_db.set_classpath_index(project, None),
+    if !had_classpath_fingerprint || classpath_changed {
+        // Best-effort classpath index. This can be expensive, so fall back to `None` if it fails.
+        let classpath_entries: Vec<nova_classpath::ClasspathEntry> = config
+            .classpath
+            .iter()
+            .chain(config.module_path.iter())
+            .map(nova_classpath::ClasspathEntry::from)
+            .collect();
+        if classpath_entries.is_empty() {
+            query_db.set_classpath_index(project, None);
+        } else {
+            let classpath_cache_dir = query_db.classpath_cache_dir();
+            match nova_classpath::ClasspathIndex::build(
+                &classpath_entries,
+                classpath_cache_dir.as_deref(),
+            ) {
+                Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
+                Err(_) => query_db.set_classpath_index(project, None),
+            }
         }
     }
 
@@ -1839,6 +1909,51 @@ mod tests {
                 snap.file_rel_path(file_id).as_str(),
                 "src/main/java/com/example/Main.java"
             );
+        });
+    }
+
+    #[test]
+    fn project_reload_updates_jpms_modules_for_module_info_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let module_info = root.join("src/module-info.java");
+        fs::write(
+            &module_info,
+            "module com.example.one { }".as_bytes(),
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        let old_name = engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(project);
+            assert_eq!(config.jpms_modules.len(), 1);
+            assert_eq!(config.jpms_modules[0].name.as_str(), "com.example.one");
+            config.jpms_modules[0].name.clone()
+        });
+
+        engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(project);
+            let workspace = config.jpms_workspace.as_ref().expect("jpms workspace present");
+            assert!(workspace.graph.get(&old_name).is_some());
+        });
+
+        fs::write(&module_info, "module com.example.two { }".as_bytes()).unwrap();
+        engine.reload_project_now(&[module_info.clone()]).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(project);
+            assert_eq!(config.jpms_modules.len(), 1);
+            assert_eq!(config.jpms_modules[0].name.as_str(), "com.example.two");
+
+            let workspace = config.jpms_workspace.as_ref().expect("jpms workspace present");
+            assert!(workspace.graph.get(&old_name).is_none());
+            assert!(workspace.graph.get(&config.jpms_modules[0].name).is_some());
         });
     }
 

@@ -93,6 +93,7 @@ pub fn is_build_file(path: &Path) -> bool {
     }
 
     if name == "pom.xml"
+        || name == "module-info.java"
         || name == "nova.toml"
         || name == ".nova.toml"
         || name == "nova.config.toml"
@@ -300,6 +301,7 @@ mod tests {
 
         let build_files = [
             root.join("pom.xml"),
+            root.join("src").join("module-info.java"),
             root.join("nova.toml"),
             root.join(".nova.toml"),
             root.join("nova.config.toml"),

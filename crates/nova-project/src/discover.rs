@@ -507,6 +507,25 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "BUILD" | "BUILD.bazel"
             ) || path.extension().is_some_and(|ext| ext == "bzl")
         }
-        BuildSystem::Simple => false,
+        BuildSystem::Simple => {
+            // Simple projects can "upgrade" to another build system as soon as a marker file
+            // appears (e.g. creating a new `pom.xml`). Treat all supported build files as reload
+            // triggers so callers can re-detect the workspace model.
+            name == "pom.xml"
+                || matches!(
+                    name,
+                    "build.gradle"
+                        | "build.gradle.kts"
+                        | "settings.gradle"
+                        | "settings.gradle.kts"
+                        | "gradle.properties"
+                        | "WORKSPACE"
+                        | "WORKSPACE.bazel"
+                        | "MODULE.bazel"
+                        | "BUILD"
+                        | "BUILD.bazel"
+                )
+                || path.extension().is_some_and(|ext| ext == "bzl")
+        }
     }
 }
