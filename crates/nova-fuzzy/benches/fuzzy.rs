@@ -116,6 +116,51 @@ fn bench_fuzzy_score(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "unicode")]
+fn bench_fuzzy_score_unicode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fuzzy_score_unicode");
+    // Coverage-oriented benches: keep runtime reasonable in CI-ish environments.
+    group.measurement_time(Duration::from_secs(1));
+    group.warm_up_time(Duration::from_millis(500));
+    group.sample_size(10);
+
+    let cases = [
+        (
+            "casefold_expansion_strasse",
+            FuzzyScoreCase {
+                query: "strasse",
+                candidate: "Straße",
+            },
+        ),
+        (
+            "nfkc_canonical_equivalence_cafe",
+            FuzzyScoreCase {
+                query: "café",
+                candidate: "cafe\u{0301}",
+            },
+        ),
+        (
+            "grapheme_cluster_emoji",
+            FuzzyScoreCase {
+                query: "👩‍💻",
+                candidate: "hello 👩‍💻 world",
+            },
+        ),
+    ];
+
+    for (id, case) in cases {
+        group.bench_with_input(BenchmarkId::from_parameter(id), &case, |b, case| {
+            let mut matcher = FuzzyMatcher::new(case.query);
+            // Warm up internal buffers so the benchmark primarily measures the scoring work,
+            // not one-time allocations.
+            black_box(matcher.score(case.candidate));
+            b.iter(|| black_box(matcher.score(black_box(case.candidate))))
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_trigram_candidates(c: &mut Criterion) {
     // Keep the corpus size large enough to be representative but small enough
     // to keep `cargo bench` runs reasonable in CI-ish environments.
@@ -239,14 +284,15 @@ fn bench_unicode_fuzzy_search(c: &mut Criterion) {
     let symbols: usize = std::env::var("NOVA_FUZZY_BENCH_UNICODE_SYMBOLS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(20_000);
+        .unwrap_or(5_000);
 
     let (symbols, index) = build_unicode_trigram_index(symbols);
 
     let mut group = c.benchmark_group("unicode_fuzzy_search");
-    group.measurement_time(Duration::from_secs(2));
-    group.warm_up_time(Duration::from_secs(1));
-    group.sample_size(20);
+    // Coverage-oriented benches: keep runtime reasonable in CI-ish environments.
+    group.measurement_time(Duration::from_secs(1));
+    group.warm_up_time(Duration::from_millis(500));
+    group.sample_size(10);
 
     let cases = [
         ("strasse_ascii", "strasse"),
@@ -292,7 +338,7 @@ fn bench_unicode_fuzzy_search(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = bench_fuzzy_score, bench_trigram_candidates, bench_unicode_fuzzy_search
+    targets = bench_fuzzy_score, bench_fuzzy_score_unicode, bench_trigram_candidates, bench_unicode_fuzzy_search
 }
 
 #[cfg(not(feature = "unicode"))]
@@ -301,5 +347,4 @@ criterion_group! {
     config = criterion_config();
     targets = bench_fuzzy_score, bench_trigram_candidates
 }
-
 criterion_main!(benches);
