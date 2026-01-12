@@ -988,6 +988,7 @@ where
             actions.extend(type_mismatch_quick_fixes_from_context(
                 source,
                 &uri,
+                &cancel,
                 span,
                 context_diagnostics,
             ));
@@ -1082,6 +1083,7 @@ fn type_mismatch_quick_fixes(
     cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
+    cancel: &CancellationToken,
     selection: Span,
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn spans_overlap(a: Span, b: Span) -> bool {
