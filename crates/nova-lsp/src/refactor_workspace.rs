@@ -76,21 +76,42 @@ impl RefactorWorkspaceSnapshot {
         let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
         paths.insert(focus_path.clone());
 
+        // Always include relevant overlay files.
+        //
+        // When `should_scan == false` we intentionally avoid scanning the filesystem (e.g. for
+        // ad-hoc `file:///Foo.java` documents where `find_project_root` may be `/`). In that mode
+        // we still want multi-file refactors (like rename) to be able to operate across other
+        // open Java documents, so we pull those from the overlay map instead of the disk.
+        let focus_parent = focus_path.parent();
+        for (overlay_uri, _) in overlays {
+            let Ok(overlay_path) =
+                nova_core::file_uri_to_path(overlay_uri).map(|p| p.into_path_buf())
+            else {
+                continue;
+            };
+
+            if !is_java_file(&overlay_path) {
+                continue;
+            }
+
+            // Best-effort locality: keep the snapshot constrained to the focus file's directory
+            // or the computed project root. This avoids dragging in unrelated open files while
+            // still making ad-hoc multi-file operations work.
+            let shares_parent = focus_parent
+                .is_some_and(|parent| overlay_path.parent() == Some(parent));
+            let within_project_root = overlay_path.starts_with(&project_root);
+            if shares_parent || within_project_root {
+                paths.insert(overlay_path);
+            }
+        }
+
         if should_scan {
             for path in project_java_files(&project_root) {
                 paths.insert(path);
             }
 
-            // Include overlay-only files that aren't on disk yet.
-            for (overlay_uri, _) in overlays {
-                if let Ok(overlay_path) =
-                    nova_core::file_uri_to_path(overlay_uri).map(|p| p.into_path_buf())
-                {
-                    if is_java_file(&overlay_path) && overlay_path.starts_with(&project_root) {
-                        paths.insert(overlay_path);
-                    }
-                }
-            }
+            // Note: overlay files are already included above. We still scan the filesystem here to
+            // pick up non-open files on disk.
         }
 
         let mut files = BTreeMap::new();
@@ -277,4 +298,40 @@ fn is_java_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn includes_overlay_java_files_when_not_scanning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let focus_path = dir.path().join("Foo.java");
+        let other_path = dir.path().join("Bar.java");
+
+        let focus_uri_string = uri_string_for_path(&focus_path).expect("focus uri");
+        let other_uri_string = uri_string_for_path(&other_path).expect("other uri");
+
+        let focus_uri: Uri = focus_uri_string.parse().expect("parse focus uri");
+
+        let overlays: HashMap<String, Arc<str>> = HashMap::from([
+            (focus_uri_string, Arc::<str>::from("class Foo {}")),
+            (other_uri_string, Arc::<str>::from("class Bar {}")),
+        ]);
+
+        let snapshot = RefactorWorkspaceSnapshot::build(&focus_uri, &overlays).expect("snapshot");
+
+        let paths: BTreeSet<PathBuf> = snapshot
+            .files()
+            .values()
+            .map(|file| file.path.clone())
+            .collect();
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&focus_path));
+        assert!(paths.contains(&other_path));
+    }
 }
