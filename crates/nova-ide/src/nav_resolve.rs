@@ -1375,7 +1375,9 @@ fn dot_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -> Option
                     while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
                         k -= 1;
                     }
-                    return (k > 0 && bytes[k - 1] == b'.').then_some(k - 1);
+                    // Note: `bool::then_some` eagerly evaluates its argument, so avoid
+                    // `cond.then_some(k - 1)` (underflows when `k == 0`).
+                    return (k > 0 && bytes[k - 1] == b'.').then(|| k - 1);
                 }
             }
             _ => {}
@@ -1405,8 +1407,10 @@ fn colon_colon_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -
                     while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
                         k -= 1;
                     }
+                    // Note: `bool::then_some` eagerly evaluates its argument, so avoid
+                    // `cond.then_some(k - 2)` (underflows when `k < 2`).
                     return (k >= 2 && bytes[k - 1] == b':' && bytes[k - 2] == b':')
-                        .then_some(k - 2);
+                        .then(|| k - 2);
                 }
             }
             _ => {}
@@ -1568,4 +1572,46 @@ fn uri_for_path(path: &Path) -> Option<Uri> {
     let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
     let uri = path_to_file_uri(&abs).ok()?;
     Uri::from_str(&uri).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_before_generic_invocation_does_not_underflow_at_bof() {
+        let text = "<T>method";
+        let close = text.find('>').expect("expected closing angle");
+        assert_eq!(dot_before_generic_invocation(text.as_bytes(), close), None);
+    }
+
+    #[test]
+    fn colon_colon_before_generic_invocation_does_not_underflow_at_bof() {
+        let text = "<T>method";
+        let close = text.find('>').expect("expected closing angle");
+        assert_eq!(
+            colon_colon_before_generic_invocation(text.as_bytes(), close),
+            None
+        );
+    }
+
+    #[test]
+    fn dot_before_generic_invocation_finds_dot() {
+        let text = "Foo.<T>method";
+        let close = text.find('>').expect("expected closing angle");
+        assert_eq!(
+            dot_before_generic_invocation(text.as_bytes(), close),
+            Some(text.find('.').expect("expected dot"))
+        );
+    }
+
+    #[test]
+    fn colon_colon_before_generic_invocation_finds_double_colon() {
+        let text = "Foo::<T>method";
+        let close = text.find('>').expect("expected closing angle");
+        assert_eq!(
+            colon_colon_before_generic_invocation(text.as_bytes(), close),
+            Some(text.find("::").expect("expected ::"))
+        );
+    }
 }
