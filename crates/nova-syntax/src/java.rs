@@ -2582,6 +2582,34 @@ impl Lowerer {
             ast::Expr::Missing(self.spans.map_node(node))
         };
 
+        // `MethodCallExpression` uses a `FieldAccessExpression` callee for explicit generic
+        // invocations without a receiver (`<T>m()`), where the field access node contains only
+        // `TypeArguments` + `Identifier` (no `Dot` / receiver expression).
+        //
+        // Lower these to a `NameExpr` so downstream passes treat them like unqualified calls.
+        if let Some(expr) = callee_node.as_ref() {
+            if expr.kind() == SyntaxKind::FieldAccessExpression
+                && expr.children().all(|child| !is_expression_kind(child.kind()))
+                && expr.children().any(|child| child.kind() == SyntaxKind::TypeArguments)
+            {
+                if let Some(method_token) = expr
+                    .children_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .filter(|tok| tok.kind().is_identifier_like())
+                    .last()
+                {
+                    let name_range = self.spans.map_token(&method_token);
+                    let range = self
+                        .non_trivia_span(expr)
+                        .unwrap_or_else(|| Span::new(name_range.start, name_range.end));
+                    callee = ast::Expr::Name(ast::NameExpr {
+                        name: method_token.text().to_string(),
+                        range,
+                    });
+                }
+            }
+        }
+
         let explicit_type_args = node
             .children()
             .find(|child| child.kind() == SyntaxKind::TypeArguments)

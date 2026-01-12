@@ -424,6 +424,29 @@ class C {
 }
 
 #[test]
+fn explicit_generic_invocation_without_receiver_is_treated_as_unqualified_call() {
+    let src = r#"
+import java.util.*;
+class C {
+    static <T> List<T> emptyList() { return null; }
+    void m() {
+        <String>emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("<String>emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "<String>emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
 fn constructor_type_args_do_not_become_method_type_args() {
     let src = r#"
 class Foo {
