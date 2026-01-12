@@ -106,6 +106,52 @@ fn bazel_workspace_java_targets_prefers_bsp_buildtargets() {
 }
 
 #[test]
+fn bazel_workspace_java_targets_falls_back_to_bsp_target_id_uri() {
+    let root = tempdir().unwrap();
+
+    let java_target = BuildTarget {
+        id: BuildTargetIdentifier {
+            uri: "//pkg:t1".to_string(),
+        },
+        tags: Vec::new(),
+        language_ids: vec!["java".to_string()],
+        display_name: None,
+    };
+
+    let config = FakeBspServerConfig {
+        initialize: InitializeBuildResult {
+            display_name: "fake-bsp".to_string(),
+            version: "0.1.0".to_string(),
+            bsp_version: "2.1.0".to_string(),
+            capabilities: server_caps(),
+        },
+        targets: vec![java_target],
+        inverse_sources: std::collections::BTreeMap::new(),
+        javac_options: Vec::new(),
+        compile_status_code: 0,
+        diagnostics: Vec::new(),
+        send_server_request_before_initialize_response: false,
+    };
+
+    let (client, server) = spawn_fake_bsp_server(config).unwrap();
+    let bsp_workspace = BspWorkspace::from_client(root.path().to_path_buf(), client).unwrap();
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner.clone())
+        .unwrap()
+        .with_bsp_workspace(bsp_workspace);
+
+    let targets = workspace.java_targets().unwrap();
+    assert_eq!(targets, vec!["//pkg:t1".to_string()]);
+
+    // BSP path should avoid invoking `bazel query` for target discovery.
+    assert!(runner.calls().is_empty());
+
+    drop(workspace);
+    server.join();
+}
+
+#[test]
 fn bazel_workspace_target_compile_info_prefers_bsp_javac_options() {
     let root = tempdir().unwrap();
 

@@ -561,8 +561,18 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         let mut out: Vec<String> = targets
                             .iter()
                             .filter(|t| t.language_ids.iter().any(|id| id == "java"))
-                            .filter_map(|t| t.display_name.clone())
-                            .filter(|label| label.starts_with("//"))
+                            .filter_map(|t| {
+                                if t.display_name
+                                    .as_deref()
+                                    .is_some_and(|name| name.starts_with("//"))
+                                {
+                                    t.display_name.clone()
+                                } else if t.id.uri.starts_with("//") {
+                                    Some(t.id.uri.clone())
+                                } else {
+                                    None
+                                }
+                            })
                             .collect();
                         out.sort();
                         out.dedup();
