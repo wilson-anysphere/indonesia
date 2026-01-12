@@ -3481,8 +3481,10 @@ dependencies = [
 name = "nova-config"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "insta",
  "nova-core",
+ "regex",
  "schemars",
  "serde",
  "serde_ignored",

@@ -200,6 +200,58 @@ model_path = "missing.gguf"
 }
 
 #[test]
+fn validates_ai_privacy_excluded_paths_are_valid_globs() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+excluded_paths = ["["]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    match &diagnostics.errors[0] {
+        ConfigValidationError::InvalidValue { toml_path, message } => {
+            assert_eq!(toml_path, "ai.privacy.excluded_paths[0]");
+            assert!(
+                message.starts_with("invalid glob pattern:"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected InvalidValue error, got {other:?}"),
+    }
+}
+
+#[test]
+fn validates_ai_privacy_redact_patterns_are_valid_regexes() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+redact_patterns = ["("]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    match &diagnostics.errors[0] {
+        ConfigValidationError::InvalidValue { toml_path, message } => {
+            assert_eq!(toml_path, "ai.privacy.redact_patterns[0]");
+            assert!(
+                message.starts_with("invalid regex:"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected InvalidValue error, got {other:?}"),
+    }
+}
+
+#[test]
 fn validates_extensions_wasm_paths_exist() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join("nova.toml");

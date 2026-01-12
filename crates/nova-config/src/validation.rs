@@ -165,6 +165,8 @@ fn validate_ai(
         return;
     }
 
+    validate_ai_privacy_patterns(config, out);
+
     let scheme = config.ai.provider.url.scheme();
     if scheme != "http" && scheme != "https" {
         out.errors.push(ConfigValidationError::InvalidValue {
@@ -346,6 +348,34 @@ fn validate_ai(
                     message: "must be >= 1".to_string(),
                 });
             }
+        }
+    }
+}
+
+fn validate_ai_privacy_patterns(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    for (idx, pattern) in config.ai.privacy.excluded_paths.iter().enumerate() {
+        if pattern.trim().is_empty() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: format!("ai.privacy.excluded_paths[{idx}]"),
+                message: "must be non-empty".to_string(),
+            });
+            continue;
+        }
+
+        if let Err(err) = globset::Glob::new(pattern) {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: format!("ai.privacy.excluded_paths[{idx}]"),
+                message: format!("invalid glob pattern: {err}"),
+            });
+        }
+    }
+
+    for (idx, pattern) in config.ai.privacy.redact_patterns.iter().enumerate() {
+        if let Err(err) = regex::Regex::new(pattern) {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: format!("ai.privacy.redact_patterns[{idx}]"),
+                message: format!("invalid regex: {err}"),
+            });
         }
     }
 }
