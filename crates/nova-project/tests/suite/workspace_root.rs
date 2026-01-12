@@ -217,6 +217,50 @@ fn load_project_finds_gradle_workspace_root_from_included_build_nested_file() {
 }
 
 #[test]
+fn load_project_finds_gradle_workspace_root_from_included_build_nested_file_settings_kts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    write(
+        &root.join("settings.gradle.kts"),
+        r#"includeBuild("build-logic")"#,
+    );
+    write(&root.join("build.gradle"), "// root build");
+
+    // Included build has its own settings file; `workspace_root` should still pick the *outer*
+    // build when the included build is nested under it.
+    write(
+        &root.join("build-logic/settings.gradle.kts"),
+        r#"include("plugins")"#,
+    );
+    write(&root.join("build-logic/build.gradle.kts"), "// included build");
+    write(
+        &root.join("build-logic/src/main/java/com/example/BuildLogic.java"),
+        "package com.example; class BuildLogic {}",
+    );
+
+    let expected_root = fs::canonicalize(root).expect("canonicalize root");
+    let nested = root.join("build-logic/src/main/java/com/example/BuildLogic.java");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&nested, &options)
+        .expect("load project from included build file");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.workspace_root, expected_root);
+    assert!(
+        config
+            .modules
+            .iter()
+            .any(|m| m.root.ends_with("build-logic")),
+        "expected included build to be loaded as a module"
+    );
+}
+
+#[test]
 fn load_project_finds_bazel_workspace_root_from_nested_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
