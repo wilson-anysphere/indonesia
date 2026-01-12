@@ -233,11 +233,8 @@ impl ExtractMethod {
         let root = parsed.syntax();
 
         let (method, _method_body) = find_enclosing_method(root.clone(), selection)
-            .ok_or("selection must be inside a method or constructor")?;
-        let enclosing_method_is_static = match &method {
-            EnclosingMethod::Method(method) => method_is_static(method),
-            EnclosingMethod::Constructor(_) => false,
-        };
+            .ok_or("selection must be inside a method, constructor, or initializer block")?;
+        let enclosing_method_is_static = method.is_static();
         let class_decl = method
             .syntax()
             .ancestors()
@@ -352,6 +349,16 @@ fn method_is_static(method: &ast::MethodDeclaration) -> bool {
     })
 }
 
+fn initializer_is_static(init: &ast::InitializerBlock) -> bool {
+    init.modifiers().is_some_and(|modifiers| {
+        modifiers
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+    })
+}
+
 fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
     let range = node.text_range();
     TextRange::new(
@@ -364,6 +371,7 @@ fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
 enum EnclosingMethod {
     Method(ast::MethodDeclaration),
     Constructor(ast::ConstructorDeclaration),
+    Initializer(ast::InitializerBlock),
 }
 
 impl EnclosingMethod {
@@ -371,6 +379,7 @@ impl EnclosingMethod {
         match self {
             EnclosingMethod::Method(method) => method.syntax(),
             EnclosingMethod::Constructor(ctor) => ctor.syntax(),
+            EnclosingMethod::Initializer(init) => init.syntax(),
         }
     }
 
@@ -378,6 +387,15 @@ impl EnclosingMethod {
         match self {
             EnclosingMethod::Method(method) => method.parameter_list(),
             EnclosingMethod::Constructor(ctor) => ctor.parameter_list(),
+            EnclosingMethod::Initializer(_) => None,
+        }
+    }
+
+    fn is_static(&self) -> bool {
+        match self {
+            EnclosingMethod::Method(method) => method_is_static(method),
+            EnclosingMethod::Constructor(_) => false,
+            EnclosingMethod::Initializer(init) => initializer_is_static(init),
         }
     }
 }
@@ -457,6 +475,22 @@ fn find_enclosing_method(
                 .is_none_or(|(best_span, _, _)| span < *best_span)
             {
                 best = Some((span, EnclosingMethod::Constructor(ctor), body));
+            }
+        }
+    }
+
+    for init in root.descendants().filter_map(ast::InitializerBlock::cast) {
+        let Some(body) = init.body() else {
+            continue;
+        };
+        let body_range = syntax_range(body.syntax());
+        if body_range.start <= selection.start && selection.end <= body_range.end {
+            let span = body_range.len();
+            if best
+                .as_ref()
+                .is_none_or(|(best_span, _, _)| span < *best_span)
+            {
+                best = Some((span, EnclosingMethod::Initializer(init), body));
             }
         }
     }
