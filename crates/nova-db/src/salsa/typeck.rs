@@ -13,7 +13,7 @@ use nova_modules::ModuleName;
 use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
-use nova_syntax::{lex, JavaLanguageLevel, SyntaxKind, Token};
+use nova_syntax::{lex, unescape_char_literal, JavaLanguageLevel, SyntaxKind, Token};
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
@@ -211,7 +211,7 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             kind: LiteralKind::Char,
             value,
             ..
-        } => nova_syntax::unescape_char_literal(value)
+        } => unescape_char_literal(value)
             .ok()
             .map(|ch| ConstValue::Int(i64::from(u32::from(ch)))),
         HirExpr::Literal {
