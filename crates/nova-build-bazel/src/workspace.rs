@@ -318,7 +318,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     /// prefers `same_pkg_direct_rdeps(...)` when available and falls back to `rdeps(//pkg:*, ...)`.
     ///
     /// Returns an empty list when `file` is inside the workspace root but is not contained in any
-    /// Bazel package (no `BUILD` / `BUILD.bazel` found up to the workspace root).
+    /// Bazel package (no `BUILD` / `BUILD.bazel` found up to the workspace root), or when `file`
+    /// does not exist on disk.
     pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
         self.java_owning_targets_for_file_with_universe(file.as_ref(), None)
     }
@@ -494,6 +495,18 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let Some((file_label, package_rel)) = self.workspace_file_label_and_package(file)? else {
             return Ok(Vec::new());
         };
+
+        // Treat missing/non-file paths as a non-match to avoid running Bazel queries that will
+        // fail (and may be expensive). This is consistent with `compile_info_for_file*`, which
+        // also returns `None` for missing paths.
+        let abs_file = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.root.join(file)
+        };
+        if !abs_file.is_file() {
+            return Ok(Vec::new());
+        }
 
         self.java_owning_targets_for_file_label_and_package_with_universe(
             file,

@@ -374,6 +374,20 @@ fn owning_targets_returns_empty_when_no_build_file_found() {
 }
 
 #[test]
+fn owning_targets_returns_empty_when_file_does_not_exist() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+
+    // Don't create the file on disk.
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let owners = workspace
+        .java_owning_targets_for_file(Path::new("java/Hello.java"))
+        .unwrap();
+    assert!(owners.is_empty());
+}
+
+#[test]
 fn path_to_label_errors_for_file_outside_workspace() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
