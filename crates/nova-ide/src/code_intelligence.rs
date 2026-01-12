@@ -4459,26 +4459,36 @@ fn package_decl_completions(
     const MAX_CLASSPATH_PACKAGES: usize = 2048;
     if !ctx.dotted_prefix.is_empty() {
         if let Some(salsa) = db.salsa_db() {
-            let pkgs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 salsa.with_snapshot(|snap| {
                     let project = snap.file_project(file);
-                    snap.classpath_index(project)
-                        .map(|cp| cp.packages_with_prefix(&ctx.dotted_prefix))
+
+                    let Some(cp) = snap.classpath_index(project) else {
+                        return;
+                    };
+
+                    let pkgs = cp.packages();
+                    let prefix = normalize_binary_prefix(&ctx.dotted_prefix);
+                    let start = pkgs.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
+                    let mut added = 0usize;
+                    for pkg in &pkgs[start..] {
+                        if added >= MAX_CLASSPATH_PACKAGES {
+                            break;
+                        }
+                        if !pkg.starts_with(prefix.as_ref()) {
+                            break;
+                        }
+                        added += 1;
+                        add_package_segment_candidates(
+                            &mut candidates,
+                            pkg,
+                            &parent_segments,
+                            &ctx.segment_prefix,
+                        );
+                    }
                 })
             }))
-            .ok()
-            .flatten();
-
-            if let Some(pkgs) = pkgs {
-                for pkg in pkgs.into_iter().take(MAX_CLASSPATH_PACKAGES) {
-                    add_package_segment_candidates(
-                        &mut candidates,
-                        &pkg,
-                        &parent_segments,
-                        &ctx.segment_prefix,
-                    );
-                }
-            }
+            .ok();
         }
     }
 

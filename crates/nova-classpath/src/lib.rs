@@ -757,6 +757,20 @@ impl ClasspathIndex {
         self.binary_names_sorted.iter().map(|s| s.as_str())
     }
 
+    /// All indexed package names (`java.util`, `com.example`, ...) in **stable sorted order**.
+    ///
+    /// This is a zero-allocation view over the internal index data and is intended for
+    /// bulk iteration (e.g. completion candidate scanning).
+    pub fn packages(&self) -> &[String] {
+        &self.packages_sorted
+    }
+
+    /// Iterate all indexed package names (`java.util`, `com.example`, ...) in **stable sorted
+    /// order**.
+    pub fn iter_packages(&self) -> impl Iterator<Item = &str> + '_ {
+        self.packages_sorted.iter().map(|s| s.as_str())
+    }
+
     pub fn class_names_with_prefix(&self, prefix: &str) -> Vec<String> {
         let prefix = normalize_binary_prefix(prefix);
         let names = &self.binary_names_sorted;
