@@ -55,6 +55,9 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
   - Pressure computed from `max(tracked_total, process_rss)` (`crates/nova-memory/src/manager.rs`)
   - Under `High`/`Critical`, calls `MemoryEvictor::flush_to_disk()` best-effort, then evicts
     proportionally.
+  - Also performs *cross-category compensation* during eviction: large non-evictable usage in a
+    category with no evictors (commonly `Other`, e.g. Salsa file texts) can still force eviction of
+    evictable caches in other categories by shrinking their effective targets.
 - `nova_memory::MemoryEvictor`:
   - Cooperative eviction; must remain snapshot-safe (cached values should be behind `Arc`)
 
@@ -74,7 +77,7 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 | Component | Crate | Category | Tracked? | Notes |
 |---|---|---:|---:|---|
 | Open document text (editor buffers) | `nova-lsp` | Other | yes | Tracked via `documents_memory` registration (`crates/nova-lsp/src/main.rs`) |
-| Salsa inputs (file contents) | `nova-db` | Other | yes | `SalsaInputFootprint` tracks per-file `file_content` sizes (registered via `register_salsa_memo_evictor`) |
+| Salsa inputs (file contents) | `nova-db` | Other | yes | `SalsaInputFootprint` tracks per-file `file_content` sizes (registered via `register_salsa_memo_evictor`). Although these inputs are not evictable, they still drive cache eviction via `MemoryManager` cross-category compensation. |
 | Classpath index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `ClasspathIndex::estimated_bytes()` |
 | JDK index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `JdkIndex::estimated_bytes()` |
 | VFS overlay documents | `nova-workspace` | Other | yes | Tracked via `OverlayFs::estimated_bytes()` |
