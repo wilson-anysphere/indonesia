@@ -1308,17 +1308,41 @@ pub fn extract_variable(
 
         let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_token_range);
 
-        // For explicit-typed extraction we must be confident about the type.
-        //
-        // When we don't have type-checker information and our parser-only inference falls back to
-        // the generic `Object` type, we may generate an extracted variable type that is too
-        // imprecise (or even invalid, e.g. `void`-typed expressions). Be conservative and refuse
-        // explicit-type extraction in that case.
+        // For explicit-typed extraction we must be confident about the type. If we don't have
+        // type-checker type information and our parser-only inference fell back to the generic
+        // "Object" type, we may be unable to distinguish between a value-returning expression and a
+        // `void`-typed method invocation, or determine a required target type for lambdas/method
+        // references. In those cases, reject the refactoring rather than guessing.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
         if typeck_ty.is_none() && parser_ty == "Object" {
-            return Err(RefactorError::TypeInferenceFailed);
+            fn expr_might_be_void(expr: &ast::Expression) -> bool {
+                match expr {
+                    ast::Expression::MethodCallExpression(_) => true,
+                    ast::Expression::ParenthesizedExpression(p) => p
+                        .expression()
+                        .is_some_and(|e| expr_might_be_void(&e)),
+                    _ => false,
+                }
+            }
+
+            fn requires_target_type(expr: &ast::Expression) -> bool {
+                match expr {
+                    ast::Expression::ParenthesizedExpression(p) => p
+                        .expression()
+                        .is_some_and(|e| requires_target_type(&e)),
+                    ast::Expression::LambdaExpression(_)
+                    | ast::Expression::MethodReferenceExpression(_)
+                    | ast::Expression::ConstructorReferenceExpression(_)
+                    | ast::Expression::ArrayInitializer(_) => true,
+                    _ => false,
+                }
+            }
+
+            if expr_might_be_void(&expr) || requires_target_type(&expr) {
+                return Err(RefactorError::TypeInferenceFailed);
+            }
         }
 
         // When emitting an explicit type (instead of `var`), prefer parser-inferred names when

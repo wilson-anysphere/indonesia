@@ -103,6 +103,14 @@ fn infer_type_at_offsets(
         else {
             continue;
         };
+        // Strip leading `java.lang.` for readability. Java implicitly imports `java.lang`, and our
+        // tests expect unqualified names for simple `java.lang` types.
+        let ty = if ty.starts_with("java.lang.") {
+            ty["java.lang.".len()..].to_string()
+        } else {
+            ty
+        };
+
         if is_valid_signature_type_string(&ty) {
             // `type_at_offset_fully_qualified` returns fully-qualified names (e.g.
             // `java.lang.RuntimeException`). Since `java.lang` is implicitly imported in Java,
@@ -1215,7 +1223,8 @@ impl ExtractMethod {
             .ok_or("selection out of bounds")?
             .to_string();
 
-        let new_body_indent = format!("{method_indent}    ");
+        let indent_unit = indent_unit(source, &method_indent, &method_body);
+        let new_body_indent = format!("{method_indent}{indent_unit}");
         let (method_body_text, replacement, return_ty) = match analysis.region {
             ExtractRegionKind::Statements => {
                 let extracted_body =
@@ -4275,6 +4284,30 @@ fn indentation_at(source: &str, offset: usize) -> String {
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n' && *c != '\r')
         .collect()
+}
+
+fn indent_unit(source: &str, method_indent: &str, method_body: &ast::Block) -> String {
+    if method_indent.contains('\t') {
+        return "\t".to_string();
+    }
+
+    // Best-effort: detect the next indentation level by looking at existing statements
+    // in the method body.
+    let mut best: Option<String> = None;
+    for stmt in method_body.statements() {
+        let stmt_indent = indentation_at(source, syntax_range(stmt.syntax()).start);
+        let Some(suffix) = stmt_indent.strip_prefix(method_indent) else {
+            continue;
+        };
+        let suffix = suffix.to_string();
+        if suffix.is_empty() {
+            continue;
+        }
+        if best.as_ref().is_none_or(|best| suffix.len() < best.len()) {
+            best = Some(suffix);
+        }
+    }
+    best.unwrap_or_else(|| "    ".to_string())
 }
 
 fn reindent(block: &str, old_indent: &str, new_indent: &str, newline: &str) -> String {

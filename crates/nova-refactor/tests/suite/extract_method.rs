@@ -3929,6 +3929,52 @@ class C {
 }
 
 #[test]
+fn extract_method_preserves_tab_indentation() {
+    let fixture = r#"
+class C {
+	int m(int a) {
+		int b = 1;
+		int r;
+		/*start*/r = a + b;/*end*/
+		return r;
+	}
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "compute".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+	int m(int a) {
+		int b = 1;
+		int r;
+		r = compute(a, b);
+		return r;
+	}
+
+	private int compute(int a, int b) {
+		int r;
+		r = a + b;
+		return r;
+	}
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_compound_assignment_treats_param_as_read_and_write() {
     let fixture = r#"
 class C {
