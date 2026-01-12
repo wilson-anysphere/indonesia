@@ -7972,6 +7972,49 @@ fn define_source_types<'idx>(
             });
         }
 
+        // Best-effort: Java canonical constructor for records that declare none.
+        if constructors.is_empty() {
+            if let nova_hir::ids::ItemId::Record(record_id) = item {
+                let record = tree.record(record_id);
+                let params = record
+                    .components
+                    .iter()
+                    .map(|component| {
+                        preload_type_names(
+                            resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            loader,
+                            &component.ty,
+                        );
+                        nova_resolve::type_ref::resolve_type_ref_text(
+                            resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            &*loader.store,
+                            &class_vars,
+                            &component.ty,
+                            Some(component.ty_range),
+                        )
+                        .ty
+                    })
+                    .collect::<Vec<_>>();
+                let used_ellipsis = record
+                    .components
+                    .last()
+                    .is_some_and(|component| component.ty.trim().contains("..."));
+                let last_is_array = params.last().is_some_and(|t| matches!(t, Type::Array(_)));
+                let is_varargs = used_ellipsis && last_is_array;
+                let is_accessible = record.modifiers.raw & Modifiers::PRIVATE == 0;
+
+                constructors.push(ConstructorDef {
+                    params,
+                    is_varargs,
+                    is_accessible,
+                });
+            }
+        }
+
         loader.store.define_class(
             class_id,
             ClassDef {

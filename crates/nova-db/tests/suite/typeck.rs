@@ -6345,6 +6345,40 @@ class D { void m(){ new C(); } }
 }
 
 #[test]
+fn source_record_canonical_constructor_is_available() {
+    let src = r#"
+record R(int x) { }
+class Use { void m(){ new R(1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected record canonical constructor to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn record_constructor_arity_mismatch_reports_diag() {
+    let src = r#"
+record R(int x) { }
+class Use { void m(){ new R(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-constructor"),
+        "expected unresolved-constructor diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn private_constructor_is_not_accessible() {
     let src = r#"
 class C { private C(int x) {} }
