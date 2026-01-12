@@ -282,6 +282,7 @@ struct SalsaMemoFootprintInner {
 #[derive(Debug, Default)]
 struct SalsaInputFootprintInner {
     file_content_by_file: HashMap<FileId, u64>,
+    project_class_ids_by_project: HashMap<ProjectId, u64>,
     total_bytes: u64,
 }
 
@@ -409,6 +410,20 @@ impl SalsaInputFootprint {
         let mut inner = self.lock_inner();
         let prev = inner.file_content_by_file.insert(file, len).unwrap_or(0);
         inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(len);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record_project_class_ids_bytes(&self, project: ProjectId, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let prev = inner
+            .project_class_ids_by_project
+            .insert(project, bytes)
+            .unwrap_or(0);
+        inner.total_bytes = inner
+            .total_bytes
+            .saturating_sub(prev)
+            .saturating_add(bytes);
         drop(inner);
         self.refresh_tracker();
     }
@@ -1685,6 +1700,22 @@ impl Database {
     }
 
     pub fn set_project_class_ids(&self, project: ProjectId, mapping: Arc<Vec<(Arc<str>, ClassId)>>) {
+        // Best-effort sizing: count the bytes of each binary name plus the per-entry tuple size.
+        //
+        // NOTE: This intentionally does not attempt to account for all `Arc` header overhead or
+        // HashMap metadata; it is only used to make large host-managed inputs visible to the
+        // memory manager so eviction of *caches* can react to input-driven pressure.
+        let bytes = {
+            let mut total = (mapping.len() as u64)
+                * (std::mem::size_of::<(Arc<str>, ClassId)>() as u64);
+            for (name, _) in mapping.as_ref() {
+                total = total.saturating_add(name.len() as u64);
+            }
+            total
+        };
+        self.input_footprint
+            .record_project_class_ids_bytes(project, bytes);
+
         self.inputs
             .lock()
             .project_class_ids
@@ -3023,6 +3054,26 @@ class Foo {
         // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).
         assert_eq!(manager.report().usage.other, 6);
         assert_eq!(db.salsa_input_bytes(), 6);
+    }
+
+    #[test]
+    fn salsa_input_tracker_accounts_project_class_ids_bytes() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new();
+        db.register_salsa_input_tracker(&manager);
+
+        let project = ProjectId::from_raw(0);
+        let mapping = Arc::new(vec![
+            (Arc::<str>::from("com.example.Foo"), ClassId::from_raw(1)),
+            (Arc::<str>::from("com.example.Bar"), ClassId::from_raw(2)),
+        ]);
+        db.set_project_class_ids(project, Arc::clone(&mapping));
+
+        let expected = (mapping.len() as u64) * (std::mem::size_of::<(Arc<str>, ClassId)>() as u64)
+            + ("com.example.Foo".len() as u64)
+            + ("com.example.Bar".len() as u64);
+        assert_eq!(manager.report().usage.other, expected);
+        assert_eq!(db.salsa_input_bytes(), expected);
     }
 
     #[test]
