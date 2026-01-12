@@ -15,7 +15,6 @@ nova-config-metadata = { path = "../nova-config-metadata" }
 nova-properties = { path = "../nova-properties" }
 nova-yaml = { path = "../nova-yaml" }
 nova-framework-parse = { path = "../nova-framework-parse" }
-nova-project = { path = "../nova-project" }
 
 tree-sitter = "0.20"
 zip = "0.6"
