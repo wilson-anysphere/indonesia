@@ -162,6 +162,14 @@ function resolveNotificationMethod(
     return asString;
   }
 
+  if (ts.isParenthesizedExpression(expr)) {
+    return resolveNotificationMethod(expr.expression, env, imports);
+  }
+
+  if (ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr)) {
+    return resolveNotificationMethod(expr.expression, env, imports);
+  }
+
   // Handle direct uses of the Did*FilesNotification constants, e.g.
   //   client.sendNotification(DidRenameFilesNotification as any, ...)
   if (ts.isIdentifier(expr)) {
@@ -847,6 +855,62 @@ test('noManualFileOperationsForwarding scan resolves protocol constants nested i
     import { DidRenameFilesNotification } from 'vscode-languageserver-protocol';
     const METHODS = { rename: DidRenameFilesNotification.method } as const;
     client.sendNotification(METHODS.rename, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags Did*FilesNotification passed directly (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    import { DidRenameFilesNotification } from 'vscode-languageserver-protocol';
+    client.sendNotification(DidRenameFilesNotification, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags const alias to Did*FilesNotification (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    import { DidRenameFilesNotification } from 'vscode-languageserver-protocol';
+    const RENAME = DidRenameFilesNotification;
+    client.sendNotification(RENAME.type, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags NotificationType-like objects with method property (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification({ method: 'workspace/didRenameFiles', messageDirection: 'clientToServer' } as any, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags bracket access on protocol constants (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    import { DidRenameFilesNotification } from 'vscode-languageserver-protocol';
+    client.sendNotification(DidRenameFilesNotification['method'], { files: [] });
   `;
 
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
