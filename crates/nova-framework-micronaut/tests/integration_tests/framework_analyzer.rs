@@ -1,5 +1,6 @@
 use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
 use nova_framework_micronaut::MicronautAnalyzer;
+use nova_types::Span;
 
 #[test]
 fn registry_emits_missing_bean_diagnostic_for_correct_file() {
@@ -40,14 +41,14 @@ fn registry_emits_missing_bean_diagnostic_for_correct_file() {
 }
 
 #[test]
-fn registry_completes_value_placeholders_from_application_properties() {
+fn registry_completes_value_placeholders_from_application_profile_properties() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
     db.add_dependency(project, "io.micronaut", "micronaut-runtime");
 
     db.add_file_with_path_and_text(
         project,
-        "src/main/resources/application.properties",
+        "src/main/resources/application-test.properties",
         "app.name=Nova\napp.number=7\n",
     );
 
@@ -59,10 +60,8 @@ fn registry_completes_value_placeholders_from_application_properties() {
             String value;
         }
     "#;
-    let cursor = java
-        .find("${app.n")
-        .expect("placeholder missing")
-        + "${app.n".len();
+    let placeholder_start = java.find("${app.n").expect("placeholder missing");
+    let cursor = placeholder_start + "${app.n".len();
 
     let file = db.add_file_with_path_and_text(project, "src/C.java", java);
 
@@ -79,5 +78,14 @@ fn registry_completes_value_placeholders_from_application_properties() {
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert!(labels.contains(&"app.name"), "labels={labels:?}");
     assert!(labels.contains(&"app.number"), "labels={labels:?}");
-}
 
+    let item = items
+        .iter()
+        .find(|i| i.label == "app.name")
+        .expect("app.name completion missing");
+    assert_eq!(
+        item.replace_span,
+        Some(Span::new(placeholder_start + 2, cursor)),
+        "expected completion to replace the current key prefix"
+    );
+}
