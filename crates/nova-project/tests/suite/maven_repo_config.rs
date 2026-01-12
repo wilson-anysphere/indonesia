@@ -4,17 +4,7 @@ use std::path::{Path, PathBuf};
 use nova_project::{load_project_with_options, ClasspathEntryKind, LoadOptions};
 use tempfile::tempdir;
 
-fn touch_guava_jar(repo: &Path) {
-    let jar = repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
-    fs::create_dir_all(jar.parent().expect("jar parent")).expect("mkdir jar parent");
-    fs::write(&jar, b"not really a jar").expect("write fake jar");
-}
-
-#[test]
-fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
-    let workspace_dir = tempdir().unwrap();
-    let workspace_root = workspace_dir.path();
-
+fn write_pom_xml(workspace_root: &Path) {
     fs::write(
         workspace_root.join("pom.xml"),
         r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -34,6 +24,31 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
 "#,
     )
     .unwrap();
+}
+
+fn touch_guava_jar(repo: &Path) {
+    let jar = repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    fs::create_dir_all(jar.parent().expect("jar parent")).expect("mkdir jar parent");
+    fs::write(&jar, b"not really a jar").expect("write fake jar");
+}
+
+fn assert_jar_entries_are_under_repo(jar_entries: &[PathBuf], repo_root: &Path) {
+    let repo_root_canon = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    assert!(
+        jar_entries.iter().all(|jar| {
+            let jar_canon = fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
+            jar_canon.starts_with(&repo_root_canon)
+        }),
+        "expected jar paths to start with repo {repo_root:?} (canonicalized to {repo_root_canon:?}), got: {jar_entries:?}"
+    );
+}
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+
+    write_pom_xml(workspace_root);
 
     fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
 
@@ -65,17 +80,7 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
         "expected at least one jar entry, got: {:?}",
         config.classpath
     );
-    let repo_path_canon = fs::canonicalize(&repo_path).unwrap_or_else(|_| repo_path.clone());
-    assert!(
-        jar_entries.iter().all(|jar| {
-            let jar_canon = fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
-            jar_canon.starts_with(&repo_path_canon)
-        }),
-        "expected jar paths to start with {:?} (canonicalized to {:?}), got: {:?}",
-        repo_path,
-        repo_path_canon,
-        jar_entries
-    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
 
     let override_repo_dir = tempdir().unwrap();
     let override_repo: PathBuf = override_repo_dir.path().to_path_buf();
@@ -100,16 +105,75 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
         "expected override to still produce jar entries, got: {:?}",
         config_override.classpath
     );
-    let override_repo_canon =
-        fs::canonicalize(&override_repo).unwrap_or_else(|_| override_repo.clone());
+    assert_jar_entries_are_under_repo(&override_jar_entries, &override_repo);
+}
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_with_quoted_path_containing_spaces() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_dir = tempdir().unwrap();
+    let repo_path = repo_dir.path().join("my maven repo");
+    fs::create_dir_all(&repo_path).unwrap();
+    touch_guava_jar(&repo_path);
+
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        format!("-Dmaven.repo.local=\"{}\"", repo_path.display()),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(workspace_root, &LoadOptions::default())
+        .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
     assert!(
-        override_jar_entries.iter().all(|jar| {
-            let jar_canon = fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
-            jar_canon.starts_with(&override_repo_canon)
-        }),
-        "expected jar paths to start with override repo {:?} (canonicalized to {:?}), got: {:?}",
-        override_repo,
-        override_repo_canon,
-        override_jar_entries
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
     );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
+}
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_with_space_separated_repo_local_arg() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_dir = tempdir().unwrap();
+    let repo_path = repo_dir.path().join("repo local");
+    fs::create_dir_all(&repo_path).unwrap();
+    touch_guava_jar(&repo_path);
+
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        format!("-Dmaven.repo.local \"{}\"", repo_path.display()),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(workspace_root, &LoadOptions::default())
+        .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
 }
