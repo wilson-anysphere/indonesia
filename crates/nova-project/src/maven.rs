@@ -2030,6 +2030,26 @@ fn resolve_snapshot_jar_file_name(
     // back to the conventional `<artifactId>-<version>(-classifier).jar` filename otherwise.
     let mut best_value: Option<String> = None;
 
+    fn parse_snapshot_timestamp_and_build(value: &str) -> Option<(&str, u32)> {
+        let (prefix_and_timestamp, build) = value.rsplit_once('-')?;
+        let (_prefix, timestamp) = prefix_and_timestamp.rsplit_once('-')?;
+        let build = build.parse().ok()?;
+        Some((timestamp, build))
+    }
+
+    fn snapshot_value_is_newer(candidate: &str, best: &str) -> bool {
+        match (
+            parse_snapshot_timestamp_and_build(candidate),
+            parse_snapshot_timestamp_and_build(best),
+        ) {
+            (Some((candidate_timestamp, candidate_build)), Some((best_timestamp, best_build))) => {
+                candidate_timestamp > best_timestamp
+                    || (candidate_timestamp == best_timestamp && candidate_build > best_build)
+            }
+            _ => candidate > best,
+        }
+    }
+
     for metadata_name in ["maven-metadata-local.xml", "maven-metadata.xml"] {
         let metadata_path = version_dir.join(metadata_name);
         let Ok(contents) = std::fs::read_to_string(&metadata_path) else {
@@ -2062,8 +2082,20 @@ fn resolve_snapshot_jar_file_name(
                 continue;
             };
 
-            // Deterministic tie-breaker: pick the lexicographically max timestamped version.
-            let replace = best_value.as_ref().is_none_or(|best| value > *best);
+            // Only consider candidate jars that exist on disk; Maven metadata can be stale.
+            let candidate_file_name = if let Some(classifier) = classifier {
+                format!("{artifact_id}-{value}-{classifier}.jar")
+            } else {
+                format!("{artifact_id}-{value}.jar")
+            };
+            if !exists_as_jar(&version_dir.join(candidate_file_name)) {
+                continue;
+            }
+
+            // Prefer the latest snapshot by `(timestamp, buildNumber)`.
+            let replace = best_value
+                .as_ref()
+                .is_none_or(|best| snapshot_value_is_newer(&value, best));
             if replace {
                 best_value = Some(value);
             }
@@ -2428,5 +2460,83 @@ mod tests {
 
         let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
         assert_eq!(resolved, jar_path);
+    }
+
+    #[test]
+    fn resolve_snapshot_jar_file_name_prefers_highest_build_number() {
+        let version_dir = tempfile::tempdir().expect("tempdir snapshot dir");
+        std::fs::write(
+            version_dir.path().join("maven-metadata-local.xml"),
+            r#"
+<metadata>
+  <versioning>
+    <snapshotVersions>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>1.0-20260112.123456-9</value>
+      </snapshotVersion>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>1.0-20260112.123456-10</value>
+      </snapshotVersion>
+    </snapshotVersions>
+  </versioning>
+</metadata>
+"#,
+        )
+        .expect("write maven-metadata-local.xml");
+
+        std::fs::write(
+            version_dir.path().join("dep-1.0-20260112.123456-9.jar"),
+            b"",
+        )
+        .expect("write snapshot jar 9");
+        std::fs::write(
+            version_dir.path().join("dep-1.0-20260112.123456-10.jar"),
+            b"",
+        )
+        .expect("write snapshot jar 10");
+
+        assert_eq!(
+            resolve_snapshot_jar_file_name(version_dir.path(), "dep", None),
+            Some("dep-1.0-20260112.123456-10.jar".to_string()),
+        );
+    }
+
+    #[test]
+    fn resolve_snapshot_jar_file_name_skips_missing_candidates() {
+        let version_dir = tempfile::tempdir().expect("tempdir snapshot dir");
+        std::fs::write(
+            version_dir.path().join("maven-metadata-local.xml"),
+            r#"
+<metadata>
+  <versioning>
+    <snapshotVersions>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>1.0-20260112.123456-9</value>
+      </snapshotVersion>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>1.0-20260112.123456-10</value>
+      </snapshotVersion>
+    </snapshotVersions>
+  </versioning>
+</metadata>
+"#,
+        )
+        .expect("write maven-metadata-local.xml");
+
+        // Only the build `-10` jar exists on disk.
+        std::fs::write(
+            version_dir.path().join("dep-1.0-20260112.123456-10.jar"),
+            b"",
+        )
+        .expect("write snapshot jar 10");
+
+        assert_eq!(
+            resolve_snapshot_jar_file_name(version_dir.path(), "dep", None),
+            Some("dep-1.0-20260112.123456-10.jar".to_string()),
+        );
     }
 }
