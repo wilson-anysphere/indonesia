@@ -66,6 +66,7 @@ fi
 model_only_crates=(
   "crates/nova-index/Cargo.toml"
   "crates/nova-resolve/Cargo.toml"
+  "crates/nova-classpath/Cargo.toml"
   "crates/nova-framework-spring/Cargo.toml"
 )
 
