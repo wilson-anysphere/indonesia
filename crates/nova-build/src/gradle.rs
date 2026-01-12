@@ -890,6 +890,159 @@ fn gradle_build_fingerprint(project_root: &Path) -> Result<BuildFileFingerprint>
     BuildFileFingerprint::from_files(project_root, build_files)
 }
 
+fn is_word_byte(b: u8) -> bool {
+    // Keep semantics aligned with Regex `\b` for ASCII: alphanumeric + underscore.
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn matches_keyword_at(bytes: &[u8], start: usize, keyword: &[u8]) -> bool {
+    if keyword.is_empty() || start >= bytes.len() || !bytes[start..].starts_with(keyword) {
+        return false;
+    }
+
+    let prev_is_word = start
+        .checked_sub(1)
+        .and_then(|idx| bytes.get(idx))
+        .is_some_and(|b| is_word_byte(*b));
+    let next_is_word = bytes
+        .get(start + keyword.len())
+        .is_some_and(|b| is_word_byte(*b));
+    !prev_is_word && !next_is_word
+}
+
+fn gradle_settings_contains_includes(contents: &str) -> bool {
+    // Best-effort parser: scan the settings file ignoring comments and string literals, and look
+    // for Gradle settings directives that indicate a multi-project build:
+    // - `include`
+    // - `includeFlat`
+    // - `includeBuild`
+    //
+    // This avoids false positives such as `rootProject.name = "includeFlat-root"`.
+    let bytes = contents.as_bytes();
+    let mut i = 0usize;
+
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Outside strings/comments.
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            i += 3;
+            continue;
+        }
+
+        if b == b'\'' {
+            in_single = true;
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' {
+            in_double = true;
+            i += 1;
+            continue;
+        }
+
+        if matches_keyword_at(bytes, i, b"includeFlat")
+            || matches_keyword_at(bytes, i, b"includeBuild")
+            || matches_keyword_at(bytes, i, b"include")
+        {
+            return true;
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
 fn gradle_settings_suggest_multi_project(project_root: &Path) -> bool {
     // Best-effort heuristic: only attempt the batch `printNovaAllJavaCompileConfigs` task when the
     // build looks multi-project. Avoids doing extra work for single-project builds where callers
@@ -905,7 +1058,7 @@ fn gradle_settings_suggest_multi_project(project_root: &Path) -> bool {
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if contents.contains("include") {
+        if gradle_settings_contains_includes(&contents) {
             return true;
         }
     }
@@ -1084,6 +1237,36 @@ mod tests {
     use std::process::ExitStatus;
     use std::sync::Mutex;
     use tempfile::tempdir;
+
+    #[test]
+    fn gradle_settings_suggest_multi_project_ignores_includes_in_strings_and_comments() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+
+        std::fs::write(
+            project_root.join("settings.gradle"),
+            r#"
+rootProject.name = "includeFlat-root"
+
+// include(":app")
+/* includeFlat(":lib") */
+val doc = """includeBuild(":other")"""
+"#,
+        )
+        .unwrap();
+
+        assert!(!gradle_settings_suggest_multi_project(project_root));
+    }
+
+    #[test]
+    fn gradle_settings_suggest_multi_project_detects_include_directives() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+
+        std::fs::write(project_root.join("settings.gradle.kts"), "include(\":app\")\n").unwrap();
+
+        assert!(gradle_settings_suggest_multi_project(project_root));
+    }
 
     #[test]
     fn gradle_output_dir_maps_project_path_to_directory() {
