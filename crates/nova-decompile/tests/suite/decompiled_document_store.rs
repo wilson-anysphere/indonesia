@@ -73,6 +73,98 @@ fn load_document_is_miss_when_only_text_is_stored() {
 }
 
 #[test]
+fn load_document_is_miss_and_deletes_oversized_metadata() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    store.store_text(content_hash, binary_name, "hello").unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let meta_path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.meta.json"));
+
+    let file = std::fs::File::create(&meta_path).unwrap();
+    file.set_len(nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64 + 1)
+        .unwrap();
+    drop(file);
+
+    let loaded = store.load_document(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!meta_path.exists(), "oversized metadata should be deleted");
+    assert_eq!(
+        store.load_text(content_hash, binary_name).unwrap().as_deref(),
+        Some("hello"),
+        "text entry should remain present"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn load_document_is_miss_and_deletes_symlinked_metadata() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    store.store_text(content_hash, binary_name, "hello").unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let target = outside.path().join("outside.meta.json");
+    std::fs::write(&target, "evil").unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let meta_path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.meta.json"));
+
+    symlink(&target, &meta_path).unwrap();
+
+    let loaded = store.load_document(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!meta_path.exists(), "symlinked metadata should be deleted");
+    assert!(target.exists(), "target outside store must not be deleted");
+}
+
+#[cfg(unix)]
+#[test]
+fn load_document_is_miss_and_deletes_hardlinked_metadata() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    store.store_text(content_hash, binary_name, "hello").unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let target = outside.path().join("outside.meta.json");
+    std::fs::write(&target, "evil").unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let meta_path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.meta.json"));
+
+    std::fs::hard_link(&target, &meta_path).unwrap();
+
+    let loaded = store.load_document(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!meta_path.exists(), "hardlinked metadata should be deleted");
+    assert!(target.exists(), "target outside store must not be deleted");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "evil");
+}
+
+#[test]
 fn path_validation_rejects_traversal_attempts() {
     let temp = TempDir::new().unwrap();
     let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
