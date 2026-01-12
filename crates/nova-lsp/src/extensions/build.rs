@@ -1275,10 +1275,21 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                             })
                         })
                         .collect::<Result<Vec<_>>>()?,
-                    nova_project::BuildSystem::Gradle => config
-                        .modules
-                        .iter()
-                        .map(|module| {
+                    nova_project::BuildSystem::Gradle => {
+                        // Prefer fetching all Gradle module configs in a single Gradle invocation
+                        // for multi-module workspaces. Fall back to per-module queries when the
+                        // batch task fails (e.g. older Gradle versions).
+                        let mut gradle_configs_by_path = HashMap::<String, JavaCompileConfig>::new();
+                        if config.modules.len() > 1 {
+                            if let Ok(configs) =
+                                manager.java_compile_configs_all_gradle(&project_root)
+                            {
+                                gradle_configs_by_path = configs.into_iter().collect();
+                            }
+                        }
+
+                        let mut units = Vec::with_capacity(config.modules.len());
+                        for module in config.modules.iter() {
                             let rel = module
                                 .root
                                 .strip_prefix(&project_root)
@@ -1302,16 +1313,17 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                 out
                             };
 
-                            let cfg = manager
-                                .java_compile_config_gradle(
+                            let cfg = if project_path == ":" {
+                                manager.java_compile_config_gradle(&project_root, None)
+                            } else if let Some(cfg) = gradle_configs_by_path.remove(&project_path) {
+                                Ok(cfg)
+                            } else {
+                                manager.java_compile_config_gradle(
                                     &project_root,
-                                    if project_path == ":" {
-                                        None
-                                    } else {
-                                        Some(project_path.as_str())
-                                    },
+                                    Some(project_path.as_str()),
                                 )
-                                .map_err(map_build_error)?;
+                            }
+                            .map_err(map_build_error)?;
 
                             let JavaCompileConfig {
                                 compile_classpath,
@@ -1339,7 +1351,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                             source_roots.sort();
                             source_roots.dedup();
 
-                            Ok(ProjectModelUnit::Gradle {
+                            units.push(ProjectModelUnit::Gradle {
                                 project_path,
                                 compile_classpath: paths_to_strings(compile_classpath.iter()),
                                 module_path: if cfg_module_path.is_empty() {
@@ -1359,9 +1371,11 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                         .or_else(|| Some(config.java.target.0.to_string())),
                                     release,
                                 }),
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
+                            });
+                        }
+
+                        units
+                    }
                     nova_project::BuildSystem::Simple | nova_project::BuildSystem::Bazel => {
                         unreachable!("handled by outer match")
                     }
@@ -2322,6 +2336,126 @@ echo \"null\"\n",
             result.classpath.iter().any(|p| p == &fake_jar_str),
             "classpath should include entry from mocked `gradle`"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn project_model_uses_batch_gradle_task_for_multi_module_workspaces() {
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Minimal multi-module Gradle markers (used by `nova-project` for module discovery).
+        fs::write(root.join("settings.gradle"), "include ':app', ':lib'\n").unwrap();
+        fs::write(root.join("build.gradle"), "").unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("app/build.gradle"), "plugins { id 'java' }\n").unwrap();
+        fs::write(root.join("lib/build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+        // Fake Gradle executable that emits Nova sentinels + counts invocations.
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let counter = root.join("gradle-invocations.txt");
+
+        let shared = root.join("shared.jar");
+        let app_dep = root.join("app.jar");
+        let lib_dep = root.join("lib.jar");
+        fs::write(&shared, "").unwrap();
+        fs::write(&app_dep, "").unwrap();
+        fs::write(&lib_dep, "").unwrap();
+
+        let batch_payload = serde_json::json!({
+            "projects": [
+                { "path": ":", "projectDir": root.to_string_lossy(), "config": { "compileClasspath": serde_json::Value::Null } },
+                { "path": ":app", "projectDir": root.join("app").to_string_lossy(), "config": { "compileClasspath": [shared.to_string_lossy(), app_dep.to_string_lossy()] } },
+                { "path": ":lib", "projectDir": root.join("lib").to_string_lossy(), "config": { "compileClasspath": [shared.to_string_lossy(), lib_dep.to_string_lossy()] } }
+            ]
+        });
+
+        let root_payload = serde_json::json!({ "compileClasspath": serde_json::Value::Null });
+        let app_payload = serde_json::json!({
+            "compileClasspath": [shared.to_string_lossy(), app_dep.to_string_lossy()]
+        });
+        let lib_payload = serde_json::json!({
+            "compileClasspath": [shared.to_string_lossy(), lib_dep.to_string_lossy()]
+        });
+
+        write_executable(
+            &bin_dir.join("gradle"),
+            &format!(
+                "#!/bin/sh\n\
+set -eu\n\
+\n\
+echo 1 >> \"{}\"\n\
+\n\
+last=\"\"\n\
+for arg in \"$@\"; do\n\
+  last=\"$arg\"\n\
+done\n\
+\n\
+case \"$last\" in\n\
+  printNovaAllJavaCompileConfigs)\n\
+    cat <<'EOF'\n\
+NOVA_ALL_JSON_BEGIN\n\
+{}\n\
+NOVA_ALL_JSON_END\n\
+EOF\n\
+    ;;\n\
+  printNovaJavaCompileConfig)\n\
+    cat <<'EOF'\n\
+NOVA_JSON_BEGIN\n\
+{}\n\
+NOVA_JSON_END\n\
+EOF\n\
+    ;;\n\
+  :app:printNovaJavaCompileConfig)\n\
+    cat <<'EOF'\n\
+NOVA_JSON_BEGIN\n\
+{}\n\
+NOVA_JSON_END\n\
+EOF\n\
+    ;;\n\
+  :lib:printNovaJavaCompileConfig)\n\
+    cat <<'EOF'\n\
+NOVA_JSON_BEGIN\n\
+{}\n\
+NOVA_JSON_END\n\
+EOF\n\
+    ;;\n\
+  *)\n\
+    echo \"unexpected gradle task: $last\" >&2\n\
+    exit 1\n\
+    ;;\n\
+esac\n",
+                counter.to_string_lossy(),
+                batch_payload,
+                root_payload,
+                app_payload,
+                lib_payload,
+            ),
+        );
+
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+
+        let value = handle_project_model(serde_json::json!({
+            "projectRoot": root.to_string_lossy().to_string(),
+        }))
+        .unwrap();
+
+        std::env::set_var("PATH", original_path);
+
+        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.project_root, root.to_string_lossy().to_string());
+        assert_eq!(result.units.len(), 2);
+
+        let count = fs::read_to_string(&counter)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(count, 1, "expected 1 gradle invocation, got {count}");
     }
 
     #[test]

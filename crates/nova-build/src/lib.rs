@@ -348,6 +348,14 @@ impl BuildManager {
             .java_compile_config(project_root, project_path, &self.cache)
     }
 
+    pub fn java_compile_configs_all_gradle(
+        &self,
+        project_root: &Path,
+    ) -> Result<Vec<(String, JavaCompileConfig)>> {
+        self.gradle
+            .java_compile_configs_all(project_root, &self.cache)
+    }
+
     pub fn classpath_gradle(
         &self,
         project_root: &Path,
