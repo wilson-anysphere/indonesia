@@ -5,7 +5,7 @@ use std::str::FromStr;
 use lsp_types::{Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{FileId, InMemoryFileStore};
-use nova_ide::goto_definition;
+use nova_ide::{find_references, goto_definition};
 use tempfile::TempDir;
 
 use crate::framework_harness::offset_to_position;
@@ -92,6 +92,18 @@ impl FileIdFixture {
     }
 }
 
+fn assert_contains_location(
+    refs: &[lsp_types::Location],
+    expected_uri: Uri,
+    expected_start: Position,
+) {
+    assert!(
+        refs.iter()
+            .any(|loc| loc.uri == expected_uri && loc.range.start == expected_start),
+        "expected references to contain {expected_uri:?} at {expected_start:?}; got {refs:#?}"
+    );
+}
+
 #[test]
 fn goto_definition_resolves_receiverless_call_to_inherited_method() {
     let fixture = FileIdFixture::parse(
@@ -109,6 +121,30 @@ class Derived extends Base { void test(){ $0foo(); } }
 
     assert_eq!(got.uri, fixture.marker_uri(1));
     assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn find_references_includes_receiverless_call_to_inherited_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base { void $0foo(){} }
+//- /Derived.java
+class Derived extends Base { void test(){ $1foo(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos_def = fixture.marker_position(0);
+    let refs = find_references(&fixture.db, file, pos_def.clone(), true);
+
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected declaration + one call site; got {refs:#?}"
+    );
+    assert_contains_location(&refs, fixture.marker_uri(0), pos_def);
+    assert_contains_location(&refs, fixture.marker_uri(1), fixture.marker_position(1));
 }
 
 #[test]
@@ -131,6 +167,30 @@ class C implements I { void test(){ new C().$0bar(); } }
 }
 
 #[test]
+fn find_references_includes_member_call_to_default_interface_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { default void $0bar(){} }
+//- /C.java
+class C implements I { void test(){ new C().$1bar(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos_def = fixture.marker_position(0);
+    let refs = find_references(&fixture.db, file, pos_def.clone(), true);
+
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected declaration + one call site; got {refs:#?}"
+    );
+    assert_contains_location(&refs, fixture.marker_uri(0), pos_def);
+    assert_contains_location(&refs, fixture.marker_uri(1), fixture.marker_position(1));
+}
+
+#[test]
 fn goto_definition_resolves_receiverless_call_to_default_interface_method() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -147,6 +207,30 @@ class C implements I { void test(){ $0baz(); } }
 
     assert_eq!(got.uri, fixture.marker_uri(1));
     assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn find_references_includes_receiverless_call_to_default_interface_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { default void $0baz(){} }
+//- /C.java
+class C implements I { void test(){ $1baz(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos_def = fixture.marker_position(0);
+    let refs = find_references(&fixture.db, file, pos_def.clone(), true);
+
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected declaration + one call site; got {refs:#?}"
+    );
+    assert_contains_location(&refs, fixture.marker_uri(0), pos_def);
+    assert_contains_location(&refs, fixture.marker_uri(1), fixture.marker_position(1));
 }
 
 #[test]
@@ -188,6 +272,30 @@ class Derived extends Base { void test(){ $0field = 1; } }
 }
 
 #[test]
+fn find_references_includes_inherited_field_without_receiver() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base { int $0field; }
+//- /Derived.java
+class Derived extends Base { void test(){ $1field = 1; } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos_def = fixture.marker_position(0);
+    let refs = find_references(&fixture.db, file, pos_def.clone(), true);
+
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected declaration + one access; got {refs:#?}"
+    );
+    assert_contains_location(&refs, fixture.marker_uri(0), pos_def);
+    assert_contains_location(&refs, fixture.marker_uri(1), fixture.marker_position(1));
+}
+
+#[test]
 fn goto_definition_resolves_inherited_interface_constant_without_receiver() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -204,6 +312,30 @@ class C implements I { void test(){ int y = $0X; } }
 
     assert_eq!(got.uri, fixture.marker_uri(1));
     assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn find_references_includes_inherited_interface_constant_without_receiver() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { int $0X = 1; }
+//- /C.java
+class C implements I { void test(){ int y = $1X; } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos_def = fixture.marker_position(0);
+    let refs = find_references(&fixture.db, file, pos_def.clone(), true);
+
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected declaration + one access; got {refs:#?}"
+    );
+    assert_contains_location(&refs, fixture.marker_uri(0), pos_def);
+    assert_contains_location(&refs, fixture.marker_uri(1), fixture.marker_position(1));
 }
 
 #[test]
