@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Best-effort hardening: install structured logging + panic hook early so
     // panics in request handlers are recorded and surfaced to the client.
-    let mut config = load_config(cli.config);
+    let (mut config, config_warning) = load_config(cli.config);
     if cli.listen.is_some() {
         // In TCP mode, stdout/stderr are reserved for human/tooling output.
         // Keep the process quiet so clients can safely parse the port discovery
@@ -48,6 +48,9 @@ async fn main() -> anyhow::Result<()> {
         config.logging.stderr = false;
     }
     nova_dap::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
+    if let Some(warning) = config_warning {
+        tracing::warn!(target: "nova.dap", "{warning}");
+    }
 
     match (cli.legacy, cli.listen) {
         (true, Some(_)) => {
@@ -73,20 +76,22 @@ async fn run_tcp(addr: SocketAddr) -> anyhow::Result<()> {
         .map_err(anyhow::Error::from)
 }
 
-fn load_config(cli_path: Option<PathBuf>) -> nova_config::NovaConfig {
+fn load_config(cli_path: Option<PathBuf>) -> (nova_config::NovaConfig, Option<String>) {
     let path = cli_path.or_else(|| std::env::var_os("NOVA_CONFIG").map(PathBuf::from));
     let Some(path) = path else {
-        return nova_config::NovaConfig::default();
+        return (nova_config::NovaConfig::default(), None);
     };
 
     match nova_config::NovaConfig::load_from_path(&path) {
-        Ok(config) => config,
+        Ok(config) => (config, None),
         Err(err) => {
-            eprintln!(
-                "nova-dap: failed to load config from {}: {err}; continuing with defaults",
-                path.display()
-            );
-            nova_config::NovaConfig::default()
+            (
+                nova_config::NovaConfig::default(),
+                Some(format!(
+                    "nova-dap: failed to load config from {}: {err}; continuing with defaults",
+                    path.display()
+                )),
+            )
         }
     }
 }
