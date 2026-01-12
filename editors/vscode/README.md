@@ -353,6 +353,9 @@ extension intercepts these AI code actions client-side and surfaces the result i
 - **Generate method body with AI** applies an edit to your workspace (via `workspace/applyEdit`) and shows a confirmation message.
 - **Generate tests with AI** applies an edit to your workspace (via `workspace/applyEdit`) and shows a confirmation message.
 
+Note: These code-edit actions require a **file-backed** Java document (`file:` URI) so the language server can
+apply edits. If you're working in an `untitled:` editor, save the file first.
+
 When the server returns generated text (legacy behavior / older builds), Nova opens it in an untitled Java document titled like:
 **“Nova AI: Generate Method Body”** / **“Nova AI: Generate Tests”**.
 
