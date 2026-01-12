@@ -606,10 +606,9 @@ impl AnalyzerRegistry {
         db: &'a dyn Database,
         project: ProjectId,
     ) -> impl Iterator<Item = &'a dyn FrameworkAnalyzer> + 'a {
-        self.analyzers
-            .iter()
-            .map(|a| a.as_ref())
-            .filter(move |a| catch_unwind(AssertUnwindSafe(|| a.applies_to(db, project))).unwrap_or(false))
+        self.analyzers.iter().map(|a| a.as_ref()).filter(move |a| {
+            catch_unwind(AssertUnwindSafe(|| a.applies_to(db, project))).unwrap_or(false)
+        })
     }
 
     /// Aggregate `FrameworkData` across all applicable analyzers.
@@ -617,7 +616,8 @@ impl AnalyzerRegistry {
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let data = catch_unwind(AssertUnwindSafe(|| analyzer.analyze_file(db, file))).unwrap_or(None);
+            let data =
+                catch_unwind(AssertUnwindSafe(|| analyzer.analyze_file(db, file))).unwrap_or(None);
             if let Some(data) = data {
                 out.push(data);
             }
@@ -630,8 +630,8 @@ impl AnalyzerRegistry {
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let diags =
-                catch_unwind(AssertUnwindSafe(|| analyzer.diagnostics(db, file))).unwrap_or_default();
+            let diags = catch_unwind(AssertUnwindSafe(|| analyzer.diagnostics(db, file)))
+                .unwrap_or_default();
             out.extend(diags);
         }
         out
@@ -656,8 +656,8 @@ impl AnalyzerRegistry {
             }
             let analyzer = analyzer.as_ref();
 
-            let applicable =
-                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))).unwrap_or(false);
+            let applicable = catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project)))
+                .unwrap_or(false);
             if !applicable {
                 continue;
             }
@@ -742,8 +742,8 @@ impl AnalyzerRegistry {
 
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let nav =
-                catch_unwind(AssertUnwindSafe(|| analyzer.navigation(db, symbol))).unwrap_or_default();
+            let nav = catch_unwind(AssertUnwindSafe(|| analyzer.navigation(db, symbol)))
+                .unwrap_or_default();
             out.extend(nav);
         }
         out
@@ -772,8 +772,8 @@ impl AnalyzerRegistry {
             }
             let analyzer = analyzer.as_ref();
 
-            let applicable =
-                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))).unwrap_or(false);
+            let applicable = catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project)))
+                .unwrap_or(false);
             if !applicable {
                 continue;
             }
@@ -821,8 +821,8 @@ impl AnalyzerRegistry {
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            let hints =
-                catch_unwind(AssertUnwindSafe(|| analyzer.inlay_hints(db, file))).unwrap_or_default();
+            let hints = catch_unwind(AssertUnwindSafe(|| analyzer.inlay_hints(db, file)))
+                .unwrap_or_default();
             out.extend(hints);
         }
         out
@@ -847,8 +847,8 @@ impl AnalyzerRegistry {
             }
             let analyzer = analyzer.as_ref();
 
-            let applicable =
-                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))).unwrap_or(false);
+            let applicable = catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project)))
+                .unwrap_or(false);
             if !applicable {
                 continue;
             }

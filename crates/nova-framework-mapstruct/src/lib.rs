@@ -1727,7 +1727,10 @@ fn property_types_for_type_best_effort(
     None
 }
 
-fn property_types_from_source_text(source: &str, ty: &JavaType) -> Option<HashMap<String, JavaType>> {
+fn property_types_from_source_text(
+    source: &str,
+    ty: &JavaType,
+) -> Option<HashMap<String, JavaType>> {
     let tree = parse_java(source).ok()?;
     let root = tree.root_node();
     let package = package_of_source(root, source);

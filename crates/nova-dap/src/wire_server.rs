@@ -67,7 +67,11 @@ struct OutgoingSender {
 }
 
 impl OutgoingSender {
-    fn new(shutdown: mpsc::Sender<Value>, hi: mpsc::Sender<Value>, lo: mpsc::Sender<Value>) -> Self {
+    fn new(
+        shutdown: mpsc::Sender<Value>,
+        hi: mpsc::Sender<Value>,
+        lo: mpsc::Sender<Value>,
+    ) -> Self {
         Self {
             shutdown,
             hi,
@@ -533,7 +537,9 @@ async fn handle_request_inner(
         }
         "nova/metrics" => {
             match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
-                Ok(snapshot) => send_response(out_tx, seq, request, true, Some(snapshot), None).await,
+                Ok(snapshot) => {
+                    send_response(out_tx, seq, request, true, Some(snapshot), None).await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -756,7 +762,8 @@ async fn handle_request_inner(
                         .await;
                     }
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
+                            .await
                     }
                 }
             } else {
@@ -834,7 +841,8 @@ async fn handle_request_inner(
                 match resolve_source_roots(request.command.as_str(), &request.arguments) {
                     Ok(roots) => roots,
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string())).await;
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
+                            .await;
                         return;
                     }
                 };
@@ -1045,20 +1053,20 @@ async fn handle_request_inner(
                         Some(port) => port,
                         None => match pick_free_port().await {
                             Ok(port) => port,
-                             Err(err) => {
-                                 send_response(
-                                     out_tx,
-                                     seq,
-                                     request,
-                                     false,
-                                     None,
-                                     Some(format!("failed to select debug port: {err}")),
-                                 )
-                                 .await;
-                                 return;
-                             }
-                         },
-                     };
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to select debug port: {err}")),
+                                )
+                                .await;
+                                return;
+                            }
+                        },
+                    };
                     // Persist the resolved port for restart so we can re-use it.
                     args.port = Some(port);
                     let host: IpAddr = "127.0.0.1".parse().unwrap();
@@ -1066,13 +1074,13 @@ async fn handle_request_inner(
 
                     let java = args.java.clone().unwrap_or_else(|| "java".to_string());
 
-                     let cp_joined = match join_classpath(&classpath) {
-                         Ok(cp) => cp,
-                         Err(err) => {
-                             send_response(out_tx, seq, request, false, None, Some(err)).await;
-                             return;
-                         }
-                     };
+                    let cp_joined = match join_classpath(&classpath) {
+                        Ok(cp) => cp,
+                        Err(err) => {
+                            send_response(out_tx, seq, request, false, None, Some(err)).await;
+                            return;
+                        }
+                    };
 
                     let suspend = if args.stop_on_entry { "y" } else { "n" };
                     let debug_arg = format!(
@@ -1192,34 +1200,34 @@ async fn handle_request_inner(
                 attach_timeout,
             );
             let dbg = tokio::select! {
-                 _ = cancel.cancelled() => {
-                     if let Some(tx) = launch_outcome_tx.take() {
-                         let _ = tx.send(Some(false));
-                     }
-                     terminate_existing_process(launched_process).await;
-                     send_response(out_tx, seq, request, false, None, Some("cancelled".to_string())).await;
-                     return;
-                 }
-                 res = attach_fut => match res {
-                     Ok(dbg) => dbg,
-                     Err(err) => {
-                        if let Some(tx) = launch_outcome_tx.take() {
-                            let _ = tx.send(Some(false));
-                        }
-                        terminate_existing_process(launched_process).await;
-                         send_response(
-                             out_tx,
-                             seq,
-                             request,
-                             false,
-                             None,
-                             Some(format!("failed to attach to {attach_target_label}: {err}")),
-                         )
-                         .await;
-                         return;
-                     }
-                 }
-             };
+                _ = cancel.cancelled() => {
+                    if let Some(tx) = launch_outcome_tx.take() {
+                        let _ = tx.send(Some(false));
+                    }
+                    terminate_existing_process(launched_process).await;
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string())).await;
+                    return;
+                }
+                res = attach_fut => match res {
+                    Ok(dbg) => dbg,
+                    Err(err) => {
+                       if let Some(tx) = launch_outcome_tx.take() {
+                           let _ = tx.send(Some(false));
+                       }
+                       terminate_existing_process(launched_process).await;
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("failed to attach to {attach_target_label}: {err}")),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            };
 
             {
                 let mut guard = debugger.lock().await;
@@ -1440,7 +1448,9 @@ async fn handle_request_inner(
                         request,
                         false,
                         None,
-                        Some(format!("failed to resolve host {host_label:?}: no addresses found")),
+                        Some(format!(
+                            "failed to resolve host {host_label:?}: no addresses found"
+                        )),
                     )
                     .await;
                     return;
@@ -1480,7 +1490,8 @@ async fn handle_request_inner(
                 match resolve_source_roots(request.command.as_str(), &request.arguments) {
                     Ok(roots) => roots,
                     Err(err) => {
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string())).await;
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
+                            .await;
                         return;
                     }
                 };
@@ -1935,7 +1946,13 @@ async fn handle_request_inner(
                             *guard = Some(proc);
                         }
 
-                        (vec![host], port, attach_target_label, main_class.to_string(), pid)
+                        (
+                            vec![host],
+                            port,
+                            attach_target_label,
+                            main_class.to_string(),
+                            pid,
+                        )
                     }
                 };
 
@@ -2252,15 +2269,17 @@ async fn handle_request_inner(
                     )
                     .await;
                 }
-                Ok(bps) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "breakpoints": bps })),
-                    None,
-                )
-                .await,
+                Ok(bps) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "breakpoints": bps })),
+                        None,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2391,15 +2410,17 @@ async fn handle_request_inner(
                     )
                     .await;
                 }
-                Ok(bps) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "breakpoints": bps })),
-                    None,
-                )
-                .await,
+                Ok(bps) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "breakpoints": bps })),
+                        None,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -2712,15 +2733,8 @@ async fn handle_request_inner(
                     if let Some(total_frames) = total_frames {
                         body.insert("totalFrames".to_string(), json!(total_frames));
                     }
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        true,
-                        Some(Value::Object(body)),
-                        None,
-                    )
-                    .await;
+                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None)
+                        .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -2781,15 +2795,17 @@ async fn handle_request_inner(
             };
 
             match dbg.scopes(frame_id) {
-                Ok(scopes) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "scopes": scopes })),
-                    None,
-                )
-                .await,
+                Ok(scopes) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "scopes": scopes })),
+                        None,
+                    )
+                    .await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -2838,33 +2854,39 @@ async fn handle_request_inner(
             };
 
             match dbg.step_in_targets(cancel, frame_id).await {
-                Ok(targets) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
-                Ok(targets) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "targets": targets })),
-                    None,
-                )
-                .await,
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Ok(targets) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
+                Ok(targets) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "targets": targets })),
+                        None,
+                    )
+                    .await
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -2933,15 +2955,17 @@ async fn handle_request_inner(
                     )
                     .await;
                 }
-                Ok(vars) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "variables": vars })),
-                    None,
-                )
-                .await,
+                Ok(vars) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "variables": vars })),
+                        None,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3008,25 +3032,29 @@ async fn handle_request_inner(
                 .set_variable(cancel, args.variables_reference, &args.name, &args.value)
                 .await
             {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Ok(body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Ok(body) => send_response(out_tx, seq, request, true, body, None).await,
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -3111,17 +3139,20 @@ async fn handle_request_inner(
                     body.insert("details".to_string(), Value::Object(details));
 
                     body.insert("breakMode".to_string(), json!(break_mode));
-                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None).await;
+                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None)
+                        .await;
                 }
-                Ok(None) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some(format!("no exception context for threadId {thread_id}")),
-                )
-                .await,
+                Ok(None) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("no exception context for threadId {thread_id}")),
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3403,25 +3434,29 @@ async fn handle_request_inner(
                 .evaluate(cancel, frame_id, &args.expression, options)
                 .await
             {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Ok(body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Ok(body) => send_response(out_tx, seq, request, true, body, None).await,
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -3561,7 +3596,9 @@ async fn handle_request_inner(
                     )
                     .await
                 }
-                Ok(body) => send_response(out_tx, seq, request, true, Some(json!(body)), None).await,
+                Ok(body) => {
+                    send_response(out_tx, seq, request, true, Some(json!(body)), None).await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3645,15 +3682,17 @@ async fn handle_request_inner(
                     )
                     .await;
                 }
-                Ok(pinned) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "pinned": pinned })),
-                    None,
-                )
-                .await,
+                Ok(pinned) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "pinned": pinned })),
+                        None,
+                    )
+                    .await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3740,22 +3779,22 @@ async fn handle_request_inner(
                 return;
             }
 
-            let args: DataBreakpointInfoArguments = match serde_json::from_value(request.arguments.clone())
-            {
-                Ok(args) => args,
-                Err(err) => {
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        false,
-                        None,
-                        Some(format!("invalid dataBreakpointInfo arguments: {err}")),
-                    )
-                    .await;
-                    return;
-                }
-            };
+            let args: DataBreakpointInfoArguments =
+                match serde_json::from_value(request.arguments.clone()) {
+                    Ok(args) => args,
+                    Err(err) => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("invalid dataBreakpointInfo arguments: {err}")),
+                        )
+                        .await;
+                        return;
+                    }
+                };
 
             // `frameId` is optional in the DAP spec; the debugger can resolve the field based on
             // the variables reference alone.
@@ -3765,25 +3804,29 @@ async fn handle_request_inner(
                 .data_breakpoint_info(cancel, args.variables_reference, &args.name)
                 .await
             {
-                Ok(body) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Ok(body) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Ok(body) => send_response(out_tx, seq, request, true, Some(body), None).await,
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -3874,33 +3917,39 @@ async fn handle_request_inner(
                 };
 
             match dbg.set_data_breakpoints(cancel, args.breakpoints).await {
-                Ok(bps) if cancel.is_cancelled() => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
-                Ok(bps) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "breakpoints": bps })),
-                    None,
-                )
-                .await,
-                Err(err) if is_cancelled_error(&err) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("cancelled".to_string()),
-                )
-                .await,
+                Ok(bps) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
+                Ok(bps) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "breakpoints": bps })),
+                        None,
+                    )
+                    .await
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    )
+                    .await
+                }
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
                 }
@@ -5010,8 +5059,7 @@ async fn send_event(
                             "output": "<output dropped>\\n",
                         })),
                     );
-                    let notice_value =
-                        serde_json::to_value(notice).unwrap_or_else(|_| json!({}));
+                    let notice_value = serde_json::to_value(notice).unwrap_or_else(|_| json!({}));
                     let _ = tx.hi.try_send(notice_value);
                 }
             }
@@ -5559,9 +5607,9 @@ fn spawn_event_task(
                     {
                         return;
                     }
-                        send_terminated_once(&tx, &seq, &terminated_sent).await;
-                        server_shutdown.cancel();
-                        return;
+                    send_terminated_once(&tx, &seq, &terminated_sent).await;
+                    server_shutdown.cancel();
+                    return;
                 }
                 _ => {}
             }

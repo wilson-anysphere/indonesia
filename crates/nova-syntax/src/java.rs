@@ -2601,7 +2601,9 @@ impl Lowerer {
         // method name and should behave like `m(...)` for name resolution/type checking.
         let callee_is_unqualified_explicit_generic = callee_node.as_ref().is_some_and(|callee| {
             callee.kind() == SyntaxKind::FieldAccessExpression
-                && !callee.children().any(|child| is_expression_kind(child.kind()))
+                && !callee
+                    .children()
+                    .any(|child| is_expression_kind(child.kind()))
         });
 
         let mut callee = if callee_is_unqualified_explicit_generic {
@@ -2643,8 +2645,12 @@ impl Lowerer {
         // Lower these to a `NameExpr` so downstream passes treat them like unqualified calls.
         if let Some(expr) = callee_node.as_ref() {
             if expr.kind() == SyntaxKind::FieldAccessExpression
-                && expr.children().all(|child| !is_expression_kind(child.kind()))
-                && expr.children().any(|child| child.kind() == SyntaxKind::TypeArguments)
+                && expr
+                    .children()
+                    .all(|child| !is_expression_kind(child.kind()))
+                && expr
+                    .children()
+                    .any(|child| child.kind() == SyntaxKind::TypeArguments)
             {
                 if let Some(method_token) = expr
                     .children_with_tokens()
@@ -3871,8 +3877,14 @@ mod tests {
         let ast::Expr::ArrayInitializer(second) = &init.items[1] else {
             panic!("expected nested array initializer");
         };
-        assert!(matches!(first.items.first(), Some(ast::Expr::IntLiteral(_))));
-        assert!(matches!(second.items.first(), Some(ast::Expr::IntLiteral(_))));
+        assert!(matches!(
+            first.items.first(),
+            Some(ast::Expr::IntLiteral(_))
+        ));
+        assert!(matches!(
+            second.items.first(),
+            Some(ast::Expr::IntLiteral(_))
+        ));
     }
 
     #[test]

@@ -47,12 +47,7 @@ impl nova_framework::Database for NoAllFilesDb {
         Vec::new()
     }
 
-    fn has_dependency(
-        &self,
-        project: nova_core::ProjectId,
-        group: &str,
-        artifact: &str,
-    ) -> bool {
+    fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
         nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
     }
 

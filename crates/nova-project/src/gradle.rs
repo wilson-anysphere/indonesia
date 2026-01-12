@@ -498,7 +498,11 @@ pub(crate) fn load_gradle_project(
             .find(|(prefix, _, _)| project_path.starts_with(prefix))
             .map(|(_prefix, props, catalog)| (props, catalog.as_ref()))
             .unwrap_or((&gradle_properties, version_catalog.as_ref()));
-        dependencies.extend(parse_gradle_dependencies(&module_root, ctx_catalog, ctx_props));
+        dependencies.extend(parse_gradle_dependencies(
+            &module_root,
+            ctx_catalog,
+            ctx_props,
+        ));
 
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.
@@ -950,11 +954,12 @@ pub(crate) fn load_gradle_workspace_model(
                     Cow::Borrowed(ctx_root_allprojects_deps),
                 )
             } else {
-                let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
-                    ctx_build_root,
-                    ctx_catalog,
-                    module_gradle_properties.as_ref(),
-                );
+                let (subprojects, allprojects) =
+                    parse_gradle_root_subprojects_allprojects_dependencies(
+                        ctx_build_root,
+                        ctx_catalog,
+                        module_gradle_properties.as_ref(),
+                    );
                 let mut common = parse_gradle_root_dependencies(
                     ctx_build_root,
                     ctx_catalog,
@@ -963,7 +968,11 @@ pub(crate) fn load_gradle_workspace_model(
                 retain_dependencies_not_in(&mut common, &subprojects);
                 retain_dependencies_not_in(&mut common, &allprojects);
                 sort_dedup_dependencies(&mut common);
-                (Cow::Owned(common), Cow::Owned(subprojects), Cow::Owned(allprojects))
+                (
+                    Cow::Owned(common),
+                    Cow::Owned(subprojects),
+                    Cow::Owned(allprojects),
+                )
             };
 
         let mut dependencies =
@@ -1884,10 +1893,7 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
 
         for raw in extract_quoted_strings(&args) {
             let project_path = normalize_project_path(&raw);
-            let name = raw
-                .trim()
-                .trim_start_matches(':')
-                .replace([':', '\\'], "/");
+            let name = raw.trim().trim_start_matches(':').replace([':', '\\'], "/");
             let name = name.trim();
             if name.is_empty() {
                 continue;

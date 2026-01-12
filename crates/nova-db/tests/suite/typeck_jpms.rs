@@ -275,8 +275,8 @@ fn jpms_typeck_unreadable_workspace_module_type_does_not_allow_method_resolution
     let mod_b_root = tmp.path().join("mod-b");
 
     let info_a = lower_module_info_source_strict("module workspace.a { }").unwrap();
-    let info_b = lower_module_info_source_strict("module workspace.b { exports com.example.b; }")
-        .unwrap();
+    let info_b =
+        lower_module_info_source_strict("module workspace.b { exports com.example.b; }").unwrap();
 
     let mut cfg = base_project_config(tmp.path().to_path_buf());
     cfg.jpms_modules = vec![
@@ -460,8 +460,8 @@ fn jpms_demand_type_of_expr_does_not_resolve_methods_on_unreadable_workspace_typ
     let mod_b_root = tmp.path().join("mod-b");
 
     let info_a = lower_module_info_source_strict("module workspace.a { }").unwrap();
-    let info_b = lower_module_info_source_strict("module workspace.b { exports com.example.b; }")
-        .unwrap();
+    let info_b =
+        lower_module_info_source_strict("module workspace.b { exports com.example.b; }").unwrap();
 
     let mut cfg = base_project_config(tmp.path().to_path_buf());
     cfg.jpms_modules = vec![

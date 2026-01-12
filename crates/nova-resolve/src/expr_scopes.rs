@@ -481,7 +481,9 @@ impl Builder {
                     }
                 }
             }
-            Expr::Switch { selector, body: b, .. } => {
+            Expr::Switch {
+                selector, body: b, ..
+            } => {
                 self.visit_expr(body, *selector, scope);
                 let switch_scope = self.alloc_scope(Some(scope));
                 let _ = self.visit_stmt(body, *b, switch_scope);

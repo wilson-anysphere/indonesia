@@ -15,7 +15,8 @@ async fn slow_client_does_not_deadlock_disconnect() {
     let (server_read, server_write) = split(server_stream);
     let (client_read, client_write) = split(client_stream);
 
-    let server_task = tokio::spawn(async move { nova_dap::wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { nova_dap::wire_server::run(server_read, server_write).await });
 
     let mut writer = DapWriter::new(client_write);
 
@@ -101,5 +102,8 @@ async fn slow_client_does_not_deadlock_disconnect() {
         .expect("server did not exit")
         .expect("server task panicked");
 
-    assert!(server_result.is_ok(), "server returned error: {server_result:?}");
+    assert!(
+        server_result.is_ok(),
+        "server returned error: {server_result:?}"
+    );
 }

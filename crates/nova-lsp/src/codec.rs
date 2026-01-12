@@ -39,9 +39,8 @@ fn read_line_limited<R: BufRead>(reader: &mut R, max_len: usize) -> io::Result<O
         }
     }
 
-    let line = String::from_utf8(buf).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "LSP header line is not UTF-8")
-    })?;
+    let line = String::from_utf8(buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "LSP header line is not UTF-8"))?;
     Ok(Some(line))
 }
 

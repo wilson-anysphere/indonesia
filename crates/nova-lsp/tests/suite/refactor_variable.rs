@@ -198,8 +198,7 @@ class C {
         let data = action.data.expect("extract variable data");
         let placeholder = data.get("name").and_then(|v| v.as_str()).expect("name");
         assert_ne!(
-            placeholder,
-            "extracted",
+            placeholder, "extracted",
             "expected Extract Variable to probe a non-conflicting placeholder name, got: {data:?}"
         );
     }
@@ -1328,7 +1327,10 @@ class C {
         let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
             panic!("expected code action");
         };
-        assert!(action.edit.is_none(), "expected disabled action without edit");
+        assert!(
+            action.edit.is_none(),
+            "expected disabled action without edit"
+        );
         let disabled = action.disabled.expect("expected disabled action");
         assert!(
             disabled.reason.contains("assert"),

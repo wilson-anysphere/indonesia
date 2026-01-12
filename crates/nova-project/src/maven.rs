@@ -2866,7 +2866,9 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-1.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
+        let resolved =
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false)
+                .expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 
@@ -2902,7 +2904,9 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-1.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
+        let resolved =
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false)
+                .expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 
@@ -2939,7 +2943,9 @@ mod tests {
         let newer_jar_path = version_dir.join("dep-1.0-20260112.223456-2.jar");
         std::fs::write(&newer_jar_path, "").expect("write newer jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
+        let resolved =
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false)
+                .expect("expected jar path");
         assert_eq!(resolved, newer_jar_path);
     }
 
@@ -2973,7 +2979,9 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-1-sources.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
+        let resolved =
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false)
+                .expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 
@@ -3009,7 +3017,9 @@ mod tests {
         std::fs::write(&jar_2, "").expect("write jar 2");
         std::fs::write(&jar_10, "").expect("write jar 10");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
+        let resolved =
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false)
+                .expect("expected jar path");
         assert_eq!(resolved, jar_10);
     }
 
@@ -3043,7 +3053,9 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-10.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
+        let resolved =
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false)
+                .expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 

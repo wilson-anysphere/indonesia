@@ -1325,10 +1325,7 @@ fn edge_narrow_null(
     state
 }
 
-fn merge_null_constraints(
-    mut lhs: NullConstraints,
-    rhs: NullConstraints,
-) -> NullConstraints {
+fn merge_null_constraints(mut lhs: NullConstraints, rhs: NullConstraints) -> NullConstraints {
     for (local, value) in rhs {
         match lhs.iter_mut().find(|(existing, _)| *existing == local) {
             Some((_, existing_value)) => *existing_value = existing_value.join(value),
@@ -1340,10 +1337,7 @@ fn merge_null_constraints(
 
 type NullConstraints = Vec<(LocalId, NullState)>;
 
-fn null_constraints(
-    body: &Body,
-    expr: ExprId,
-) -> (NullConstraints, NullConstraints) {
+fn null_constraints(body: &Body, expr: ExprId) -> (NullConstraints, NullConstraints) {
     let expr_data = body.expr(expr);
     match &expr_data.kind {
         ExprKind::Unary {

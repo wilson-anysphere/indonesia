@@ -1,6 +1,6 @@
 use lsp_types::{
-    CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit, Uri,
-    WorkspaceEdit,
+    CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
+    Uri, WorkspaceEdit,
 };
 use nova_core::{LineIndex, Name, PackageName, Position as CorePosition, TypeIndex};
 use nova_jdk::JdkIndex;
@@ -120,7 +120,9 @@ pub fn diagnostic_quick_fixes(
         if let Some(action) = create_class_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
-        actions.extend(unresolved_type_import_quick_fixes(source, &uri, &selection, diag));
+        actions.extend(unresolved_type_import_quick_fixes(
+            source, &uri, &selection, diag,
+        ));
 
         for action in create_symbol_quick_fixes(source, &uri, &selection, diag) {
             if !seen_create_symbol_titles.insert(action.title.clone()) {
@@ -147,8 +149,7 @@ pub fn diagnostic_quick_fixes(
         if let Some(action) = remove_unreachable_code_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
-        if let Some(action) =
-            initialize_unassigned_local_quick_fix(source, &uri, &selection, diag)
+        if let Some(action) = initialize_unassigned_local_quick_fix(source, &uri, &selection, diag)
         {
             actions.push(action);
         }
@@ -275,7 +276,8 @@ fn create_unresolved_name_quick_fixes(
         let mut actions = Vec::new();
 
         // Create local variable: insert before the current line (line containing the unresolved name).
-        if let Some(start_offset) = crate::text::position_to_offset(source, diagnostic.range.start) {
+        if let Some(start_offset) = crate::text::position_to_offset(source, diagnostic.range.start)
+        {
             if let Some((line_start, indent)) = line_start_and_indent(source, start_offset) {
                 let line_ending = if source.contains("\r\n") {
                     "\r\n"
@@ -354,8 +356,7 @@ fn create_unresolved_name_quick_fixes(
     if looks_like_type_identifier(&name) {
         // Avoid offering import/FQN fixes if the span already contains a qualification
         // (e.g. `java.util.List`).
-        if source_range_text(source, &diagnostic.range)
-            .is_some_and(|snippet| snippet.contains('.'))
+        if source_range_text(source, &diagnostic.range).is_some_and(|snippet| snippet.contains('.'))
         {
             return Vec::new();
         }
@@ -1466,7 +1467,9 @@ fn split_member_access(expr: &str) -> Option<(&str, &str)> {
             ']' => bracket_depth = bracket_depth.saturating_sub(1),
             '{' => brace_depth = brace_depth.saturating_add(1),
             '}' => brace_depth = brace_depth.saturating_sub(1),
-            '.' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => last_dot = Some(idx),
+            '.' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                last_dot = Some(idx)
+            }
             _ => {}
         }
     }

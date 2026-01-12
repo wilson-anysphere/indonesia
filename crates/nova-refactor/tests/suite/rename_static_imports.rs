@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use nova_refactor::{
-    apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams,
-};
+use nova_refactor::{apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams};
 
 #[test]
 fn rename_static_imported_field_updates_import_and_usages() {
@@ -133,4 +131,3 @@ class Use {
         "expected invocation to be renamed: {use_after}"
     );
 }
-

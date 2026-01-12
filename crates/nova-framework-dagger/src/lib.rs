@@ -359,7 +359,11 @@ fn fingerprint_db_project_sources(db: &dyn Database, files: &[(PathBuf, FileId)]
     hasher.finish()
 }
 
-fn fingerprint_fs_project_sources(db: &dyn Database, files: &[PathBuf], current_file: FileId) -> u64 {
+fn fingerprint_fs_project_sources(
+    db: &dyn Database,
+    files: &[PathBuf],
+    current_file: FileId,
+) -> u64 {
     use std::collections::hash_map::DefaultHasher;
 
     let mut hasher = DefaultHasher::new();

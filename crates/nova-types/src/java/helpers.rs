@@ -444,7 +444,10 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
             return None;
         }
         let ((_name, params), return_type) = candidates.into_iter().next()?;
-        Some(SamSignature { params, return_type })
+        Some(SamSignature {
+            params,
+            return_type,
+        })
     }
 
     let mut seen_type_vars = HashSet::new();
@@ -779,8 +782,8 @@ mod tests {
             .expect("minimal JDK should define java.util.List");
 
         let array_list_named = Type::Named("java.util.ArrayList".to_string());
-        let instantiated =
-            instantiate_as_supertype(&store, &array_list_named, list).expect("should map supertypes");
+        let instantiated = instantiate_as_supertype(&store, &array_list_named, list)
+            .expect("should map supertypes");
         assert_eq!(instantiated, Type::class(list, vec![]));
     }
 

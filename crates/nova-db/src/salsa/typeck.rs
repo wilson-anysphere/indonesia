@@ -16,8 +16,8 @@ use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution
 use nova_syntax::{lex, unescape_char_literal, JavaLanguageLevel, SyntaxKind, Token};
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
-    cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
-    lub, CallKind, ClassDef, ClassId, ClassKind, ConstValue, ConstructorDef, Diagnostic, FieldDef,
+    cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype, lub,
+    CallKind, ClassDef, ClassId, ClassKind, ConstValue, ConstructorDef, Diagnostic, FieldDef,
     MethodCall, MethodCandidateFailureReason, MethodDef, MethodNotFound, MethodResolution,
     PrimitiveType, ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef, TypeProvider,
     TypeStore, TypeVarId, TypeWarning, UncheckedReason, WildcardBound,
@@ -209,7 +209,9 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             kind: LiteralKind::Long,
             value,
             ..
-        } => nova_syntax::parse_long_literal(value).ok().map(ConstValue::Int),
+        } => nova_syntax::parse_long_literal(value)
+            .ok()
+            .map(ConstValue::Int),
         HirExpr::Literal {
             kind: LiteralKind::Char,
             value,
@@ -4155,10 +4157,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let method_type_param_ids: Vec<TypeVarId> =
                             type_params.iter().map(|(_, id)| *id).collect();
 
-                        let is_varargs = method
-                            .params
-                            .last()
-                            .is_some_and(|param| param.is_varargs || param.ty.trim().contains("..."));
+                        let is_varargs = method.params.last().is_some_and(|param| {
+                            param.is_varargs || param.ty.trim().contains("...")
+                        });
 
                         let params = method
                             .params
@@ -4606,8 +4607,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     ) {
         self.tick();
         let slot: *mut Type = &mut self.current_expected_return;
-        let prev =
-            std::mem::replace(&mut self.current_expected_return, expected_return.clone());
+        let prev = std::mem::replace(&mut self.current_expected_return, expected_return.clone());
         let _restore = RestoreTypeOnDrop {
             slot,
             prev: Some(prev),
@@ -6354,7 +6354,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                             Some(PrimitiveType::Boolean),
                                         ) => Some(Type::Primitive(PrimitiveType::Boolean)),
                                         (Some(a), Some(b))
-                                            if is_integral_primitive(a) && is_integral_primitive(b) =>
+                                            if is_integral_primitive(a)
+                                                && is_integral_primitive(b) =>
                                         {
                                             binary_numeric_promotion(a, b).map(Type::Primitive)
                                         }
@@ -8444,7 +8445,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         };
 
         let env_ro: &dyn TypeEnv = &*loader.store;
-        match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, expected_for_call) {
+        match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, expected_for_call)
+        {
             MethodResolution::Found(method) => {
                 for (arg, param_ty) in args.iter().zip(method.params.iter()) {
                     // Target-typed expressions like lambdas and method references may need the
@@ -9366,11 +9368,7 @@ fn define_workspace_source_types<'idx>(
             }
 
             let tree = db.hir_item_tree(file);
-            let package = tree
-                .package
-                .as_ref()
-                .map(|p| p.name.as_str())
-                .unwrap_or("");
+            let package = tree.package.as_ref().map(|p| p.name.as_str()).unwrap_or("");
             if let Some(info) = graph.get(&to) {
                 if !info.exports_package_to(package, from) {
                     continue;

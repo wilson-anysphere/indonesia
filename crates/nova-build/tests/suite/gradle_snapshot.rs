@@ -591,7 +591,9 @@ fn refreshes_gradle_snapshot_from_cached_projects() {
     std::fs::remove_file(&snapshot_path).expect("remove snapshot");
     assert!(!snapshot_path.exists(), "snapshot should be removed");
 
-    let _projects2 = gradle.projects(&project_root, &cache).expect("projects (cached)");
+    let _projects2 = gradle
+        .projects(&project_root, &cache)
+        .expect("projects (cached)");
     assert_eq!(
         runner.invocations(),
         1,

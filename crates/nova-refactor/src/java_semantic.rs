@@ -5949,7 +5949,15 @@ fn collect_switch_contexts(
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
                 }
                 if let Some(initializer) = initializer {
-                    walk_expr(body, *initializer, owner, scope_result, resolver, item_trees, out);
+                    walk_expr(
+                        body,
+                        *initializer,
+                        owner,
+                        scope_result,
+                        resolver,
+                        item_trees,
+                        out,
+                    );
                 }
             }
             hir::Expr::ArrayInitializer { items, .. } => {
@@ -6221,8 +6229,7 @@ fn record_syntax_only_references(
         let range = ty.syntax().text_range();
         let start = u32::from(range.start()) as usize;
 
-        let scope =
-            scope_for_offset_in_type_scopes(&type_scopes, scope_result.file_scope, start);
+        let scope = scope_for_offset_in_type_scopes(&type_scopes, scope_result.file_scope, start);
 
         // Resolve each prefix (`Outer`, `Outer.Inner`, ...) so renames can target both outer and
         // inner identifiers within a qualified type reference.

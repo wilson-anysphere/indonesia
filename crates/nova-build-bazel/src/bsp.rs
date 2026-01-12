@@ -1792,6 +1792,8 @@ mod tests {
         let mut client = BspClient::from_streams(std::io::Cursor::new(payload), std::io::sink());
 
         let err = client.read_message().unwrap_err();
-        assert!(err.to_string().contains("BSP header line exceeds maximum size"));
+        assert!(err
+            .to_string()
+            .contains("BSP header line exceeds maximum size"));
     }
 }

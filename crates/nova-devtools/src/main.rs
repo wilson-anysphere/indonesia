@@ -149,11 +149,18 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         "check-test-layout" => {
             let opts = parse_common_workspace_args(args, "check-test-layout")?;
-            let report =
-                nova_devtools::check_test_layout::check(opts.manifest_path.as_deref(), opts.metadata_path.as_deref())
-                    .context("check-test-layout failed")?;
+            let report = nova_devtools::check_test_layout::check(
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+            )
+            .context("check-test-layout failed")?;
 
-            emit_report("check-test-layout", opts.json, report.ok, report.diagnostics)?;
+            emit_report(
+                "check-test-layout",
+                opts.json,
+                report.ok,
+                report.diagnostics,
+            )?;
             Ok(if report.ok {
                 ExitCode::SUCCESS
             } else {

@@ -680,7 +680,9 @@ impl GradleBuild {
         let json = parse_gradle_java_compile_config_json(&combined)?;
         let is_buildsrc = project_path.is_some_and(|p| gradle_buildsrc_suffix(p).is_some());
         let project_path_for_snapshot = if is_buildsrc {
-            project_path.expect("buildSrc project path should be Some(..)").to_string()
+            project_path
+                .expect("buildSrc project path should be Some(..)")
+                .to_string()
         } else {
             json.project_path
                 .as_deref()
@@ -963,13 +965,8 @@ impl GradleBuild {
         let init_script = write_init_script(project_root)?;
         let buildsrc_suffix = project_path.and_then(gradle_buildsrc_suffix);
         let is_buildsrc = buildsrc_suffix.is_some();
-        let buildsrc_nested_project_path = buildsrc_suffix.and_then(|rest| {
-            if rest.is_empty() {
-                None
-            } else {
-                Some(rest)
-            }
-        });
+        let buildsrc_nested_project_path =
+            buildsrc_suffix.and_then(|rest| if rest.is_empty() { None } else { Some(rest) });
 
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
@@ -1007,13 +1004,8 @@ impl GradleBuild {
         let init_script = write_init_script(project_root)?;
         let buildsrc_suffix = project_path.and_then(gradle_buildsrc_suffix);
         let is_buildsrc = buildsrc_suffix.is_some();
-        let buildsrc_nested_project_path = buildsrc_suffix.and_then(|rest| {
-            if rest.is_empty() {
-                None
-            } else {
-                Some(rest)
-            }
-        });
+        let buildsrc_nested_project_path =
+            buildsrc_suffix.and_then(|rest| if rest.is_empty() { None } else { Some(rest) });
 
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
@@ -1091,13 +1083,8 @@ impl GradleBuild {
         args.push("--console=plain".into());
         let buildsrc_suffix = project_path.and_then(gradle_buildsrc_suffix);
         let is_buildsrc = buildsrc_suffix.is_some();
-        let buildsrc_nested_project_path = buildsrc_suffix.and_then(|rest| {
-            if rest.is_empty() {
-                None
-            } else {
-                Some(rest)
-            }
-        });
+        let buildsrc_nested_project_path =
+            buildsrc_suffix.and_then(|rest| if rest.is_empty() { None } else { Some(rest) });
         if is_buildsrc {
             args.push("--project-dir".into());
             args.push(GRADLE_BUILDSRC_PROJECT_DIR.to_string());

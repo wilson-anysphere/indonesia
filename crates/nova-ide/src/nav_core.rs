@@ -269,7 +269,11 @@ where
         .split('.')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|seg| seg.strip_suffix("()").map(|name| (name, true)).unwrap_or((seg, false)))
+        .map(|seg| {
+            seg.strip_suffix("()")
+                .map(|name| (name, true))
+                .unwrap_or((seg, false))
+        })
         .filter(|(name, _)| !name.is_empty())
         .collect();
     let &(first, first_is_call) = segments.first()?;
@@ -300,7 +304,11 @@ where
         cur_ty = if is_call {
             resolve_method_return_type_best_effort::<TI, FTypeInfo>(lookup_type_info, &cur_ty, seg)?
         } else {
-            resolve_field_declared_type_best_effort::<TI, FTypeInfo>(lookup_type_info, &cur_ty, seg)?
+            resolve_field_declared_type_best_effort::<TI, FTypeInfo>(
+                lookup_type_info,
+                &cur_ty,
+                seg,
+            )?
         };
     }
 

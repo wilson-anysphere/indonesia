@@ -1058,7 +1058,9 @@ fn stdio_server_nova_ai_generate_tests_request_returns_null_and_applies_workspac
             }
             edit.edits.iter().any(|edit| match edit {
                 lsp_types::OneOf::Left(edit) => edit.new_text.contains("class CalculatorTest"),
-                lsp_types::OneOf::Right(edit) => edit.text_edit.new_text.contains("class CalculatorTest"),
+                lsp_types::OneOf::Right(edit) => {
+                    edit.text_edit.new_text.contains("class CalculatorTest")
+                }
             })
         }),
         "expected TextDocumentEdit containing generated test class, got {ops:?}"
@@ -2540,7 +2542,8 @@ fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method(
         .expect("expected error response");
     assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
     assert!(
-        error.get("message")
+        error
+            .get("message")
             .and_then(|v| v.as_str())
             .is_some_and(|m| m.contains("method body")),
         "expected error message mentioning method body, got: {resp:#?}"
@@ -2797,7 +2800,9 @@ excluded_paths = ["src/test/java/**"]
                     }
                     for edit in &doc_edit.edits {
                         match edit {
-                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Left(edit) => {
+                                all_new_texts.push(edit.new_text.clone())
+                            }
                             lsp_types::OneOf::Right(edit) => {
                                 all_new_texts.push(edit.text_edit.new_text.clone())
                             }

@@ -165,7 +165,10 @@ public class CarMapperGenerated implements CarMapper {
     let locations = nova_lsp::implementation(&db, file_id, position);
     assert_eq!(locations.len(), 1);
     let location = &locations[0];
-    assert!(location.uri.to_string().ends_with("CarMapperGenerated.java"));
+    assert!(location
+        .uri
+        .to_string()
+        .ends_with("CarMapperGenerated.java"));
 
     let impl_text = std::fs::read_to_string(&impl_path).unwrap();
     assert_eq!(range_text(&impl_text, location.range), "carToCarDto");

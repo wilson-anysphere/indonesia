@@ -428,7 +428,10 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
             }
             None => {
                 if looks_like_java_source(text) {
-                    sources.push(JavaSource::new(synthetic_path_for_file(file), text.to_string()));
+                    sources.push(JavaSource::new(
+                        synthetic_path_for_file(file),
+                        text.to_string(),
+                    ));
                 }
             }
         }

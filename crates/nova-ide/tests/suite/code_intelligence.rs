@@ -118,7 +118,8 @@ class A { void m(){ int[] xs=null; xs.<|> } }
         "expected non-empty completion list for array member access"
     );
     assert_eq!(
-        items[0].label, "length",
+        items[0].label,
+        "length",
         "expected array.length to rank first for empty prefix; got {:?}",
         items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );
@@ -1905,7 +1906,9 @@ class A {
         .as_ref()
         .expect("expected `new ArrayList` completion to add an import");
     assert!(
-        edits.iter().any(|e| e.new_text.contains("import java.util.ArrayList;")),
+        edits
+            .iter()
+            .any(|e| e.new_text.contains("import java.util.ArrayList;")),
         "expected import edit for java.util.ArrayList; got {edits:#?}"
     );
 }
@@ -3737,8 +3740,7 @@ class A {
         "expected System.out to insert without parens; got {out:#?}"
     );
     assert_eq!(
-        out.insert_text_format,
-        None,
+        out.insert_text_format, None,
         "expected System.out to not use snippet insertion; got {out:#?}"
     );
 }
@@ -4345,10 +4347,7 @@ class A {}
         .expect("expected java.util.Map.Entry nested type completion");
 
     let text = text_with_caret.replace("<|>", "");
-    let segment_start = text
-        .find("Map . E")
-        .expect("expected Map . E in fixture")
-        + "Map . ".len();
+    let segment_start = text.find("Map . E").expect("expected Map . E in fixture") + "Map . ".len();
 
     let edit = match item.text_edit.as_ref().expect("expected text_edit") {
         CompletionTextEdit::Edit(edit) => edit,
@@ -4644,8 +4643,8 @@ fn completion_inside_string_literal_unicode_escape_sequence_suggests_unicode_sni
 }
 
 #[test]
-fn completion_inside_string_literal_unicode_escape_sequence_with_partial_hex_suggests_unicode_snippet()
-{
+fn completion_inside_string_literal_unicode_escape_sequence_with_partial_hex_suggests_unicode_snippet(
+) {
     let (db, file, pos) = fixture(r#"class A { void m(){ String s = "\u0<|>"; } }"#);
     let items = completions(&db, file, pos);
 
@@ -5052,7 +5051,8 @@ class Main {
 }
 
 #[test]
-fn goto_definition_resolves_qualified_constructor_call_type_with_constructor_type_args_across_files() {
+fn goto_definition_resolves_qualified_constructor_call_type_with_constructor_type_args_across_files(
+) {
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
     let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
 

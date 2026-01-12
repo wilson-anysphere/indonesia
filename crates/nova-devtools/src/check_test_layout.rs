@@ -110,12 +110,9 @@ fn root_tests_rs_files(tests_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
         let path = entry.path();
 
         // Only consider depth=1; ignore nested suite directories.
-        let file_type = entry.file_type().with_context(|| {
-            format!(
-                "failed to read file type for {}",
-                entry.path().display()
-            )
-        })?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to read file type for {}", entry.path().display()))?;
         if !file_type.is_file() {
             continue;
         }
@@ -180,4 +177,3 @@ mod tests {
         assert_eq!(files.len(), 2);
     }
 }
-

@@ -446,30 +446,29 @@ fn main() -> std::io::Result<()> {
                 let start = Instant::now();
                 let mut did_panic = false;
 
-                let response =
-                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        nova_db::catch_cancelled(|| {
-                            handle_request(request, cancel_token, &mut state, &client)
-                        })
-                    })) {
-                        Ok(Ok(Ok(response))) => response,
-                        Ok(Ok(Err(err))) => {
-                            request_cancellation.finish(cancel_id);
-                            metrics.record_request(&method, start.elapsed());
-                            metrics.record_error(&method);
-                            return Err(err);
-                        }
-                        Ok(Err(_cancelled)) => response_error(request_id, -32800, "Request cancelled"),
-                        Err(_) => {
-                            did_panic = true;
-                            tracing::error!(
-                                target = "nova.lsp",
-                                method,
-                                "panic while handling request"
-                            );
-                            response_error(request_id, -32603, "Internal error (panic)")
-                        }
-                    };
+                let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    nova_db::catch_cancelled(|| {
+                        handle_request(request, cancel_token, &mut state, &client)
+                    })
+                })) {
+                    Ok(Ok(Ok(response))) => response,
+                    Ok(Ok(Err(err))) => {
+                        request_cancellation.finish(cancel_id);
+                        metrics.record_request(&method, start.elapsed());
+                        metrics.record_error(&method);
+                        return Err(err);
+                    }
+                    Ok(Err(_cancelled)) => response_error(request_id, -32800, "Request cancelled"),
+                    Err(_) => {
+                        did_panic = true;
+                        tracing::error!(
+                            target = "nova.lsp",
+                            method,
+                            "panic while handling request"
+                        );
+                        response_error(request_id, -32603, "Internal error (panic)")
+                    }
+                };
                 let response_is_error = response.error.is_some();
 
                 request_cancellation.finish(cancel_id);
@@ -788,10 +787,9 @@ fn message_router(
                         if let Some(salsa) = salsa.as_ref() {
                             // Best-effort and non-panicking: cancellation is advisory and should
                             // never crash the router thread.
-                            let _ =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    salsa.request_cancellation();
-                                }));
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                salsa.request_cancellation();
+                            }));
                         }
                     }
                 }
@@ -2573,10 +2571,9 @@ fn handle_request_json(
                 nova_lsp::INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
                 json!({ "id": id.clone() }),
             );
-            let value = state
-                .analysis
-                .salsa
-                .with_snapshot(|snap| snap.interruptible_work(nova_db::FileId::from_raw(0), params.steps));
+            let value = state.analysis.salsa.with_snapshot(|snap| {
+                snap.interruptible_work(nova_db::FileId::from_raw(0), params.steps)
+            });
 
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": { "value": value } }))
         }
@@ -4188,28 +4185,30 @@ fn publish_diagnostics_for_file(
         state.extensions_registry.clone(),
     );
     let ext_diags = ide_extensions.diagnostics(cancel, file_id);
-    diagnostics.extend(ext_diags.into_iter().map(|d| lsp_types::Diagnostic {
-        range: d
-            .span
-            .map(|span| lsp_types::Range {
-                start: offset_to_position_utf16(&text, span.start),
-                end: offset_to_position_utf16(&text, span.end),
-            })
-            .unwrap_or_else(|| {
-                lsp_types::Range::new(
-                    lsp_types::Position::new(0, 0),
-                    lsp_types::Position::new(0, 0),
-                )
+    diagnostics.extend(ext_diags.into_iter().map(|d| {
+        lsp_types::Diagnostic {
+            range: d
+                .span
+                .map(|span| lsp_types::Range {
+                    start: offset_to_position_utf16(&text, span.start),
+                    end: offset_to_position_utf16(&text, span.end),
+                })
+                .unwrap_or_else(|| {
+                    lsp_types::Range::new(
+                        lsp_types::Position::new(0, 0),
+                        lsp_types::Position::new(0, 0),
+                    )
+                }),
+            severity: Some(match d.severity {
+                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
             }),
-        severity: Some(match d.severity {
-            nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
-            nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-            nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
-        }),
-        code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-        source: Some("nova".into()),
-        message: d.message,
-        ..lsp_types::Diagnostic::default()
+            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+            source: Some("nova".into()),
+            message: d.message,
+            ..lsp_types::Diagnostic::default()
+        }
     }));
 
     diagnostics
@@ -8829,12 +8828,11 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let _ = apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out).map_err(
-        |err| {
+    let _ = apply_code_action_outcome(outcome, "AI: Generate method body", state, rpc_out)
+        .map_err(|err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
-        },
-    )?;
+        })?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
     // The `nova/ai/*` patch-based endpoints return `null` on success and apply edits via
     // `workspace/applyEdit`.
@@ -9164,8 +9162,12 @@ fn run_ai_generate_method_body(
     let range = args
         .range
         .ok_or_else(|| (-32602, "missing range for generateMethodBody".to_string()))?;
-    let text = load_document_text(state, uri_string)
-        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri_string)))?;
+    let text = load_document_text(state, uri_string).ok_or_else(|| {
+        (
+            -32602,
+            format!("missing document text for `{}`", uri_string),
+        )
+    })?;
     let (root_uri, rel_path, abs_path) = resolve_ai_patch_target(&uri, state)?;
 
     if is_ai_excluded_path(state, &abs_path) {
@@ -9274,8 +9276,12 @@ fn run_ai_generate_tests(
         .ok_or_else(|| (-32602, "missing range for generateTests".to_string()))?;
     let target = args.target.clone();
     let context = args.context.clone();
-    let source_text = load_document_text(state, uri_string)
-        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri_string)))?;
+    let source_text = load_document_text(state, uri_string).ok_or_else(|| {
+        (
+            -32602,
+            format!("missing document text for `{}`", uri_string),
+        )
+    })?;
     let source_snippet = byte_range_for_ide_range(&source_text, range)
         .and_then(|r| source_text.get(r).map(|s| s.to_string()))
         .filter(|s| !s.trim().is_empty());

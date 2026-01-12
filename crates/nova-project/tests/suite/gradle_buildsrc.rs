@@ -277,11 +277,8 @@ fn gradle_includes_buildsrc_when_only_subprojects_have_sources() {
     let java_file =
         workspace_root.join("buildSrc/plugins/src/main/java/com/example/plugins/Plugin.java");
     std::fs::create_dir_all(java_file.parent().unwrap()).expect("mkdir buildSrc/plugins sources");
-    std::fs::write(
-        &java_file,
-        "package com.example.plugins; class Plugin {}",
-    )
-    .expect("write buildSrc/plugins java");
+    std::fs::write(&java_file, "package com.example.plugins; class Plugin {}")
+        .expect("write buildSrc/plugins java");
 
     let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
     let options = LoadOptions {
@@ -414,8 +411,7 @@ fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
         ..LoadOptions::default()
     };
 
-    let config =
-        load_project_with_options(&workspace_root, &options).expect("load gradle project");
+    let config = load_project_with_options(&workspace_root, &options).expect("load gradle project");
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
     assert!(

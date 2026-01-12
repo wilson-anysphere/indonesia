@@ -110,7 +110,9 @@ class C { double m(){ return 1.0; } }
 "#;
 
     let (db, file) = setup_db(src);
-    let offset = src.find("1.0").expect("snippet should contain double literal");
+    let offset = src
+        .find("1.0")
+        .expect("snippet should contain double literal");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -181,7 +183,9 @@ class C { void m(){ int[] a = {1,2}; } }
         "expected array initializer to type-check; got {diags:?}"
     );
 
-    let offset = src.find("{1,2}").expect("snippet should contain array initializer");
+    let offset = src
+        .find("{1,2}")
+        .expect("snippet should contain array initializer");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -263,7 +267,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-catch-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-catch-type"),
         "expected invalid-catch-type diagnostic; got {diags:?}"
     );
 }
@@ -281,7 +287,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "invalid-catch-type"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-catch-type"),
         "expected no invalid-catch-type diagnostic; got {diags:?}"
     );
     assert!(
@@ -323,7 +331,9 @@ class C {
     let diags = db.type_diagnostics(file);
     assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
 
-    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let offset = src
+        .find("instanceof")
+        .expect("snippet should contain instanceof");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -343,11 +353,15 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "instanceof-primitive"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "instanceof-primitive"),
         "expected instanceof-primitive diagnostic, got {diags:?}"
     );
 
-    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let offset = src
+        .find("instanceof")
+        .expect("snippet should contain instanceof");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -371,7 +385,9 @@ class C {
         "expected instanceof-void diagnostic, got {diags:?}"
     );
 
-    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let offset = src
+        .find("instanceof")
+        .expect("snippet should contain instanceof");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -429,7 +445,9 @@ class C { void m(){ while (1) {} } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "condition-not-boolean"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "condition-not-boolean"),
         "expected condition-not-boolean diagnostic; got {diags:?}"
     );
 }
@@ -443,7 +461,9 @@ class C { void m(){ for (; 1; ) {} } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "condition-not-boolean"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "condition-not-boolean"),
         "expected condition-not-boolean diagnostic; got {diags:?}"
     );
 }

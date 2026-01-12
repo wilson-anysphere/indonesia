@@ -1440,7 +1440,8 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                         let inner = project_path
                                             .strip_prefix(composite_root_project_path.unwrap())
                                             .unwrap_or_default();
-                                        let inner = if inner.is_empty() { None } else { Some(inner) };
+                                        let inner =
+                                            if inner.is_empty() { None } else { Some(inner) };
                                         (build_root.as_path(), inner)
                                     }
                                     None => (project_root.as_path(), Some(project_path.as_str())),

@@ -1136,7 +1136,10 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn resolve_maven_repo_path_best_effort(value: &str) -> Option<PathBuf> {
-    let value = value.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
+    let value = value
+        .trim()
+        .trim_matches(|c| matches!(c, '"' | '\''))
+        .trim();
     if value.is_empty() {
         return None;
     }
@@ -1186,7 +1189,10 @@ fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
     }
 
     // Accept both separators so configs remain portable.
-    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+    let rest = rest
+        .strip_prefix('/')
+        .or_else(|| rest.strip_prefix('\\'))
+        .unwrap_or(rest);
     if rest.contains("${") {
         // If there are any remaining placeholders, bail out rather than guessing.
         return None;
@@ -1676,9 +1682,9 @@ fn collect_maven_build_files_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
     use std::collections::BTreeSet;
     use std::collections::HashMap;
+    use std::ffi::OsString;
     use std::process::ExitStatus;
     use std::sync::{Mutex, OnceLock};
 
@@ -1757,8 +1763,8 @@ mod tests {
         std::fs::create_dir_all(&home).expect("create home");
 
         with_home_dir(&home, || {
-            let repo = resolve_maven_repo_path_best_effort("${user.home}/.m2/custom-repo")
-                .expect("repo");
+            let repo =
+                resolve_maven_repo_path_best_effort("${user.home}/.m2/custom-repo").expect("repo");
             assert_eq!(repo, home.join(".m2").join("custom-repo"));
         });
     }
@@ -1770,8 +1776,7 @@ mod tests {
         std::fs::create_dir_all(&home).expect("create home");
 
         with_home_dir(&home, || {
-            let repo =
-                resolve_maven_repo_path_best_effort("~/.m2/custom-repo").expect("repo");
+            let repo = resolve_maven_repo_path_best_effort("~/.m2/custom-repo").expect("repo");
             assert_eq!(repo, home.join(".m2").join("custom-repo"));
         });
     }
@@ -1786,8 +1791,7 @@ mod tests {
 
         with_home_dir(&home, || {
             let _guard = EnvVarGuard::set("M2_REPO_ROOT", Some(&repo_root));
-            let repo = resolve_maven_repo_path_best_effort("${env.M2_REPO_ROOT}/m2")
-                .expect("repo");
+            let repo = resolve_maven_repo_path_best_effort("${env.M2_REPO_ROOT}/m2").expect("repo");
             assert_eq!(repo, repo_root.join("m2"));
         });
     }

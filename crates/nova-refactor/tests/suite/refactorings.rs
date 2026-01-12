@@ -119,7 +119,10 @@ fn rename_updates_occurrences_in_assert_statement() {
 
     assert!(after.contains("int bar = 1;"));
     assert!(after.contains("assert bar > 0 : bar;"), "got: {after}");
-    assert!(!after.contains("foo"), "expected all occurrences to be renamed: {after}");
+    assert!(
+        !after.contains("foo"),
+        "expected all occurrences to be renamed: {after}"
+    );
 }
 
 #[test]
@@ -931,8 +934,8 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
 }
 
 #[test]
-fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses()
-{
+fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses(
+) {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   int value = 0;
@@ -974,7 +977,8 @@ fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_lat
 }
 
 #[test]
-fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_switch_case_group() {
+fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_switch_case_group(
+) {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   int value = 0;
@@ -1018,7 +1022,8 @@ fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_
 }
 
 #[test]
-fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_other_switch_case_group() {
+fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_other_switch_case_group(
+) {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   int value = 0;
@@ -7813,7 +7818,10 @@ fn inline_variable_rejects_assert_when_initializer_is_order_sensitive() {
         },
     )
     .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineNotSupportedInAssert));
+    assert!(matches!(
+        err,
+        SemanticRefactorError::InlineNotSupportedInAssert
+    ));
 }
 
 #[test]

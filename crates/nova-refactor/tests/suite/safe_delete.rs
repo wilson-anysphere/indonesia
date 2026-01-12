@@ -276,11 +276,20 @@ class C implements I {
     let updated = apply_workspace_edit(&files, &edit);
 
     let iface = updated.get("I.java").unwrap();
-    assert!(!iface.contains("used()"), "interface method should be removed");
+    assert!(
+        !iface.contains("used()"),
+        "interface method should be removed"
+    );
 
     let c = updated.get("C.java").unwrap();
-    assert!(!c.contains("@Override"), "override annotation should be removed");
-    assert!(!c.contains("used()"), "implementing method should be removed");
+    assert!(
+        !c.contains("@Override"),
+        "override annotation should be removed"
+    );
+    assert!(
+        !c.contains("used()"),
+        "implementing method should be removed"
+    );
     assert!(c.contains("other()"), "unrelated members should remain");
 }
 

@@ -22,8 +22,12 @@ static COMMON_PACKAGE_STRS: &[&str] = &[
     "java.lang",
 ];
 
-static COMMON_PACKAGE_NAMES: Lazy<Vec<PackageName>> =
-    Lazy::new(|| COMMON_PACKAGE_STRS.iter().map(|pkg| PackageName::from_dotted(pkg)).collect());
+static COMMON_PACKAGE_NAMES: Lazy<Vec<PackageName>> = Lazy::new(|| {
+    COMMON_PACKAGE_STRS
+        .iter()
+        .map(|pkg| PackageName::from_dotted(pkg))
+        .collect()
+});
 
 /// Generate quick fixes for unresolved type diagnostics.
 ///

@@ -226,4 +226,3 @@ fn maven_resolver_smoke() {
     assert_parses(&ws, &repo_system);
     assert_diagnostics(&ws, &repo_system);
 }
-

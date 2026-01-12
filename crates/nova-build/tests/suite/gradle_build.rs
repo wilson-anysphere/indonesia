@@ -517,9 +517,7 @@ fn annotation_processing_for_buildsrc_subproject_uses_project_dir_flag_and_trans
     let main = ap.main.expect("expected main annotation processing config");
     assert_eq!(
         main.generated_sources_dir,
-        Some(
-            plugins_dir.join("build/generated/sources/annotationProcessor/java/main")
-        )
+        Some(plugins_dir.join("build/generated/sources/annotationProcessor/java/main"))
     );
 
     let invocations = runner.invocations();
@@ -581,8 +579,13 @@ fn build_for_buildsrc_subproject_uses_project_dir_flag_and_translated_task() {
         "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
     );
 
-    assert_eq!(args.last().map(String::as_str), Some(":plugins:compileJava"));
-    assert!(!args.iter().any(|arg| arg == ":__buildSrc:plugins:compileJava"));
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some(":plugins:compileJava")
+    );
+    assert!(!args
+        .iter()
+        .any(|arg| arg == ":__buildSrc:plugins:compileJava"));
 }
 
 #[test]

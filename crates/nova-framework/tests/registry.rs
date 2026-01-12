@@ -371,7 +371,11 @@ fn analyzer_registry_with_cancel_short_circuits_before_applies_to_when_already_c
             _file: nova_vfs::FileId,
             _cancel: &CancellationToken,
         ) -> Vec<Diagnostic> {
-            vec![Diagnostic::warning("SHOULD_NOT_RUN", "should-not-run", None)]
+            vec![Diagnostic::warning(
+                "SHOULD_NOT_RUN",
+                "should-not-run",
+                None,
+            )]
         }
     }
 

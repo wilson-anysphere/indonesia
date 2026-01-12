@@ -194,7 +194,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "condition-not-boolean"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "condition-not-boolean"),
         "expected condition-not-boolean diagnostic; got {diags:?}"
     );
 }

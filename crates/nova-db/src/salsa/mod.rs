@@ -3120,7 +3120,8 @@ impl Database {
     /// (for example, workspace-owned eviction of closed-file contents) can
     /// suppress those texts here to avoid double-counting.
     pub fn set_file_text_suppressed(&self, file: FileId, suppressed: bool) {
-        self.input_footprint.set_file_text_suppressed(file, suppressed);
+        self.input_footprint
+            .set_file_text_suppressed(file, suppressed);
     }
 
     pub fn register_salsa_input_tracker(&self, manager: &MemoryManager) {

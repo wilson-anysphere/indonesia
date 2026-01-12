@@ -1069,10 +1069,7 @@ impl<'a> BodyLower<'a> {
                 }))
             }
             syntax::Stmt::Yield(yield_stmt) => {
-                let expr = yield_stmt
-                    .expr
-                    .as_ref()
-                    .map(|expr| self.lower_expr(expr));
+                let expr = yield_stmt.expr.as_ref().map(|expr| self.lower_expr(expr));
                 Some(self.alloc_stmt(Stmt::Yield {
                     expr,
                     range: yield_stmt.range,

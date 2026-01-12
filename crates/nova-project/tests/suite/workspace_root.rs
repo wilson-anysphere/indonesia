@@ -233,7 +233,10 @@ fn load_project_finds_gradle_workspace_root_from_included_build_nested_file_sett
         &root.join("build-logic/settings.gradle.kts"),
         r#"include("plugins")"#,
     );
-    write(&root.join("build-logic/build.gradle.kts"), "// included build");
+    write(
+        &root.join("build-logic/build.gradle.kts"),
+        "// included build",
+    );
     write(
         &root.join("build-logic/src/main/java/com/example/BuildLogic.java"),
         "package com.example; class BuildLogic {}",

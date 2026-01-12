@@ -45,7 +45,9 @@ fn return_mismatch_diagnostic_quick_fixes_offer_cast_to_expected_type() {
     let uri: Uri = "file:///test.java".parse().expect("valid uri");
 
     let needle = "return o;";
-    let stmt_start = source.find(needle).expect("expected return statement in fixture");
+    let stmt_start = source
+        .find(needle)
+        .expect("expected return statement in fixture");
     let expr_start = stmt_start + "return ".len();
     let expr_end = expr_start + "o".len();
 
@@ -76,4 +78,3 @@ fn return_mismatch_diagnostic_quick_fixes_offer_cast_to_expected_type() {
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].new_text, "(String) (o)");
 }
-

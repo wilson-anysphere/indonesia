@@ -2365,9 +2365,7 @@ impl FlowMaps {
                     walk_expr(body, *rhs, maps);
                 }
                 ExprKind::FieldAccess { receiver, .. } => walk_expr(body, *receiver, maps),
-                ExprKind::Call {
-                    receiver, args, ..
-                } => {
+                ExprKind::Call { receiver, args, .. } => {
                     if let Some(recv) = receiver {
                         walk_expr(body, *recv, maps);
                     }

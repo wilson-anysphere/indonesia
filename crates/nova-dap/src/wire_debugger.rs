@@ -361,7 +361,11 @@ where
     }
 }
 
-fn remaining_budget(token: &CancellationToken, started: Instant, budget: Duration) -> Result<Duration> {
+fn remaining_budget(
+    token: &CancellationToken,
+    started: Instant,
+    budget: Duration,
+) -> Result<Duration> {
     if token.is_cancelled() {
         return Err(JdwpError::Cancelled.into());
     }
@@ -2703,7 +2707,8 @@ impl Debugger {
                 budget,
                 jdwp.method_variable_table_with_generic(location.class_id, location.method_id),
             )
-            .await {
+            .await
+            {
                 Ok((_argc, vars)) => {
                     let in_scope: Vec<_> = vars
                         .into_iter()
@@ -2731,7 +2736,8 @@ impl Debugger {
                     budget,
                     jdwp.method_variable_table(location.class_id, location.method_id),
                 )
-                .await {
+                .await
+                {
                     Ok(res) => res,
                     Err(err) => match err {
                         DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
@@ -2763,7 +2769,8 @@ impl Debugger {
                 budget,
                 jdwp.stack_frame_get_values(thread, frame_id, &[(slot, signature)]),
             )
-            .await {
+            .await
+            {
                 Ok(values) => values,
                 Err(err) => match err {
                     DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
@@ -2792,7 +2799,8 @@ impl Debugger {
                 budget,
                 jdwp.stack_frame_this_object(thread, frame_id),
             )
-            .await {
+            .await
+            {
                 Ok(id) => id,
                 Err(err) => match err {
                     DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
@@ -2813,7 +2821,8 @@ impl Debugger {
                 budget,
                 jdwp.object_reference_reference_type(this_id),
             )
-            .await {
+            .await
+            {
                 Ok(res) => res,
                 Err(err) => match err {
                     DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
@@ -2827,18 +2836,22 @@ impl Debugger {
             while type_id != 0 && seen_types.insert(type_id) {
                 enforce_budget(cancel, started, budget)?;
 
-                let fields =
-                    match budgeted_jdwp(cancel, started, budget, jdwp.reference_type_fields(type_id))
-                        .await
-                    {
-                        Ok(fields) => fields,
-                        Err(err) => match err {
-                            DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
-                                return Err(err)
-                            }
-                            _ => return Ok(None),
-                        },
-                    };
+                let fields = match budgeted_jdwp(
+                    cancel,
+                    started,
+                    budget,
+                    jdwp.reference_type_fields(type_id),
+                )
+                .await
+                {
+                    Ok(fields) => fields,
+                    Err(err) => match err {
+                        DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                            return Err(err)
+                        }
+                        _ => return Ok(None),
+                    },
+                };
 
                 if let Some(field) = fields
                     .into_iter()
@@ -2850,7 +2863,8 @@ impl Debugger {
                         budget,
                         jdwp.object_reference_get_values(this_id, &[field.field_id]),
                     )
-                    .await {
+                    .await
+                    {
                         Ok(values) => values,
                         Err(err) => match err {
                             DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
@@ -2862,8 +2876,13 @@ impl Debugger {
                     return Ok(values.pop());
                 }
 
-                type_id = match budgeted_jdwp(cancel, started, budget, jdwp.class_type_superclass(type_id))
-                    .await
+                type_id = match budgeted_jdwp(
+                    cancel,
+                    started,
+                    budget,
+                    jdwp.class_type_superclass(type_id),
+                )
+                .await
                 {
                     Ok(id) => id,
                     Err(err) => match err {
@@ -3182,8 +3201,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             // frames so we preserve Java's shadowing rules (locals > fields > static fields) even
             // when the selected frame is a synthetic lambda frame that lacks the original locals.
             if value.is_none() {
-                value =
-                    resolve_static_field_in_frame(&jdwp, cancel, frame.location, lookup_name).await?;
+                value = resolve_static_field_in_frame(&jdwp, cancel, frame.location, lookup_name)
+                    .await?;
             }
 
             let Some(value) = value else {
@@ -3232,9 +3251,13 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                             "unsupported list implementation (missing backing array)".to_string(),
                         ));
                     };
-                    let length =
-                        budgeted_jdwp(cancel, started, budget, jdwp.array_reference_length(array_id))
-                            .await?;
+                    let length = budgeted_jdwp(
+                        cancel,
+                        started,
+                        budget,
+                        jdwp.array_reference_length(array_id),
+                    )
+                    .await?;
                     let length = length.max(0) as usize;
                     let sample_len = length.min(config.max_sample_size);
                     let sample = if sample_len == 0 {
@@ -3265,7 +3288,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             let truncated = raw_sample.len() < size;
             let mut elements = Vec::with_capacity(raw_sample.len());
             for v in &raw_sample {
-                elements.push(format_stream_value(&mut inspector, cancel, started, budget, v).await?);
+                elements
+                    .push(format_stream_value(&mut inspector, cancel, started, budget, v).await?);
             }
 
             (elements, truncated, collection_type)
@@ -6240,11 +6264,13 @@ mod tests {
         // evaluation exceeds the configured `max_total_time`.
         server_config.delayed_replies = vec![DelayedReply {
             command_set: 13, // ArrayReference
-            command: 2,     // GetValues
+            command: 2,      // GetValues
             delay: Duration::from_millis(200),
         }];
 
-        let server = MockJdwpServer::spawn_with_config(server_config).await.unwrap();
+        let server = MockJdwpServer::spawn_with_config(server_config)
+            .await
+            .unwrap();
         let addr = server.addr();
         let mut dbg = Debugger::attach(AttachArgs {
             host: addr.ip(),

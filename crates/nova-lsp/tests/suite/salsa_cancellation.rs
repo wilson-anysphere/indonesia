@@ -102,7 +102,9 @@ impl MessagePump {
     }
 
     fn recv_notification_with_method(&mut self, method: &str, timeout: Duration) -> Option<Value> {
-        self.recv_matching(timeout, |msg| msg.get("method").and_then(|m| m.as_str()) == Some(method))
+        self.recv_matching(timeout, |msg| {
+            msg.get("method").and_then(|m| m.as_str()) == Some(method)
+        })
     }
 }
 

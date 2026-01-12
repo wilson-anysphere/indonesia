@@ -170,9 +170,12 @@ fn bazel_workspace_project_model_classifies_overrides_onto_module_path_for_jpms(
     let mut options = options_with_bazel_enabled();
     options.classpath_overrides.push(dep_dir.clone());
 
-    let model =
-        nova_project::load_bazel_workspace_project_model_with_runner(&workspace_root, &options, runner)
-            .expect("load bazel workspace project model");
+    let model = nova_project::load_bazel_workspace_project_model_with_runner(
+        &workspace_root,
+        &options,
+        runner,
+    )
+    .expect("load bazel workspace project model");
 
     let lib = model
         .module_by_id("//java/com/example:lib")
@@ -448,7 +451,10 @@ fn resolves_aquery_paths_relative_to_execution_root() {
     fs::write(workspace_root.join("WORKSPACE"), "").expect("WORKSPACE");
 
     let execroot = tempfile::tempdir().expect("execroot");
-    let execution_root = execroot.path().canonicalize().expect("canonicalize execroot");
+    let execution_root = execroot
+        .path()
+        .canonicalize()
+        .expect("canonicalize execroot");
 
     let query = read_fixture("bazel/query.txt");
     let aquery_lib = read_fixture("bazel/aquery_lib.textproto");
@@ -786,9 +792,12 @@ fn loads_bazel_targets_as_workspace_modules() {
         );
 
     let options = options_with_bazel_enabled();
-    let model =
-        nova_project::load_bazel_workspace_project_model_with_runner(&workspace_root, &options, runner)
-            .expect("load bazel workspace project model");
+    let model = nova_project::load_bazel_workspace_project_model_with_runner(
+        &workspace_root,
+        &options,
+        runner,
+    )
+    .expect("load bazel workspace project model");
 
     assert_eq!(
         model

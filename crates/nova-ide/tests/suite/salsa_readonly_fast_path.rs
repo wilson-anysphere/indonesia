@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nova_classpath::ClasspathIndex;
-use nova_db::{Database as LegacyDatabase, FileId, NovaInputs, ProjectId, QueryStat, SalsaDatabase};
+use nova_db::{
+    Database as LegacyDatabase, FileId, NovaInputs, ProjectId, QueryStat, SalsaDatabase,
+};
 use nova_jdk::JdkIndex;
 use nova_scheduler::CancellationToken;
 
@@ -164,7 +166,8 @@ class A {}
             "expected host Salsa DB to preserve the provided jdk_index"
         );
         assert!(
-            snap.classpath_index(project).is_some_and(|cp| Arc::ptr_eq(&cp.0, &host_classpath)),
+            snap.classpath_index(project)
+                .is_some_and(|cp| Arc::ptr_eq(&cp.0, &host_classpath)),
             "expected host Salsa DB to preserve the provided classpath_index"
         );
     });

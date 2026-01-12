@@ -40,9 +40,11 @@ where
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let base = self.base;
         let adjusted = match pos {
-            SeekFrom::Start(offset) => SeekFrom::Start(offset.checked_add(base).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow")
-            })?),
+            SeekFrom::Start(offset) => {
+                SeekFrom::Start(offset.checked_add(base).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow")
+                })?)
+            }
             SeekFrom::End(offset) => SeekFrom::End(offset),
             SeekFrom::Current(offset) => SeekFrom::Current(offset),
         };

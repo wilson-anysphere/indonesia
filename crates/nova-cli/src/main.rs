@@ -1098,8 +1098,7 @@ fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Resul
             if let Some(program) = adjacent_program {
                 let mut cmd = build_lsp_command(&program, args, config_path);
                 let err = cmd.exec();
-                return Err(err)
-                    .with_context(|| format!("failed to exec {}", program.display()));
+                return Err(err).with_context(|| format!("failed to exec {}", program.display()));
             }
         }
         return Err(err).with_context(|| "failed to exec nova-lsp");
@@ -1181,8 +1180,7 @@ fn run_dap_launcher(args: &DapLauncherArgs, config_path: Option<&Path>) -> Resul
             if let Some(program) = adjacent_program {
                 let mut cmd = build_dap_command(&program, args, config_path);
                 let err = cmd.exec();
-                return Err(err)
-                    .with_context(|| format!("failed to exec {}", program.display()));
+                return Err(err).with_context(|| format!("failed to exec {}", program.display()));
             }
         }
         return Err(err).with_context(|| "failed to exec nova-dap");
@@ -2572,9 +2570,10 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
 
             if let Some(rest) = header.strip_prefix("Content-Length:") {
                 let value = rest.trim();
-                content_length = Some(value.parse::<usize>().with_context(|| {
-                    format!("invalid Content-Length header value {value:?}")
-                })?);
+                content_length =
+                    Some(value.parse::<usize>().with_context(|| {
+                        format!("invalid Content-Length header value {value:?}")
+                    })?);
             }
         }
 

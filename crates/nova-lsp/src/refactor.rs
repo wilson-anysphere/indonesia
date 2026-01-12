@@ -1000,7 +1000,10 @@ class B {
             existing_symbol,
         };
 
-        assert!(conflicts_resolvable_by_renaming(&[conflict.clone()], "extracted"));
+        assert!(conflicts_resolvable_by_renaming(
+            &[conflict.clone()],
+            "extracted"
+        ));
         assert!(!conflicts_resolvable_by_renaming(&[conflict], "extracted1"));
     }
 

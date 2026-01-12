@@ -196,9 +196,9 @@ pub(crate) fn unresolved_member_name(message: &str, source: &str, span: Span) ->
     extract_backticked_ident(message)
         .or_else(|| extract_quoted_ident(message, '\''))
         .or_else(|| {
-        let snippet = source.get(span.start..span.end)?;
-        extract_identifier_from_snippet(snippet)
-    })
+            let snippet = source.get(span.start..span.end)?;
+            extract_identifier_from_snippet(snippet)
+        })
 }
 
 fn extract_backticked_ident(message: &str) -> Option<String> {

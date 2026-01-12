@@ -427,7 +427,11 @@ class A {
 
     let view = SalsaDbView::from_source_db(&db);
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
-    let ide = IdeExtensions::new(Arc::clone(&db), Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let ide = IdeExtensions::new(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
 
     // Ensure `MissingType` triggers an `unresolved-name` diagnostic (expression position).
     let cancel = CancellationToken::new();

@@ -3737,8 +3737,8 @@ fn smart_step_location(state: &State) -> Location {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::inspect::{Inspector, ObjectKindPreview};
+    use super::*;
 
     #[tokio::test]
     async fn variable_table_with_generic_locals_have_coherent_values() {
@@ -3786,7 +3786,10 @@ mod tests {
 
         // Ensure the mock provides a collection-like runtime type for `list` so higher-level
         // stream-eval/stream-debug code can resolve `stream()` and similar methods.
-        let (_tag, type_id) = client.object_reference_reference_type(list_id).await.unwrap();
+        let (_tag, type_id) = client
+            .object_reference_reference_type(list_id)
+            .await
+            .unwrap();
         let signature = client.reference_type_signature(type_id).await.unwrap();
         assert_eq!(signature, "Ljava/util/ArrayList;");
 
@@ -3798,10 +3801,15 @@ mod tests {
         match preview.kind {
             ObjectKindPreview::List { size, sample } => {
                 assert!(size > 0, "expected list preview size > 0");
-                assert!(!sample.is_empty(), "expected list preview to include a sample");
+                assert!(
+                    !sample.is_empty(),
+                    "expected list preview to include a sample"
+                );
             }
             other => {
-                panic!("expected list local to preview as List, got {other:?} (type={runtime_type})")
+                panic!(
+                    "expected list local to preview as List, got {other:?} (type={runtime_type})"
+                )
             }
         }
 

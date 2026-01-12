@@ -4675,9 +4675,8 @@ fn parse_java_expression_primitive_cast_allows_preincrement() {
 
 #[test]
 fn parse_java_expression_parameterized_cast_with_lambda_is_cast_expression() {
-    let result = parse_java_expression(
-        "(java.util.function.Function<String, Integer>) (s) -> s.length()",
-    );
+    let result =
+        parse_java_expression("(java.util.function.Function<String, Integer>) (s) -> s.length()");
     assert_eq!(result.errors, Vec::new());
 
     let expr = expression_from_snippet(&result);

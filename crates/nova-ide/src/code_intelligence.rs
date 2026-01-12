@@ -1276,7 +1276,8 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
         // header in that case.
         let mut lookahead = idx + 1;
         skip_trivia(&tokens, &mut lookahead);
-        if lookahead < tokens.len() && tokens[lookahead].kind == nova_syntax::SyntaxKind::InterfaceKw
+        if lookahead < tokens.len()
+            && tokens[lookahead].kind == nova_syntax::SyntaxKind::InterfaceKw
         {
             break;
         }
@@ -1420,9 +1421,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
             continue;
         }
 
-        if tok.kind.is_identifier_like()
-            && prev_non_trivia != Some(nova_syntax::SyntaxKind::Dot)
-        {
+        if tok.kind.is_identifier_like() && prev_non_trivia != Some(nova_syntax::SyntaxKind::Dot) {
             used.insert(tok.text(java_source));
         }
 
@@ -3408,9 +3407,7 @@ fn escape_snippet_placeholder_text(text: &str) -> Cow<'_, str> {
     // like `arg$0`), so we must escape it in placeholder default text.
     //
     // See: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#snippet_syntax
-    let needs_escape = text
-        .bytes()
-        .any(|b| matches!(b, b'$' | b'\\' | b'}'));
+    let needs_escape = text.bytes().any(|b| matches!(b, b'$' | b'\\' | b'}'));
     if !needs_escape {
         return Cow::Borrowed(text);
     }
@@ -6355,21 +6352,21 @@ class A {
 "#;
         db.set_file_text(file, source.to_string());
 
-        let offset = source
-            .find("\\u0")
-            .expect("expected `\\\\u0` in fixture")
-            + "\\u0".len();
+        let offset = source.find("\\u0").expect("expected `\\\\u0` in fixture") + "\\u0".len();
         let position = crate::text::offset_to_position(source, offset);
 
         let cancel = nova_scheduler::CancellationToken::new();
         let items = core_completions(&db, file, position, &cancel);
 
-        let unicode = items.iter().find(|i| i.label == r#"\u0000"#).unwrap_or_else(|| {
-            panic!(
-                "expected unicode escape completion inside string literal; got labels {:?}",
-                items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
-            )
-        });
+        let unicode = items
+            .iter()
+            .find(|i| i.label == r#"\u0000"#)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected unicode escape completion inside string literal; got labels {:?}",
+                    items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+                )
+            });
         assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u0${1:000}"#));
         assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
     }
@@ -8746,7 +8743,10 @@ impl CompletionResolveCtx {
         }
 
         // `java.lang.*` is implicitly imported.
-        push_unique(&mut out, canonical_to_binary_name(&format!("java.lang.{raw}")));
+        push_unique(
+            &mut out,
+            canonical_to_binary_name(&format!("java.lang.{raw}")),
+        );
 
         for pkg in &self.star_imports {
             push_unique(&mut out, canonical_to_binary_name(&format!("{pkg}.{raw}")));
@@ -8771,11 +8771,7 @@ impl CompletionResolveCtx {
         // A leading lowercase segment is typically a package name, so treat the whole string as a
         // canonical qualified name and convert nested types to binary form (`java.util.Map.Entry`
         // -> `java.util.Map$Entry`).
-        if first
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase())
-        {
+        if first.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
             return vec![canonical_to_binary_name(raw)];
         }
 
@@ -9037,8 +9033,13 @@ fn member_completions(
         return Vec::new();
     }
 
-    let receiver_ty =
-        maybe_load_external_type_for_member_completion(db, file, &mut types, &file_ctx, receiver_ty);
+    let receiver_ty = maybe_load_external_type_for_member_completion(
+        db,
+        file,
+        &mut types,
+        &file_ctx,
+        receiver_ty,
+    );
 
     let mut items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
     if call_kind == CallKind::Static {
@@ -9406,11 +9407,12 @@ fn static_member_completions(
                         if let Some((params, return_type)) =
                             parse_method_descriptor(types, method.descriptor.as_str())
                         {
-                            stub_method_min_arity = Some(if method.access_flags & ACC_VARARGS != 0 {
-                                params.len().saturating_sub(1)
-                            } else {
-                                params.len()
-                            });
+                            stub_method_min_arity =
+                                Some(if method.access_flags & ACC_VARARGS != 0 {
+                                    params.len().saturating_sub(1)
+                                } else {
+                                    params.len()
+                                });
                             let return_ty = nova_types::format_type(types, &return_type);
                             let params = params
                                 .iter()
@@ -9984,7 +9986,11 @@ fn infer_receiver_type_of_expr_ending_at(
     // Prefer constructor calls like `new Foo()`.
     if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
         if is_constructor_call(analysis, call) {
-            return Some(parse_source_type_in_context(types, file_ctx, call.name.as_str()));
+            return Some(parse_source_type_in_context(
+                types,
+                file_ctx,
+                call.name.as_str(),
+            ));
         }
 
         // Best-effort: avoid recursive semantic resolution to keep completion fast.
@@ -9996,7 +10002,11 @@ fn infer_receiver_type_of_expr_ending_at(
     // Calls outside method bodies won't be in `analysis.calls`. Try scanning tokens.
     if let Some(call) = scan_call_expr_ending_at(text, analysis, end) {
         if is_constructor_call(analysis, &call) {
-            return Some(parse_source_type_in_context(types, file_ctx, call.name.as_str()));
+            return Some(parse_source_type_in_context(
+                types,
+                file_ctx,
+                call.name.as_str(),
+            ));
         }
         if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
             return Some(Type::Named(ty));
@@ -12313,12 +12323,9 @@ fn maybe_add_smart_constructor_completions(
 
     match expected_def.kind {
         ClassKind::Class => {
-            if let Some(mut item) = smart_constructor_completion_item(
-                env_types,
-                expected_id,
-                &expected_detail,
-                prefix,
-            ) {
+            if let Some(mut item) =
+                smart_constructor_completion_item(env_types, expected_id, &expected_detail, prefix)
+            {
                 decorate_smart_constructor_completion_item(
                     &mut item,
                     env_types
@@ -12363,11 +12370,7 @@ fn maybe_add_smart_constructor_completions(
                 {
                     let cand_name = env_types.class(id).map(|c| c.name.as_str()).unwrap_or("");
                     decorate_smart_constructor_completion_item(
-                        &mut item,
-                        cand_name,
-                        &imports,
-                        text,
-                        text_index,
+                        &mut item, cand_name, &imports, text, text_index,
                     );
                     items.push(item);
                 }
@@ -12387,11 +12390,8 @@ fn decorate_smart_constructor_completion_item(
         mark_workspace_completion_item(item);
     }
     if !binary_name.contains('$') && java_type_needs_import(imports, binary_name) {
-        item.additional_text_edits = Some(vec![java_import_text_edit(
-            text,
-            text_index,
-            binary_name,
-        )]);
+        item.additional_text_edits =
+            Some(vec![java_import_text_edit(text, text_index, binary_name)]);
     }
 }
 
@@ -12528,7 +12528,10 @@ fn smart_constructor_completion_item(
     }
 
     let use_diamond = !class_def.type_params.is_empty();
-    let mut accessible_ctors = class_def.constructors.iter().filter(|ctor| ctor.is_accessible);
+    let mut accessible_ctors = class_def
+        .constructors
+        .iter()
+        .filter(|ctor| ctor.is_accessible);
     let param_count = match accessible_ctors
         .by_ref()
         .map(|ctor| ctor.params.len())
@@ -12959,7 +12962,8 @@ fn parse_source_type_for_expected(
     }
 
     // Workspace fallback: if the name is globally unambiguous, prefer that FQN.
-    let Some(resolved_name) = workspace_index.and_then(|idx| idx.unique_fqn_for_simple_name(trimmed))
+    let Some(resolved_name) =
+        workspace_index.and_then(|idx| idx.unique_fqn_for_simple_name(trimmed))
     else {
         return parsed;
     };
@@ -13400,10 +13404,9 @@ fn static_import_completion_item(
     let detail = detail.or_else(|| Some(binary_name_to_source_name(owner)));
 
     let (insert_text, insert_text_format) = match kind {
-        CompletionItemKind::METHOD => (
-            Some(format!("{name}($0)")),
-            Some(InsertTextFormat::SNIPPET),
-        ),
+        CompletionItemKind::METHOD => {
+            (Some(format!("{name}($0)")), Some(InsertTextFormat::SNIPPET))
+        }
         _ => (Some(name.to_string()), None),
     };
 
@@ -13764,7 +13767,11 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         },
     );
 
-    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _, _, _, _)| item));
+    items.extend(
+        scored
+            .into_iter()
+            .map(|(item, _, _, _, _, _, _, _, _, _)| item),
+    );
 }
 
 fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {
@@ -16364,7 +16371,11 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
     analysis.fields.iter().any(|f| f.name == receiver)
 }
 
-fn in_scope_local_var<'a>(analysis: &'a Analysis, name: &str, offset: usize) -> Option<&'a VarDecl> {
+fn in_scope_local_var<'a>(
+    analysis: &'a Analysis,
+    name: &str,
+    offset: usize,
+) -> Option<&'a VarDecl> {
     let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
 
     analysis
@@ -16377,7 +16388,8 @@ fn in_scope_local_var<'a>(analysis: &'a Analysis, name: &str, offset: usize) -> 
                 return false;
             }
 
-            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start) {
+            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start)
+            {
                 if offset >= scope_end {
                     return false;
                 }
@@ -17595,10 +17607,7 @@ fn analyze(text: &str) -> Analysis {
                 continue;
             }
             TokenKind::Symbol('}') => {
-                if scope_stack
-                    .last()
-                    .is_some_and(|scope| scope.close_idx == i)
-                {
+                if scope_stack.last().is_some_and(|scope| scope.close_idx == i) {
                     scope_stack.pop();
                 }
                 brace_depth -= 1;
@@ -19119,13 +19128,9 @@ class A {}
             .expect("expected Map.Entry to resolve via single-type import");
         assert_eq!(imported.as_str(), "java.util.Map$Entry");
 
-        let fully_qualified = resolve_type_receiver(
-            &resolver,
-            &imports,
-            package.as_ref(),
-            "java.util.Map.Entry",
-        )
-        .expect("expected java.util.Map.Entry to resolve as a nested type");
+        let fully_qualified =
+            resolve_type_receiver(&resolver, &imports, package.as_ref(), "java.util.Map.Entry")
+                .expect("expected java.util.Map.Entry to resolve as a nested type");
         assert_eq!(fully_qualified.as_str(), "java.util.Map$Entry");
     }
 }

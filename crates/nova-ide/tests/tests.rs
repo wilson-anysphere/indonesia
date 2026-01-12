@@ -57,7 +57,11 @@ fn suite_mod_is_in_sync_with_suite_directory() {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
                 let stem = path.file_stem()?.to_string_lossy().into_owned();
-                if stem == "mod" { None } else { Some(stem) }
+                if stem == "mod" {
+                    None
+                } else {
+                    Some(stem)
+                }
             } else {
                 None
             }
@@ -65,10 +69,8 @@ fn suite_mod_is_in_sync_with_suite_directory() {
         .collect();
 
     let mod_decls: BTreeSet<String> = {
-        let re = regex::Regex::new(
-            r"(?m)^\s*(?:#\[[^\]]*\]\s*)*mod\s+([A-Za-z0-9_]+)\s*;",
-        )
-        .expect("suite mod.rs module declaration regex");
+        let re = regex::Regex::new(r"(?m)^\s*(?:#\[[^\]]*\]\s*)*mod\s+([A-Za-z0-9_]+)\s*;")
+            .expect("suite mod.rs module declaration regex");
         re.captures_iter(&suite_mod_source)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .collect()

@@ -634,7 +634,12 @@ mod tests {
 
         assert_eq!(
             selected_module_root(&project, &params),
-            Some(dir.path().join("modules/application").canonicalize().unwrap())
+            Some(
+                dir.path()
+                    .join("modules/application")
+                    .canonicalize()
+                    .unwrap()
+            )
         );
     }
 

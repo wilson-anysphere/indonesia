@@ -180,7 +180,8 @@ fn reload_project_rescans_on_build_markers_under_external_gradle_module_roots() 
     let external_root = tmp_root.join("build/external");
 
     std::fs::create_dir_all(&workspace_root).expect("mkdir workspace");
-    std::fs::create_dir_all(external_root.join("src/main/java/com/example")).expect("mkdir external");
+    std::fs::create_dir_all(external_root.join("src/main/java/com/example"))
+        .expect("mkdir external");
     std::fs::create_dir_all(workspace_root.join("consumer/src/main/java/com/example"))
         .expect("mkdir consumer");
 
@@ -227,8 +228,7 @@ fn reload_project_rescans_on_build_markers_under_external_gradle_module_roots() 
         "include(':consumer', ':external', ':lib')\n\
          project(':external').projectDir = file('../build/external')\n",
     );
-    std::fs::create_dir_all(config.workspace_root.join("lib"))
-        .expect("mkdir lib module root");
+    std::fs::create_dir_all(config.workspace_root.join("lib")).expect("mkdir lib module root");
 
     // Report only an external module build marker as changed.
     let next =

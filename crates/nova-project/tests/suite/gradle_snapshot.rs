@@ -76,9 +76,7 @@ fn gradle_snapshot_populates_root_project_classpath_for_single_project_workspace
 
     let model =
         load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
-    let root = model
-        .module_by_id("gradle::")
-        .expect("root module config");
+    let root = model.module_by_id("gradle::").expect("root module config");
     assert!(
         root.classpath
             .iter()

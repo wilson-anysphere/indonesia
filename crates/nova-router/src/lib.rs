@@ -771,7 +771,8 @@ impl InProcessRouter {
             .scheduler
             .spawn_background_with_token(token.clone(), move |token| {
                 Cancelled::check(&token)?;
-                let symbols = index_for_files(shard_id, shard_files, Some((path_str, text)), &token)?;
+                let symbols =
+                    index_for_files(shard_id, shard_files, Some((path_str, text)), &token)?;
                 Cancelled::check(&token)?;
                 Ok(symbols)
             });
@@ -992,9 +993,8 @@ impl DistributedRouter {
         }
 
         let mut join_set = JoinSet::new();
-        let snapshot_semaphore = Arc::new(Semaphore::new(
-            MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1),
-        ));
+        let snapshot_semaphore =
+            Arc::new(Semaphore::new(MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1)));
         for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
             let state = self.state.clone();
             let root = self.state.layout.source_roots[shard_id as usize]
@@ -3212,12 +3212,18 @@ mod tests {
         }
 
         let lines = Arc::new(Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::registry().with(CaptureLayer { lines: lines.clone() });
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer {
+            lines: lines.clone(),
+        });
         let _guard = tracing::subscriber::set_default(subscriber);
         tracing::callsite::rebuild_interest_cache();
 
         tracing::info!(target = "nova.worker.output", line = %"probe", "worker output");
-        assert_eq!(lines.lock().unwrap().len(), 1, "capture layer did not receive probe event");
+        assert_eq!(
+            lines.lock().unwrap().len(),
+            1,
+            "capture layer did not receive probe event"
+        );
         lines.lock().unwrap().clear();
 
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);

@@ -747,12 +747,12 @@ mod tests {
             "expected `super.foo()` to be indexed as a call site, got calls={:?}",
             parsed_sub.calls
         );
-        let offset = parsed_sub
-            .text
-            .find("super.foo")
-            .expect("super.foo")
-            + "super.".len();
-        let pos = crate::text::offset_to_position_with_index(&parsed_sub.line_index, &parsed_sub.text, offset);
+        let offset = parsed_sub.text.find("super.foo").expect("super.foo") + "super.".len();
+        let pos = crate::text::offset_to_position_with_index(
+            &parsed_sub.line_index,
+            &parsed_sub.text,
+            offset,
+        );
 
         let got = implementation(&db, sub_file, pos);
         assert_eq!(got.len(), 1);

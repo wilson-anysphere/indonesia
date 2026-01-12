@@ -50,11 +50,7 @@ impl nova_framework::Database for NoAllFilesDb {
         nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
     }
 
-    fn has_class_on_classpath_prefix(
-        &self,
-        project: nova_core::ProjectId,
-        prefix: &str,
-    ) -> bool {
+    fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
         nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
     }
 }

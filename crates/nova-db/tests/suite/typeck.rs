@@ -289,9 +289,7 @@ class C {
         "expected no invalid-cast diagnostics; got {diags:?}"
     );
 
-    let offset = src
-        .find("f.apply")
-        .expect("snippet should contain f.apply");
+    let offset = src.find("f.apply").expect("snippet should contain f.apply");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -318,7 +316,9 @@ class C {
         "expected cast to provide a target type for constructor reference/var inference; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "method-ref-without-target"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
         "expected cast to provide a target type for constructor references; got {diags:?}"
     );
     assert!(
@@ -347,7 +347,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "var-poly-expression"),
         "expected cast to provide a target type for lambda/var inference; got {diags:?}"
     );
     assert!(
@@ -363,9 +365,7 @@ class C {
         "expected no invalid-cast diagnostics; got {diags:?}"
     );
 
-    let offset = src
-        .find("f.apply")
-        .expect("snippet should contain f.apply");
+    let offset = src.find("f.apply").expect("snippet should contain f.apply");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -542,7 +542,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
         "expected an unchecked warning diagnostic, got {diags:?}"
     );
 }
@@ -560,7 +562,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
         "expected an unchecked warning diagnostic, got {diags:?}"
     );
 }
@@ -578,7 +582,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
         "expected an unchecked warning diagnostic, got {diags:?}"
     );
 }
@@ -596,7 +602,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
         "expected an unchecked warning diagnostic, got {diags:?}"
     );
 }
@@ -1105,7 +1113,9 @@ class C {
         "expected invalid-for-update-expression diagnostic; got {diags:?}"
     );
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-for-update-expr"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-for-update-expr"),
         "expected invalid-for-update-expr diagnostic; got {diags:?}"
     );
 }
@@ -2018,7 +2028,9 @@ class C { int m(int a, boolean b){ return a[b]; } }
         "expected invalid-array-access diagnostic; got {diags:?}"
     );
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "invalid-array-index"),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-array-index"),
         "did not expect invalid-array-index when receiver is not an array; got {diags:?}"
     );
 }
@@ -2489,7 +2501,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "method-ref-mismatch"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "method-ref-mismatch"),
         "expected method-ref-mismatch diagnostic; got {diags:?}"
     );
     assert!(
@@ -2588,7 +2602,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "method-ref-mismatch"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "method-ref-mismatch"),
         "expected method-ref-mismatch diagnostic; got {diags:?}"
     );
     assert!(
@@ -2754,7 +2770,9 @@ class C {
         "expected ctor invocation to target-type method reference; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected constructor invocation to resolve; got {diags:?}"
     );
 
@@ -2912,7 +2930,9 @@ class C {
     let span = bad
         .span
         .expect("constructor-invocation-not-first diagnostic should have a span");
-    let this_kw = src.find("this(1)").expect("snippet should contain this call");
+    let this_kw = src
+        .find("this(1)")
+        .expect("snippet should contain this call");
     assert!(
         span.start <= this_kw && this_kw < span.end,
         "expected diagnostic span to cover this invocation, got {span:?}"
@@ -2945,7 +2965,9 @@ class C {
     let span = bad
         .span
         .expect("constructor-invocation-not-first diagnostic should have a span");
-    let super_kw = src.find("super()").expect("snippet should contain super() call");
+    let super_kw = src
+        .find("super()")
+        .expect("snippet should contain super() call");
     assert!(
         span.start <= super_kw && super_kw < span.end,
         "expected diagnostic span to cover super() invocation, got {span:?}"
@@ -2987,7 +3009,9 @@ class C extends Base<String> {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected super(\"x\") to resolve against Base<String>(String); got {diags:?}"
     );
 }
@@ -3948,7 +3972,9 @@ class C {
     );
     assert_eq!(
         resolved.signature_params,
-        Some(vec![Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))])
+        Some(vec![Type::Array(Box::new(Type::Primitive(
+            PrimitiveType::Int
+        )))])
     );
 
     let stats = db.query_stats();
@@ -5102,8 +5128,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "ambiguous-call"
-            && d.code.as_ref() != "unresolved-method"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "ambiguous-call" && d.code.as_ref() != "unresolved-method"),
         "expected overload resolution to use foo() argument type; got {diags:?}"
     );
 }
@@ -5228,9 +5255,11 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"
-            && d.code.as_ref() != "unresolved-method"
-            && d.code.as_ref() != "unchecked"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"
+                && d.code.as_ref() != "unresolved-method"
+                && d.code.as_ref() != "unchecked"),
         "expected ctor-arg diamond to target-type without warnings; got {diags:?}"
     );
 
@@ -6452,14 +6481,14 @@ class B {
 
     let diags = db.type_diagnostics(b_file);
 
-    let offset = src_b
-        .find("foo()")
-        .expect("snippet should contain foo()")
-        + "foo".len();
+    let offset = src_b.find("foo()").expect("snippet should contain foo()") + "foo".len();
     let ty = db
         .type_at_offset_display(b_file, offset as u32)
         .expect("expected a type at offset for foo()");
-    assert_eq!(ty, "String", "expected foo() to return String, got {ty:?} diags={diags:?}");
+    assert_eq!(
+        ty, "String",
+        "expected foo() to return String, got {ty:?} diags={diags:?}"
+    );
     assert!(
         diags
             .iter()

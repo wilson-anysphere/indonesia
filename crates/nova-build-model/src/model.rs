@@ -43,8 +43,8 @@ mod build_task_state_tests {
             let encoded = serde_json::to_value(state).expect("serialize BuildTaskState");
             assert_eq!(encoded, serde_json::Value::String(expected.to_string()));
 
-            let decoded =
-                serde_json::from_value::<BuildTaskState>(encoded).expect("deserialize BuildTaskState");
+            let decoded = serde_json::from_value::<BuildTaskState>(encoded)
+                .expect("deserialize BuildTaskState");
             assert_eq!(decoded, state);
         }
     }

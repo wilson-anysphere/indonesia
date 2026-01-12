@@ -26,7 +26,9 @@ fn unresolved_name_type_like_offers_import_and_qualify_quick_fixes() {
     let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diagnostic]);
 
     assert!(
-        actions.iter().any(|action| action.title == "Import java.util.List"),
+        actions
+            .iter()
+            .any(|action| action.title == "Import java.util.List"),
         "expected `Import java.util.List`; got {actions:#?}"
     );
     assert!(
@@ -36,4 +38,3 @@ fn unresolved_name_type_like_offers_import_and_qualify_quick_fixes() {
         "expected `Use fully qualified name 'java.util.List'`; got {actions:#?}"
     );
 }
-

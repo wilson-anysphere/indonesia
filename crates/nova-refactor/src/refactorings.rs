@@ -1195,7 +1195,8 @@ pub fn extract_variable(
                 } else if let Some(stmt_expr) = expr_stmt.expression() {
                     let stmt_expr_range = trimmed_syntax_range(stmt_expr.syntax());
                     let stmt_expr_range_ws = trim_range(text, syntax_range(stmt_expr.syntax()));
-                    (stmt_expr_range.start == selection.start && stmt_expr_range.end == selection.end)
+                    (stmt_expr_range.start == selection.start
+                        && stmt_expr_range.end == selection.end)
                         || (stmt_expr_range_ws.start == selection.start
                             && stmt_expr_range_ws.end == selection.end)
                 } else {
@@ -3676,7 +3677,10 @@ fn check_extract_variable_name_conflicts(
         };
 
         let for_end = syntax_range(for_stmt.syntax()).end;
-        for decl in header.descendants().filter_map(ast::VariableDeclarator::cast) {
+        for decl in header
+            .descendants()
+            .filter_map(ast::VariableDeclarator::cast)
+        {
             let Some(tok) = decl.name_token() else {
                 continue;
             };
@@ -4111,9 +4115,8 @@ impl EnclosingBodyOwner {
     fn body(&self) -> &ast::Block {
         match self {
             EnclosingBodyOwner::Method(_, body) | EnclosingBodyOwner::Constructor(_, body) => body,
-            EnclosingBodyOwner::CompactConstructor(body) | EnclosingBodyOwner::Initializer(body) => {
-                body
-            }
+            EnclosingBodyOwner::CompactConstructor(body)
+            | EnclosingBodyOwner::Initializer(body) => body,
         }
     }
 

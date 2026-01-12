@@ -424,13 +424,13 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     || walk_expr(source, method_name, &expr.then_expr)
                     || walk_expr(source, method_name, &expr.else_expr)
             }
-             jast::Expr::Lambda(expr) => match &expr.body {
-                 jast::LambdaBody::Expr(expr) => walk_expr(source, method_name, expr.as_ref()),
-                 jast::LambdaBody::Block(block) => block
-                     .statements
-                     .iter()
-                     .any(|stmt| walk_stmt(source, method_name, stmt)),
-             },
+            jast::Expr::Lambda(expr) => match &expr.body {
+                jast::LambdaBody::Expr(expr) => walk_expr(source, method_name, expr.as_ref()),
+                jast::LambdaBody::Block(block) => block
+                    .statements
+                    .iter()
+                    .any(|stmt| walk_stmt(source, method_name, stmt)),
+            },
             jast::Expr::Switch(expr) => {
                 walk_expr(source, method_name, expr.selector.as_ref())
                     || expr
@@ -439,13 +439,13 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                         .iter()
                         .any(|stmt| walk_stmt(source, method_name, stmt))
             }
-             jast::Expr::Invalid { children, .. } => children
-                 .iter()
-                 .any(|child| walk_expr(source, method_name, child)),
-             jast::Expr::Name(_)
-             | jast::Expr::IntLiteral(_)
-             | jast::Expr::LongLiteral(_)
-             | jast::Expr::FloatLiteral(_)
+            jast::Expr::Invalid { children, .. } => children
+                .iter()
+                .any(|child| walk_expr(source, method_name, child)),
+            jast::Expr::Name(_)
+            | jast::Expr::IntLiteral(_)
+            | jast::Expr::LongLiteral(_)
+            | jast::Expr::FloatLiteral(_)
             | jast::Expr::DoubleLiteral(_)
             | jast::Expr::CharLiteral(_)
             | jast::Expr::StringLiteral(_)
