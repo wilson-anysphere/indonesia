@@ -626,3 +626,80 @@ fn gradle_buildsrc_does_not_inherit_outer_root_dependencies() {
         "did not expect buildSrc module to inherit outer root dependencies"
     );
 }
+
+#[test]
+fn gradle_buildsrc_resolves_versions_from_buildsrc_gradle_properties() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path();
+
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "rootProject.name = \"demo\"\n",
+    )
+    .expect("write settings.gradle");
+
+    // Outer build defines a property that should *not* affect buildSrc.
+    std::fs::write(
+        workspace_root.join("gradle.properties"),
+        "guavaVersion=33.0.0-jre\n",
+    )
+    .expect("write root gradle.properties");
+    std::fs::write(workspace_root.join("build.gradle"), "// root build\n")
+        .expect("write build.gradle");
+
+    // buildSrc defines its own property with a different value.
+    std::fs::create_dir_all(workspace_root.join("buildSrc")).expect("mkdir buildSrc");
+    std::fs::write(
+        workspace_root.join("buildSrc/gradle.properties"),
+        "guavaVersion=32.0.0-jre\n",
+    )
+    .expect("write buildSrc gradle.properties");
+    std::fs::write(
+        workspace_root.join("buildSrc/build.gradle"),
+        r#"
+            plugins { id 'java' }
+            dependencies {
+              implementation "com.google.guava:guava:$guavaVersion"
+            }
+        "#,
+    )
+    .expect("write buildSrc/build.gradle");
+    std::fs::create_dir_all(workspace_root.join("buildSrc/src/main/java/com/example"))
+        .expect("mkdir buildSrc sources");
+    std::fs::write(
+        workspace_root.join("buildSrc/src/main/java/com/example/BuildLogic.java"),
+        "package com.example; class BuildLogic {}",
+    )
+    .expect("write buildSrc java");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(workspace_root, &options).expect("load workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let buildsrc = model
+        .module_by_id("gradle::__buildSrc")
+        .expect("buildSrc module");
+    assert!(
+        buildsrc.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("32.0.0-jre")
+        }),
+        "expected buildSrc module dependencies to resolve $guavaVersion from buildSrc/gradle.properties; deps={:?}",
+        buildsrc.dependencies
+    );
+    assert!(
+        !buildsrc.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "did not expect buildSrc module dependencies to use the outer workspace gradle.properties value"
+    );
+}
