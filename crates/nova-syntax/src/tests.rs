@@ -4601,6 +4601,28 @@ fn parse_java_expression_cast() {
 }
 
 #[test]
+fn parse_java_expression_parenthesized_ident_plus_is_not_cast() {
+    let result = parse_java_expression("(x) + y");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::BinaryExpression);
+
+    let children: Vec<_> = expr.children().collect();
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0].kind(), SyntaxKind::ParenthesizedExpression);
+}
+
+#[test]
+fn parse_java_expression_primitive_cast_allows_unary_plus() {
+    let result = parse_java_expression("(int) +x");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
 fn parse_java_expression_method_call_with_dotted_name() {
     let result = parse_java_expression("foo.bar(1,2)");
     assert_eq!(result.errors, Vec::new());

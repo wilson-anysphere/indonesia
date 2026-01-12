@@ -4105,6 +4105,36 @@ impl<'a> Parser<'a> {
         if !self.at(SyntaxKind::LParen) {
             return false;
         }
+
+        // Disambiguate reference casts vs parenthesized expressions in cases like:
+        // `(x) + y`
+        //
+        // In Java's grammar, reference casts require a `UnaryExpressionNotPlusMinus` as the cast
+        // operand, so `+` / `-` cannot appear immediately after the closing `)` unless the cast
+        // type is a primitive type. Without this check, we would misclassify many common
+        // parenthesized expressions as casts (and later semantic passes would treat `x` as a type
+        // name).
+        let mut type_probe = skip_trivia(&self.tokens, 1);
+        loop {
+            if self.tokens.get(type_probe).map(|t| t.kind) != Some(SyntaxKind::At) {
+                break;
+            }
+            // `@interface` starts an annotation type declaration; not a type-use annotation.
+            let next = skip_trivia(&self.tokens, type_probe + 1);
+            if self.tokens.get(next).map(|t| t.kind) == Some(SyntaxKind::InterfaceKw) {
+                break;
+            }
+            let after = skip_annotation(&self.tokens, type_probe);
+            if after <= type_probe {
+                break;
+            }
+            type_probe = skip_trivia(&self.tokens, after);
+        }
+        let is_primitive_cast = self
+            .tokens
+            .get(type_probe)
+            .is_some_and(|t| is_primitive_type(t.kind));
+
         // Track nested parens so we don't stop at a `)` that appears inside a type-use annotation
         // argument list (e.g. `(@A(x=1) String) expr`).
         let mut paren_depth = 0usize;
@@ -4128,6 +4158,11 @@ impl<'a> Parser<'a> {
                             if next.kind.is_trivia() {
                                 j += 1;
                                 continue;
+                            }
+                            if !is_primitive_cast
+                                && matches!(next.kind, SyntaxKind::Plus | SyntaxKind::Minus)
+                            {
+                                return false;
                             }
                             return can_start_expression(next.kind);
                         }
