@@ -37,6 +37,9 @@ mod gradle_reload_build_files;
 #[path = "cases/gradle_snapshot.rs"]
 mod gradle_snapshot;
 
+#[path = "cases/gradle_version_catalog.rs"]
+mod gradle_version_catalog;
+
 #[path = "cases/jpms.rs"]
 mod jpms;
 

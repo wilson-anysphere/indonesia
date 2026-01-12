@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use nova_project::{load_project, BuildSystem};
+use nova_project::{load_project_with_options, BuildSystem, LoadOptions};
+use tempfile::tempdir;
 
 fn testdata_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12,7 +13,12 @@ fn testdata_path(rel: &str) -> PathBuf {
 #[test]
 fn extracts_gradle_version_catalog_libraries() {
     let root = testdata_path("gradle-version-catalog");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
@@ -31,14 +37,19 @@ fn extracts_gradle_version_catalog_libraries() {
     assert!(deps.contains(&("com.google.guava", "guava", Some("33.0.0-jre"))));
     assert!(deps.contains(&("org.slf4j", "slf4j-api", Some("2.0.12"))));
 
-    let config2 = load_project(&root).expect("load gradle project again");
+    let config2 = load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 
 #[test]
 fn extracts_gradle_version_catalog_bundles() {
     let root = testdata_path("gradle-version-catalog");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     let deps: BTreeSet<_> = config
         .dependencies
