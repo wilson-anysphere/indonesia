@@ -109,7 +109,7 @@ name).
 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test refactorings
 ```
 
 #### Formatter snapshots (`INSTA_UPDATE=always`)
