@@ -9,6 +9,7 @@
 //! semantic class/type model of a few key JDK types.
 
 mod discovery;
+mod ct_sym;
 mod index;
 mod jmod;
 mod persist;
