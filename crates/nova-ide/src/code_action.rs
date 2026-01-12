@@ -2,7 +2,6 @@ use lsp_types::{
     CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
     Uri, WorkspaceEdit,
 };
-use crate::quick_fixes::is_java_identifier;
 use nova_core::{LineIndex, Name, PackageName, Position as CorePosition, TypeIndex};
 use nova_jdk::JdkIndex;
 use nova_refactor::extract_method::{
@@ -1222,24 +1221,6 @@ fn looks_like_value_identifier(name: &str) -> bool {
         .is_some_and(|b| matches!(b, b'a'..=b'z'))
 }
 
-fn is_java_identifier(s: &str) -> bool {
-    fn is_ident_start(c: char) -> bool {
-        c == '_' || c == '$' || c.is_ascii_alphabetic()
-    }
-
-    fn is_ident_continue(c: char) -> bool {
-        is_ident_start(c) || c.is_ascii_digit()
-    }
-
-    let mut chars = s.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_ident_start(first) {
-        return false;
-    }
-    chars.all(is_ident_continue)
-}
 fn looks_like_type_identifier(name: &str) -> bool {
     if !is_java_identifier(name) {
         return false;

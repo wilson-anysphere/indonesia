@@ -6295,7 +6295,6 @@ fn collect_switch_contexts(
                         resolver,
                         item_trees,
                     );
-
                     out.entry(range.start).or_insert(SwitchContext {
                         scope,
                         selector_enum,
