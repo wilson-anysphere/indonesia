@@ -65,6 +65,12 @@ rejected.
 
 When neither are set, it uses `NovaConfig::default()` (in-memory defaults).
 
+## Protocol notes
+
+- Incoming DAP messages are limited to 16 MiB (`Content-Length`) to prevent
+  unbounded allocations from malformed/hostile clients.
+- Individual DAP header lines are limited to 8 KiB.
+
 ## DAP lifecycle / request ordering
 
 `nova-dap` follows the standard DAP initialization flow:

@@ -131,6 +131,7 @@ pub fn write_raw_message<W: Write>(writer: &mut W, json_bytes: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dap::MAX_DAP_MESSAGE_BYTES;
     use serde_json::json;
     use std::io::Cursor;
 

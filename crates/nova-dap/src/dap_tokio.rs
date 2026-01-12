@@ -164,7 +164,7 @@ impl<R: AsyncRead + Unpin> DapReader<R> {
 
         if len > MAX_DAP_MESSAGE_BYTES {
             return Err(DapError::Protocol(format!(
-                "message too large ({len} bytes > {MAX_DAP_MESSAGE_BYTES})",
+                "DAP message Content-Length {len} exceeds maximum allowed size {MAX_DAP_MESSAGE_BYTES}",
             )));
         }
 
@@ -216,18 +216,22 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn rejects_messages_larger_than_max() {
-        let framed = format!("Content-Length: {}\r\n\r\n{{}}", MAX_DAP_MESSAGE_BYTES + 1);
-        let (mut writer, reader) = tokio::io::duplex(framed.len());
-        writer.write_all(framed.as_bytes()).await.unwrap();
-        writer.shutdown().await.unwrap();
-        drop(writer);
+    async fn rejects_messages_exceeding_max_size() {
+        // Intentionally omit the payload; the size check must fire before any read/allocation.
+        let framed = format!("Content-Length: {}\r\n\r\n", MAX_DAP_MESSAGE_BYTES + 1);
 
-        let mut reader = DapReader::new(reader);
+        let (client, mut server) = tokio::io::duplex(1024);
+        server.write_all(framed.as_bytes()).await.unwrap();
+        drop(server);
+
+        let mut reader = DapReader::new(client);
         let err = reader.read_value().await.unwrap_err();
         match err {
-            DapError::Protocol(msg) => assert!(msg.contains("too large")),
-            other => panic!("unexpected error: {other:?}"),
+            DapError::Protocol(msg) => {
+                assert!(msg.contains("Content-Length"));
+                assert!(msg.contains("exceeds maximum allowed size"));
+            }
+            other => panic!("expected protocol error, got {other:?}"),
         }
     }
 }
