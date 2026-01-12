@@ -452,6 +452,11 @@ unified diff) and applying it as an editor workspace edit. Because these operati
 exact source text, they are subject to the `allow_cloud_code_edits` + anonymization policy described
 below.
 
+Patch file paths are treated as **workspace-relative** (e.g. `src/Main.java`) and are resolved
+against a `rootUri` derived from the workspace root (or, as a fallback, the document’s parent
+directory). Patch safety rejects absolute paths, path traversal (`..`), and Windows-style backslashes
+to ensure edits can’t escape the intended workspace root.
+
 In particular, anonymizing identifiers is great for privacy, but it makes LLM-generated patches
 impossible to apply reliably to the original source.
 
