@@ -751,6 +751,18 @@ mod tests {
 
     #[cfg(feature = "unicode")]
     #[test]
+    fn ascii_query_can_match_unicode_identifier() {
+        // Ensure ASCII-only queries can still hit identifiers containing Unicode,
+        // as long as the relevant trigram is ASCII.
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "café");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("caf"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
     fn unicode_trigrams_are_over_units_not_utf8_bytes() {
         // "éa" is 3 UTF-8 bytes but only 2 Unicode scalar values.
         let mut out = Vec::new();
