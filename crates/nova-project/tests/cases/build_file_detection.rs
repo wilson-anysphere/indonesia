@@ -29,6 +29,9 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradlew.bat",
         "gradle/wrapper/gradle-wrapper.properties",
         "gradle/wrapper/gradle-wrapper.jar",
+        // Dependency locking can change resolved versions/classpaths without touching build scripts.
+        "gradle.lockfile",
+        "gradle/dependency-locks/compileClasspath.lockfile",
         // Version catalogs can live outside the conventional `gradle/` directory.
         "libs.versions.toml",
         "deps.versions.toml",
@@ -61,8 +64,12 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "wrapper/gradle-wrapper.jar",
         // Version catalogs under ignored dirs should not be treated as build files.
         ".gradle/deps.versions.toml",
+        // Lockfiles under ignored dirs should not be treated as build files.
+        ".gradle/gradle.lockfile",
         // Sanity check: non-build file.
         "gradle/conventions.txt",
+        // Dependency locks must use the `.lockfile` extension.
+        "gradle/dependency-locks/compileClasspath.lock",
     ];
     for rel in negatives {
         let path = join(root, rel);
@@ -186,6 +193,40 @@ fn reload_project_reloads_on_gradle_wrapper_jar_change() {
     write(&wrapper_jar, "jar bytes are not relevant for this test\n");
 
     let reloaded = reload_project(&config, &mut options, &[wrapper_jar]).expect("reload project");
+    assert_eq!(reloaded.modules.len(), 2);
+}
+
+#[test]
+fn reload_project_reloads_on_gradle_lockfile_change() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+
+    // Minimal Gradle project with one module.
+    write(&root.join("settings.gradle"), r#"include("app")"#);
+    write(&root.join("build.gradle"), "// root");
+    write(&root.join("app/build.gradle"), "// app");
+    write(&root.join("gradle.lockfile"), "locked=1\n");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.modules.len(), 1);
+
+    // Update settings to add another module; this should only be observed if reload_project
+    // decides to reload on our chosen changed-file path.
+    write(&root.join("settings.gradle"), r#"include("app", "lib")"#);
+    write(&root.join("lib/build.gradle"), "// lib");
+
+    // The changed file is not settings.gradle; it is a dependency lockfile that should trigger a
+    // full reload.
+    let lockfile = root.join("gradle.lockfile");
+    write(&lockfile, "locked=2\n");
+
+    let reloaded = reload_project(&config, &mut options, &[lockfile]).expect("reload project");
     assert_eq!(reloaded.modules.len(), 2);
 }
 
