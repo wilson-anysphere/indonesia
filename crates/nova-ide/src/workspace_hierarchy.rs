@@ -363,7 +363,7 @@ fn workspace_identity(db: &dyn Database) -> (WorkspaceId, u64) {
         // `(len, ptr)` is a reasonable proxy for content identity.
         let text = db.file_content(file.file_id);
         text.len().hash(&mut fingerprint_hasher);
-        (text.as_ptr() as usize).hash(&mut fingerprint_hasher);
+        text.as_ptr().hash(&mut fingerprint_hasher);
     }
 
     (

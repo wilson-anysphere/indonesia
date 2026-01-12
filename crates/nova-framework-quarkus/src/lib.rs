@@ -566,7 +566,7 @@ fn fingerprint_config_files(db: &dyn Database, files: &[ConfigFile]) -> u64 {
 fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     let bytes = text.as_bytes();
     bytes.len().hash(hasher);
-    (text.as_ptr() as usize).hash(hasher);
+    text.as_ptr().hash(hasher);
 
     const EDGE: usize = 64;
     let prefix_len = bytes.len().min(EDGE);

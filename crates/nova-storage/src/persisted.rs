@@ -333,7 +333,7 @@ where
         let payload = backing.payload();
 
         let required = std::mem::align_of::<rkyv::Archived<T>>();
-        let got = payload.as_ptr() as usize;
+        let got = payload.as_ptr().addr();
         if !got.is_multiple_of(required) {
             return Err(StorageError::Misaligned { required, got });
         }

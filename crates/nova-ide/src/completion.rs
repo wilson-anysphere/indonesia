@@ -96,13 +96,13 @@ mod tests {
         let expected = items
             .iter()
             .take(2)
-            .map(|item| item.label.as_ptr() as usize)
+            .map(|item| item.label.as_ptr())
             .collect::<Vec<_>>();
 
         let ranked = filter_and_rank_completions(items, "", 2);
         let got = ranked
             .iter()
-            .map(|item| item.label.as_ptr() as usize)
+            .map(|item| item.label.as_ptr())
             .collect::<Vec<_>>();
 
         assert_eq!(got, expected);

@@ -148,7 +148,7 @@ fn workspace_id_and_fingerprint(db: &dyn Database) -> (u64, u64) {
         path.hash(&mut fingerprint_hasher);
         let text = db.file_content(file_id);
         text.len().hash(&mut fingerprint_hasher);
-        (text.as_ptr() as usize).hash(&mut fingerprint_hasher);
+        text.as_ptr().hash(&mut fingerprint_hasher);
     }
 
     (workspace_hasher.finish(), fingerprint_hasher.finish())

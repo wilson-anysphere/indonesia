@@ -60,7 +60,7 @@ fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
     use std::collections::hash_map::DefaultHasher;
 
-    let mut files: Vec<(PathBuf, FileId, usize, usize)> = Vec::new();
+    let mut files: Vec<(PathBuf, FileId, usize, *const u8)> = Vec::new();
     for file in db.all_files(project) {
         let Some(path) = db.file_path(file) else {
             continue;
@@ -71,7 +71,7 @@ fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
         let Some(text) = db.file_text(file) else {
             continue;
         };
-        files.push((path.to_path_buf(), file, text.len(), text.as_ptr() as usize));
+        files.push((path.to_path_buf(), file, text.len(), text.as_ptr()));
     }
     files.sort_by(|(a, ..), (b, ..)| a.cmp(b));
 

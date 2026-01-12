@@ -217,8 +217,8 @@ fn project_analysis(db: &dyn Database, project: ProjectId) -> Option<Arc<CachedD
         path.hash(&mut hasher);
         text.len().hash(&mut hasher);
 
-        let ptr = text.as_ptr() as usize;
-        let ptr_again = db.file_text(*file).map(|t| t.as_ptr() as usize);
+        let ptr = text.as_ptr();
+        let ptr_again = db.file_text(*file).map(|t| t.as_ptr());
         if ptr_again.is_some_and(|p| p == ptr) {
             ptr.hash(&mut hasher);
         } else {
