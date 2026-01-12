@@ -377,6 +377,23 @@ fn completion_in_incomplete_abstract_keyword_suggests_abstract() {
 }
 
 #[test]
+fn completion_includes_member_from_parameter_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo { int x; }
+class A { void m(Foo foo){ foo.<|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"x"),
+        "expected completion list to contain Foo.x when completing on param receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_call_does_not_panic() {
     let (db, file, pos) = fixture(
         r#"
@@ -392,6 +409,31 @@ class A {
     assert!(
         !items.is_empty(),
         "expected completion list to be non-empty inside incomplete call; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_infers_expected_return_type_for_return_statement() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  String m(){
+    int i = 0;
+    return <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"\"\""),
+        "expected completion list to include string literal snippet; got {items:#?}"
+    );
+    assert!(
+        !labels.contains(&"i"),
+        "expected incompatible int local to be filtered out in String return; got {labels:?}"
     );
 }
 

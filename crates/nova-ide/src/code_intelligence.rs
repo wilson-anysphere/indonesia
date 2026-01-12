@@ -13508,8 +13508,8 @@ fn infer_receiver(
         );
     }
 
-    // Best-effort fallback: if we can't determine the enclosing method, scan all method
-    // parameters. Still use the file context so unqualified types in `package ...;` files resolve.
+    // Best-effort fallback: if we can't find an enclosing method (e.g. cursor is outside a method
+    // body), fall back to any parameter in the file.
     if let Some(param) = analysis
         .methods
         .iter()
@@ -13558,6 +13558,14 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
                 .iter()
                 .find(|v| v.name == ident)
                 .map(|v| parse_source_type(types, &v.ty))
+                .or_else(|| {
+                    analysis
+                        .methods
+                        .iter()
+                        .find(|m| span_contains(m.body_span, offset))
+                        .and_then(|m| m.params.iter().find(|p| p.name == ident))
+                        .map(|p| parse_source_type(types, &p.ty))
+                })
                 .or_else(|| {
                     analysis
                         .methods
@@ -14584,6 +14592,13 @@ fn analyze(text: &str) -> Analysis {
                     && name.kind == TokenKind::Ident
                     && l_paren.kind == TokenKind::Symbol('(')
                 {
+                    // Guard against common false positives inside field initializers / expressions,
+                    // e.g. `new Foo() { ... }` (anonymous class bodies).
+                    if ret.text == "new" {
+                        i += 1;
+                        continue;
+                    }
+
                     let (r_paren_idx, close_paren) = match find_matching_paren(&tokens, j + 2) {
                         Some(v) => v,
                         None => {
