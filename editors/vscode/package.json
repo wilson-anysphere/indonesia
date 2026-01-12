@@ -317,6 +317,7 @@
             "null"
           ],
           "default": null,
+          "scope": "resource",
           "description": "Override the nova-lsp binary path. Supports ~ and ${workspaceFolder}. Relative paths resolve against the target workspace folder. When set, Nova will not download or manage the server."
         },
         "nova.server.args": {
@@ -335,6 +336,7 @@
             "null"
           ],
           "default": null,
+          "scope": "resource",
           "description": "Override the nova-dap binary path (debug adapter). Supports ~ and ${workspaceFolder}. Relative paths resolve against the target workspace folder. When unset, Nova will search $PATH and can fall back to managed downloads (nova.download.mode)."
         },
         "nova.download.mode": {
@@ -373,6 +375,7 @@
             "null"
           ],
           "default": null,
+          "scope": "resource",
           "description": "Path to a Nova TOML config file. Supports ~ and ${workspaceFolder}. Relative paths resolve against the target workspace folder. When set, Nova passes it to nova-lsp via --config and NOVA_CONFIG_PATH."
         },
         "nova.lsp.extraArgs": {
