@@ -276,6 +276,23 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   registerNovaProjectExplorer(context, requestWithFallback, projectModelCache);
 
+  // Keep capability entries for workspace-folder keys in sync as folders are added/removed.
+  // This is mainly transitional until Nova runs one LanguageClient per workspace folder.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+      for (const folder of event.removed) {
+        resetNovaExperimentalCapabilities(folder.uri.toString());
+      }
+
+      const languageClient = client;
+      if (languageClient?.initializeResult) {
+        for (const folder of event.added) {
+          setNovaExperimentalCapabilities(folder.uri.toString(), languageClient.initializeResult);
+        }
+      }
+    }),
+  );
+
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
     const rawPath = cfg.get<string | null>('server.path', null);
