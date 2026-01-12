@@ -10625,7 +10625,58 @@ fn resolve_owner_throws_clause_types<'idx>(
         let range = throws_ranges.get(idx).copied();
         let resolved =
             resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, thrown, range);
+
+        let has_unresolved_type = resolved
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type");
         diags.extend(resolved.diagnostics);
+
+        // Best-effort: validate throws clause types are `Throwable` subtypes.
+        //
+        // Skip if the type itself is unresolved to avoid piling on additional diagnostics in
+        // minimal/broken environments.
+        if has_unresolved_type || resolved.ty.is_errorish() {
+            continue;
+        }
+
+        if resolved.ty == Type::Void {
+            diags.push(Diagnostic::error(
+                "void-throws-clause-type",
+                "`void` is not a valid throws clause type",
+                range,
+            ));
+            continue;
+        }
+
+        let Some(throwable_id) = loader.store.lookup_class("java.lang.Throwable") else {
+            // Minimal environments may omit Throwable; if so we can't validate.
+            continue;
+        };
+        let throwable_ty = Type::class(throwable_id, vec![]);
+
+        // Best-effort: load the thrown type so subtyping checks can see its superclass chain.
+        match &resolved.ty {
+            Type::Class(nova_types::ClassType { def, .. }) => {
+                if let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) {
+                    let _ = loader.ensure_class(&name);
+                }
+            }
+            Type::Named(name) => {
+                let _ = loader.ensure_class(name);
+            }
+            _ => {}
+        }
+
+        let env_ro: &dyn TypeEnv = &*loader.store;
+        if !is_subtype(env_ro, &resolved.ty, &throwable_ty) {
+            let found = format_type(env_ro, &resolved.ty);
+            diags.push(Diagnostic::error(
+                "invalid-throws-type",
+                format!("throws clause type must be a subtype of Throwable; found {found}"),
+                range,
+            ));
+        }
     }
 
     diags

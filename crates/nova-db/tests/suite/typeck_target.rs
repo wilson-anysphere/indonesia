@@ -588,6 +588,46 @@ class C {
 }
 
 #[test]
+fn throws_clause_requires_throwable_subtype() {
+    let src = r#"
+class C {
+    void m() throws Object { }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-throws-type"),
+        "expected invalid-throws-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn throws_exception_is_allowed() {
+    let src = r#"
+class C {
+    void m() throws Exception { }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-throws-type"),
+        "expected no invalid-throws-type diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| !(d.code.as_ref() == "unresolved-type" && d.message.contains("Exception"))),
+        "expected Exception to resolve from built-in JDK index; got {diags:?}"
+    );
+}
+
+#[test]
 fn varargs_method_call_resolves() {
     let src = r#"
 class C {
