@@ -177,3 +177,43 @@ dependencies {
 
     Ok(())
 }
+
+#[test]
+fn gradle_unresolved_property_interpolation_drops_version() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir().context("tempdir")?;
+
+    std::fs::write(
+        dir.path().join("build.gradle"),
+        r#"
+plugins {
+  id 'java'
+}
+
+dependencies {
+  implementation("com.google.guava:guava:$guavaVersion")
+}
+"#,
+    )
+    .context("write build.gradle")?;
+
+    let gradle_home = tempfile::tempdir().context("tempdir (gradle home)")?;
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(dir.path(), &options).context("load_project")?;
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(
+        config.dependencies,
+        vec![Dependency {
+            group_id: "com.google.guava".to_string(),
+            artifact_id: "guava".to_string(),
+            version: None,
+            scope: Some("compile".to_string()),
+            classifier: None,
+            type_: None,
+        }]
+    );
+
+    Ok(())
+}

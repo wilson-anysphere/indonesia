@@ -2244,6 +2244,107 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     deps
 }
 
+fn resolve_gradle_dependency_version(
+    raw_version: &str,
+    gradle_properties: &GradleProperties,
+) -> Option<String> {
+    let raw_version = raw_version.trim();
+    if raw_version.is_empty() {
+        return None;
+    }
+
+    let resolved = if raw_version.contains('$') {
+        interpolate_gradle_placeholders(raw_version, gradle_properties)?
+    } else {
+        raw_version.to_string()
+    };
+    let resolved = resolved.trim();
+    if resolved.is_empty() {
+        return None;
+    }
+    if is_dynamic_gradle_version(resolved) {
+        return None;
+    }
+
+    Some(resolved.to_string())
+}
+
+fn is_dynamic_gradle_version(version: &str) -> bool {
+    if version.contains('$') {
+        return true;
+    }
+
+    // Gradle dynamic version patterns like `1.+`.
+    if version.contains('+') {
+        return true;
+    }
+
+    // Gradle dynamic version selector (see `DynamicVersion` in Gradle).
+    matches!(
+        version.trim().to_ascii_lowercase().as_str(),
+        "latest.release" | "latest.integration"
+    )
+}
+
+fn interpolate_gradle_placeholders(
+    input: &str,
+    gradle_properties: &GradleProperties,
+) -> Option<String> {
+    const MAX_ITERATIONS: usize = 4;
+
+    let mut current = input.to_string();
+    for _ in 0..MAX_ITERATIONS {
+        let next = interpolate_gradle_placeholders_once(&current, gradle_properties)?;
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    Some(current)
+}
+
+fn interpolate_gradle_placeholders_once(
+    input: &str,
+    gradle_properties: &GradleProperties,
+) -> Option<String> {
+    static RE_BRACED: OnceLock<Regex> = OnceLock::new();
+    static RE_SIMPLE: OnceLock<Regex> = OnceLock::new();
+    let re_braced =
+        RE_BRACED.get_or_init(|| Regex::new(r"\$\{([A-Za-z0-9_.-]+)\}").expect("valid regex"));
+    let re_simple =
+        RE_SIMPLE.get_or_init(|| Regex::new(r"\$([A-Za-z0-9_.-]+)").expect("valid regex"));
+
+    let mut unknown = false;
+    let after_braced = re_braced.replace_all(input, |caps: &regex::Captures<'_>| {
+        let key = &caps[1];
+        if let Some(value) = gradle_properties.get(key) {
+            value.clone()
+        } else {
+            unknown = true;
+            caps[0].to_string()
+        }
+    });
+    if unknown {
+        return None;
+    }
+
+    let mut unknown = false;
+    let after_simple = re_simple.replace_all(&after_braced, |caps: &regex::Captures<'_>| {
+        let key = &caps[1];
+        if let Some(value) = gradle_properties.get(key) {
+            value.clone()
+        } else {
+            unknown = true;
+            caps[0].to_string()
+        }
+    });
+    if unknown {
+        return None;
+    }
+
+    Some(after_simple.into_owned())
+}
+
 /// Best-effort extraction of local classpath entries from Gradle build scripts.
 ///
 /// This is intended to cover common patterns like:
@@ -2440,9 +2541,9 @@ fn parse_gradle_dependencies_from_text(
             continue;
         };
         let scope = gradle_scope_from_configuration(config).map(str::to_string);
-        let version = caps.name("version").map(|m| m.as_str().to_string());
-        let version = version
-            .map(|v| resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v));
+        let version = caps
+            .name("version")
+            .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
@@ -2482,9 +2583,9 @@ fn parse_gradle_dependencies_from_text(
             continue;
         };
         let scope = gradle_scope_from_configuration(config).map(str::to_string);
-        let version = caps.name("version").map(|m| m.as_str().to_string());
-        let version = version
-            .map(|v| resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v));
+        let version = caps
+            .name("version")
+            .and_then(|m| resolve_gradle_dependency_version(m.as_str(), gradle_properties));
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
@@ -2551,11 +2652,7 @@ fn resolve_version_catalog_dependencies(
         for dep in &mut resolved {
             dep.scope = scope.clone();
             if let Some(v) = dep.version.as_deref() {
-                if let Some(resolved_version) =
-                    resolve_gradle_properties_placeholder(v, gradle_properties)
-                {
-                    dep.version = Some(resolved_version);
-                }
+                dep.version = resolve_gradle_dependency_version(v, gradle_properties);
             }
         }
         deps.extend(resolved);
@@ -2575,6 +2672,11 @@ fn resolve_version_catalog_dependencies(
                 dep.scope = Some(scope.clone());
             }
         }
+        for dep in &mut resolved {
+            if let Some(v) = dep.version.as_deref() {
+                dep.version = resolve_gradle_dependency_version(v, gradle_properties);
+            }
+        }
         deps.extend(resolved);
     }
 
@@ -2591,6 +2693,11 @@ fn resolve_version_catalog_dependencies(
         if let Some(scope) = scope {
             for dep in &mut resolved {
                 dep.scope = Some(scope.clone());
+            }
+        }
+        for dep in &mut resolved {
+            if let Some(v) = dep.version.as_deref() {
+                dep.version = resolve_gradle_dependency_version(v, gradle_properties);
             }
         }
         deps.extend(resolved);
