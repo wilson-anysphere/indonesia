@@ -16,6 +16,17 @@ struct JavaParseEntry {
 /// The store pins parse results for open documents so they can be reused even if
 /// Salsa memo tables are evicted and recomputed.
 ///
+/// ## Memory accounting
+///
+/// The store reports best-effort syntax tree usage under
+/// [`MemoryCategory::SyntaxTrees`] (approximated as the source text length).
+///
+/// When used together with Nova's Salsa query database (`nova-db`), the parse
+/// result is typically an `Arc<JavaParseResult>` that is shared between Salsa
+/// memoization and this store. Callers should avoid counting the same
+/// allocation in both places (e.g. by recording `0` bytes for pinned parses in
+/// the Salsa memo footprint tracker).
+///
 /// Entries are keyed by `(FileId, Arc<String>)` using pointer identity: callers
 /// must keep the same `Arc<String>` alive for as long as they want cache hits.
 #[derive(Debug)]
@@ -54,6 +65,10 @@ impl JavaParseStore {
         store
     }
 
+    pub fn is_open(&self, file: FileId) -> bool {
+        self.open_docs.is_open(file)
+    }
+
     /// Returns the cached parse result for `file` if:
     /// - the document is currently open, and
     /// - the cached text snapshot is the same allocation as `text` (`Arc::ptr_eq`).
@@ -64,16 +79,29 @@ impl JavaParseStore {
     ) -> Option<Arc<JavaParseResult>> {
         let mut inner = self.inner.lock().unwrap();
 
+        // Opportunistically drop closed documents so the store only retains
+        // items for currently-open files.
+        let len_before = inner.len();
+        inner.retain(|file, _| self.open_docs.is_open(*file));
+        if inner.len() != len_before {
+            self.update_tracker_locked(&inner);
+        }
+
         if !self.open_docs.is_open(file) {
-            if inner.remove(&file).is_some() {
-                self.update_tracker_locked(&inner);
-            }
             return None;
         }
 
-        inner
-            .get(&file)
-            .and_then(|entry| Arc::ptr_eq(&entry.text, text).then(|| entry.parse.clone()))
+        let entry = inner.get(&file)?;
+        if Arc::ptr_eq(&entry.text, text) {
+            return Some(entry.parse.clone());
+        }
+
+        // Stale entry (file still open but text changed). Drop it now so the
+        // next computed tree can replace it.
+        if inner.remove(&file).is_some() {
+            self.update_tracker_locked(&inner);
+        }
+        None
     }
 
     /// Insert a parse result for `file` if it is currently open.
@@ -81,12 +109,15 @@ impl JavaParseStore {
     /// If the file is not open, this removes any existing cached entry for it.
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<JavaParseResult>) {
         let mut inner = self.inner.lock().unwrap();
+        let len_before = inner.len();
 
         // Opportunistically drop closed docs whenever we touch the store.
         inner.retain(|file, _| self.open_docs.is_open(*file));
 
         if !self.open_docs.is_open(file) {
-            self.update_tracker_locked(&inner);
+            if inner.len() != len_before {
+                self.update_tracker_locked(&inner);
+            }
             return;
         }
 

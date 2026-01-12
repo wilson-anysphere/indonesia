@@ -1296,7 +1296,7 @@ fn record_body_references(
                     let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                         return;
                     };
-                    let Some(method) = methods.first().map(|m| m.id) else {
+                    let Some(method) = methods.first().map(|method| method.id) else {
                         return;
                     };
                     let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
@@ -1334,7 +1334,7 @@ fn record_body_references(
                 let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                     return;
                 };
-                let Some(method) = methods.first().map(|m| m.id) else {
+                let Some(method) = methods.first().map(|method| method.id) else {
                     return;
                 };
                 let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {

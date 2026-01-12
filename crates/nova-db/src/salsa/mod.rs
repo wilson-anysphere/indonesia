@@ -1703,6 +1703,41 @@ impl Database {
             .record(file, TrackedSalsaMemo::ParseJava, bytes);
     }
 
+    /// Remove any pinned `parse_java` result for `file` from the shared
+    /// [`nova_syntax::JavaParseStore`] (if configured) and restore the query-cache
+    /// entry in the Salsa memo footprint.
+    pub fn unpin_java_parse(&self, file: FileId) {
+        let store = self.inner.lock().java_parse_store.clone();
+        if let Some(store) = store.as_ref() {
+            store.remove(file);
+        }
+
+        // Only restore memo accounting if we have previously recorded a
+        // `parse_java` memo for this file and suppressed it to `0` while pinned.
+        let should_restore = self
+            .memo_footprint
+            .lock_inner()
+            .by_file
+            .get(&file)
+            .and_then(|bytes| bytes.parse_java)
+            .is_some_and(|bytes| bytes == 0);
+        if !should_restore {
+            return;
+        }
+
+        // Best-effort: restore the parse_java memo approximation based on the
+        // most recent input text snapshot.
+        let bytes = self
+            .inputs
+            .lock()
+            .file_content
+            .get(&file)
+            .map(|text| text.len() as u64)
+            .unwrap_or(0);
+        self.memo_footprint
+            .record(file, TrackedSalsaMemo::ParseJava, bytes);
+    }
+
     pub fn new_with_persistence(
         project_root: impl AsRef<Path>,
         persistence: PersistenceConfig,

@@ -141,7 +141,8 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
         Arc::new(String::new())
     };
 
-    if let Some(store) = db.java_parse_store() {
+    let store = db.java_parse_store();
+    if let Some(store) = store.as_ref() {
         if let Some(cached) = store.get_if_text_matches(file, &text) {
             // Avoid double-counting: the parse allocation is tracked by the
             // open-document store under `MemoryCategory::SyntaxTrees`.
@@ -234,13 +235,8 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     db.java_parse_cache()
         .insert(file, text.clone(), result.clone());
 
-    let mut pinned_in_store = false;
-    if let Some(store) = db.java_parse_store() {
+    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
         store.insert(file, Arc::clone(&text), Arc::clone(&result));
-        // If the document is open, the result is now pinned in the store.
-        pinned_in_store = store.get_if_text_matches(file, &text).is_some();
-    }
-    if pinned_in_store {
         // Avoid double-counting with `JavaParseStore`.
         db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, 0);
     } else {

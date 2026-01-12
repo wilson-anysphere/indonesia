@@ -1217,6 +1217,7 @@ impl WorkspaceEngine {
             self.query_db.unpin_syntax_tree(file_id);
             self.query_db.unpin_java_parse_tree(file_id);
             self.query_db.unpin_item_tree(file_id);
+            self.query_db.unpin_java_parse(file_id);
         }
 
         // Closing can read disk contents back into Salsa, and often follows large edit sessions.
