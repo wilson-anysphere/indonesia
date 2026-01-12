@@ -751,6 +751,10 @@ fn parse_gradle_java_config_with_path(root: &Path) -> Option<(JavaConfig, PathBu
 }
 
 fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
+    // Precedence rules (deterministic):
+    // 1) Prefer explicit `sourceCompatibility` / `targetCompatibility` assignments when present.
+    // 2) Otherwise, fall back to Gradle toolchains (`JavaLanguageVersion.of(N)`).
+    // 3) Otherwise, return `None` (caller uses defaults).
     let mut source = None;
     let mut target = None;
 
@@ -777,8 +781,26 @@ fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
             target: v,
             enable_preview: false,
         }),
-        (None, None) => None,
+        (None, None) => parse_java_toolchain_language_version(contents).map(|v| JavaConfig {
+            source: v,
+            target: v,
+            enable_preview: false,
+        }),
     }
+}
+
+fn parse_java_toolchain_language_version(contents: &str) -> Option<JavaVersion> {
+    // Best-effort text parsing: match both Groovy DSL:
+    //   languageVersion = JavaLanguageVersion.of(21)
+    // and Kotlin DSL:
+    //   languageVersion.set(JavaLanguageVersion.of(21))
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r#"JavaLanguageVersion\s*\.\s*of\s*\(\s*(\d+)\s*\)"#).expect("valid regex")
+    });
+    let caps = re.captures(contents)?;
+    let version = caps.get(1)?.as_str();
+    JavaVersion::parse(version)
 }
 
 fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {

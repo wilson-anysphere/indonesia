@@ -1,12 +1,23 @@
 use std::fs;
 
-use nova_project::{load_workspace_model, BuildSystem, ClasspathEntryKind};
+use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
 use tempfile::tempdir;
 
 #[test]
 fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path();
+
+    // Use an isolated Maven repo so this test is hermetic (does not depend on a pre-populated
+    // `~/.m2/repository`).
+    let maven_repo = root.join("m2");
+    let guava_dir = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    fs::create_dir_all(guava_dir.join("META-INF")).expect("mkdir Guava jar dir");
+    fs::write(
+        guava_dir.join("META-INF/MANIFEST.MF"),
+        b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.google.common\r\n\r\n",
+    )
+    .expect("write Guava MANIFEST.MF");
 
     fs::write(
         root.join("pom.xml"),
@@ -41,7 +52,11 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     )
     .expect("write module-info.java");
 
-    let model = load_workspace_model(root).expect("load workspace model");
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
     assert_eq!(model.build_system, BuildSystem::Maven);
     assert_eq!(model.modules.len(), 1);
 
@@ -92,7 +107,7 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     );
 
     // Ensure model is deterministic (important for cache keys and downstream indexing).
-    let model2 = load_workspace_model(root).expect("reload workspace model");
+    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }

@@ -314,6 +314,26 @@ fn loads_gradle_custom_source_sets_workspace() {
 }
 
 #[test]
+fn loads_gradle_toolchain_language_version() {
+    let root = testdata_path("gradle-toolchain-only");
+    let config = load_project(&root).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.java.source, JavaVersion(21));
+    assert_eq!(config.java.target, JavaVersion(21));
+}
+
+#[test]
+fn gradle_source_compatibility_overrides_toolchain_language_version() {
+    let root = testdata_path("gradle-toolchain-with-compat");
+    let config = load_project(&root).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.java.source, JavaVersion(17));
+    assert_eq!(config.java.target, JavaVersion(17));
+}
+
+#[test]
 fn loads_maven_multi_module_workspace_model() {
     let root = testdata_path("maven-multi");
     let model = load_workspace_model(&root).expect("load maven workspace model");
