@@ -4,91 +4,105 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
 
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const BUILD_INTEGRATION_PATH = path.resolve(TEST_DIR, '..', 'buildIntegration.ts');
+
+async function loadBuildIntegrationSourceFile(): Promise<ts.SourceFile> {
+  const contents = await fs.readFile(BUILD_INTEGRATION_PATH, 'utf8');
+  return ts.createSourceFile(BUILD_INTEGRATION_PATH, contents, ts.ScriptTarget.ESNext, true);
+}
+
+function unwrapExpression(expr: ts.Expression): ts.Expression {
+  let out = expr;
+  while (true) {
+    if (ts.isParenthesizedExpression(out)) {
+      out = out.expression;
+      continue;
+    }
+    if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
+      out = out.expression;
+      continue;
+    }
+    if (ts.isVoidExpression(out)) {
+      out = out.expression;
+      continue;
+    }
+    if (ts.isAwaitExpression(out)) {
+      out = out.expression;
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
+function isSilentTrueObject(expr: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expr);
+  if (!ts.isObjectLiteralExpression(unwrapped)) {
+    return false;
+  }
+  for (const prop of unwrapped.properties) {
+    if (!ts.isPropertyAssignment(prop)) {
+      continue;
+    }
+    const name = prop.name;
+    const key = ts.isIdentifier(name) ? name.text : ts.isStringLiteral(name) ? name.text : undefined;
+    if (key !== 'silent') {
+      continue;
+    }
+    const value = unwrapExpression(prop.initializer);
+    if (value.kind === ts.SyntaxKind.TrueKeyword) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function containsSilentRefreshCall(node: ts.Node): boolean {
+  let found = false;
+  const visit = (n: ts.Node) => {
+    if (found) {
+      return;
+    }
+    if (ts.isCallExpression(n)) {
+      const callee = unwrapExpression(n.expression);
+      if (ts.isIdentifier(callee) && callee.text === 'refreshBuildDiagnostics') {
+        const [arg0, arg1] = n.arguments;
+        if (arg0 && ts.isIdentifier(arg0) && arg0.text === 'folder' && arg1 && isSilentTrueObject(arg1)) {
+          found = true;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function findArrowFunctionVariable(sourceFile: ts.SourceFile, name: string): ts.ArrowFunction | undefined {
+  let found: ts.ArrowFunction | undefined;
+  const visit = (node: ts.Node) => {
+    if (found) {
+      return;
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+      const init = node.initializer ? unwrapExpression(node.initializer) : undefined;
+      if (init && ts.isArrowFunction(init)) {
+        found = init;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 describe('build integration polling', () => {
   it('triggers a silent diagnostics refresh when build status transitions to a terminal state', async () => {
-    const testDir = path.dirname(fileURLToPath(import.meta.url));
-    const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
-    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
-
-    const sourceFile = ts.createSourceFile(buildIntegrationPath, contents, ts.ScriptTarget.ESNext, true);
-
-    const unwrapExpression = (expr: ts.Expression): ts.Expression => {
-      let out = expr;
-      while (true) {
-        if (ts.isParenthesizedExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        break;
-      }
-      return out;
-    };
-
-    const isSilentTrueObject = (expr: ts.Expression): boolean => {
-      const unwrapped = unwrapExpression(expr);
-      if (!ts.isObjectLiteralExpression(unwrapped)) {
-        return false;
-      }
-      for (const prop of unwrapped.properties) {
-        if (!ts.isPropertyAssignment(prop)) {
-          continue;
-        }
-        const name = prop.name;
-        const key = ts.isIdentifier(name) ? name.text : ts.isStringLiteral(name) ? name.text : undefined;
-        if (key !== 'silent') {
-          continue;
-        }
-        const value = unwrapExpression(prop.initializer);
-        if (value.kind === ts.SyntaxKind.TrueKeyword) {
-          return true;
-        }
-      }
-      return false;
-    };
-
-    const containsSilentRefreshCall = (node: ts.Node): boolean => {
-      let found = false;
-      const visit = (n: ts.Node) => {
-        if (found) {
-          return;
-        }
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'refreshBuildDiagnostics') {
-          const [arg0, arg1] = n.arguments;
-          if (arg0 && ts.isIdentifier(arg0) && arg0.text === 'folder' && arg1 && isSilentTrueObject(arg1)) {
-            found = true;
-            return;
-          }
-        }
-        ts.forEachChild(n, visit);
-      };
-      visit(node);
-      return found;
-    };
-
-    const findPollBuildStatusOnce = (): ts.ArrowFunction | undefined => {
-      let found: ts.ArrowFunction | undefined;
-      const visit = (node: ts.Node) => {
-        if (found) {
-          return;
-        }
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'pollBuildStatusOnce') {
-          const init = node.initializer ? unwrapExpression(node.initializer) : undefined;
-          if (init && ts.isArrowFunction(init)) {
-            found = init;
-            return;
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
-      return found;
-    };
-
-    const pollBuildStatusOnce = findPollBuildStatusOnce();
+    const sourceFile = await loadBuildIntegrationSourceFile();
+    const pollBuildStatusOnce = findArrowFunctionVariable(sourceFile, 'pollBuildStatusOnce');
     expect(pollBuildStatusOnce).toBeDefined();
 
     let foundGuard = false;
@@ -118,68 +132,7 @@ describe('build integration polling', () => {
   });
 
   it('queues a diagnostics refresh when a manual build command is in flight', async () => {
-    const testDir = path.dirname(fileURLToPath(import.meta.url));
-    const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
-    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
-
-    const sourceFile = ts.createSourceFile(buildIntegrationPath, contents, ts.ScriptTarget.ESNext, true);
-
-    const unwrapExpression = (expr: ts.Expression): ts.Expression => {
-      let out = expr;
-      while (true) {
-        if (ts.isParenthesizedExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        break;
-      }
-      return out;
-    };
-
-    const isSilentTrueObject = (expr: ts.Expression): boolean => {
-      const unwrapped = unwrapExpression(expr);
-      if (!ts.isObjectLiteralExpression(unwrapped)) {
-        return false;
-      }
-      for (const prop of unwrapped.properties) {
-        if (!ts.isPropertyAssignment(prop)) {
-          continue;
-        }
-        const name = prop.name;
-        const key = ts.isIdentifier(name) ? name.text : ts.isStringLiteral(name) ? name.text : undefined;
-        if (key !== 'silent') {
-          continue;
-        }
-        const value = unwrapExpression(prop.initializer);
-        if (value.kind === ts.SyntaxKind.TrueKeyword) {
-          return true;
-        }
-      }
-      return false;
-    };
-
-    const containsSilentRefreshCall = (node: ts.Node): boolean => {
-      let found = false;
-      const visit = (n: ts.Node) => {
-        if (found) {
-          return;
-        }
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'refreshBuildDiagnostics') {
-          const [arg0, arg1] = n.arguments;
-          if (arg0 && ts.isIdentifier(arg0) && arg0.text === 'folder' && arg1 && isSilentTrueObject(arg1)) {
-            found = true;
-            return;
-          }
-        }
-        ts.forEachChild(n, visit);
-      };
-      visit(node);
-      return found;
-    };
+    const sourceFile = await loadBuildIntegrationSourceFile();
 
     const containsPendingRefreshAssignment = (node: ts.Node): boolean => {
       let found = false;
@@ -207,26 +160,7 @@ describe('build integration polling', () => {
       return found;
     };
 
-    const findPollBuildStatusOnce = (): ts.ArrowFunction | undefined => {
-      let found: ts.ArrowFunction | undefined;
-      const visit = (node: ts.Node) => {
-        if (found) {
-          return;
-        }
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'pollBuildStatusOnce') {
-          const init = node.initializer ? unwrapExpression(node.initializer) : undefined;
-          if (init && ts.isArrowFunction(init)) {
-            found = init;
-            return;
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
-      return found;
-    };
-
-    const pollBuildStatusOnce = findPollBuildStatusOnce();
+    const pollBuildStatusOnce = findArrowFunctionVariable(sourceFile, 'pollBuildStatusOnce');
     expect(pollBuildStatusOnce).toBeDefined();
 
     const buildCommandConditionKind = (expr: ts.Expression): 'positive' | 'negated' | undefined => {
@@ -303,57 +237,7 @@ describe('build integration polling', () => {
   });
 
   it('runs a pending silent diagnostics refresh after a manual build command finishes', async () => {
-    const testDir = path.dirname(fileURLToPath(import.meta.url));
-    const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
-    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
-
-    const sourceFile = ts.createSourceFile(buildIntegrationPath, contents, ts.ScriptTarget.ESNext, true);
-
-    const unwrapExpression = (expr: ts.Expression): ts.Expression => {
-      let out = expr;
-      while (true) {
-        if (ts.isParenthesizedExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        if (ts.isVoidExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        if (ts.isAwaitExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        break;
-      }
-      return out;
-    };
-
-    const isSilentTrueObject = (expr: ts.Expression): boolean => {
-      const unwrapped = unwrapExpression(expr);
-      if (!ts.isObjectLiteralExpression(unwrapped)) {
-        return false;
-      }
-      for (const prop of unwrapped.properties) {
-        if (!ts.isPropertyAssignment(prop)) {
-          continue;
-        }
-        const name = prop.name;
-        const key = ts.isIdentifier(name) ? name.text : ts.isStringLiteral(name) ? name.text : undefined;
-        if (key !== 'silent') {
-          continue;
-        }
-        const value = unwrapExpression(prop.initializer);
-        if (value.kind === ts.SyntaxKind.TrueKeyword) {
-          return true;
-        }
-      }
-      return false;
-    };
+    const sourceFile = await loadBuildIntegrationSourceFile();
 
     const isRefreshBuildDiagnosticsSilentCall = (node: ts.Node): boolean => {
       const expr = ts.isExpressionStatement(node) ? unwrapExpression(node.expression) : undefined;
