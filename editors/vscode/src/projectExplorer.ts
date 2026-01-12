@@ -200,8 +200,6 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
 
   private readonly isServerRunning: () => boolean;
 
-  private didTriggerUnsupportedWelcome = false;
-
   constructor(
     private readonly cache: ProjectModelCache,
     opts?: { isServerRunning?: () => boolean },
@@ -216,9 +214,6 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
   refresh(opts?: { clearCache?: boolean; forceRefresh?: boolean; workspace?: vscode.WorkspaceFolder }): void {
     if (opts?.clearCache) {
       this.cache.clear(opts.workspace);
-      if (!opts.workspace) {
-        this.didTriggerUnsupportedWelcome = false;
-      }
     }
 
     const folders = opts?.workspace ? [opts.workspace] : (vscode.workspace.workspaceFolders ?? []);
@@ -278,7 +273,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:configuration`,
           workspace,
         };
-        if (!this.isProjectModelSupported()) {
+        if (!this.isProjectModelSupportedForWorkspace(workspace)) {
           await this.triggerUnsupportedWelcome();
          return [
              {
@@ -420,7 +415,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
 
       case 'workspaceConfiguration': {
         const workspace = element.workspace;
-        if (this.cache.isProjectConfigurationUnsupported()) {
+        if (this.cache.isProjectConfigurationUnsupported(workspace)) {
           return [
             {
               type: 'message',
@@ -928,28 +923,30 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
   }
 
   private isProjectModelSupported(): boolean {
-    if (this.cache.isProjectModelUnsupported()) {
-      return false;
-    }
-
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     if (workspaces.length === 0) {
       return true;
     }
 
+    return workspaces.some((workspace) => this.isProjectModelSupportedForWorkspace(workspace));
+  }
+
+  private isProjectModelSupportedForWorkspace(workspace: vscode.WorkspaceFolder): boolean {
+    if (this.cache.isProjectModelUnsupported(workspace)) {
+      return false;
+    }
+
     const method = 'nova/projectModel';
-    // Default to optimistic behaviour when capability lists are unavailable.
-    return workspaces.some((workspace) => isNovaRequestSupported(workspace.uri.toString(), method) !== false);
+    const supported = isNovaRequestSupported(workspace.uri.toString(), method);
+    // Default to optimistic behaviour when capability lists are unavailable (unless we already
+    // observed a method-not-found error for this workspace's server).
+    return supported !== false;
   }
 
   private async triggerUnsupportedWelcome(): Promise<void> {
-    if (this.didTriggerUnsupportedWelcome) {
-      return;
-    }
-    this.didTriggerUnsupportedWelcome = true;
-
     const serverRunning = this.isServerRunning();
-    await this.setContexts({ serverRunning, projectModelSupported: serverRunning ? false : true });
+    const projectModelSupported = serverRunning ? this.isProjectModelSupported() : true;
+    await this.setContexts({ serverRunning, projectModelSupported });
 
     // Re-render the root so VS Code can show the viewsWelcome unsupported-state guidance.
     this.emitter.fire(undefined);
@@ -1299,7 +1296,7 @@ async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promis
   }
 
   try {
-    if (cache.isProjectModelUnsupported()) {
+    if (cache.isProjectModelUnsupported(workspace)) {
       void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
@@ -1307,7 +1304,7 @@ async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promis
     const model = await cache.getProjectModel(workspace);
     await openJsonDocument(`Nova Project Model (${workspace.name}).json`, model);
   } catch (err) {
-    if (cache.isProjectModelUnsupported() || isNovaMethodNotFoundError(err)) {
+    if (cache.isProjectModelUnsupported(workspace) || isNovaMethodNotFoundError(err)) {
       void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
@@ -1323,7 +1320,7 @@ async function showProjectConfiguration(cache: ProjectModelCache, arg?: unknown)
   }
 
   try {
-    if (cache.isProjectConfigurationUnsupported()) {
+    if (cache.isProjectConfigurationUnsupported(workspace)) {
       void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }
@@ -1331,7 +1328,7 @@ async function showProjectConfiguration(cache: ProjectModelCache, arg?: unknown)
     const config = await cache.getProjectConfiguration(workspace);
     await openJsonDocument(`Nova Project Configuration (${workspace.name}).json`, config);
   } catch (err) {
-    if (cache.isProjectConfigurationUnsupported() || isNovaMethodNotFoundError(err)) {
+    if (cache.isProjectConfigurationUnsupported(workspace) || isNovaMethodNotFoundError(err)) {
       void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }

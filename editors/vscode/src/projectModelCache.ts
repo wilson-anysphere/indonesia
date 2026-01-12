@@ -82,9 +82,11 @@ export class ProjectModelCache {
   private readonly projectModelByWorkspace = new Map<string, CacheEntry<ProjectModelResult>>();
   private readonly projectConfigurationByWorkspace = new Map<string, CacheEntry<ProjectConfigurationResponse>>();
 
-  // Session-level feature gating: once we know the server doesn't support a method, stop calling it.
-  private projectModelUnsupported = false;
-  private projectConfigurationUnsupported = false;
+  // Session-level feature gating (per workspace key): once we know a workspace's server doesn't
+  // support a method, stop calling it for that workspace. This will matter once Nova runs one
+  // LanguageClient per workspace folder (multi-root).
+  private readonly projectModelUnsupportedByWorkspace = new Set<string>();
+  private readonly projectConfigurationUnsupportedByWorkspace = new Set<string>();
 
   constructor(
     private readonly novaRequest: NovaRequest,
@@ -93,25 +95,39 @@ export class ProjectModelCache {
     this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
   }
 
-  isProjectModelUnsupported(): boolean {
-    return this.projectModelUnsupported;
+  isProjectModelUnsupported(workspaceFolder: vscode.WorkspaceFolder): boolean;
+  isProjectModelUnsupported(): boolean;
+  isProjectModelUnsupported(workspaceFolder?: vscode.WorkspaceFolder): boolean {
+    if (!workspaceFolder) {
+      // Backwards-compatible: treat "any unsupported" as unsupported.
+      return this.projectModelUnsupportedByWorkspace.size > 0;
+    }
+    return this.projectModelUnsupportedByWorkspace.has(this.key(workspaceFolder));
   }
 
-  isProjectConfigurationUnsupported(): boolean {
-    return this.projectConfigurationUnsupported;
+  isProjectConfigurationUnsupported(workspaceFolder: vscode.WorkspaceFolder): boolean;
+  isProjectConfigurationUnsupported(): boolean;
+  isProjectConfigurationUnsupported(workspaceFolder?: vscode.WorkspaceFolder): boolean {
+    if (!workspaceFolder) {
+      // Backwards-compatible: treat "any unsupported" as unsupported.
+      return this.projectConfigurationUnsupportedByWorkspace.size > 0;
+    }
+    return this.projectConfigurationUnsupportedByWorkspace.has(this.key(workspaceFolder));
   }
 
   clear(workspaceFolder?: vscode.WorkspaceFolder): void {
     if (!workspaceFolder) {
       this.projectModelByWorkspace.clear();
       this.projectConfigurationByWorkspace.clear();
-      this.projectModelUnsupported = false;
-      this.projectConfigurationUnsupported = false;
+      this.projectModelUnsupportedByWorkspace.clear();
+      this.projectConfigurationUnsupportedByWorkspace.clear();
       return;
     }
     const key = this.key(workspaceFolder);
     this.projectModelByWorkspace.delete(key);
     this.projectConfigurationByWorkspace.delete(key);
+    this.projectModelUnsupportedByWorkspace.delete(key);
+    this.projectConfigurationUnsupportedByWorkspace.delete(key);
   }
 
   peekProjectModel(workspaceFolder: vscode.WorkspaceFolder): CacheSnapshot<ProjectModelResult> {
@@ -126,12 +142,12 @@ export class ProjectModelCache {
     workspaceFolder: vscode.WorkspaceFolder,
     opts?: { forceRefresh?: boolean },
   ): Promise<ProjectModelResult> {
-    if (this.projectModelUnsupported) {
+    const key = this.key(workspaceFolder);
+    if (this.projectModelUnsupportedByWorkspace.has(key)) {
       throw new Error('nova/projectModel is not supported by the active Nova server.');
     }
 
     const forceRefresh = opts?.forceRefresh === true;
-    const key = this.key(workspaceFolder);
     const entry = this.getOrCreateEntry(this.projectModelByWorkspace, key);
 
     if (!forceRefresh && entry.value && !this.isStale(entry.fetchedAt)) {
@@ -147,7 +163,7 @@ export class ProjectModelCache {
     entry.inFlight = this.novaRequest<ProjectModelResult>('nova/projectModel', { projectRoot: workspaceFolder.uri.fsPath })
       .then((result) => {
         if (!result) {
-          this.projectModelUnsupported = true;
+          this.projectModelUnsupportedByWorkspace.add(key);
           throw new Error('nova/projectModel is not supported by the active Nova server.');
         }
         entry.value = result;
@@ -158,7 +174,7 @@ export class ProjectModelCache {
       .catch((err) => {
         entry.lastError = err;
         if (isMethodNotFoundError(err)) {
-          this.projectModelUnsupported = true;
+          this.projectModelUnsupportedByWorkspace.add(key);
         }
         throw err;
       })
@@ -173,12 +189,12 @@ export class ProjectModelCache {
     workspaceFolder: vscode.WorkspaceFolder,
     opts?: { forceRefresh?: boolean },
   ): Promise<ProjectConfigurationResponse> {
-    if (this.projectConfigurationUnsupported) {
+    const key = this.key(workspaceFolder);
+    if (this.projectConfigurationUnsupportedByWorkspace.has(key)) {
       throw new Error('nova/projectConfiguration is not supported by the active Nova server.');
     }
 
     const forceRefresh = opts?.forceRefresh === true;
-    const key = this.key(workspaceFolder);
     const entry = this.getOrCreateEntry(this.projectConfigurationByWorkspace, key);
 
     if (!forceRefresh && entry.value && !this.isStale(entry.fetchedAt)) {
@@ -196,7 +212,7 @@ export class ProjectModelCache {
     })
       .then((result) => {
         if (!result) {
-          this.projectConfigurationUnsupported = true;
+          this.projectConfigurationUnsupportedByWorkspace.add(key);
           throw new Error('nova/projectConfiguration is not supported by the active Nova server.');
         }
         entry.value = result;
@@ -207,7 +223,7 @@ export class ProjectModelCache {
       .catch((err) => {
         entry.lastError = err;
         if (isMethodNotFoundError(err)) {
-          this.projectConfigurationUnsupported = true;
+          this.projectConfigurationUnsupportedByWorkspace.add(key);
         }
         throw err;
       })
@@ -250,4 +266,3 @@ export class ProjectModelCache {
     return workspaceFolder.uri.fsPath;
   }
 }
-
