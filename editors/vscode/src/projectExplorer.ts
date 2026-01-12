@@ -520,6 +520,38 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           });
         }
 
+        const schemaVersion = typeof config.schemaVersion === 'number' ? config.schemaVersion : undefined;
+        if (typeof schemaVersion === 'number') {
+          nodes.push({
+            type: 'workspaceInfo',
+            id: `${element.id}:info:schemaVersion`,
+            label: 'Schema Version',
+            description: String(schemaVersion),
+          });
+        }
+
+        const workspaceRoot =
+          typeof config.workspaceRoot === 'string' && config.workspaceRoot.trim().length > 0 ? config.workspaceRoot.trim() : undefined;
+        if (workspaceRoot) {
+          const resolved = resolvePossiblyRelativePath(workspace.uri.fsPath, workspaceRoot);
+          const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+          nodes.push({
+            type: 'path',
+            id: `${element.id}:workspaceRoot`,
+            label: 'Workspace Root',
+            description: resolved || workspaceRoot,
+            uri,
+            icon: vscode.ThemeIcon.Folder,
+            command: uri
+              ? {
+                  title: 'Reveal Workspace Root',
+                  command: COMMAND_REVEAL_PATH,
+                  arguments: [uri],
+                }
+              : undefined,
+          });
+        }
+
         const javaSource = config.java?.source;
         const javaTarget = config.java?.target;
         if (typeof javaSource === 'number' || typeof javaTarget === 'number') {
