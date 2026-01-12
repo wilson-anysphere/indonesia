@@ -8510,8 +8510,8 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
         .and_then(|pkg| (!pkg.is_empty()).then(|| PackageName::from_dotted(&pkg)));
     let imports = parse_java_type_import_map(text);
 
-    let jdk = JdkIndex::new();
-    let resolver = ImportResolver::new(&jdk);
+    let jdk = jdk_index();
+    let resolver = ImportResolver::new(jdk.as_ref());
     let owner =
         resolve_type_receiver(&resolver, &imports, package.as_ref(), receiver).or_else(|| {
             // If a type receiver isn't resolvable via imports, still try a small
@@ -8532,7 +8532,7 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
     };
 
     let owner_source_name = binary_name_to_source_name(owner.as_str());
-    let members = TypeIndex::static_members(&jdk, &owner);
+    let members = TypeIndex::static_members(jdk.as_ref(), &owner);
     if members.is_empty() {
         return Vec::new();
     }
