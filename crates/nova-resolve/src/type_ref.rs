@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use nova_core::{Name, QualifiedName};
-use nova_types::{Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
+use nova_types::{lub, Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
 
 use crate::{Resolution, Resolver, ScopeGraph, ScopeId, TypeResolution};
 
@@ -98,10 +98,30 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     }
 
     fn parse_type(&mut self) -> Type {
+        self.parse_union_type()
+    }
+
+    fn parse_union_type(&mut self) -> Type {
+        // Union types (`A|B|C`) can appear in Java multi-catch (`catch (A|B e)`).
+        // We model them as the least-upper-bound of the alternatives.
+        let mut ty = self.parse_intersection_type();
+        loop {
+            self.skip_ws();
+            if !self.consume_char('|') {
+                break;
+            }
+            let rhs = self.parse_intersection_type();
+            ty = lub(self.env, &ty, &rhs);
+        }
+        ty
+    }
+
+    fn parse_intersection_type(&mut self) -> Type {
+        // Intersection types (`A&B&C`) are common in bounds and appear in some
+        // best-effort type representations.
         let mut types = Vec::new();
         let first = self.parse_single_type();
         types.push(first);
-
         loop {
             self.skip_ws();
             if !self.consume_char('&') {
@@ -112,7 +132,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
 
         if types.len() == 1 {
-            types.pop().unwrap()
+            types.pop().unwrap_or(Type::Unknown)
         } else {
             Type::Intersection(types)
         }

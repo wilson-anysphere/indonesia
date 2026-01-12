@@ -502,7 +502,7 @@ fn parses_intersection_types() {
         scope,
         &env,
         &type_vars,
-        "Cloneable & java.io.Serializable",
+        "java.lang.Cloneable&java.io.Serializable",
         None,
     );
 
@@ -514,4 +514,53 @@ fn parses_intersection_types() {
             Type::class(serializable_id, vec![]),
         ])
     );
+}
+
+#[test]
+fn resolves_catch_union_types_via_lub() {
+    let (jdk, mut index, scopes, scope) = setup(&["import com.example.*;"]);
+    index.add_type("com.example", "Base");
+    index.add_type("com.example", "A");
+    index.add_type("com.example", "B");
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let mut env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let object = Type::class(env.well_known().object, vec![]);
+
+    let base_id = env.add_class(ClassDef {
+        name: "com.example.Base".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(object),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+    let _a_id = env.add_class(ClassDef {
+        name: "com.example.A".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(base_id, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+    let _b_id = env.add_class(ClassDef {
+        name: "com.example.B".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(base_id, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "A|B", None);
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::class(base_id, vec![]));
 }

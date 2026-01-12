@@ -142,6 +142,10 @@ impl JdkIndex {
         this.add_type("java.lang", "Integer");
         this.add_type("java.lang", "System");
         this.add_type("java.lang", "Math");
+        this.add_type("java.lang", "Cloneable");
+
+        // java.io
+        this.add_type("java.io", "Serializable");
 
         // java.util
         this.add_type("java.util", "List");
