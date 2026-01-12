@@ -2426,11 +2426,31 @@ impl Debugger {
         Ok(Some(Value::Object(obj)))
     }
 
-    pub async fn stream_debug(
-        &mut self,
-        cancel: &CancellationToken,
+    pub fn stream_debug(
+        &self,
+        cancel: CancellationToken,
         frame_id: i64,
-        expression: &str,
+        expression: String,
+        config: nova_stream_debug::StreamDebugConfig,
+    ) -> Result<impl Future<Output = Result<crate::stream_debug::StreamDebugBody>> + Send + 'static>
+    {
+        check_cancel(&cancel)?;
+
+        let Some(frame) = self.frame_handles.get(frame_id).copied() else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown frameId {frame_id}"
+            )));
+        };
+        let jdwp = self.jdwp.clone();
+
+        Ok(async move { Debugger::stream_debug_impl(jdwp, cancel, frame, expression, config).await })
+    }
+
+    async fn stream_debug_impl(
+        jdwp: JdwpClient,
+        cancel: CancellationToken,
+        frame: FrameHandle,
+        expression: String,
         config: nova_stream_debug::StreamDebugConfig,
     ) -> Result<crate::stream_debug::StreamDebugBody> {
         use nova_stream_debug::{
@@ -2438,16 +2458,11 @@ impl Debugger {
             StreamTerminalResult, StreamValueKind,
         };
 
+        let cancel = &cancel;
         check_cancel(cancel)?;
 
-        let analysis = analyze_stream_expression(expression)
+        let analysis = analyze_stream_expression(&expression)
             .map_err(|err| DebuggerError::InvalidRequest(err.to_string()))?;
-
-        let Some(frame) = self.frame_handles.get(frame_id).copied() else {
-            return Err(DebuggerError::InvalidRequest(format!(
-                "unknown frameId {frame_id}"
-            )));
-        };
 
         fn parse_i64(s: &str) -> Option<i64> {
             s.trim().parse::<i64>().ok()
@@ -2510,6 +2525,11 @@ impl Debugger {
             let param = param.trim();
             let body = body.trim();
 
+            // Identity mapping: `x -> x`
+            if body == param {
+                return Some(Box::new(|x| x));
+            }
+
             // Support a small subset of common numeric mappings:
             //   x * 2
             //   x + 2
@@ -2558,7 +2578,7 @@ impl Debugger {
         }
 
         async fn format_stream_value(
-            dbg: &mut Debugger,
+            inspector: &mut Inspector,
             cancel: &CancellationToken,
             value: &JdwpValue,
         ) -> Result<String> {
@@ -2583,7 +2603,7 @@ impl Debugger {
                     JdwpValue::Object { id: 0, .. } => return Ok("null".to_string()),
                     JdwpValue::Object { id, .. } => {
                         let preview =
-                            cancellable_jdwp(cancel, dbg.inspector.preview_object(id)).await?;
+                            cancellable_jdwp(cancel, inspector.preview_object(id)).await?;
                         let runtime_type = preview.runtime_type;
                         match preview.kind {
                             ObjectKindPreview::String { value } => return Ok(value),
@@ -2599,42 +2619,73 @@ impl Debugger {
         }
 
         async fn resolve_local_in_frame(
-            dbg: &mut Debugger,
+            jdwp: &JdwpClient,
             cancel: &CancellationToken,
             thread: ThreadId,
             frame_id: u64,
             location: Location,
             name: &str,
         ) -> Result<Option<JdwpValue>> {
-            let (_argc, vars) = match cancellable_jdwp(
+            // Prefer `Method.VariableTableWithGeneric` when available. Some VMs (and the JDWP mock
+            // server) only surface certain locals (e.g. generic `List<T>`) via the generic-aware
+            // variant.
+            let mut var: Option<(u32, String)> = None;
+            match cancellable_jdwp(
                 cancel,
-                dbg.jdwp
-                    .method_variable_table(location.class_id, location.method_id),
+                jdwp.method_variable_table_with_generic(location.class_id, location.method_id),
             )
             .await
             {
-                Ok(res) => res,
+                Ok((_argc, vars)) => {
+                    let in_scope: Vec<_> = vars
+                        .into_iter()
+                        .filter(|v| {
+                            v.code_index <= location.index
+                                && location.index < v.code_index + (v.length as u64)
+                        })
+                        .collect();
+                    if let Some(found) = in_scope.iter().find(|v| v.name == name) {
+                        var = Some((found.slot, found.signature.clone()));
+                    }
+                }
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_err) => return Ok(None),
-            };
+                Err(_err) => {}
+            }
 
-            let in_scope: Vec<VariableInfo> = vars
-                .into_iter()
-                .filter(|v| {
-                    v.code_index <= location.index
-                        && location.index < v.code_index + (v.length as u64)
-                })
-                .collect();
-            let Some(var) = in_scope.iter().find(|v| v.name == name) else {
+            if var.is_none() {
+                let (_argc, vars) = match cancellable_jdwp(
+                    cancel,
+                    jdwp.method_variable_table(location.class_id, location.method_id),
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_err) => return Ok(None),
+                };
+
+                let in_scope: Vec<VariableInfo> = vars
+                    .into_iter()
+                    .filter(|v| {
+                        v.code_index <= location.index
+                            && location.index < v.code_index + (v.length as u64)
+                    })
+                    .collect();
+                if let Some(found) = in_scope.iter().find(|v| v.name == name) {
+                    var = Some((found.slot, found.signature.clone()));
+                }
+            }
+
+            let Some((slot, signature)) = var else {
                 return Ok(None);
             };
 
             let mut values = match cancellable_jdwp(
                 cancel,
-                dbg.jdwp.stack_frame_get_values(
+                jdwp.stack_frame_get_values(
                     thread,
                     frame_id,
-                    &[(var.slot, var.signature.clone())],
+                    &[(slot, signature)],
                 ),
             )
             .await
@@ -2647,6 +2698,7 @@ impl Debugger {
         }
 
         let started = Instant::now();
+        let mut inspector = Inspector::new(jdwp.clone());
 
         fn unsafe_existing_stream_message(stream_expr: &str) -> String {
             // This mirrors `nova-stream-debug`'s safety guard message. Sampling a stream requires
@@ -2786,7 +2838,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             // Best-effort: if the variable isn't found in the requested frame, walk up the
             // stack and use the first frame where it is in-scope.
             let mut value = resolve_local_in_frame(
-                self,
+                &jdwp,
                 cancel,
                 frame.thread,
                 frame.frame_id,
@@ -2796,14 +2848,13 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             .await?;
 
             if value.is_none() {
-                let frames =
-                    cancellable_jdwp(cancel, self.jdwp.frames(frame.thread, 0, -1)).await?;
+                let frames = cancellable_jdwp(cancel, jdwp.frames(frame.thread, 0, -1)).await?;
                 for frame_info in frames {
                     if frame_info.frame_id == frame.frame_id {
                         continue;
                     }
                     value = resolve_local_in_frame(
-                        self,
+                        &jdwp,
                         cancel,
                         frame.thread,
                         frame_info.frame_id,
@@ -2833,8 +2884,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             };
 
             // First attempt: use the built-in preview for known collection types.
-            let preview =
-                cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await?;
+            let preview = cancellable_jdwp(cancel, inspector.preview_object(object_id)).await?;
             let collection_type = Some(preview.runtime_type.clone());
 
             let (size, mut raw_sample) = match preview.kind {
@@ -2845,22 +2895,18 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     // Arrays.asList uses `java.util.Arrays$ArrayList`, which isn't covered by
                     // the default preview helpers. Read the backing array field directly.
                     let children =
-                        cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await?;
-                    let array_id =
-                        children
-                            .iter()
-                            .find_map(|child| match (&child.name[..], &child.value) {
-                                ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
-                                _ => None,
-                            });
+                        cancellable_jdwp(cancel, inspector.object_children(object_id)).await?;
+                    let array_id = children.iter().find_map(|child| match (&child.name[..], &child.value) {
+                        ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
+                        _ => None,
+                    });
                     let Some(array_id) = array_id else {
                         return Err(DebuggerError::InvalidRequest(
                             "unsupported list implementation (missing backing array)".to_string(),
                         ));
                     };
                     let length =
-                        cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id))
-                            .await?;
+                        cancellable_jdwp(cancel, jdwp.array_reference_length(array_id)).await?;
                     let length = length.max(0) as usize;
                     let sample_len = length.min(config.max_sample_size);
                     let sample = if sample_len == 0 {
@@ -2868,8 +2914,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     } else {
                         cancellable_jdwp(
                             cancel,
-                            self.jdwp
-                                .array_reference_get_values(array_id, 0, sample_len as i32),
+                            jdwp.array_reference_get_values(array_id, 0, sample_len as i32),
                         )
                         .await?
                     };
@@ -2890,7 +2935,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             let truncated = raw_sample.len() < size;
             let mut elements = Vec::with_capacity(raw_sample.len());
             for v in &raw_sample {
-                elements.push(format_stream_value(self, cancel, v).await?);
+                elements.push(format_stream_value(&mut inspector, cancel, v).await?);
             }
 
             (elements, truncated, collection_type)

@@ -1992,21 +1992,11 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         // If the timestamped SNAPSHOT jar isn't present in the repo, fall back to the
         // conventional `<artifactId>-<version>(-classifier).jar` path.
         let fallback = version_dir.join(default_file_name(version));
-        return Some(fallback);
+        return exists_as_jar(&fallback).then_some(fallback);
     }
 
     let path = version_dir.join(default_file_name(version));
-    Some(path)
-}
-
-fn exists_as_jar(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
-}
-
-fn exists_as_jar(path: &Path) -> bool {
-    // Maven dependency resolution frequently probes for jar files derived from POM coordinates.
-    // Use `is_file` (not `exists`) so we don't treat directories as valid artifacts.
-    path.is_file()
+    exists_as_jar(&path).then_some(path)
 }
 
 fn exists_as_jar(path: &Path) -> bool {

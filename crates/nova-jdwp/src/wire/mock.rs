@@ -2016,6 +2016,14 @@ async fn handle_packet(
 
                     let value = match (slot, tag) {
                         (0, b'I') => JdwpValue::Int(42),
+                        // Slot 0 is `int x` in the non-generic variable table, but is also used
+                        // for `List<String> list` in the mock's generic variable table. When the
+                        // requested tag indicates a reference type, return the sample array object
+                        // so stream-debug can treat it as a collection-like source.
+                        (0, _) => JdwpValue::Object {
+                            tag: b'[',
+                            id: ARRAY_OBJECT_ID,
+                        },
                         (1, _) => JdwpValue::Object {
                             tag: b'L',
                             id: OBJECT_ID,
@@ -2350,6 +2358,52 @@ async fn handle_packet(
             let array_id = r.read_object_id(sizes).unwrap_or(0);
             let first_index = r.read_i32().unwrap_or(0);
             let length = r.read_i32().unwrap_or(0);
+
+            // When the reply is intentionally delayed (used by higher-level adapter tests),
+            // emit a breakpoint event while the command is "in flight". This mimics real JDWP
+            // behavior where async events from other threads can be delivered while the debugger
+            // is awaiting a long-running request.
+            //
+            // This is intentionally best-effort and only kicks in when:
+            // - The reply is configured to be delayed for this command, and
+            // - A breakpoint event request is configured.
+            if let Some(delay) = state.reply_delay(packet.command_set, packet.command) {
+                if !delay.is_zero() {
+                    let breakpoint_request = { *state.breakpoint_request.lock().await };
+                    let breakpoint_suspend_policy = { *state.breakpoint_suspend_policy.lock().await };
+
+                    if let Some(stop_packet) = make_stop_event_packet(
+                        state,
+                        id_sizes,
+                        breakpoint_request,
+                        breakpoint_suspend_policy,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ) {
+                        let writer = writer.clone();
+                        let shutdown = shutdown.clone();
+                        let event_delay = if delay > Duration::from_millis(100) {
+                            Duration::from_millis(50)
+                        } else {
+                            let ms = (delay.as_millis() / 2).max(1);
+                            Duration::from_millis(ms as u64)
+                        };
+
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = shutdown.cancelled() => {}
+                                _ = tokio::time::sleep(event_delay) => {
+                                    let mut guard = writer.lock().await;
+                                    let _ = guard.write_all(&stop_packet).await;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
             let mut w = JdwpWriter::new();
             if let Some(values) = state.array_values.lock().await.get(&array_id) {
                 let start = first_index.max(0) as usize;

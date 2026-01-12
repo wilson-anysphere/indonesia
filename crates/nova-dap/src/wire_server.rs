@@ -35,7 +35,7 @@ use crate::{
         HotSwapEngine, HotSwapStatus,
     },
     javac::{compile_java_for_hot_swap, resolve_hot_swap_javac_config},
-    stream_debug::{StreamDebugArguments, StreamDebugBody, STREAM_DEBUG_COMMAND},
+    stream_debug::{StreamDebugArguments, STREAM_DEBUG_COMMAND},
     wire_debugger::{
         is_retryable_attach_error, AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger,
         DebuggerError, FunctionBreakpointSpec, StepDepth, VmStoppedValue,
@@ -3196,117 +3196,14 @@ async fn handle_request_inner(
                 }
             };
 
-            let frame_id = args.frame_id.filter(|frame_id| *frame_id > 0);
-            let Some(frame_id) = frame_id else {
-                send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some(
-                        "This request requires a stack frame. Retry while stopped or pass frameId."
-                            .to_string(),
-                    ),
-                );
-                return;
-            };
-
-            let analysis = match nova_stream_debug::analyze_stream_expression(&args.expression) {
-                Ok(chain) => chain,
-                Err(err) => {
-                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
-                    return;
-                }
-            };
-
-            let config = args.into_config();
-
-            fn is_pure_access_expr(expr: &str) -> bool {
-                // Heuristic: if the expression contains no *call* segments, it's likely an existing
-                // Stream *value* (e.g. `s`, `this.s`, `foo.bar`, `(s)`, `((Stream<?>) s)`), which is
-                // unsafe to sample because iterating consumes the stream.
-                //
-                // If the expression contains a call (e.g. `collection.stream(...)`,
-                // `Arrays.stream(arr)`, `getStream()`), it is usually safe to re-evaluate.
-                //
-                // When we can't confidently parse, err on the side of safety (treat as a value).
-                let expr = expr.trim();
-                if expr.is_empty() {
-                    return true;
-                }
-
-                let mut in_str = false;
-                let mut in_char = false;
-                let mut escape = false;
-
-                let chars: Vec<char> = expr.chars().collect();
-                for (idx, ch) in chars.iter().enumerate() {
-                    if escape {
-                        escape = false;
-                        continue;
-                    }
-
-                    if in_str {
-                        if *ch == '\\' {
-                            escape = true;
-                        } else if *ch == '"' {
-                            in_str = false;
-                        }
-                        continue;
-                    }
-
-                    if in_char {
-                        if *ch == '\\' {
-                            escape = true;
-                        } else if *ch == '\'' {
-                            in_char = false;
-                        }
-                        continue;
-                    }
-
-                    match *ch {
-                        '"' => {
-                            in_str = true;
-                            continue;
-                        }
-                        '\'' => {
-                            in_char = true;
-                            continue;
-                        }
-                        '(' => {
-                            // Look back for the previous non-whitespace character.
-                            let mut j = idx;
-                            while j > 0 {
-                                j -= 1;
-                                let prev = chars[j];
-                                if prev.is_whitespace() {
-                                    continue;
-                                }
-
-                                // A call segment is preceded by an identifier character, e.g.
-                                // `stream(`.
-                                if prev == '_' || prev == '$' || prev.is_alphanumeric() {
-                                    return false;
-                                }
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                true
-            }
-
-            // IMPORTANT: Do not hold the debugger mutex across compilation / JDWP InvokeMethod.
-            // Stream debug can execute user code and trigger async JDWP events, which the event
-            // forwarding task must be able to process concurrently.
+            // IMPORTANT: Do not hold the debugger mutex while stream-debugging. Stream debug may
+            // execute JDWP operations that interleave with asynchronous events; the event
+            // forwarding task must be able to lock the debugger concurrently.
             //
-            // While the invoke is in flight, mark the evaluation thread as being in internal
+            // While stream debug is in-flight, mark the evaluation thread as being in internal
             // evaluation mode so the JDWP event task can auto-resume any breakpoint hits without
             // emitting DAP stop/output events or mutating hit-count breakpoint state.
-            let (jdwp, thread_id, _jdwp_frame_id, _eval_guard) = {
+            let (fut, _eval_guard) = {
                 let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                     Some(guard) => guard,
                     None => {
@@ -3333,7 +3230,23 @@ async fn handle_request_inner(
                     return;
                 };
 
-                let Some((thread_id, jdwp_frame_id)) = dbg.jdwp_frame(frame_id) else {
+                let frame_id = args.frame_id.filter(|frame_id| *frame_id > 0);
+                let Some(frame_id) = frame_id else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(
+                            "This request requires a stack frame. Retry while stopped or pass frameId."
+                                .to_string(),
+                        ),
+                    );
+                    return;
+                };
+
+                let Some((thread_id, _jdwp_frame_id)) = dbg.jdwp_frame(frame_id) else {
                     send_response(
                         out_tx,
                         seq,
@@ -3344,52 +3257,32 @@ async fn handle_request_inner(
                     );
                     return;
                 };
+                let eval_guard = dbg.begin_internal_evaluation(thread_id);
 
-                // `StreamSource::ExistingStream` can be either:
-                // - an already-instantiated stream value (unsafe to sample: iterating consumes it)
-                // - a stream-producing expression (usually safe to re-evaluate, e.g. Arrays.stream(arr))
-                //
-                // Heuristic: if the source expression contains no call segments, treat it as a value
-                // and refuse by default (sampling consumes streams).
-                if let nova_stream_debug::StreamSource::ExistingStream { stream_expr } =
-                    &analysis.source
-                {
-                    let stream_expr = stream_expr.trim();
-                    let looks_like_value = is_pure_access_expr(stream_expr);
-                    if looks_like_value {
+                let config = args.into_config();
+
+                match dbg.stream_debug(cancel.clone(), frame_id, args.expression.clone(), config) {
+                    Ok(fut) => (fut, eval_guard),
+                    Err(err) if is_cancelled_error(&err) => {
                         send_response(
                             out_tx,
                             seq,
                             request,
                             false,
                             None,
-                            Some(format!(
-                                "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
-Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
-Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
-                            )),
+                            Some("cancelled".to_string()),
                         );
                         return;
                     }
-                }
-                let eval_guard = dbg.begin_internal_evaluation(thread_id);
-                (dbg.jdwp_client(), thread_id, jdwp_frame_id, eval_guard)
-            };
-
-            let max_sample_size = config.max_sample_size.min(i32::MAX as usize) as i32;
-            let invoke_args = [JdwpValue::Int(max_sample_size)];
-            let invoke = jdwp.class_type_invoke_method(0, thread_id, 0, &invoke_args, 0);
-
-            let invoke_result = tokio::select! {
-                _ = cancel.cancelled() => Err(JdwpError::Cancelled),
-                res = tokio::time::timeout(config.max_total_time, invoke) => match res {
-                    Ok(res) => res,
-                    Err(_elapsed) => Err(JdwpError::Timeout),
+                    Err(err) => {
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        return;
+                    }
                 }
             };
 
-            match invoke_result {
-                Ok((value, exception)) if cancel.is_cancelled() => send_response(
+            match fut.await {
+                Ok(body) if cancel.is_cancelled() => send_response(
                     out_tx,
                     seq,
                     request,
@@ -3397,77 +3290,14 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     None,
                     Some("cancelled".to_string()),
                 ),
-                Ok((_value, exception)) if exception != 0 => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some(format!(
-                        "stream debug invocation threw exception objectId=0x{exception:x}"
-                    )),
-                ),
-                Ok((value, _exception)) => {
-                    let source_sample = nova_stream_debug::StreamSample {
-                        elements: vec![value.to_string()],
-                        truncated: false,
-                        element_type: None,
-                        collection_type: None,
-                    };
-
-                    let steps: Vec<nova_stream_debug::StreamStepResult> = analysis
-                        .intermediates
-                        .iter()
-                        .map(|op| nova_stream_debug::StreamStepResult {
-                            operation: op.name.clone(),
-                            kind: op.kind,
-                            executed: false,
-                            input: source_sample.clone(),
-                            output: source_sample.clone(),
-                            duration_ms: 0,
-                        })
-                        .collect();
-
-                    let terminal = analysis.terminal.as_ref().map(|op| {
-                        nova_stream_debug::StreamTerminalResult {
-                            operation: op.name.clone(),
-                            kind: op.kind,
-                            executed: false,
-                            value: None,
-                            type_name: None,
-                            duration_ms: 0,
-                        }
-                    });
-
-                    let runtime = nova_stream_debug::StreamDebugResult {
-                        expression: analysis.expression.clone(),
-                        source: analysis.source.clone(),
-                        source_sample,
-                        source_duration_ms: 0,
-                        steps,
-                        terminal,
-                        total_duration_ms: 0,
-                    };
-
-                    let body = StreamDebugBody { analysis, runtime };
-
-                    send_response(out_tx, seq, request, true, Some(json!(body)), None);
-                }
-                Err(JdwpError::Cancelled) => send_response(
+                Ok(body) => send_response(out_tx, seq, request, true, Some(json!(body)), None),
+                Err(err) if is_cancelled_error(&err) => send_response(
                     out_tx,
                     seq,
                     request,
                     false,
                     None,
                     Some("cancelled".to_string()),
-                ),
-                Err(JdwpError::Timeout) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("stream debug timed out".to_string()),
                 ),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
