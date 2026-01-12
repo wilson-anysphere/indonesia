@@ -3461,7 +3461,7 @@ function createVsTestItem(
   idPrefix: string,
   item: TestItem,
 ): vscode.TestItem {
-  const uri = vscode.Uri.file(path.join(projectRoot, item.path));
+  const uri = uriForWorkspacePath(workspaceFolder, path.join(projectRoot, item.path));
   const vscodeId = `${idPrefix}${item.id}`;
   const vscodeItem = controller.createTestItem(vscodeId, item.label, uri);
   vscodeItem.range = toVsRange(item.range);
@@ -3477,6 +3477,15 @@ function createVsTestItem(
   }
 
   return vscodeItem;
+}
+
+function uriForWorkspacePath(workspaceFolder: vscode.WorkspaceFolder, fsPath: string): vscode.Uri {
+  const uri = vscode.Uri.file(fsPath);
+  // Preserve workspace scheme/authority for remote workspaces (e.g. vscode-remote://...) so test
+  // items point at the correct files.
+  return workspaceFolder.uri.scheme === 'file'
+    ? uri
+    : uri.with({ scheme: workspaceFolder.uri.scheme, authority: workspaceFolder.uri.authority });
 }
 
 function toVsRange(range: LspRange): vscode.Range {

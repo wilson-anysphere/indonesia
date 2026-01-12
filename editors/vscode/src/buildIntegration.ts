@@ -410,10 +410,16 @@ export function registerNovaBuildIntegration(
     }),
   );
 
+  const uriForWorkspacePath = (folder: vscode.WorkspaceFolder, fsPath: string): vscode.Uri => {
+    const uri = vscode.Uri.file(fsPath);
+    // Preserve the workspace scheme/authority for remote workspaces so diagnostics map to the
+    // correct documents/Problems entries.
+    return folder.uri.scheme === 'file' ? uri : uri.with({ scheme: folder.uri.scheme, authority: folder.uri.authority });
+  };
+
   const clearDiagnosticsForWorkspace = (folder: vscode.WorkspaceFolder, state: WorkspaceBuildState): void => {
-    void folder;
     for (const file of state.diagnosticFiles) {
-      buildDiagnostics.delete(vscode.Uri.file(file));
+      buildDiagnostics.delete(uriForWorkspacePath(folder, file));
     }
     state.diagnosticFiles.clear();
   };
@@ -492,7 +498,7 @@ export function registerNovaBuildIntegration(
             continue;
           }
 
-          const uri = vscode.Uri.file(resolved);
+          const uri = uriForWorkspacePath(folder, resolved);
           const diagnostics: vscode.Diagnostic[] = [];
           for (const entry of entries) {
             const startLine = toNonNegativeInt(entry.range?.start?.line);
