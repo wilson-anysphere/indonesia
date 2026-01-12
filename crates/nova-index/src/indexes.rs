@@ -20,7 +20,50 @@ pub struct SymbolLocation {
     pub column: u32,
 }
 
-/// Symbol index: name → locations.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
+pub enum IndexSymbolKind {
+    Class,
+    Interface,
+    Enum,
+    Record,
+    Annotation,
+    Method,
+    Field,
+    Constructor,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
+pub struct IndexedSymbol {
+    pub qualified_name: String,
+    pub kind: IndexSymbolKind,
+    pub container_name: Option<String>,
+    pub location: SymbolLocation,
+    pub ast_id: u32,
+}
+
+/// Symbol index: name → definitions.
 #[derive(
     Clone,
     Debug,
@@ -36,7 +79,7 @@ pub struct SymbolLocation {
 #[archive(check_bytes)]
 pub struct SymbolIndex {
     pub generation: u64,
-    pub symbols: BTreeMap<String, Vec<SymbolLocation>>,
+    pub symbols: BTreeMap<String, Vec<IndexedSymbol>>,
 }
 
 impl SymbolIndex {
@@ -54,45 +97,55 @@ impl SymbolIndex {
         // Approximate per-entry storage inside the `BTreeMap` nodes.
         bytes = bytes.saturating_add(
             (self.symbols.len() as u64).saturating_mul(
-                (size_of::<String>() + size_of::<Vec<SymbolLocation>>()) as u64,
+                (size_of::<String>() + size_of::<Vec<IndexedSymbol>>()) as u64,
             ),
         );
 
-        for (symbol, locations) in &self.symbols {
+        for (symbol, symbols) in &self.symbols {
             bytes = bytes.saturating_add(symbol.capacity() as u64);
 
             bytes = bytes.saturating_add(
-                (locations.capacity() as u64).saturating_mul(size_of::<SymbolLocation>() as u64),
+                (symbols.capacity() as u64).saturating_mul(size_of::<IndexedSymbol>() as u64),
             );
-            for loc in locations {
-                bytes = bytes.saturating_add(loc.file.capacity() as u64);
+            for sym in symbols {
+                bytes = bytes.saturating_add(sym.qualified_name.capacity() as u64);
+                if let Some(container) = &sym.container_name {
+                    bytes = bytes.saturating_add(container.capacity() as u64);
+                }
+                bytes = bytes.saturating_add(sym.location.file.capacity() as u64);
             }
         }
 
         bytes
     }
 
-    pub fn insert(&mut self, symbol: impl Into<String>, location: SymbolLocation) {
-        self.symbols
-            .entry(symbol.into())
-            .or_default()
-            .push(location);
+    fn sort_symbols(symbols: &mut [IndexedSymbol]) {
+        symbols.sort_by(|a, b| {
+            a.qualified_name
+                .cmp(&b.qualified_name)
+                .then_with(|| a.ast_id.cmp(&b.ast_id))
+        });
+    }
+
+    pub fn insert(&mut self, symbol: impl Into<String>, sym: IndexedSymbol) {
+        let symbols = self.symbols.entry(symbol.into()).or_default();
+        symbols.push(sym);
+        Self::sort_symbols(symbols);
     }
 
     pub fn merge_from(&mut self, other: SymbolIndex) {
         self.generation = self.generation.max(other.generation);
-        for (symbol, mut locations) in other.symbols {
-            self.symbols
-                .entry(symbol)
-                .or_default()
-                .append(&mut locations);
+        for (symbol, mut symbols) in other.symbols {
+            let entry = self.symbols.entry(symbol).or_default();
+            entry.append(&mut symbols);
+            Self::sort_symbols(entry);
         }
     }
 
     pub fn invalidate_file(&mut self, file: &str) {
-        self.symbols.retain(|_, locations| {
-            locations.retain(|loc| loc.file != file);
-            !locations.is_empty()
+        self.symbols.retain(|_, symbols| {
+            symbols.retain(|sym| sym.location.file != file);
+            !symbols.is_empty()
         });
     }
 }
@@ -510,10 +563,16 @@ mod tests {
 
         indexes.symbols.insert(
             "Foo".to_string(),
-            SymbolLocation {
-                file: "A.java".to_string(),
-                line: 0,
-                column: 0,
+            IndexedSymbol {
+                qualified_name: "Foo".to_string(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "A.java".to_string(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
             },
         );
         let next = indexes.estimated_bytes();

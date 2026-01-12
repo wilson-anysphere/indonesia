@@ -4,7 +4,8 @@ use nova_hir::item_tree::{Item as HirItem, ItemTree as HirItemTree, Member as Hi
 use nova_syntax::ast::{self, AstNode};
 
 use crate::indexes::{
-    AnnotationLocation, InheritanceEdge, ProjectIndexes, ReferenceLocation, SymbolLocation,
+    AnnotationLocation, IndexedSymbol, IndexSymbolKind, InheritanceEdge, ProjectIndexes,
+    ReferenceLocation, SymbolLocation,
 };
 
 /// Stable, range-insensitive semantic information extracted from a Java syntax tree.
@@ -287,24 +288,25 @@ pub fn build_file_indexes(
     let mut out = ProjectIndexes::default();
     let file = rel_path.to_string();
 
-    let mut symbol_names = BTreeSet::<String>::new();
     let mut reference_names = BTreeSet::<String>::new();
-    collect_hir_names(hir, &mut symbol_names, &mut reference_names);
+    let package = hir.package.as_ref().map(|pkg| pkg.name.as_str());
+
+    let mut type_stack: Vec<String> = Vec::new();
+    for item in &hir.items {
+        collect_hir_item(
+            hir,
+            *item,
+            package,
+            &mut type_stack,
+            &file,
+            &mut out,
+            &mut reference_names,
+        );
+    }
 
     // Treat supertypes in inheritance edges as type references.
     for (_, supertype) in &extras.inheritance {
         reference_names.insert(supertype.clone());
-    }
-
-    for name in symbol_names {
-        out.symbols.insert(
-            name,
-            SymbolLocation {
-                file: file.clone(),
-                line: 0,
-                column: 0,
-            },
-        );
     }
 
     for name in reference_names {
@@ -342,70 +344,192 @@ pub fn build_file_indexes(
         });
     out.inheritance.extend(edges);
 
-    out
-}
-
-fn collect_hir_names(
-    tree: &HirItemTree,
-    symbols: &mut BTreeSet<String>,
-    references: &mut BTreeSet<String>,
-) {
-    for item in &tree.items {
-        collect_hir_item(tree, *item, symbols, references);
+    // Keep results stable for deterministic tests.
+    for symbols in out.symbols.symbols.values_mut() {
+        symbols.sort_by(|a, b| {
+            a.qualified_name
+                .cmp(&b.qualified_name)
+                .then_with(|| a.ast_id.cmp(&b.ast_id))
+        });
     }
+
+    out
 }
 
 fn collect_hir_item(
     tree: &HirItemTree,
     item: HirItem,
-    symbols: &mut BTreeSet<String>,
+    package: Option<&str>,
+    type_stack: &mut Vec<String>,
+    file: &str,
+    out: &mut ProjectIndexes,
     references: &mut BTreeSet<String>,
 ) {
     match item {
         HirItem::Class(id) => {
             let data = tree.class(id);
-            symbols.insert(data.name.clone());
-            collect_hir_members(tree, &data.members, symbols, references);
+            collect_hir_type(
+                tree,
+                IndexSymbolKind::Class,
+                &data.name,
+                id.ast_id.to_raw(),
+                &data.members,
+                package,
+                type_stack,
+                file,
+                out,
+                references,
+            );
         }
         HirItem::Interface(id) => {
             let data = tree.interface(id);
-            symbols.insert(data.name.clone());
-            collect_hir_members(tree, &data.members, symbols, references);
+            collect_hir_type(
+                tree,
+                IndexSymbolKind::Interface,
+                &data.name,
+                id.ast_id.to_raw(),
+                &data.members,
+                package,
+                type_stack,
+                file,
+                out,
+                references,
+            );
         }
         HirItem::Enum(id) => {
             let data = tree.enum_(id);
-            symbols.insert(data.name.clone());
-            collect_hir_members(tree, &data.members, symbols, references);
+            collect_hir_type(
+                tree,
+                IndexSymbolKind::Enum,
+                &data.name,
+                id.ast_id.to_raw(),
+                &data.members,
+                package,
+                type_stack,
+                file,
+                out,
+                references,
+            );
         }
         HirItem::Record(id) => {
             let data = tree.record(id);
-            symbols.insert(data.name.clone());
-            collect_hir_members(tree, &data.members, symbols, references);
+            collect_hir_type(
+                tree,
+                IndexSymbolKind::Record,
+                &data.name,
+                id.ast_id.to_raw(),
+                &data.members,
+                package,
+                type_stack,
+                file,
+                out,
+                references,
+            );
         }
         HirItem::Annotation(id) => {
             let data = tree.annotation(id);
-            symbols.insert(data.name.clone());
-            collect_hir_members(tree, &data.members, symbols, references);
+            collect_hir_type(
+                tree,
+                IndexSymbolKind::Annotation,
+                &data.name,
+                id.ast_id.to_raw(),
+                &data.members,
+                package,
+                type_stack,
+                file,
+                out,
+                references,
+            );
         }
     }
+}
+
+fn collect_hir_type(
+    tree: &HirItemTree,
+    kind: IndexSymbolKind,
+    name: &str,
+    ast_id: u32,
+    members: &[HirMember],
+    package: Option<&str>,
+    type_stack: &mut Vec<String>,
+    file: &str,
+    out: &mut ProjectIndexes,
+    references: &mut BTreeSet<String>,
+) {
+    let container_name = if type_stack.is_empty() {
+        package.map(|pkg| pkg.to_string()).filter(|pkg| !pkg.is_empty())
+    } else {
+        Some(fqn_for_type(package, type_stack))
+    };
+
+    type_stack.push(name.to_string());
+    let qualified_name = fqn_for_type(package, type_stack);
+
+    out.symbols.insert(
+        name,
+        IndexedSymbol {
+            qualified_name,
+            kind,
+            container_name,
+            location: SymbolLocation {
+                file: file.to_string(),
+                line: 0,
+                column: 0,
+            },
+            ast_id,
+        },
+    );
+
+    collect_hir_members(tree, members, package, type_stack, file, out, references);
+    type_stack.pop();
 }
 
 fn collect_hir_members(
     tree: &HirItemTree,
     members: &[HirMember],
-    symbols: &mut BTreeSet<String>,
+    package: Option<&str>,
+    type_stack: &mut Vec<String>,
+    file: &str,
+    out: &mut ProjectIndexes,
     references: &mut BTreeSet<String>,
 ) {
+    let container_type_fqn = fqn_for_type(package, type_stack);
     for member in members {
         match member {
             HirMember::Field(id) => {
                 let field = tree.field(*id);
-                symbols.insert(field.name.clone());
+                out.symbols.insert(
+                    &field.name,
+                    IndexedSymbol {
+                        qualified_name: format!("{container_type_fqn}.{}", field.name),
+                        kind: IndexSymbolKind::Field,
+                        container_name: Some(container_type_fqn.clone()),
+                        location: SymbolLocation {
+                            file: file.to_string(),
+                            line: 0,
+                            column: 0,
+                        },
+                        ast_id: id.ast_id.to_raw(),
+                    },
+                );
                 collect_type_references(&field.ty, references);
             }
             HirMember::Method(id) => {
                 let method = tree.method(*id);
-                symbols.insert(method.name.clone());
+                out.symbols.insert(
+                    &method.name,
+                    IndexedSymbol {
+                        qualified_name: format!("{container_type_fqn}.{}", method.name),
+                        kind: IndexSymbolKind::Method,
+                        container_name: Some(container_type_fqn.clone()),
+                        location: SymbolLocation {
+                            file: file.to_string(),
+                            line: 0,
+                            column: 0,
+                        },
+                        ast_id: id.ast_id.to_raw(),
+                    },
+                );
                 collect_type_references(&method.return_ty, references);
                 for param in &method.params {
                     collect_type_references(&param.ty, references);
@@ -413,13 +537,36 @@ fn collect_hir_members(
             }
             HirMember::Constructor(id) => {
                 let ctor = tree.constructor(*id);
-                symbols.insert(ctor.name.clone());
+                out.symbols.insert(
+                    &ctor.name,
+                    IndexedSymbol {
+                        qualified_name: format!("{container_type_fqn}.{}", ctor.name),
+                        kind: IndexSymbolKind::Constructor,
+                        container_name: Some(container_type_fqn.clone()),
+                        location: SymbolLocation {
+                            file: file.to_string(),
+                            line: 0,
+                            column: 0,
+                        },
+                        ast_id: id.ast_id.to_raw(),
+                    },
+                );
                 for param in &ctor.params {
                     collect_type_references(&param.ty, references);
                 }
             }
             HirMember::Initializer(_) => {}
-            HirMember::Type(item) => collect_hir_item(tree, *item, symbols, references),
+            HirMember::Type(item) => {
+                collect_hir_item(
+                    tree,
+                    *item,
+                    package,
+                    type_stack,
+                    file,
+                    out,
+                    references,
+                );
+            }
         }
     }
 }
@@ -503,6 +650,21 @@ fn is_type_keyword(ident: &str) -> bool {
     )
 }
 
+fn fqn_for_type(package: Option<&str>, type_parts: &[String]) -> String {
+    let package = package.filter(|pkg| !pkg.is_empty());
+    let mut out = String::new();
+    if let Some(pkg) = package {
+        out.push_str(pkg);
+    }
+    for part in type_parts {
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,7 +722,50 @@ mod tests {
                 indexes.symbols.symbols.contains_key(name),
                 "expected symbol {name} in symbols index"
             );
+            assert!(
+                !indexes
+                    .symbols
+                    .symbols
+                    .get(name)
+                    .expect("key checked above")
+                    .is_empty(),
+                "expected symbol {name} to have at least one definition"
+            );
         }
+
+        let inner = indexes
+            .symbols
+            .symbols
+            .get("Inner")
+            .unwrap()
+            .iter()
+            .find(|sym| sym.qualified_name == "com.example.A.Inner")
+            .expect("expected Inner to have qualified name com.example.A.Inner");
+        assert_eq!(inner.kind, IndexSymbolKind::Class);
+        assert_eq!(inner.container_name.as_deref(), Some("com.example.A"));
+        assert!(inner.ast_id > 0, "expected Inner ast_id to be non-zero");
+
+        let field = indexes
+            .symbols
+            .symbols
+            .get("field")
+            .unwrap()
+            .iter()
+            .find(|sym| sym.qualified_name == "com.example.A.field")
+            .expect("expected field to have qualified name com.example.A.field");
+        assert_eq!(field.kind, IndexSymbolKind::Field);
+        assert_eq!(field.container_name.as_deref(), Some("com.example.A"));
+
+        let method = indexes
+            .symbols
+            .symbols
+            .get("m")
+            .unwrap()
+            .iter()
+            .find(|sym| sym.qualified_name == "com.example.A.m")
+            .expect("expected method m to have qualified name com.example.A.m");
+        assert_eq!(method.kind, IndexSymbolKind::Method);
+        assert_eq!(method.container_name.as_deref(), Some("com.example.A"));
 
         // Inheritance edges (from rowan AST).
         assert!(

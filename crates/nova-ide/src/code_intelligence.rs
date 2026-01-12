@@ -3113,7 +3113,7 @@ fn infer_call_return_type(
         return Some(nova_types::format_type(&types, &ty));
     }
 
-    let (receiver_ty, call_kind) = infer_call_receiver(&mut types, analysis, text, call);
+    let (receiver_ty, call_kind) = infer_call_receiver_lexical(&mut types, analysis, text, call);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return fallback_receiver_type_for_call(call.name.as_str());
     }
@@ -3166,7 +3166,7 @@ fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
     analysis.tokens[idx - 1].kind == TokenKind::Ident && analysis.tokens[idx - 1].text == "new"
 }
 
-fn infer_call_receiver(
+fn infer_call_receiver_lexical(
     types: &mut TypeStore,
     analysis: &Analysis,
     text: &str,

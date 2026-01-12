@@ -1,9 +1,23 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
     append_index_segment, compact_index_segments, load_index_archives, load_index_view,
-    save_indexes, ProjectIndexes, SymbolLocation,
+    save_indexes, IndexedSymbol, IndexSymbolKind, ProjectIndexes, SymbolLocation,
 };
 use std::path::PathBuf;
+
+fn sym(name: &str, file: &str, line: u32, column: u32) -> IndexedSymbol {
+    IndexedSymbol {
+        qualified_name: name.to_string(),
+        kind: IndexSymbolKind::Class,
+        container_name: None,
+        location: SymbolLocation {
+            file: file.to_string(),
+            line,
+            column,
+        },
+        ast_id: 0,
+    }
+}
 
 #[test]
 fn segments_overlay_and_compaction() {
@@ -31,22 +45,8 @@ fn segments_overlay_and_compaction() {
     .unwrap();
 
     let mut base = ProjectIndexes::default();
-    base.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
-    base.symbols.insert(
-        "B",
-        SymbolLocation {
-            file: "B.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    base.symbols.insert("A", sym("A", "A.java", 1, 1));
+    base.symbols.insert("B", sym("B", "B.java", 1, 1));
 
     save_indexes(&cache_dir, &snapshot_v1, &mut base).unwrap();
 
@@ -59,14 +59,7 @@ fn segments_overlay_and_compaction() {
     .unwrap();
 
     let mut delta = ProjectIndexes::default();
-    delta.symbols.insert(
-        "A2",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    delta.symbols.insert("A2", sym("A2", "A.java", 1, 1));
 
     append_index_segment(
         &cache_dir,

@@ -4,7 +4,8 @@ use nova_index::{
     load_sharded_index_view, load_sharded_index_view_lazy, load_sharded_index_view_lazy_fast,
     save_sharded_indexes,
     save_sharded_indexes_incremental, shard_id_for_path, AnnotationLocation, InheritanceEdge,
-    ProjectIndexes, ReferenceLocation, ShardedIndexOverlay, SymbolLocation,
+    IndexedSymbol, IndexSymbolKind, ProjectIndexes, ReferenceLocation, ShardedIndexOverlay,
+    SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -17,6 +18,20 @@ fn empty_shards(shard_count: u32) -> Vec<ProjectIndexes> {
 }
 
 fn assert_send_sync<T: Send + Sync>() {}
+
+fn sym(name: &str, file: &str, line: u32, column: u32) -> IndexedSymbol {
+    IndexedSymbol {
+        qualified_name: name.to_string(),
+        kind: IndexSymbolKind::Class,
+        container_name: None,
+        location: SymbolLocation {
+            file: file.to_string(),
+            line,
+            column,
+        },
+        ast_id: 0,
+    }
+}
 
 #[test]
 fn lazy_sharded_index_view_is_send_sync() {
@@ -55,22 +70,8 @@ fn sharded_roundtrip_loads_all_shards() {
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
     let shard_b = shard_id_for_path("B.java", shard_count) as usize;
 
-    shards[shard_a].symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
-    shards[shard_b].symbols.insert(
-        "B",
-        SymbolLocation {
-            file: "B.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_b].symbols.insert("B", sym("B", "B.java", 1, 1));
     shards[shard_b].references.insert(
         "A",
         ReferenceLocation {
@@ -152,14 +153,7 @@ fn invalidated_files_map_to_affected_shards() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
 
     // Change only A.java so only its shard is affected.
@@ -213,24 +207,10 @@ fn sharded_index_view_filters_invalidated_files() {
     let mut shards = empty_shards(shard_count);
     shards[shard_id_for_path("A.java", shard_count) as usize]
         .symbols
-        .insert(
-            "A",
-            SymbolLocation {
-                file: "A.java".to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        .insert("A", sym("A", "A.java", 1, 1));
     shards[shard_id_for_path("B.java", shard_count) as usize]
         .symbols
-        .insert(
-            "B",
-            SymbolLocation {
-                file: "B.java".to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        .insert("B", sym("B", "B.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
 
     // Modify A.java so it is marked invalidated, but keep shard files intact on disk.
@@ -289,14 +269,7 @@ fn sharded_index_view_overlay_merges_invalidated_files() {
     let mut shards = empty_shards(shard_count);
     for file in [&file_a, &file_b] {
         let shard = shard_id_for_path(file, shard_count) as usize;
-        shards[shard].symbols.insert(
-            "Foo",
-            SymbolLocation {
-                file: file.to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        shards[shard].symbols.insert("Foo", sym("Foo", file, 1, 1));
         shards[shard].references.insert(
             "Foo",
             ReferenceLocation {
@@ -316,14 +289,9 @@ fn sharded_index_view_overlay_merges_invalidated_files() {
     }
 
     let shard_a_idx = shard_id_for_path(&file_a, shard_count) as usize;
-    shards[shard_a_idx].symbols.insert(
-        "OnlyA",
-        SymbolLocation {
-            file: file_a.clone(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a_idx]
+        .symbols
+        .insert("OnlyA", sym("OnlyA", &file_a, 1, 1));
     shards[shard_a_idx].references.insert(
         "OnlyA",
         ReferenceLocation {
@@ -374,14 +342,7 @@ fn sharded_index_view_overlay_merges_invalidated_files() {
     // Apply overlay deltas for the invalidated file.
     let mut delta = ProjectIndexes::default();
     for (symbol, column) in [("Foo", 1u32), ("OnlyA", 1), ("NewInA", 10)] {
-        delta.symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: file_a.clone(),
-                line: 2,
-                column,
-            },
-        );
+        delta.symbols.insert(symbol, sym(symbol, &file_a, 2, column));
         delta.references.insert(
             symbol,
             ReferenceLocation {
@@ -508,14 +469,7 @@ fn lazy_sharded_index_view_overlay_merges_invalidated_files() {
     let mut shards = empty_shards(shard_count);
     for file in [&file_a, &file_b] {
         let shard = shard_id_for_path(file, shard_count) as usize;
-        shards[shard].symbols.insert(
-            "Foo",
-            SymbolLocation {
-                file: file.to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        shards[shard].symbols.insert("Foo", sym("Foo", file, 1, 1));
         shards[shard].references.insert(
             "Foo",
             ReferenceLocation {
@@ -535,14 +489,9 @@ fn lazy_sharded_index_view_overlay_merges_invalidated_files() {
     }
 
     let shard_a_idx = shard_id_for_path(&file_a, shard_count) as usize;
-    shards[shard_a_idx].symbols.insert(
-        "OnlyA",
-        SymbolLocation {
-            file: file_a.clone(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a_idx]
+        .symbols
+        .insert("OnlyA", sym("OnlyA", &file_a, 1, 1));
     shards[shard_a_idx].references.insert(
         "OnlyA",
         ReferenceLocation {
@@ -593,14 +542,7 @@ fn lazy_sharded_index_view_overlay_merges_invalidated_files() {
     // Apply overlay deltas for the invalidated file.
     let mut delta = ProjectIndexes::default();
     for (symbol, column) in [("Foo", 1u32), ("OnlyA", 1), ("NewInA", 10)] {
-        delta.symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: file_a.clone(),
-                line: 2,
-                column,
-            },
-        );
+        delta.symbols.insert(symbol, sym(symbol, &file_a, 2, column));
         delta.references.insert(
             symbol,
             ReferenceLocation {
@@ -729,14 +671,7 @@ fn corrupt_shard_is_partial_cache_miss() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: name.clone(),
-                line: 1,
-                column: 1,
-            },
-        );
+        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
     }
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
@@ -816,14 +751,7 @@ fn lazy_sharded_index_view_discovers_corrupt_shards_on_access() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: name.clone(),
-                line: 1,
-                column: 1,
-            },
-        );
+        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
     }
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
@@ -858,7 +786,7 @@ fn lazy_sharded_index_view_discovers_corrupt_shards_on_access() {
         .expect("expected symbol to be present");
     assert_eq!(locations.iter().count(), 1);
     assert_eq!(
-        locations.iter().next().unwrap().file.as_str(),
+        locations.iter().next().unwrap().location.file.as_str(),
         paths[1].as_str()
     );
     assert!(loaded.view.missing_shards().is_empty());
@@ -897,27 +825,13 @@ fn sharded_save_rewrites_all_shards_when_shard_count_changes() {
     let mut shards_v1 = empty_shards(shard_count_v1);
     shards_v1[shard_id_for_path(&file, shard_count_v1) as usize]
         .symbols
-        .insert(
-            "A",
-            SymbolLocation {
-                file: file.clone(),
-                line: 1,
-                column: 1,
-            },
-        );
+        .insert("A", sym("A", &file, 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count_v1, &mut shards_v1).unwrap();
 
     let mut shards_v2 = empty_shards(shard_count_v2);
     shards_v2[shard_id_for_path(&file, shard_count_v2) as usize]
         .symbols
-        .insert(
-            "A",
-            SymbolLocation {
-                file: file.clone(),
-                line: 1,
-                column: 1,
-            },
-        );
+        .insert("A", sym("A", &file, 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count_v2, &mut shards_v2).unwrap();
 
     let loaded = load_sharded_index_archives(&cache_dir, &snapshot, shard_count_v2)
@@ -960,14 +874,7 @@ fn sharded_fast_load_does_not_read_project_file_contents() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
@@ -1009,14 +916,7 @@ fn lazy_sharded_fast_load_does_not_read_project_file_contents() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
@@ -1058,14 +958,7 @@ fn lazy_sharded_load_works_with_metadata_bin_only() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Simulate an interruption between writing `metadata.bin` and `metadata.json`.
@@ -1100,14 +993,7 @@ fn sharded_load_works_with_metadata_bin_only() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Simulate an interruption between writing `metadata.bin` and `metadata.json`.
@@ -1167,14 +1053,7 @@ fn save_sharded_indexes_rewrites_only_affected_shards() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: name.clone(),
-                line: 1,
-                column: 1,
-            },
-        );
+        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
     }
 
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
@@ -1213,14 +1092,9 @@ fn save_sharded_indexes_rewrites_only_affected_shards() {
         ProjectSnapshot::new(&project_root, paths.iter().map(PathBuf::from).collect()).unwrap();
 
     // Simulate an incremental rebuild by updating only the affected shard payload.
-    shards[affected_shard as usize].symbols.insert(
-        "Updated",
-        SymbolLocation {
-            file: affected_path.clone(),
-            line: 2,
-            column: 1,
-        },
-    );
+    shards[affected_shard as usize]
+        .symbols
+        .insert("Updated", sym("Updated", affected_path, 2, 1));
 
     save_sharded_indexes(&cache_dir, &snapshot_v2, shard_count, &mut shards).unwrap();
 
@@ -1279,14 +1153,7 @@ fn save_sharded_indexes_incremental_rewrites_only_touched_shards() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: name.clone(),
-                line: 1,
-                column: 1,
-            },
-        );
+        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
     }
 
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
@@ -1332,14 +1199,7 @@ fn save_sharded_indexes_incremental_rewrites_only_touched_shards() {
 
     let mut overlay = ShardedIndexOverlay::new(shard_count).unwrap();
     let mut delta = ProjectIndexes::default();
-    delta.symbols.insert(
-        "Updated",
-        SymbolLocation {
-            file: affected_path.clone(),
-            line: 2,
-            column: 1,
-        },
-    );
+    delta.symbols.insert("Updated", sym("Updated", affected_path, 2, 1));
     overlay.apply_file_delta(affected_path, delta);
 
     save_sharded_indexes_incremental(&cache_dir, &snapshot_v2, shard_count, &base, &overlay)

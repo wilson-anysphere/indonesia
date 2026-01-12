@@ -1,10 +1,24 @@
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
 use nova_index::{
-    load_index_view, load_index_view_fast, save_indexes, AnnotationLocation, ProjectIndexes,
-    ReferenceLocation, SymbolLocation,
+    load_index_view, load_index_view_fast, save_indexes, AnnotationLocation, IndexedSymbol,
+    IndexSymbolKind, ProjectIndexes, ReferenceLocation, SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+
+fn sym(name: &str, file: &str, line: u32, column: u32) -> IndexedSymbol {
+    IndexedSymbol {
+        qualified_name: name.to_string(),
+        kind: IndexSymbolKind::Class,
+        container_name: None,
+        location: SymbolLocation {
+            file: file.to_string(),
+            line,
+            column,
+        },
+        ast_id: 0,
+    }
+}
 
 #[test]
 fn index_view_filters_invalidated_files_without_materializing() {
@@ -35,14 +49,7 @@ fn index_view_filters_invalidated_files_without_materializing() {
     // Put the same symbol/annotation in two files so invalidation can filter
     // out a subset of results.
     for file in ["A.java", "B.java"] {
-        indexes.symbols.insert(
-            "Foo",
-            SymbolLocation {
-                file: file.to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        indexes.symbols.insert("Foo", sym("Foo", file, 1, 1));
         indexes.references.insert(
             "Foo",
             ReferenceLocation {
@@ -60,14 +67,7 @@ fn index_view_filters_invalidated_files_without_materializing() {
             },
         );
     }
-    indexes.symbols.insert(
-        "OnlyA",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("OnlyA", sym("OnlyA", "A.java", 1, 1));
     indexes.references.insert(
         "OnlyA",
         ReferenceLocation {
@@ -144,7 +144,7 @@ fn index_view_filters_invalidated_files_without_materializing() {
         let name = "Foo".to_string();
         view_v2.symbol_locations(&name)
     };
-    let symbol_files: Vec<&str> = symbol_iter.map(|loc| loc.file.as_str()).collect();
+    let symbol_files: Vec<&str> = symbol_iter.map(|loc| loc.location.file.as_str()).collect();
     assert_eq!(symbol_files, vec!["B.java"]);
 
     assert_eq!(view_v2.symbol_locations("OnlyA").count(), 0);
@@ -176,27 +176,15 @@ fn index_view_filters_invalidated_files_without_materializing() {
     // introduced by the updated file.
     view_v2.overlay.symbols.insert(
         "Foo",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 2,
-            column: 1,
-        },
+        sym("Foo", "A.java", 2, 1),
     );
     view_v2.overlay.symbols.insert(
         "OnlyA",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 2,
-            column: 1,
-        },
+        sym("OnlyA", "A.java", 2, 1),
     );
     view_v2.overlay.symbols.insert(
         "NewInA",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 2,
-            column: 10,
-        },
+        sym("NewInA", "A.java", 2, 10),
     );
     view_v2.overlay.references.insert(
         "Foo",
@@ -346,14 +334,7 @@ fn index_view_filters_deleted_files() {
 
     let mut indexes = ProjectIndexes::default();
     for file in ["A.java", "B.java"] {
-        indexes.symbols.insert(
-            "Foo",
-            SymbolLocation {
-                file: file.to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        indexes.symbols.insert("Foo", sym("Foo", file, 1, 1));
     }
     save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
@@ -369,7 +350,7 @@ fn index_view_filters_deleted_files() {
 
     let files: Vec<&str> = view_v2
         .symbol_locations("Foo")
-        .map(|loc| loc.file.as_str())
+        .map(|loc| loc.location.file.as_str())
         .collect();
     assert_eq!(files, vec!["A.java"]);
 }
@@ -401,14 +382,7 @@ fn index_view_marks_new_files_invalidated_without_filtering_existing_results() {
 
     let mut indexes = ProjectIndexes::default();
     for file in ["A.java", "B.java"] {
-        indexes.symbols.insert(
-            "Foo",
-            SymbolLocation {
-                file: file.to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        indexes.symbols.insert("Foo", sym("Foo", file, 1, 1));
     }
     save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
@@ -434,7 +408,7 @@ fn index_view_marks_new_files_invalidated_without_filtering_existing_results() {
 
     let files: Vec<&str> = view_v2
         .symbol_locations("Foo")
-        .map(|loc| loc.file.as_str())
+        .map(|loc| loc.location.file.as_str())
         .collect();
     assert_eq!(files, vec!["A.java", "B.java"]);
 }
@@ -466,14 +440,7 @@ fn index_view_fast_filters_invalidated_files_without_materializing() {
 
     let mut indexes = ProjectIndexes::default();
     for file in ["A.java", "B.java"] {
-        indexes.symbols.insert(
-            "Foo",
-            SymbolLocation {
-                file: file.to_string(),
-                line: 1,
-                column: 1,
-            },
-        );
+        indexes.symbols.insert("Foo", sym("Foo", file, 1, 1));
     }
     save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
@@ -496,7 +463,7 @@ fn index_view_fast_filters_invalidated_files_without_materializing() {
 
     let files: Vec<&str> = view
         .symbol_locations("Foo")
-        .map(|loc| loc.file.as_str())
+        .map(|loc| loc.location.file.as_str())
         .collect();
     assert_eq!(files, vec!["B.java"]);
 }
@@ -521,14 +488,7 @@ fn index_view_fast_does_not_read_project_file_contents() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
@@ -562,14 +522,7 @@ fn index_view_fast_schema_mismatch_is_cache_miss() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Sanity check: the cache is readable through the fast path.

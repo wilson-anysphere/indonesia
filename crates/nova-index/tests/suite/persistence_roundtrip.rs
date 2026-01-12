@@ -1,9 +1,24 @@
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
 use nova_index::{
     load_indexes, load_indexes_fast, load_indexes_with_fingerprints, save_indexes,
-    AnnotationLocation, InheritanceEdge, ProjectIndexes, ReferenceLocation, SymbolLocation,
+    AnnotationLocation, IndexedSymbol, IndexSymbolKind, InheritanceEdge, ProjectIndexes,
+    ReferenceLocation, SymbolLocation,
 };
 use std::path::PathBuf;
+
+fn sym(name: &str, file: &str, line: u32, column: u32) -> IndexedSymbol {
+    IndexedSymbol {
+        qualified_name: name.to_string(),
+        kind: IndexSymbolKind::Class,
+        container_name: None,
+        location: SymbolLocation {
+            file: file.to_string(),
+            line,
+            column,
+        },
+        ast_id: 0,
+    }
+}
 
 #[test]
 fn indexes_roundtrip_and_invalidation() {
@@ -31,14 +46,7 @@ fn indexes_roundtrip_and_invalidation() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     indexes.references.insert(
         "A",
         ReferenceLocation {
@@ -146,14 +154,7 @@ fn indexes_invalidate_new_files() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
 
     save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
@@ -202,22 +203,8 @@ fn indexes_invalidate_deleted_files() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
-    indexes.symbols.insert(
-        "B",
-        SymbolLocation {
-            file: "B.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
+    indexes.symbols.insert("B", sym("B", "B.java", 1, 1));
 
     save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
@@ -252,14 +239,7 @@ fn corrupt_metadata_is_cache_miss() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
 
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
@@ -302,14 +282,7 @@ fn load_indexes_fast_detects_mtime_or_size_changes() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Modify A.java in a way that changes its size so the fast fingerprint must change even if
@@ -347,14 +320,7 @@ fn load_indexes_fast_does_not_read_project_file_contents() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
@@ -389,14 +355,7 @@ fn load_indexes_fast_schema_mismatch_is_cache_miss() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Sanity check: the cache is readable through the fast path.
@@ -450,14 +409,7 @@ fn load_indexes_with_fingerprints_works_with_metadata_bin_only() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
 
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 

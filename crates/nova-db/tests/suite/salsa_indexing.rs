@@ -81,7 +81,7 @@ fn project_indexes_warm_start_and_invalidation() {
         .get("C")
         .unwrap()
         .iter()
-        .all(|loc| loc.file == "B.java"));
+        .all(|loc| loc.location.file == "B.java"));
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn project_indexes_reindex_dirty_file_without_disk_change() {
         .get("C")
         .unwrap()
         .iter()
-        .all(|loc| loc.file == "B.java"));
+        .all(|loc| loc.location.file == "B.java"));
 }
 
 #[test]

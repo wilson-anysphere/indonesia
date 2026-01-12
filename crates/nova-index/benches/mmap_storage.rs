@@ -6,7 +6,7 @@ use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{load_index_archives, load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
 
 #[cfg(nova_index_has_indexed_symbol)]
-use nova_index::{IndexedSymbol, SymbolKind};
+use nova_index::{IndexSymbolKind, IndexedSymbol};
 
 fn build_symbol_index_entries(indexes: &mut ProjectIndexes, file: &str, count: usize) {
     for i in 0..count {
@@ -24,10 +24,10 @@ fn build_symbol_index_entries(indexes: &mut ProjectIndexes, file: &str, count: u
                 symbol.clone(),
                 IndexedSymbol {
                     qualified_name: symbol,
-                    kind: SymbolKind::Class,
+                    kind: IndexSymbolKind::Class,
                     container_name: None,
-                    ast_id: i as u32,
                     location,
+                    ast_id: i as u32,
                 },
             );
         }

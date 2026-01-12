@@ -1,7 +1,24 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
-use nova_index::{load_indexes, save_indexes, ProjectIndexes, ReferenceLocation, SymbolLocation};
+use nova_index::{
+    load_indexes, save_indexes, IndexedSymbol, IndexSymbolKind, ProjectIndexes, ReferenceLocation,
+    SymbolLocation,
+};
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
+
+fn sym(name: String, file: &str, line: u32, column: u32) -> IndexedSymbol {
+    IndexedSymbol {
+        qualified_name: name,
+        kind: IndexSymbolKind::Class,
+        container_name: None,
+        location: SymbolLocation {
+            file: file.to_string(),
+            line,
+            column,
+        },
+        ast_id: 0,
+    }
+}
 
 #[test]
 fn concurrent_save_indexes_does_not_corrupt_cache_files() {
@@ -32,14 +49,9 @@ fn concurrent_save_indexes_does_not_corrupt_cache_files() {
 
     let mut indexes_a = ProjectIndexes::default();
     for i in 0..entries {
-        indexes_a.symbols.insert(
-            format!("S{i}"),
-            SymbolLocation {
-                file: "A.java".to_string(),
-                line: i as u32,
-                column: 0,
-            },
-        );
+        indexes_a
+            .symbols
+            .insert(format!("S{i}"), sym(format!("S{i}"), "A.java", i as u32, 0));
         indexes_a.references.insert(
             format!("S{i}"),
             ReferenceLocation {
@@ -52,14 +64,9 @@ fn concurrent_save_indexes_does_not_corrupt_cache_files() {
 
     let mut indexes_b = ProjectIndexes::default();
     for i in 0..entries {
-        indexes_b.symbols.insert(
-            format!("T{i}"),
-            SymbolLocation {
-                file: "B.java".to_string(),
-                line: i as u32,
-                column: 2,
-            },
-        );
+        indexes_b
+            .symbols
+            .insert(format!("T{i}"), sym(format!("T{i}"), "B.java", i as u32, 2));
         indexes_b.references.insert(
             format!("T{i}"),
             ReferenceLocation {

@@ -1,6 +1,6 @@
 use crate::indexes::{
     AnnotationIndex, AnnotationLocation, ArchivedAnnotationLocation, ArchivedReferenceLocation,
-    ArchivedSymbolLocation, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
+    ArchivedIndexedSymbol, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
     SymbolIndex, SymbolLocation,
 };
 use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-pub const INDEX_SCHEMA_VERSION: u32 = 2;
+pub const INDEX_SCHEMA_VERSION: u32 = 3;
 
 const INDEX_WRITE_LOCK_NAME: &str = ".lock";
 
@@ -124,11 +124,11 @@ impl LoadedIndexArchives {
             &self.segments,
             |segment| segment.archive.archived().symbols.symbols.get(symbol),
             self.symbols.archived().symbols.get(symbol),
-            |loc| loc.file.as_str(),
+            |loc| loc.location.file.as_str(),
             |loc| SymbolLocation {
-                file: loc.file.as_str().to_string(),
-                line: loc.line,
-                column: loc.column,
+                file: loc.location.file.as_str().to_string(),
+                line: loc.location.line,
+                column: loc.location.column,
             },
         );
         out.sort_by(|a, b| {
@@ -284,7 +284,7 @@ impl ProjectIndexesView {
                 locations
                     .iter()
                     .any(|loc| {
-                        let file = loc.file.as_str();
+                        let file = loc.location.file.as_str();
                         !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
                     })
                     .then(|| name.as_str())
@@ -305,7 +305,7 @@ impl ProjectIndexesView {
                     locations
                         .iter()
                         .any(|loc| {
-                            let file = loc.file.as_str();
+                            let file = loc.location.file.as_str();
                             !invalidated_files.contains(file)
                                 && file_to_segment.get(file).copied() == Some(segment_idx)
                         })
@@ -338,7 +338,7 @@ impl ProjectIndexesView {
                 locations
                     .iter()
                     .any(|loc| {
-                        let file = loc.file.as_str();
+                        let file = loc.location.file.as_str();
                         !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
                     })
                     .then(|| name.as_str())
@@ -361,7 +361,7 @@ impl ProjectIndexesView {
                     locations
                         .iter()
                         .any(|loc| {
-                            let file = loc.file.as_str();
+                            let file = loc.location.file.as_str();
                             !invalidated_files.contains(file)
                                 && file_to_segment.get(file).copied() == Some(segment_idx)
                         })
@@ -410,7 +410,7 @@ impl ProjectIndexesView {
     pub fn symbol_locations<'a>(
         &'a self,
         name: &str,
-    ) -> impl Iterator<Item = &'a ArchivedSymbolLocation> + 'a {
+    ) -> impl Iterator<Item = &'a ArchivedIndexedSymbol> + 'a {
         let invalidated_files = &self.invalidated_files;
         let file_to_segment = &self.file_to_segment;
 
@@ -426,14 +426,14 @@ impl ProjectIndexesView {
             .into_iter()
             .flat_map(move |(segment_idx, locations)| {
                 locations.iter().filter(move |loc| {
-                    let file = loc.file.as_str();
+                    let file = loc.location.file.as_str();
                     !invalidated_files.contains(file)
                         && file_to_segment.get(file).copied() == Some(segment_idx)
                 })
             })
             .chain(base_locations.into_iter().flat_map(move |locations| {
                 locations.iter().filter(move |loc| {
-                    let file = loc.file.as_str();
+                    let file = loc.location.file.as_str();
                     !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
                 })
             }))
@@ -450,9 +450,9 @@ impl ProjectIndexesView {
         name: &str,
     ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
         let archived = self.symbol_locations(name).map(|loc| LocationRef {
-            file: loc.file.as_str(),
-            line: loc.line,
-            column: loc.column,
+            file: loc.location.file.as_str(),
+            line: loc.location.line,
+            column: loc.location.column,
         });
 
         let overlay = self
@@ -463,9 +463,9 @@ impl ProjectIndexesView {
             .into_iter()
             .flat_map(|locations| locations.iter())
             .map(|loc| LocationRef {
-                file: loc.file.as_str(),
-                line: loc.line,
-                column: loc.column,
+                file: loc.location.file.as_str(),
+                line: loc.location.line,
+                column: loc.location.column,
             });
 
         archived.chain(overlay)
@@ -2010,11 +2010,11 @@ impl ShardedIndexView {
         lists
             .into_iter()
             .flat_map(move |locations| locations.iter())
-            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .filter(move |loc| !invalidated_files.contains(loc.location.file.as_str()))
             .map(|loc| LocationRef {
-                file: loc.file.as_str(),
-                line: loc.line,
-                column: loc.column,
+                file: loc.location.file.as_str(),
+                line: loc.location.line,
+                column: loc.location.column,
             })
     }
 
@@ -2038,9 +2038,9 @@ impl ShardedIndexView {
             .into_iter()
             .flat_map(|locations| locations.iter())
             .map(|loc| LocationRef {
-                file: loc.file.as_str(),
-                line: loc.line,
-                column: loc.column,
+                file: loc.location.file.as_str(),
+                line: loc.location.line,
+                column: loc.location.column,
             });
 
         archived.chain(overlay)
@@ -2056,7 +2056,7 @@ impl ShardedIndexView {
             for (name, locations) in shard.symbols.archived().symbols.iter() {
                 if locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| !invalidated_files.contains(loc.location.file.as_str()))
                 {
                     names.insert(name.as_str());
                 }
@@ -2086,7 +2086,7 @@ impl ShardedIndexView {
             {
                 if locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| !invalidated_files.contains(loc.location.file.as_str()))
                 {
                     names.insert(name.as_str());
                 }
@@ -2510,11 +2510,11 @@ impl LazyShardedIndexView {
         lists
             .into_iter()
             .flat_map(move |locations| locations.iter())
-            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .filter(move |loc| !invalidated_files.contains(loc.location.file.as_str()))
             .map(|loc| LocationRef {
-                file: loc.file.as_str(),
-                line: loc.line,
-                column: loc.column,
+                file: loc.location.file.as_str(),
+                line: loc.location.line,
+                column: loc.location.column,
             })
     }
 
@@ -2538,9 +2538,9 @@ impl LazyShardedIndexView {
             .into_iter()
             .flat_map(|locations| locations.iter())
             .map(|loc| LocationRef {
-                file: loc.file.as_str(),
-                line: loc.line,
-                column: loc.column,
+                file: loc.location.file.as_str(),
+                line: loc.location.line,
+                column: loc.location.column,
             });
 
         archived.chain(overlay)
@@ -2561,7 +2561,7 @@ impl LazyShardedIndexView {
             for (name, locations) in shard.symbols.archived().symbols.iter() {
                 if locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| !invalidated_files.contains(loc.location.file.as_str()))
                 {
                     names.insert(name.as_str());
                 }
@@ -2597,7 +2597,7 @@ impl LazyShardedIndexView {
             {
                 if locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| !invalidated_files.contains(loc.location.file.as_str()))
                 {
                     names.insert(name.as_str());
                 }

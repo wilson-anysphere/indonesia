@@ -1,11 +1,26 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
-    load_index_archives, save_indexes, ProjectIndexes, SymbolLocation, INDEX_SCHEMA_VERSION,
+    load_index_archives, save_indexes, IndexedSymbol, IndexSymbolKind, ProjectIndexes,
+    SymbolLocation, INDEX_SCHEMA_VERSION,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
+
+fn sym(name: &str, file: &str, line: u32, column: u32) -> IndexedSymbol {
+    IndexedSymbol {
+        qualified_name: name.to_string(),
+        kind: IndexSymbolKind::Class,
+        container_name: None,
+        location: SymbolLocation {
+            file: file.to_string(),
+            line,
+            column,
+        },
+        ast_id: 0,
+    }
+}
 
 #[test]
 fn mixed_generation_is_cache_miss() {
@@ -27,14 +42,7 @@ fn mixed_generation_is_cache_miss() {
     .unwrap();
 
     let mut indexes = ProjectIndexes::default();
-    indexes.symbols.insert(
-        "A",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    indexes.symbols.insert("A", sym("A", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
     let generation_v1 = indexes.symbols.generation;
 
@@ -75,14 +83,7 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
 
     // Seed the cache so the loader has something to observe while writers race.
     let mut seed = ProjectIndexes::default();
-    seed.symbols.insert(
-        "Seed",
-        SymbolLocation {
-            file: "A.java".to_string(),
-            line: 1,
-            column: 1,
-        },
-    );
+    seed.symbols.insert("Seed", sym("Seed", "A.java", 1, 1));
     save_indexes(&cache_dir, &snapshot, &mut seed).unwrap();
 
     let cache_dir = Arc::new(cache_dir);
@@ -109,14 +110,10 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
                 // Add enough data to make each write non-trivial, increasing the chance
                 // that other threads observe a mid-save directory state.
                 for entry in 0..200u32 {
-                    indexes.symbols.insert(
-                        format!("T{thread_id}-I{iter}-S{entry}"),
-                        SymbolLocation {
-                            file: "A.java".to_string(),
-                            line: entry + 1,
-                            column: 1,
-                        },
-                    );
+                    let name = format!("T{thread_id}-I{iter}-S{entry}");
+                    indexes
+                        .symbols
+                        .insert(name.clone(), sym(&name, "A.java", entry + 1, 1));
                 }
 
                 save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
