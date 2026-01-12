@@ -729,7 +729,7 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
 }
 
 #[allow(private_bounds)]
-impl<DB> IdeExtensions<DB>
+impl<DB: ?Sized> IdeExtensions<DB>
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
     FrameworkAnalyzerRegistryProvider: DiagnosticProvider<DB> + CompletionProvider<DB>,
