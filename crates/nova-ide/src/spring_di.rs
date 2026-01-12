@@ -335,6 +335,54 @@ pub(crate) fn injection_definition_targets(
     Some(locations)
 }
 
+/// Returns `true` if `offset` is inside a Spring injection site (field name or its type)
+/// and the injection does **not** resolve to exactly one candidate.
+///
+/// This is used as a guard in `goto_definition`: when Spring DI is applicable but
+/// can't provide a unique navigation target, we must *not* fall back to core Java
+/// resolution (e.g. returning the field declaration) since that regresses
+/// framework-aware behavior.
+pub(crate) fn injection_blocks_core_navigation(
+    db: &dyn Database,
+    file: FileId,
+    offset: usize,
+) -> bool {
+    let Some(path) = db.file_path(file) else {
+        return false;
+    };
+    let source_text = db.file_content(file);
+    let Some(entry) = workspace_entry(db, file) else {
+        return false;
+    };
+    let Some(analysis) = entry.analysis.as_ref() else {
+        return false;
+    };
+    let Some(source_idx) = entry.source_index_for_path(path) else {
+        return false;
+    };
+
+    let injection_idx = analysis
+        .model
+        .injections
+        .iter()
+        .enumerate()
+        .find(|(_, inj)| {
+            inj.location.source == source_idx
+                && injection_contains_offset(source_text, inj.location.span, &inj.ty, offset)
+        })
+        .map(|(idx, _)| idx);
+
+    let Some(injection_idx) = injection_idx else {
+        return false;
+    };
+
+    analysis
+        .model
+        .injection_candidates
+        .get(injection_idx)
+        .is_some_and(|cands| cands.len() != 1)
+}
+
 pub(crate) fn qualifier_definition_targets(
     db: &dyn Database,
     file: FileId,

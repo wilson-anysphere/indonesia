@@ -75,6 +75,7 @@ mod dagger_intel;
 mod db;
 mod lombok_intel;
 mod navigation;
+mod nav_resolve;
 mod parse;
 mod text;
 

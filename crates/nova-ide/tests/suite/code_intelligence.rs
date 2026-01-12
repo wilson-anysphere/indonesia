@@ -167,6 +167,193 @@ class A {
 }
 
 #[test]
+fn goto_definition_finds_local_variable() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int x;
+    x<|> = 1;
+  }
+}
+"#,
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert_eq!(loc.range.start.line, 3);
+}
+
+#[test]
+fn goto_definition_finds_field() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  int f;
+  void m() { f<|> = 1; }
+}
+"#,
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_type_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    Foo<|> x;
+  }
+}
+"#;
+    let foo_text = r#"
+class Foo {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+}
+
+#[test]
+fn goto_definition_resolves_member_method_call_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    Foo foo = new Foo();
+    foo.ba<|>r();
+  }
+}
+"#;
+    let foo_text = r#"
+class Foo {
+  void bar() {}
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_member_field_access_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    Foo foo = new Foo();
+    int x = foo.va<|>l;
+  }
+}
+"#;
+    let foo_text = r#"
+class Foo {
+  int val;
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn find_references_resolves_method_across_files() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+
+    let foo_text = r#"
+class Foo {
+  void ba<|>r() {}
+}
+"#;
+    let main_text = r#"
+class Main {
+  void m() {
+    Foo foo = new Foo();
+    foo.bar();
+  }
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(foo_path, foo_text, vec![(main_path, main_text)]);
+
+    let refs = find_references(&db, file, pos, true);
+    assert!(
+        refs.iter().any(|loc| loc.uri.as_str().contains("Foo.java")),
+        "expected references to include declaration; got {refs:#?}"
+    );
+    assert!(
+        refs.iter().any(|loc| loc.uri.as_str().contains("Main.java")),
+        "expected references to include call site in Main.java; got {refs:#?}"
+    );
+}
+
+#[test]
+fn find_references_resolves_field_across_files() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+
+    let foo_text = r#"
+class Foo {
+  int va<|>l;
+}
+"#;
+    let main_text = r#"
+class Main {
+  void m() {
+    Foo foo = new Foo();
+    int x = foo.val;
+  }
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(foo_path, foo_text, vec![(main_path, main_text)]);
+
+    let refs = find_references(&db, file, pos, true);
+    assert!(
+        refs.iter().any(|loc| loc.uri.as_str().contains("Foo.java")),
+        "expected references to include declaration; got {refs:#?}"
+    );
+    assert!(
+        refs.iter().any(|loc| loc.uri.as_str().contains("Main.java")),
+        "expected references to include access in Main.java; got {refs:#?}"
+    );
+}
+
+#[test]
 fn diagnostics_include_unresolved_symbol() {
     let (db, file) = fixture_file(
         r#"

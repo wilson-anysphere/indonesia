@@ -98,7 +98,7 @@ class A {
 "#,
     );
 
-    let refs = find_references(&db, file, pos, false);
+    let refs = find_references(&db, file, pos, true);
     assert_eq!(
         refs.len(),
         3,

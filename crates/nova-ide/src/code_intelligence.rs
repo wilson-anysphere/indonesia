@@ -31,6 +31,7 @@ use serde_json::json;
 use crate::framework_cache;
 use crate::lombok_intel;
 use crate::micronaut_intel;
+use crate::nav_resolve;
 use crate::quarkus_intel;
 use crate::spring_config;
 use crate::spring_di;
@@ -1649,6 +1650,10 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
                     return Some(loc);
                 }
             }
+        } else if spring_di::injection_blocks_core_navigation(db, file, offset) {
+            // If Spring identifies this as an injection site but can't navigate to a unique bean
+            // candidate, do *not* fall back to core Java resolution (e.g. field declarations).
+            return None;
         }
     }
 
@@ -1684,23 +1689,22 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         });
     }
 
-    let analysis = analyze(text);
-    let token = token_at_offset(&analysis.tokens, offset)?;
-    if token.kind != TokenKind::Ident {
+    let is_java = db.file_path(file).is_some_and(|path| {
+        path.extension().and_then(|e| e.to_str()) == Some("java")
+    });
+    if !is_java {
         return None;
     }
 
-    // Prefer calls at the cursor.
-    if analysis.calls.iter().any(|c| c.name_span == token.span) {
-        let decl = analysis.methods.iter().find(|m| m.name == token.text)?;
-        let uri = file_uri(db, file);
-        return Some(Location {
-            uri,
-            range: text_index.span_to_lsp_range(decl.name_span),
-        });
-    }
+    let resolver = nav_resolve::Resolver::new(db);
+    let resolved = resolver.resolve_at(file, offset)?;
+    let def_file = resolver.parsed_file(resolved.def.file)?;
+    let def_index = TextIndex::new(&def_file.text);
 
-    None
+    Some(Location {
+        uri: resolved.def.uri,
+        range: def_index.span_to_lsp_range(resolved.def.name_span),
+    })
 }
 
 pub fn find_references(
@@ -1797,34 +1801,113 @@ pub fn find_references(
             .collect();
     }
 
-    let analysis = analyze(text);
-    let token = match token_at_offset(&analysis.tokens, offset) {
-        Some(t) if t.kind == TokenKind::Ident => t,
-        _ => return Vec::new(),
+    let is_java = db.file_path(file).is_some_and(|path| {
+        path.extension().and_then(|e| e.to_str()) == Some("java")
+    });
+    if !is_java {
+        return Vec::new();
+    }
+
+    let resolver = nav_resolve::Resolver::new(db);
+    let Some(target) = resolver.resolve_at(file, offset) else {
+        return Vec::new();
     };
 
-    let uri = file_uri(db, file);
+    let mut out: Vec<Location> = Vec::new();
 
-    let mut locations = Vec::new();
-    if include_declaration {
-        if let Some(method) = analysis.methods.iter().find(|m| m.name == token.text) {
-            locations.push(Location {
-                uri: uri.clone(),
-                range: text_index.span_to_lsp_range(method.name_span),
-            });
+    match target.kind {
+        nav_resolve::ResolvedKind::LocalVar { scope } => {
+            if include_declaration {
+                if let Some(def_parsed) = resolver.parsed_file(target.def.file) {
+                    let def_index = TextIndex::new(&def_parsed.text);
+                    out.push(Location {
+                        uri: target.def.uri.clone(),
+                        range: def_index.span_to_lsp_range(target.def.name_span),
+                    });
+                }
+            }
+
+            let Some(spans) = resolver.scan_identifiers_in_span(file, scope, &target.name) else {
+                return Vec::new();
+            };
+            let Some(parsed) = resolver.parsed_file(file) else {
+                return Vec::new();
+            };
+            let file_index = TextIndex::new(&parsed.text);
+            for span in spans {
+                if !include_declaration
+                    && file == target.def.file
+                    && span == target.def.name_span
+                {
+                    continue;
+                }
+                let Some(resolved) = resolver.resolve_at(file, span.start) else {
+                    continue;
+                };
+                if resolved.def.key != target.def.key {
+                    continue;
+                }
+                out.push(Location {
+                    uri: parsed.uri.clone(),
+                    range: file_index.span_to_lsp_range(span),
+                });
+            }
+        }
+        nav_resolve::ResolvedKind::Field | nav_resolve::ResolvedKind::Method | nav_resolve::ResolvedKind::Type => {
+            if include_declaration {
+                if let Some(def_parsed) = resolver.parsed_file(target.def.file) {
+                    let def_index = TextIndex::new(&def_parsed.text);
+                    out.push(Location {
+                        uri: target.def.uri.clone(),
+                        range: def_index.span_to_lsp_range(target.def.name_span),
+                    });
+                }
+            }
+
+            for file_id in resolver.java_file_ids_sorted() {
+                let Some(parsed) = resolver.parsed_file(file_id) else {
+                    continue;
+                };
+                let file_index = TextIndex::new(&parsed.text);
+                let spans = nav_resolve::scan_identifier_occurrences(
+                    &parsed.text,
+                    Span::new(0, parsed.text.len()),
+                    &target.name,
+                );
+                for span in spans {
+                    if !include_declaration
+                        && file_id == target.def.file
+                        && span == target.def.name_span
+                    {
+                        continue;
+                    }
+                    let Some(resolved) = resolver.resolve_at(file_id, span.start) else {
+                        continue;
+                    };
+                    if resolved.def.key != target.def.key {
+                        continue;
+                    }
+                    out.push(Location {
+                        uri: parsed.uri.clone(),
+                        range: file_index.span_to_lsp_range(span),
+                    });
+                }
+            }
         }
     }
 
-    for tok in &analysis.tokens {
-        if tok.kind == TokenKind::Ident && tok.text == token.text {
-            locations.push(Location {
-                uri: uri.clone(),
-                range: text_index.span_to_lsp_range(tok.span),
-            });
-        }
-    }
+    out.sort_by(|a, b| {
+        a.uri
+            .to_string()
+            .cmp(&b.uri.to_string())
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+            .then(a.range.end.line.cmp(&b.range.end.line))
+            .then(a.range.end.character.cmp(&b.range.end.character))
+    });
+    out.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
 
-    locations
+    out
 }
 
 // -----------------------------------------------------------------------------
