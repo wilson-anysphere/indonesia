@@ -75,7 +75,7 @@ INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test forma
  Requires a JDK (`javac` on `PATH`):
 
  ```bash
- cargo test -p nova-types --test integration javac_differential -- --ignored
+ cargo test -p nova-types --test javac_differential -- --ignored
  ```
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)
