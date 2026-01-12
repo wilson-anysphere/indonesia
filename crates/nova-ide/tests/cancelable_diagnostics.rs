@@ -1,4 +1,5 @@
 mod framework_harness;
+mod text_fixture;
 
 use framework_harness::fixture_multi;
 use nova_scheduler::CancellationToken;
@@ -51,4 +52,3 @@ class A {
         "expected unresolved reference diagnostic; got {diags:#?}"
     );
 }
-

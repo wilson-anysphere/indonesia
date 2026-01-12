@@ -11,8 +11,7 @@ use nova_ide::{
 };
 use tempfile::TempDir;
 
-mod text_fixture;
-use text_fixture::offset_to_position;
+use crate::text_fixture::offset_to_position;
 
 struct FileIdFixture {
     _temp_dir: TempDir,
