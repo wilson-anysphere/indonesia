@@ -197,6 +197,23 @@ fn qualifies_as_type(name: &str) -> bool {
     ) || name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
+fn is_receiverless_call_keyword(name: &str) -> bool {
+    // Keywords/constructs that are commonly followed by `(` but are not method calls.
+    //
+    // This list is intentionally not exhaustive; it's a best-effort filter to avoid
+    // obvious false positives in our token-based parser.
+    matches!(
+        name,
+        // Control-flow constructs.
+        "if" | "for" | "while" | "switch" | "catch" | "return" | "throw" | "try"
+            | "synchronized"
+            // Special identifiers / object construction.
+            | "new" | "super" | "this"
+            // Other Java keywords that may be followed by `(` in some contexts.
+            | "assert"
+    )
+}
+
 fn parse_method_body(
     tokens: &[Token],
     body_start: usize,
@@ -220,6 +237,34 @@ fn parse_method_body(
                 method: method.to_string(),
                 method_span: tokens[i + 2].span,
             });
+        }
+
+        // Call site: method (
+        //
+        // We treat this as `this.method(...)` (best-effort), enabling navigation on
+        // common receiverless calls inside a class.
+        if let (Some(method), Some('(')) = (
+            tokens.get(i).and_then(|t| t.ident()),
+            tokens.get(i + 1).and_then(|t| t.symbol()),
+        ) {
+            let prev_symbol = tokens.get(i.wrapping_sub(1)).and_then(|t| t.symbol());
+            let prev_ident = tokens.get(i.wrapping_sub(1)).and_then(|t| t.ident());
+
+            // Avoid obvious false positives:
+            // - `recv.method(` is handled above, so skip `.method(`.
+            // - `new Foo(` is a constructor call.
+            // - Filter out common control-flow keywords/constructs.
+            if prev_symbol != Some('.')
+                && prev_ident != Some("new")
+                && !is_receiverless_call_keyword(method)
+            {
+                calls.push(CallSite {
+                    receiver: "this".to_string(),
+                    receiver_span: Span::new(tokens[i].span.start, tokens[i].span.start),
+                    method: method.to_string(),
+                    method_span: tokens[i].span,
+                });
+            }
         }
 
         // Local variable: Type name

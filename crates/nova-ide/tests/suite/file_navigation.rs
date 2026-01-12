@@ -115,6 +115,48 @@ class C implements I {
 }
 
 #[test]
+fn go_to_implementation_on_receiverless_call_returns_method_definition() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /C.java
+class C {
+  void $1foo() {}
+  void test(){ $0foo(); }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_implementation_does_not_trigger_on_constructor_call() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class Foo {}
+//- /C.java
+class C {
+  void $1Foo() {}
+  void test(){ new $0Foo(); }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert!(got.is_empty());
+}
+
+#[test]
 fn go_to_type_definition_on_variable_returns_class() {
     let fixture = FileIdFixture::parse(
         r#"
