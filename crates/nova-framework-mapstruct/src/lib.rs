@@ -170,7 +170,10 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             return Vec::new();
         }
-        if db.file_text(file).is_none() {
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
+        if !looks_like_mapstruct_source(text) {
             return Vec::new();
         }
 
@@ -190,6 +193,9 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             return Vec::new();
         };
         if ctx.offset > text.len() {
+            return Vec::new();
+        }
+        if !looks_like_mapstruct_source(text) {
             return Vec::new();
         }
 
@@ -413,6 +419,18 @@ fn span_contains(span: Span, offset: usize) -> bool {
 
 fn span_contains_inclusive(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
+}
+
+fn looks_like_mapstruct_source(text: &str) -> bool {
+    // Best-effort, cheap guard to avoid building the full workspace model when the
+    // file clearly isn't participating in MapStruct.
+    //
+    // We intentionally keep this conservative (false negatives are acceptable).
+    text.contains("org.mapstruct.")
+        || text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("@org.mapstruct.Mapping")
 }
 
 fn mapping_property_completions(
