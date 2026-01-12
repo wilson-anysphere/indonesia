@@ -131,7 +131,6 @@ pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
 pub const AI_EXPLAIN_ERROR_METHOD: &str = "nova/ai/explainError";
 pub const AI_GENERATE_METHOD_BODY_METHOD: &str = "nova/ai/generateMethodBody";
 pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
-pub const SEMANTIC_SEARCH_INDEX_STATUS_METHOD: &str = "nova/semanticSearch/indexStatus";
 pub const BUG_REPORT_METHOD: &str = "nova/bugReport";
 // Semantic search endpoints (handled by the `nova-lsp` binary).
 pub const SEMANTIC_SEARCH_INDEX_STATUS_METHOD: &str = "nova/semanticSearch/indexStatus";
@@ -145,7 +144,6 @@ pub const PROJECT_MODEL_METHOD: &str = "nova/projectModel";
 // Performance / memory custom endpoints.
 pub const MEMORY_STATUS_METHOD: &str = "nova/memoryStatus";
 pub const MEMORY_STATUS_NOTIFICATION: &str = "nova/memoryStatusChanged";
-pub const WORKSPACE_RENAME_PATH_NOTIFICATION: &str = "nova/workspace/renamePath";
 pub const METRICS_METHOD: &str = "nova/metrics";
 pub const RESET_METRICS_METHOD: &str = "nova/resetMetrics";
 pub const SAFE_MODE_STATUS_METHOD: &str = "nova/safeModeStatus";
