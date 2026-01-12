@@ -921,6 +921,32 @@ mod notify_impl {
         use notify::event::{ModifyKind, RenameMode};
 
         #[cfg(feature = "watch-notify")]
+        #[derive(Debug)]
+        struct EnvVarGuard {
+            key: &'static str,
+            prev: Option<std::ffi::OsString>,
+        }
+
+        #[cfg(feature = "watch-notify")]
+        impl EnvVarGuard {
+            fn new(key: &'static str) -> Self {
+                let prev = std::env::var_os(key);
+                Self { key, prev }
+            }
+        }
+
+        #[cfg(feature = "watch-notify")]
+        impl Drop for EnvVarGuard {
+            fn drop(&mut self) {
+                if let Some(prev) = &self.prev {
+                    std::env::set_var(self.key, prev);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+
+        #[cfg(feature = "watch-notify")]
         #[test]
         fn emits_rescan_when_raw_queue_overflows_via_notify_watcher() {
             use notify::EventKind;
@@ -1403,6 +1429,59 @@ mod notify_impl {
                     path: VfsPath::local(normalized),
                 }]
             );
+        }
+
+        #[cfg(feature = "watch-notify")]
+        #[test]
+        fn queue_capacity_from_env_returns_none_when_unset() {
+            const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_UNSET";
+            let _guard = EnvVarGuard::new(VAR);
+            std::env::remove_var(VAR);
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), None);
+        }
+
+        #[cfg(feature = "watch-notify")]
+        #[test]
+        fn queue_capacity_from_env_treats_empty_and_zero_as_none() {
+            const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_EMPTY";
+            let _guard = EnvVarGuard::new(VAR);
+
+            std::env::set_var(VAR, "");
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), None);
+
+            std::env::set_var(VAR, "  ");
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), None);
+
+            std::env::set_var(VAR, "0");
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), None);
+
+            std::env::set_var(VAR, " 0 ");
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), None);
+        }
+
+        #[cfg(feature = "watch-notify")]
+        #[test]
+        fn queue_capacity_from_env_parses_and_clamps_values() {
+            const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_PARSE";
+            let _guard = EnvVarGuard::new(VAR);
+
+            std::env::set_var(VAR, "123");
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), Some(123));
+
+            // Guard against pathological configs that would allocate enormous queues.
+            std::env::set_var(VAR, "999999999");
+            assert_eq!(queue_capacity_from_env(VAR).unwrap(), Some(1_000_000));
+        }
+
+        #[cfg(feature = "watch-notify")]
+        #[test]
+        fn queue_capacity_from_env_rejects_invalid_values() {
+            const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_INVALID";
+            let _guard = EnvVarGuard::new(VAR);
+
+            std::env::set_var(VAR, "nope");
+            let err = queue_capacity_from_env(VAR).expect_err("expected invalid input error");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         }
     }
 }
