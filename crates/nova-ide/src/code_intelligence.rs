@@ -6802,7 +6802,16 @@ fn general_completions(
         expected_argument_type_for_completion(&mut types, &analysis, text, offset);
     let mut items = Vec::new();
 
-    maybe_add_lambda_snippet_completion(&mut items, text, &analysis, prefix_start, offset, prefix);
+    maybe_add_lambda_snippet_completion(
+        db,
+        file,
+        &mut items,
+        text,
+        &analysis,
+        prefix_start,
+        offset,
+        prefix,
+    );
 
     maybe_add_smart_constructor_completions(
         &mut items,
@@ -7039,7 +7048,7 @@ fn maybe_add_smart_constructor_completions(
     prefix: &str,
 ) {
     // Expected-type smart completions are only useful in expression positions.
-    let expected = expected_type_for_completion(types, text, analysis, prefix_start, offset)
+    let expected = expected_type_for_completion(types, None, text, analysis, prefix_start, offset)
         .or_else(|| expected_arg_ty.cloned());
     let Some(expected) = expected else {
         return;
@@ -7311,6 +7320,8 @@ fn new_expression_snippet(simple: &str, use_diamond: bool, param_count: usize) -
 }
 
 fn maybe_add_lambda_snippet_completion(
+    db: &dyn Database,
+    file: FileId,
     items: &mut Vec<CompletionItem>,
     text: &str,
     analysis: &Analysis,
@@ -7328,22 +7339,68 @@ fn maybe_add_lambda_snippet_completion(
         return;
     }
 
-    let mut types = TypeStore::with_minimal_jdk();
-    define_local_interfaces(&mut types, &analysis.tokens);
+    // Fast path: use a tiny `TypeStore` seeded with the minimal JDK plus local interface parsing.
+    // This avoids pulling the workspace completion cache (which may require scanning lots of files)
+    // for most non-SAM contexts.
+    let mut fast_types = TypeStore::with_minimal_jdk();
+    define_local_interfaces(&mut fast_types, &analysis.tokens);
+    let expected_fast = expected_type_for_completion(
+        &mut fast_types,
+        None,
+        text,
+        analysis,
+        prefix_start,
+        offset,
+    );
 
-    let expected = expected_type_for_completion(&mut types, text, analysis, prefix_start, offset);
+    let needs_workspace_fallback = if let Some(expected) = expected_fast {
+        ensure_type_methods_loaded(&mut fast_types, &expected);
+        if let Some(param_count) = sam_param_count(&fast_types, &expected) {
+            push_lambda_snippet_item(items, label, param_count);
+            return;
+        }
+
+        // Only retry with the workspace env when the expected type wasn't resolved.
+        matches!(expected, Type::Named(_) | Type::Unknown | Type::Error)
+    } else {
+        // If we couldn't even identify an expected-type context, only fall back to the workspace
+        // env when the cursor is clearly inside a receiver call argument list (which needs richer
+        // semantic resolution).
+        analysis.calls.iter().any(|c| {
+            c.receiver.is_some() && c.open_paren < prefix_start && prefix_start <= c.close_paren
+        })
+    };
+
+    if !needs_workspace_fallback {
+        return;
+    }
+
+    let Some(env) = completion_cache::completion_env_for_file(db, file) else {
+        return;
+    };
+    let workspace_index = Some(env.workspace_index());
+    let mut types = env.types().clone();
+
+    let expected = expected_type_for_completion(
+        &mut types,
+        workspace_index,
+        text,
+        analysis,
+        prefix_start,
+        offset,
+    );
     let Some(expected) = expected else {
         return;
     };
 
-    // Load methods from the JDK/classpath for the expected type if needed, so SAM detection has
-    // access to method signatures.
     ensure_type_methods_loaded(&mut types, &expected);
-
     let Some(param_count) = sam_param_count(&types, &expected) else {
         return;
     };
+    push_lambda_snippet_item(items, label, param_count);
+}
 
+fn push_lambda_snippet_item(items: &mut Vec<CompletionItem>, label: &str, param_count: usize) {
     let snippet = lambda_snippet(param_count);
     items.push(CompletionItem {
         label: label.to_string(),
@@ -7351,12 +7408,14 @@ fn maybe_add_lambda_snippet_completion(
         detail: Some("lambda".to_string()),
         insert_text: Some(snippet),
         insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+        data: Some(json!({ "nova": { "origin": "code_intelligence", "lambda_snippet": true } })),
         ..Default::default()
     });
 }
 
 fn expected_type_for_completion(
     types: &mut TypeStore,
+    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
     text: &str,
     analysis: &Analysis,
     prefix_start: usize,
@@ -7385,7 +7444,11 @@ fn expected_type_for_completion(
                         .map(|f| f.ty.as_str())
                 })
             {
-                return Some(parse_source_type(types, ty));
+                return Some(parse_source_type_for_expected(
+                    types,
+                    workspace_index,
+                    ty,
+                ));
             }
         }
     }
@@ -7393,12 +7456,12 @@ fn expected_type_for_completion(
     // 2) Return: `return <cursor>`
     let (_, kw) = identifier_prefix(text, before);
     if kw == "return" {
-        if let Some(method) = analysis
-            .methods
-            .iter()
-            .find(|m| span_contains(m.body_span, offset))
-        {
-            return Some(parse_source_type(types, &method.ret_ty));
+        if let Some(method) = analysis.methods.iter().find(|m| span_contains(m.body_span, offset)) {
+            return Some(parse_source_type_for_expected(
+                types,
+                workspace_index,
+                &method.ret_ty,
+            ));
         }
     }
 
@@ -7409,17 +7472,31 @@ fn expected_type_for_completion(
         .filter(|c| c.open_paren < prefix_start && prefix_start <= c.close_paren)
         .max_by_key(|c| c.open_paren)?;
     let arg_index = call_argument_index(text, call.open_paren, prefix_start);
-    expected_type_for_call_argument(types, analysis, call, arg_index)
+    expected_type_for_call_argument(types, workspace_index, analysis, call, arg_index)
 }
 
 fn expected_type_for_call_argument(
     types: &mut TypeStore,
+    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
     analysis: &Analysis,
     call: &CallExpr,
     arg_index: usize,
 ) -> Option<Type> {
-    let receiver = call.receiver.as_deref()?;
     let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+
+    let Some(receiver) = call.receiver.as_deref() else {
+        // Receiverless calls: fall back to same-file method declarations (best-effort).
+        let candidates: Vec<&MethodDecl> = analysis.methods.iter().filter(|m| m.name == call.name).collect();
+        if candidates.len() != 1 {
+            return None;
+        }
+        let method = candidates[0];
+        return method
+            .params
+            .get(arg_index)
+            .map(|p| parse_source_type_in_context(types, &file_ctx, &p.ty));
+    };
+
     let (receiver_ty, call_kind) =
         infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
@@ -7440,8 +7517,9 @@ fn expected_type_for_call_argument(
         args.push(Type::Unknown);
     }
 
+    let call_arity = args.len();
     let call = MethodCall {
-        receiver: receiver_ty,
+        receiver: receiver_ty.clone(),
         call_kind,
         name: call.name.as_str(),
         args,
@@ -7451,10 +7529,188 @@ fn expected_type_for_call_argument(
 
     let mut ctx = TyContext::new(&*types);
     match nova_types::resolve_method_call(&mut ctx, &call) {
-        MethodResolution::Found(method) => method.params.get(arg_index).cloned(),
-        // Be conservative: don't guess a parameter type when overload resolution is ambiguous.
-        MethodResolution::Ambiguous(_) | MethodResolution::NotFound(_) => None,
+        MethodResolution::Found(method) => return method.params.get(arg_index).cloned(),
+        // Fall through to a best-effort name/arity-based lookup: during completion, the argument
+        // expression is often incomplete, and `Type::Unknown` cannot be converted to any formal
+        // parameter type, causing overload resolution to fail.
+        MethodResolution::Ambiguous(_) | MethodResolution::NotFound(_) => {}
     }
+
+    fallback_expected_type_for_receiver_call_argument(
+        types,
+        &receiver_ty,
+        call_kind,
+        call.name,
+        call_arity,
+        arg_index,
+    )
+}
+
+fn fallback_expected_type_for_receiver_call_argument(
+    types: &mut TypeStore,
+    receiver: &Type,
+    call_kind: CallKind,
+    method_name: &str,
+    call_arity: usize,
+    arg_index: usize,
+) -> Option<Type> {
+    use std::collections::{HashSet, VecDeque};
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct ParamKey(Type);
+
+    let mut queue: VecDeque<Type> = VecDeque::new();
+    queue.push_back(receiver.clone());
+
+    let mut visited: HashSet<ClassId> = HashSet::new();
+    let mut candidates: Vec<Type> = Vec::new();
+    let mut seen_params: HashSet<ParamKey> = HashSet::new();
+
+    while let Some(ty) = queue.pop_front() {
+        let class_id = match &ty {
+            Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+            Type::Named(name) => types.class_id(name),
+            _ => None,
+        };
+        let Some(class_id) = class_id else {
+            continue;
+        };
+        if !visited.insert(class_id) {
+            continue;
+        }
+
+        ensure_type_methods_loaded(types, &ty);
+        let Some(class_def) = types.class(class_id) else {
+            continue;
+        };
+
+        for method in &class_def.methods {
+            if method.name != method_name {
+                continue;
+            }
+
+            if call_kind == CallKind::Static && !method.is_static {
+                continue;
+            }
+
+            let param_ty = if method.is_varargs {
+                if method.params.is_empty() {
+                    continue;
+                }
+                let fixed = method.params.len().saturating_sub(1);
+                if arg_index < fixed {
+                    method.params.get(arg_index).cloned()
+                } else {
+                    let vararg = method.params.get(fixed).cloned();
+                    vararg.map(|t| match t {
+                        Type::Array(elem) => *elem,
+                        other => other,
+                    })
+                }
+            } else {
+                if arg_index >= method.params.len() {
+                    continue;
+                }
+                // If the user already has more arguments than this overload accepts, discard it.
+                if call_arity > method.params.len() {
+                    continue;
+                }
+                method.params.get(arg_index).cloned()
+            };
+
+            let Some(param_ty) = param_ty else {
+                continue;
+            };
+
+            // Track unique parameter types across candidates; we only return a type if it is
+            // unambiguous even without full overload resolution.
+            if seen_params.insert(ParamKey(param_ty.clone())) {
+                candidates.push(param_ty);
+            }
+        }
+
+        if let Some(sc) = &class_def.super_class {
+            queue.push_back(sc.clone());
+        }
+        for iface in &class_def.interfaces {
+            queue.push_back(iface.clone());
+        }
+        if class_def.kind == ClassKind::Interface {
+            queue.push_back(Type::class(types.well_known().object, vec![]));
+        }
+    }
+
+    if candidates.len() == 1 {
+        return Some(candidates.remove(0));
+    }
+    None
+}
+
+fn parse_source_type_for_expected(
+    types: &mut TypeStore,
+    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
+    source: &str,
+) -> Type {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Type::Unknown;
+    }
+
+    if trimmed.contains('.') {
+        return parse_source_type(types, trimmed);
+    }
+
+    let resolved = workspace_index
+        .and_then(|idx| idx.unique_fqn_for_simple_name(trimmed))
+        .unwrap_or(trimmed);
+    parse_source_type(types, resolved)
+}
+
+fn infer_receiver_for_expected(
+    types: &mut TypeStore,
+    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
+    analysis: &Analysis,
+    receiver: &str,
+) -> (Type, CallKind) {
+    if receiver.starts_with('"') {
+        return (
+            types
+                .class_id("java.lang.String")
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
+            CallKind::Instance,
+        );
+    }
+
+    if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
+        return (
+            parse_source_type_for_expected(types, workspace_index, &var.ty),
+            CallKind::Instance,
+        );
+    }
+    if let Some(param) = analysis
+        .methods
+        .iter()
+        .flat_map(|m| m.params.iter())
+        .find(|p| p.name == receiver)
+    {
+        return (
+            parse_source_type_for_expected(types, workspace_index, &param.ty),
+            CallKind::Instance,
+        );
+    }
+    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+        return (
+            parse_source_type_for_expected(types, workspace_index, &field.ty),
+            CallKind::Instance,
+        );
+    }
+
+    // Allow `Foo.bar()` to treat `Foo` as a type reference.
+    (
+        parse_source_type_for_expected(types, workspace_index, receiver),
+        CallKind::Static,
+    )
 }
 
 fn sam_param_count(types: &TypeStore, ty: &Type) -> Option<usize> {
@@ -7813,7 +8069,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 .unwrap_or(&item.label);
             let score = matcher.score(match_target)?;
 
-            let expected_bonus = match (expected_ty.as_ref(), item.detail.as_deref()) {
+            let expected_bonus: i32 = match (expected_ty.as_ref(), item.detail.as_deref()) {
                 (Some(expected), Some(detail)) => types
                     .as_mut()
                     .and_then(|types| {
@@ -7825,6 +8081,16 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                     .unwrap_or(0),
                 _ => 0,
             };
+            let lambda_bonus: i32 = item
+                .data
+                .as_ref()
+                .and_then(|data| data.get("nova"))
+                .and_then(|nova| nova.get("lambda_snippet"))
+                .and_then(|value| value.as_bool())
+                .is_some_and(|b| b)
+                .then_some(25)
+                .unwrap_or(0);
+            let expected_bonus = expected_bonus.saturating_add(lambda_bonus);
 
             let scope = scope_bonus(item.kind);
             let recency = ctx.last_used_offsets.get(&item.label).copied();

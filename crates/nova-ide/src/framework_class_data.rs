@@ -29,8 +29,8 @@ pub fn extract_classes_from_source(source: &str) -> Vec<ClassData> {
         }
 
         if let Some(interface) = syntax_ast::InterfaceDeclaration::cast(node) {
-            if let Some(interface) = parse_interface_declaration(interface, source) {
-                classes.push(interface);
+            if let Some(class) = parse_interface_declaration(interface, source) {
+                classes.push(class);
             }
         }
     }
