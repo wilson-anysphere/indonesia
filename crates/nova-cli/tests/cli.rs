@@ -489,12 +489,20 @@ fn index_creates_persistent_cache_and_symbols_work() {
     let symbols = symbols.as_array().unwrap();
     assert!(
         symbols.iter().any(|sym| {
-            sym["name"] == "Main"
-                && sym["locations"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|loc| loc["file"] == "src/Main.java")
+            let has_file = sym
+                .get("location")
+                .and_then(|loc| loc.get("file"))
+                .and_then(|v| v.as_str())
+                == Some("src/Main.java")
+                || sym
+                    .get("locations")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .any(|loc| {
+                        loc.get("file").and_then(|v| v.as_str()) == Some("src/Main.java")
+                    });
+            sym.get("name").and_then(|v| v.as_str()) == Some("Main") && has_file
         }),
         "expected Main symbol in results, got: {symbols:#?}"
     );

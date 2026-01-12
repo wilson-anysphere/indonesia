@@ -69,9 +69,18 @@ fn init_cache_dir() {
 fn assert_symbols_contain_file(symbols: &[WorkspaceSymbol], expected_file: &str) {
     let expected_file = expected_file.replace('\\', "/");
     let found = symbols.iter().any(|sym| {
-        sym.locations
-            .iter()
-            .any(|loc| loc.file.replace('\\', "/") == expected_file)
+        let value =
+            serde_json::to_value(sym).expect("WorkspaceSymbol should be serializable to JSON");
+        let mut locations = value
+            .get("location")
+            .into_iter()
+            .chain(value.get("locations").and_then(|v| v.as_array()).into_iter().flatten());
+        locations.any(|loc| {
+            loc.get("file")
+                .and_then(|v| v.as_str())
+                .map(|f| f.replace('\\', "/") == expected_file)
+                .unwrap_or(false)
+        })
     });
     assert!(
         found,
