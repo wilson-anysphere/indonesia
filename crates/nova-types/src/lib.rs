@@ -3456,8 +3456,46 @@ fn collect_arg_constraints(
                 args: a_args,
             }) = arg
             {
+                // Fast path: same generic class/interface.
                 if p_def == a_def && p_args.len() == a_args.len() {
                     for (a, p) in a_args.iter().zip(p_args) {
+                        collect_type_arg_constraints(env, a, p, bounds);
+                    }
+                    return;
+                }
+
+                // Common Java inference case: the argument is a subtype whose generic
+                // supertype matches the formal parameter. Example:
+                //   formal:  List<T>
+                //   actual:  ArrayList<String>
+                // We map `actual` to an instantiation of `formal`'s generic class via
+                // supertypes and collect constraints against that view.
+                if p_def != a_def {
+                    // Be conservative around raw types and malformed instantiations: if we
+                    // don't have enough info to map type arguments correctly, skip.
+                    let (Some(actual_def), Some(formal_def)) =
+                        (env.class(*a_def), env.class(*p_def))
+                    else {
+                        return;
+                    };
+                    if actual_def.type_params.len() != a_args.len()
+                        || formal_def.type_params.len() != p_args.len()
+                    {
+                        return;
+                    }
+                    if is_raw_class(env, *a_def, a_args) || is_raw_class(env, *p_def, p_args) {
+                        return;
+                    }
+
+                    let Some(mapped_args) =
+                        instantiate_as(env, *a_def, a_args.clone(), *p_def)
+                    else {
+                        return;
+                    };
+                    if mapped_args.len() != p_args.len() {
+                        return;
+                    }
+                    for (a, p) in mapped_args.iter().zip(p_args) {
                         collect_type_arg_constraints(env, a, p, bounds);
                     }
                 }
@@ -3573,8 +3611,45 @@ fn collect_return_constraints(
                 args: e_args,
             }) = expected
             {
+                // Fast path: expected is the same generic class/interface.
                 if r_def == e_def && r_args.len() == e_args.len() {
                     for (r, e) in r_args.iter().zip(e_args) {
+                        collect_equality_constraints(env, e, r, bounds);
+                    }
+                    return;
+                }
+
+                // Return context can constrain method type variables through a supertype
+                // relationship, e.g.:
+                //   ret:      ArrayList<T>
+                //   expected: List<String>
+                // We map `ret` to an instantiation of `expected`'s generic class via
+                // supertypes and collect constraints against that view.
+                if r_def != e_def {
+                    // Be conservative around raw types and malformed instantiations.
+                    let (Some(ret_def), Some(expected_def)) =
+                        (env.class(*r_def), env.class(*e_def))
+                    else {
+                        return;
+                    };
+                    if ret_def.type_params.len() != r_args.len()
+                        || expected_def.type_params.len() != e_args.len()
+                    {
+                        return;
+                    }
+                    if is_raw_class(env, *r_def, r_args) || is_raw_class(env, *e_def, e_args) {
+                        return;
+                    }
+
+                    let Some(mapped_args) =
+                        instantiate_as(env, *r_def, r_args.clone(), *e_def)
+                    else {
+                        return;
+                    };
+                    if mapped_args.len() != e_args.len() {
+                        return;
+                    }
+                    for (r, e) in mapped_args.iter().zip(e_args) {
                         collect_equality_constraints(env, e, r, bounds);
                     }
                 }

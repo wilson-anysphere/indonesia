@@ -134,3 +134,100 @@ fn inferred_type_respects_bounds() {
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(integer, vec![])]);
 }
+
+#[test]
+fn infer_from_argument_via_generic_supertype() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+    let list = env.class_id("java.util.List").unwrap();
+    let array_list = env.class_id("java.util.ArrayList").unwrap();
+
+    let t = env.add_type_param("T", vec![Type::class(object, vec![])]);
+    let test = env.add_class(ClassDef {
+        name: "com.example.Test4".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "m".to_string(),
+            type_params: vec![t],
+            params: vec![Type::class(list, vec![Type::TypeVar(t)])],
+            return_type: Type::Void,
+            is_static: true,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    let call = MethodCall {
+        receiver: Type::class(test, vec![]),
+        call_kind: nova_types::CallKind::Static,
+        name: "m",
+        args: vec![Type::class(
+            array_list,
+            vec![Type::class(string, vec![])],
+        )],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
+        panic!("expected method resolution success");
+    };
+    assert_eq!(res.inferred_type_args, vec![Type::class(string, vec![])]);
+}
+
+#[test]
+fn infer_from_return_context_via_generic_supertype() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+    let list = env.class_id("java.util.List").unwrap();
+    let array_list = env.class_id("java.util.ArrayList").unwrap();
+
+    let t = env.add_type_param("T", vec![Type::class(object, vec![])]);
+    let test = env.add_class(ClassDef {
+        name: "com.example.Test5".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "empty".to_string(),
+            type_params: vec![t],
+            params: vec![],
+            return_type: Type::class(array_list, vec![Type::TypeVar(t)]),
+            is_static: true,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    let expected = Type::class(list, vec![Type::class(string, vec![])]);
+    let call = MethodCall {
+        receiver: Type::class(test, vec![]),
+        call_kind: nova_types::CallKind::Static,
+        name: "empty",
+        args: vec![],
+        expected_return: Some(expected.clone()),
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
+        panic!("expected method resolution success");
+    };
+    assert_eq!(res.inferred_type_args, vec![Type::class(string, vec![])]);
+    assert_eq!(
+        res.return_type,
+        Type::class(array_list, vec![Type::class(string, vec![])])
+    );
+    assert!(nova_types::is_assignable(&env, &res.return_type, &expected));
+}
