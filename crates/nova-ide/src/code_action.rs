@@ -1085,7 +1085,7 @@ fn is_java_identifier(token: &str) -> bool {
 }
 
 fn looks_like_type_identifier(name: &str) -> bool {
-    if !is_java_identifier(name) {
+    if !crate::quick_fixes::is_java_identifier(name) {
         return false;
     }
 

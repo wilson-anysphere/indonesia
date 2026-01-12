@@ -2140,7 +2140,29 @@ fn collect_declared_types(
                 continue;
             };
             let name_span = span_of_token(&name_tok);
-            types.insert(name_span, ty_text.clone());
+            // Best-effort: for `var x = new Foo();`, prefer the *source* type text `Foo` over a
+            // fully-qualified type-checker string (`pkg.Foo`) when the initializer type is written
+            // unqualified. This keeps the extracted signature consistent with the user's code and
+            // avoids unnecessary `java.lang.` qualification (e.g. `RuntimeException`).
+            let mut declared_ty = ty_text.clone();
+            if declared_ty.trim() == "var" {
+                if let Some(ast::Expression::NewExpression(new_expr)) = decl.initializer() {
+                    if let Some(init_ty) = new_expr.ty() {
+                        let init_ty_text = slice_syntax(source, init_ty.syntax())
+                            .unwrap_or("")
+                            .trim();
+                        if init_ty_text
+                            .chars()
+                            .next()
+                            .is_some_and(|c| !c.is_ascii_lowercase())
+                            && !init_ty_text.is_empty()
+                        {
+                            declared_ty = init_ty_text.to_string();
+                        }
+                    }
+                }
+            }
+            types.insert(name_span, declared_ty);
 
             if let Some(initializer) = decl.initializer() {
                 initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
@@ -2396,9 +2418,31 @@ fn collect_declared_types_by_name(
             };
             let name = name_tok.text().to_string();
             let offset = u32::from(name_tok.text_range().start()) as usize;
+            let mut decl_ty = ty_text.to_string();
+
+            // Best-effort: for `var e = new RuntimeException();`, treat the declared type as the
+            // unqualified initializer type (`RuntimeException`) so throw-type inference doesn't
+            // fall back to fully-qualified type-checker strings (`java.lang.RuntimeException`).
+            if decl_ty == "var" {
+                if let Some(ast::Expression::NewExpression(new_expr)) = decl.initializer() {
+                    if let Some(init_ty) = new_expr.ty() {
+                        let init_ty_text_full =
+                            slice_syntax(source, init_ty.syntax()).unwrap_or("").trim();
+                        let init_ty_text = strip_type_arguments(init_ty_text_full);
+                        if init_ty_text
+                            .chars()
+                            .next()
+                            .is_some_and(|c| !c.is_ascii_lowercase())
+                            && !init_ty_text.is_empty()
+                        {
+                            decl_ty = init_ty_text.to_string();
+                        }
+                    }
+                }
+            }
             out.entry(name).or_default().push(DeclaredTypeCandidate {
                 offset,
-                ty: ty_text.to_string(),
+                ty: decl_ty,
             });
         }
     }
