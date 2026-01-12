@@ -2139,8 +2139,8 @@ async fn handle_packet(
                         (0, b'I') => JdwpValue::Int(42),
                         // Slot 0 is `int x` in `Method.VariableTable`, but is also used for a
                         // reference-typed local (`List<String> list`) in the mock's generic variable
-                        // table. Use a concrete `ArrayList` sample object so stream-debug can
-                        // inspect it without requiring a real JVM.
+                        // table. Use a concrete `java.util.ArrayList` sample object so stream-debug
+                        // can inspect the backing collection without requiring a real JVM.
                         (0, _) => JdwpValue::Object {
                             tag: b'L',
                             id: SAMPLE_ARRAYLIST_OBJECT_ID,
@@ -3648,6 +3648,7 @@ fn smart_step_location(state: &State) -> Location {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::inspect::{Inspector, ObjectKindPreview};
 
     #[tokio::test]
     async fn variable_table_with_generic_locals_have_coherent_values() {
@@ -3685,9 +3686,27 @@ mod tests {
         assert_eq!(values.len(), 2);
 
         // `list` should never decode to `Void` (regression guard for slot=0, tag='L').
-        match &values[0] {
-            JdwpValue::Object { id, .. } => assert_ne!(*id, 0, "expected non-null list object id"),
+        let list_id = match &values[0] {
+            JdwpValue::Object { id, .. } => {
+                assert_ne!(*id, 0, "expected non-null list object id");
+                *id
+            }
             other => panic!("expected list to be an object value, got {other:?}"),
+        };
+
+        // Ensure higher-level helpers can treat `list` like an actual list (regression guard for
+        // stream-debug, which samples the backing collection via inspection).
+        let mut inspector = Inspector::new(client.clone());
+        let preview = inspector.preview_object(list_id).await.unwrap();
+        let runtime_type = preview.runtime_type.clone();
+        match preview.kind {
+            ObjectKindPreview::List { size, sample } => {
+                assert!(size > 0, "expected list preview size > 0");
+                assert!(!sample.is_empty(), "expected list preview to include a sample");
+            }
+            other => {
+                panic!("expected list local to preview as List, got {other:?} (type={runtime_type})")
+            }
         }
 
         match &values[1] {
