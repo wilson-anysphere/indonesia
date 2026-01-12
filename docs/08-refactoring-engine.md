@@ -190,6 +190,7 @@ let edit = extract_variable(
 
 Current implementation policy:
 
+- **Target:** currently limited to *local variables* (not fields/parameters), and only when a suitable initializer is available.
 - **Two modes:**
   - **Inline at cursor**: inline the single usage that the user invoked the refactoring on.
   - **Inline all usages**: inline every usage of the variable within its scope.
