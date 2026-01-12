@@ -4198,6 +4198,19 @@ fn record_syntax_only_references(
         let Some(args) = annotation.arguments() else {
             return;
         };
+
+        let anno_def = annotation
+            .name()
+            .and_then(|name| {
+                let qn = QualifiedName::from_dotted(&name.text());
+                resolver.resolve_qualified_type_resolution_in_scope(&scope_result.scopes, scope, &qn)
+            })
+            .and_then(|resolved| match resolved {
+                TypeResolution::Source(item) => workspace.type_def(item),
+                _ => None,
+            })
+            .filter(|def| def.kind == TypeKind::Annotation);
+
         if let Some(value) = args.value() {
             visit_value(
                 file,
@@ -4213,6 +4226,23 @@ fn record_syntax_only_references(
             );
         }
         for pair in args.pairs() {
+            if let (Some(anno_def), Some(name_tok)) = (anno_def, pair.name_token()) {
+                let name_range = syntax_token_range(&name_tok);
+                let element_name = Name::from(name_tok.text());
+                if let Some(methods) = anno_def.methods.get(&element_name) {
+                    if let Some(method) = methods.first() {
+                        record_reference(
+                            file,
+                            name_range,
+                            ResolutionKey::Method(method.id),
+                            resolution_to_symbol,
+                            references,
+                            spans,
+                        );
+                    }
+                }
+            }
+
             let Some(value) = pair.value() else {
                 continue;
             };
