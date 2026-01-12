@@ -223,7 +223,7 @@ Nova uses “golden” fixtures when the expected output is easiest to review as
 - Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (run via `crates/nova-syntax/tests/harness.rs`)
 
 The golden corpus test is the `#[test] fn golden_corpus()` test inside the consolidated `harness`
-integration test binary. There is **no** separate `--test golden_corpus` integration test target;
+integration test binary. There is **no** separate integration test target named `golden_corpus`;
 run it via `--test harness` and (optionally) a test-name filter.
 
 **Run locally:**
