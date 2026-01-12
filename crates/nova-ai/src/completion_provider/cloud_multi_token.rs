@@ -8,6 +8,7 @@ use crate::{
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -17,6 +18,7 @@ pub struct CloudMultiTokenCompletionProvider {
     max_output_tokens: u32,
     temperature: f32,
     privacy: PrivacyMode,
+    anonymization_gate_warned: Arc<AtomicBool>,
     max_insert_text_chars: usize,
     max_label_chars: usize,
     max_additional_edits: usize,
@@ -46,6 +48,7 @@ impl CloudMultiTokenCompletionProvider {
                 include_file_paths: false,
                 ..PrivacyMode::default()
             },
+            anonymization_gate_warned: Arc::new(AtomicBool::new(false)),
             max_insert_text_chars: 4_096,
             max_label_chars: 120,
             max_additional_edits: 8,
@@ -90,11 +93,13 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
             // identifiers when `ai.privacy.anonymize_identifiers=true` (the default in cloud
             // mode).
             if self.privacy.anonymize_identifiers {
-                warn!(
-                    "cloud multi-token completions are disabled when identifier anonymization is enabled \
-                     (ai.privacy.anonymize_identifiers=true). \
-                     To enable cloud multi-token completions, set ai.privacy.anonymize_identifiers=false."
-                );
+                if !self.anonymization_gate_warned.swap(true, Ordering::Relaxed) {
+                    warn!(
+                        "cloud multi-token completions are disabled when identifier anonymization is enabled \
+                         (ai.privacy.anonymize_identifiers=true). \
+                         To enable cloud multi-token completions, set ai.privacy.anonymize_identifiers=false."
+                    );
+                }
                 return Ok(Vec::new());
             }
 
