@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nova_core::ProjectDatabase;
 use nova_db::{Database, FileId};
 use nova_vfs::FileSystem;
 use nova_vfs::VfsPath;
@@ -146,6 +147,24 @@ impl Database for WorkspaceSnapshot {
     }
 }
 
+impl ProjectDatabase for WorkspaceSnapshot {
+    fn project_files(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .file_paths
+            .values()
+            .filter_map(|path| path.clone())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    fn file_text(&self, path: &Path) -> Option<String> {
+        let file_id = self.file_id(path)?;
+        Some(self.file_content(file_id).to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +216,28 @@ mod tests {
         assert_eq!(snapshot.file_id(abs.as_path()), Some(file_id));
         assert!(snapshot.all_file_ids().contains(&file_id));
         assert_eq!(snapshot.file_content(file_id), "class Main {}");
+    }
+
+    #[test]
+    fn workspace_snapshot_implements_project_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let snapshot = WorkspaceSnapshot::from_sources(
+            root,
+            vec![
+                (PathBuf::from("src/B.java"), "class B {}".to_string()),
+                (PathBuf::from("src/A.java"), "class A {}".to_string()),
+            ],
+        );
+
+        let files = ProjectDatabase::project_files(&snapshot);
+        assert_eq!(
+            files,
+            vec![root.join("src/A.java"), root.join("src/B.java")]
+        );
+
+        let text = ProjectDatabase::file_text(&snapshot, &files[0]).expect("file text");
+        assert_eq!(text, "class A {}");
     }
 }
