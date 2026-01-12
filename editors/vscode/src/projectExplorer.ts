@@ -529,6 +529,13 @@ function createClasspathEntryNode(
     description: resolved && resolved !== entry ? resolved : entry,
     uri,
     icon: new vscode.ThemeIcon('symbol-file'),
+    command: uri
+      ? {
+          title: 'Reveal Path',
+          command: COMMAND_REVEAL_PATH,
+          arguments: [uri],
+        }
+      : undefined,
   };
 }
 
