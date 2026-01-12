@@ -1439,33 +1439,6 @@ async fn handle_new_connection(
     let worker_id = welcome.worker_id;
     let has_cached_index = hello.cached_index_info.is_some();
 
-    {
-        let notif_state = state.clone();
-        let notif_conn = conn.clone();
-        conn.set_notification_handler(move |notification| {
-            let notif_state = notif_state.clone();
-            let notif_conn = notif_conn.clone();
-            async move {
-                match notification {
-                    Notification::CachedIndex(index) => {
-                        if index.shard_id != shard_id {
-                            warn!(
-                                shard_id,
-                                worker_id,
-                                reported_shard_id = index.shard_id,
-                                "worker sent cached index for wrong shard; closing connection"
-                            );
-                            let _ = notif_conn.shutdown().await;
-                            return;
-                        }
-                        apply_shard_index(notif_state, index).await;
-                    }
-                    Notification::Unknown => {}
-                }
-            }
-        });
-    }
-
     let handle = WorkerHandle {
         shard_id,
         worker_id,
@@ -1491,6 +1464,58 @@ async fn handle_new_connection(
     }
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
+
+    conn.set_notification_handler({
+        let notif_state = state.clone();
+        move |notification| {
+            let notif_state = notif_state.clone();
+            async move {
+                match notification {
+                    Notification::CachedIndex(index) => {
+                        if index.shard_id != shard_id {
+                            warn!(
+                                shard_id,
+                                worker_id,
+                                reported_shard_id = index.shard_id,
+                                "worker sent cached index for wrong shard; disconnecting worker"
+                            );
+
+                            // Remove the worker handle first so a replacement connection isn't
+                            // blocked on the accept-loop shard reservation check.
+                            let conn = {
+                                let mut guard = notif_state.shards.lock().await;
+                                let Some(shard) = guard.get_mut(&shard_id) else {
+                                    return;
+                                };
+                                let Some(worker) = shard.worker.as_ref() else {
+                                    return;
+                                };
+                                if worker.worker_id != worker_id {
+                                    return;
+                                }
+
+                                let conn = worker.conn.clone();
+                                shard.worker = None;
+                                if shard.pending_worker == Some(worker_id) {
+                                    shard.pending_worker = None;
+                                }
+                                conn
+                            };
+                            notif_state.notify.notify_waiters();
+
+                            // Close the transport outside the mutex to avoid holding router state
+                            // across an await.
+                            let _ = conn.shutdown().await;
+                            return;
+                        }
+
+                        apply_shard_index(notif_state, index).await;
+                    }
+                    Notification::Unknown => {}
+                }
+            }
+        }
+    });
 
     let cleanup_state = state.clone();
     let cleanup_conn = conn.clone();
