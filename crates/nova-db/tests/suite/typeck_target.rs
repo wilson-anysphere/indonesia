@@ -207,6 +207,32 @@ class C { void m(){ int[] a = new int[] {1,2}; } }
 }
 
 #[test]
+fn array_initializer_items_target_type_lambdas() {
+    let src = r#"
+class C { void m(){ Runnable[] rs = { () -> {}, () -> {} }; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "lambda-arity-mismatch"
+        }),
+        "expected lambda array initializer to type-check; got {diags:?}"
+    );
+
+    let offset = src
+        .find("() -> {}")
+        .expect("snippet should contain lambda expression");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Runnable");
+}
+
+#[test]
 fn throw_requires_throwable() {
     let src = r#"
 class C {
