@@ -633,6 +633,12 @@ pub struct ExtractVariableParams {
     pub expr_range: TextRange,
     pub name: String,
     pub use_var: bool,
+    /// When enabled, attempt to replace other equivalent expressions in the same statement-list
+    /// scope as the extracted declaration.
+    ///
+    /// Safety note (switch statements): we intentionally restrict replacement to the current case
+    /// group / rule body. Control flow may enter a `switch` at any label, so replacing across
+    /// labels could introduce uses of the extracted local on paths that skip its declaration.
     pub replace_all: bool,
 }
 
@@ -988,11 +994,14 @@ pub fn extract_variable(
     }
     let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
-    let occurrences = if params.replace_all {
+    let mut occurrences = if params.replace_all {
         find_replace_all_occurrences_same_execution_context(text, root.clone(), &stmt, &expr_text)
     } else {
         vec![expr_range]
     };
+    if occurrences.is_empty() {
+        occurrences.push(expr_range);
+    }
 
     let mut edits = Vec::with_capacity(1 + occurrences.len());
     edits.push(TextEdit::insert(params.file.clone(), insert_pos, decl));
@@ -2984,22 +2993,22 @@ fn find_replace_all_occurrences_same_execution_context(
         .ancestors()
         .find_map(ast::ClassBody::cast);
 
-    // Restrict to the closest enclosing statement-list scope to avoid replacing occurrences where
-    // the extracted local would not be visible.
-    //
-    // Most statements live in a `{ ... }` block, but `switch { ... }` bodies also define a scope
-    // for locals declared inside case groups.
+    // Restrict to the closest statement-list-like scope to avoid replacing across execution entry
+    // points (e.g. traditional `switch` case groups) or into unrelated scopes.
     let search_root = insertion_stmt
         .syntax()
         .ancestors()
         .find_map(|node| {
             if let Some(block) = ast::Block::cast(node.clone()) {
-                Some(block.syntax().clone())
-            } else if let Some(switch_block) = ast::SwitchBlock::cast(node) {
-                Some(switch_block.syntax().clone())
-            } else {
-                None
+                return Some(block.syntax().clone());
             }
+            if let Some(group) = ast::SwitchGroup::cast(node.clone()) {
+                return Some(group.syntax().clone());
+            }
+            if let Some(rule) = ast::SwitchRule::cast(node.clone()) {
+                return rule.body().map(|body| body.syntax().clone());
+            }
+            None
         })
         .unwrap_or(root);
 

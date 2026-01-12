@@ -183,6 +183,8 @@ let edit = extract_variable(
         name: "extracted".to_string(),
         // `true` => `var`, `false` => best-effort explicit type.
         use_var: true,
+        // Replace other equivalent expressions in the same scope (conservative in `switch`).
+        replace_all: false,
     },
 )?;
 ```
