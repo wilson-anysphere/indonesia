@@ -3642,7 +3642,13 @@ fn glb_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
 
     let mut it = sorted.into_iter();
     let first = it.next().unwrap_or_else(|| object.clone());
-    it.fold(first, |acc, t| glb(env, &acc, &t))
+    // Ensure any pre-existing intersection is normalized even when there is only
+    // a single bound (so we never leak a non-canonical `Type::Intersection`).
+    let mut acc = make_intersection(env, vec![first]);
+    for t in it {
+        acc = glb(env, &acc, &t);
+    }
+    acc
 }
 
 fn lub_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
