@@ -703,6 +703,17 @@ mod tests {
         let foo_ty = Type::class(class_id, vec![]);
         let members = complete_member_names(&db, &registry, &foo_ty);
         assert!(members.iter().any(|m| m == "withX"), "{members:?}");
+
+        let resolved = resolve_method_call(
+            &db,
+            &registry,
+            &foo_ty,
+            CallKind::Instance,
+            "withX",
+            &[Type::int()],
+        )
+        .expect("withX(int) should resolve");
+        assert_eq!(resolved, foo_ty);
     }
 
     #[test]
@@ -759,6 +770,10 @@ mod tests {
         let mut registry = AnalyzerRegistry::new();
         registry.register(Box::new(LombokAnalyzer::new()));
 
+        let foo_ty = Type::class(class_id, vec![]);
+        let names = complete_member_names(&db, &registry, &foo_ty);
+        assert!(names.iter().any(|n| n == "log"), "{names:?}");
+
         let members = registry.virtual_members_for_class(&db, class_id);
         let logger = members
             .into_iter()
@@ -772,6 +787,8 @@ mod tests {
             logger.ty,
             Type::Named("org.apache.commons.logging.Log".into())
         );
+        assert!(logger.is_static);
+        assert!(logger.is_final);
     }
 
     #[test]
@@ -792,6 +809,10 @@ mod tests {
         let mut registry = AnalyzerRegistry::new();
         registry.register(Box::new(LombokAnalyzer::new()));
 
+        let foo_ty = Type::class(class_id, vec![]);
+        let names = complete_member_names(&db, &registry, &foo_ty);
+        assert!(names.iter().any(|n| n == "log"), "{names:?}");
+
         let members = registry.virtual_members_for_class(&db, class_id);
         let logger = members
             .into_iter()
@@ -802,6 +823,8 @@ mod tests {
             .expect("expected Lombok logger field");
 
         assert_eq!(logger.ty, Type::Named("org.apache.log4j.Logger".into()));
+        assert!(logger.is_static);
+        assert!(logger.is_final);
     }
 
     #[test]
