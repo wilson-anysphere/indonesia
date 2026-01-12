@@ -517,6 +517,24 @@ mod tests {
     }
 
     #[test]
+    fn jar_uri_parsing_normalizes_archive_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("lib.jar");
+        let with_dotdot = dir.path().join("x").join("..").join("lib.jar");
+
+        let abs = AbsPathBuf::new(with_dotdot).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+        let uri = format!("jar:{archive_uri}!/com/example/Foo.class");
+
+        let parsed = VfsPath::uri(uri);
+        assert_eq!(
+            parsed,
+            VfsPath::jar(normalized, "/com/example/Foo.class"),
+            "jar: URIs should normalize dot segments in the embedded archive file URI"
+        );
+    }
+
+    #[test]
     fn jmod_uri_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("java.base.jmod");
