@@ -1702,6 +1702,21 @@ class Foo {
     );
     assert_eq!(java10.result.errors, Vec::new());
     assert!(java10.diagnostics.is_empty());
+
+    // `var` is still legal as a package identifier; don't diagnose it when it appears in a
+    // qualifier position of a type name.
+    let qualified_type = "class Foo { var.Bar b; }";
+    let java10 = parse_java_with_options(
+        qualified_type,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert!(java10.diagnostics.is_empty());
 }
 
 #[test]

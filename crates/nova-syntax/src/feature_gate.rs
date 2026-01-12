@@ -89,14 +89,22 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
             .filter(|t| t.kind().is_identifier_like())
             .collect();
 
-        if segments.iter().all(|t| t.kind() != SyntaxKind::VarKw) {
+        // `var` is only a reserved *type name*; it remains legal as a package identifier.
+        // Avoid diagnosing `var` when it appears in a qualifier position (e.g. `var.Foo` or
+        // `com.var.Foo` where `var` is a package segment). Without name resolution we can't know
+        // whether a qualifier is a package name or an enclosing type, but Java permits `var` as a
+        // package name, so only diagnose `var` when it is the *simple* (last) name of a type.
+        let Some(last_segment) = segments.last() else {
+            continue;
+        };
+        if last_segment.kind() != SyntaxKind::VarKw {
             continue;
         }
 
         // `var` is allowed as a special "inferred type" only when it appears as an unqualified,
         // unparameterized type in a handful of local contexts.
         let is_plain_var_type =
-            segments.len() == 1 && segments[0].kind() == SyntaxKind::VarKw && !named_type
+            segments.len() == 1 && last_segment.kind() == SyntaxKind::VarKw && !named_type
                 .children()
                 .any(|n| n.kind() == SyntaxKind::TypeArguments);
 
@@ -114,10 +122,7 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
         if matches!(parent_kind, Some(SyntaxKind::LambdaParameter)) {
             continue;
         }
-
-        for tok in segments.into_iter().filter(|t| t.kind() == SyntaxKind::VarKw) {
-            out.push(reserved_type_name_var_error(&tok));
-        }
+        out.push(reserved_type_name_var_error(last_segment));
     }
 }
 
