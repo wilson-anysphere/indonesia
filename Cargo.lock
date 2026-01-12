@@ -3633,6 +3633,7 @@ dependencies = [
  "nova-config",
  "nova-core",
  "nova-ext-abi",
+ "nova-metrics",
  "nova-scheduler",
  "nova-types",
  "semver",

@@ -18,6 +18,7 @@ wasm-extensions = [
 [dependencies]
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
+nova-metrics = { path = "../nova-metrics" }
 nova-types = { path = "../nova-types" }
 nova-scheduler = { path = "../nova-scheduler" }
 tracing = { workspace = true }

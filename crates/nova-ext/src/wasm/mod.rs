@@ -68,8 +68,9 @@
 //! - **Per-plugin memory limits** via Wasmtime's `StoreLimits` (prevents unbounded `memory.grow`).
 //! - **No WASI** by default (no filesystem/network access unless explicitly linked by the host).
 //!
-//! Any trap/panic/timeout is treated as a provider failure: the host returns an empty result set and
-//! emits a `tracing` warning.
+//! Any trap/panic/timeout is treated as a provider failure. WASM providers report failures via
+//! `ProviderError` so the [`crate::ExtensionRegistry`] can account for them (stats, metrics, circuit
+//! breaker) and emit the appropriate structured logs. Callers still observe an empty result set.
 
 mod runtime;
 

@@ -1,4 +1,5 @@
 mod context;
+mod outcome;
 mod registry;
 mod traits;
 mod types;
@@ -12,6 +13,7 @@ mod manifest;
 pub mod wasm;
 
 pub use context::ExtensionContext;
+pub use outcome::{ProviderError, ProviderErrorKind, ProviderResult};
 pub use registry::{
     ExtensionRegistry, ExtensionRegistryOptions, ExtensionRegistryStats, ProviderLastError,
     ProviderStats, RegisterError,

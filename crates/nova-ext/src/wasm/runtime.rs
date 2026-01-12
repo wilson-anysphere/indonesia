@@ -1,3 +1,4 @@
+use crate::outcome::{ProviderError, ProviderErrorKind, ProviderResult};
 use crate::traits::{
     CodeActionParams, CodeActionProvider, CompletionParams, CompletionProvider, DiagnosticParams,
     DiagnosticProvider, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
@@ -252,6 +253,21 @@ fn classify_call_error(err: wasmtime::Error) -> WasmCallError {
     } else {
         WasmCallError::Trap(msg)
     }
+}
+
+fn provider_error_from_wasm_call_error(err: WasmCallError) -> ProviderError {
+    let kind = match err {
+        WasmCallError::Timeout(_) => ProviderErrorKind::Timeout,
+        WasmCallError::Trap(_) => ProviderErrorKind::Trap,
+        WasmCallError::Json(_)
+        | WasmCallError::MissingExport(_)
+        | WasmCallError::MemoryOutOfBounds { .. }
+        | WasmCallError::RequestTooLarge { .. }
+        | WasmCallError::ResponseTooLarge { .. }
+        | WasmCallError::Instantiate(_) => ProviderErrorKind::InvalidResponse,
+    };
+
+    ProviderError::new(kind, err.to_string())
 }
 
 #[derive(Clone)]
@@ -627,8 +643,17 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
+        self.try_provide_diagnostics(ctx, params)
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn try_provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> ProviderResult<Vec<Diagnostic>> {
         if !self.capabilities.contains(WasmCapabilities::DIAGNOSTICS) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let file_path = ctx
@@ -643,26 +668,19 @@ where
         };
 
         let config = self.config_for_ctx(&ctx);
-        match self.call_diagnostics_v1(&config, req) {
-            Ok(diags) => diags
-                .into_iter()
-                .map(|diag| Diagnostic {
-                    severity: severity_from_v1(diag.severity),
-                    code: diag.code.map_or_else(|| "WASM_EXT".into(), Into::into),
-                    message: diag.message,
-                    span: diag.span.map(|s| Span::new(s.start, s.end)),
-                })
-                .collect(),
-            Err(err) => {
-                tracing::warn!(
-                    plugin_id = %self.id,
-                    capability = "diagnostics",
-                    error = %err,
-                    "wasm extension diagnostics failed"
-                );
-                Vec::new()
-            }
-        }
+        let diags = self
+            .call_diagnostics_v1(&config, req)
+            .map_err(provider_error_from_wasm_call_error)?;
+
+        Ok(diags
+            .into_iter()
+            .map(|diag| Diagnostic {
+                severity: severity_from_v1(diag.severity),
+                code: diag.code.map_or_else(|| "WASM_EXT".into(), Into::into),
+                message: diag.message,
+                span: diag.span.map(|s| Span::new(s.start, s.end)),
+            })
+            .collect())
     }
 }
 
@@ -679,8 +697,17 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        self.try_provide_completions(ctx, params)
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn try_provide_completions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CompletionParams,
+    ) -> ProviderResult<Vec<CompletionItem>> {
         if !self.capabilities.contains(WasmCapabilities::COMPLETIONS) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let req = CompletionsRequestV1 {
@@ -695,24 +722,17 @@ where
         };
 
         let config = self.config_for_ctx(&ctx);
-        match self.call_completions_v1(&config, req) {
-            Ok(items) => items
-                .into_iter()
-                .map(|item| CompletionItem {
-                    label: item.label,
-                    detail: item.detail,
-                })
-                .collect(),
-            Err(err) => {
-                tracing::warn!(
-                    plugin_id = %self.id,
-                    capability = "completions",
-                    error = %err,
-                    "wasm extension completions failed"
-                );
-                Vec::new()
-            }
-        }
+        let items = self
+            .call_completions_v1(&config, req)
+            .map_err(provider_error_from_wasm_call_error)?;
+
+        Ok(items
+            .into_iter()
+            .map(|item| CompletionItem {
+                label: item.label,
+                detail: item.detail,
+            })
+            .collect())
     }
 }
 
@@ -729,8 +749,17 @@ where
         ctx: ExtensionContext<DB>,
         params: CodeActionParams,
     ) -> Vec<CodeAction> {
+        self.try_provide_code_actions(ctx, params)
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn try_provide_code_actions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CodeActionParams,
+    ) -> ProviderResult<Vec<CodeAction>> {
         if !self.capabilities.contains(WasmCapabilities::CODE_ACTIONS) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let req = CodeActionsRequestV1 {
@@ -745,24 +774,17 @@ where
         };
 
         let config = self.config_for_ctx(&ctx);
-        match self.call_code_actions_v1(&config, req) {
-            Ok(actions) => actions
-                .into_iter()
-                .map(|action| CodeAction {
-                    title: action.title,
-                    kind: action.kind,
-                })
-                .collect(),
-            Err(err) => {
-                tracing::warn!(
-                    plugin_id = %self.id,
-                    capability = "code_actions",
-                    error = %err,
-                    "wasm extension code actions failed"
-                );
-                Vec::new()
-            }
-        }
+        let actions = self
+            .call_code_actions_v1(&config, req)
+            .map_err(provider_error_from_wasm_call_error)?;
+
+        Ok(actions
+            .into_iter()
+            .map(|action| CodeAction {
+                title: action.title,
+                kind: action.kind,
+            })
+            .collect())
     }
 }
 
@@ -779,8 +801,17 @@ where
         ctx: ExtensionContext<DB>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
+        self.try_provide_navigation(ctx, params)
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn try_provide_navigation(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: NavigationParams,
+    ) -> ProviderResult<Vec<NavigationTarget>> {
         if !self.capabilities.contains(WasmCapabilities::NAVIGATION) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let req = NavigationRequestV1 {
@@ -789,25 +820,18 @@ where
         };
 
         let config = self.config_for_ctx(&ctx);
-        match self.call_navigation_v1(&config, req) {
-            Ok(targets) => targets
-                .into_iter()
-                .map(|target| NavigationTarget {
-                    file: FileId::from_raw(target.file_id),
-                    span: target.span.map(|s| Span::new(s.start, s.end)),
-                    label: target.label,
-                })
-                .collect(),
-            Err(err) => {
-                tracing::warn!(
-                    plugin_id = %self.id,
-                    capability = "navigation",
-                    error = %err,
-                    "wasm extension navigation failed"
-                );
-                Vec::new()
-            }
-        }
+        let targets = self
+            .call_navigation_v1(&config, req)
+            .map_err(provider_error_from_wasm_call_error)?;
+
+        Ok(targets
+            .into_iter()
+            .map(|target| NavigationTarget {
+                file: FileId::from_raw(target.file_id),
+                span: target.span.map(|s| Span::new(s.start, s.end)),
+                label: target.label,
+            })
+            .collect())
     }
 }
 
@@ -824,8 +848,17 @@ where
         ctx: ExtensionContext<DB>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
+        self.try_provide_inlay_hints(ctx, params)
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn try_provide_inlay_hints(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: InlayHintParams,
+    ) -> ProviderResult<Vec<InlayHint>> {
         if !self.capabilities.contains(WasmCapabilities::INLAY_HINTS) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let req = InlayHintsRequestV1 {
@@ -839,23 +872,16 @@ where
         };
 
         let config = self.config_for_ctx(&ctx);
-        match self.call_inlay_hints_v1(&config, req) {
-            Ok(hints) => hints
-                .into_iter()
-                .map(|hint| InlayHint {
-                    span: hint.span.map(|s| Span::new(s.start, s.end)),
-                    label: hint.label,
-                })
-                .collect(),
-            Err(err) => {
-                tracing::warn!(
-                    plugin_id = %self.id,
-                    capability = "inlay_hints",
-                    error = %err,
-                    "wasm extension inlay hints failed"
-                );
-                Vec::new()
-            }
-        }
+        let hints = self
+            .call_inlay_hints_v1(&config, req)
+            .map_err(provider_error_from_wasm_call_error)?;
+
+        Ok(hints
+            .into_iter()
+            .map(|hint| InlayHint {
+                span: hint.span.map(|s| Span::new(s.start, s.end)),
+                label: hint.label,
+            })
+            .collect())
     }
 }

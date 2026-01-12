@@ -4,6 +4,7 @@ use crate::traits::{
     DiagnosticProvider, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
 };
 use crate::types::{CodeAction, InlayHint, NavigationTarget};
+use crate::ProviderLastError;
 use crate::{ExtensionContext, ExtensionRegistry, RegisterError};
 use nova_config::NovaConfig;
 use nova_core::FileId;
@@ -268,6 +269,62 @@ const WAT_BUSY_LOOP: &str = r#"
       br $loop
     )
     (i64.const 0)
+  )
+)
+"#;
+
+const WAT_INVALID_JSON: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 1024))
+
+  (func $nova_ext_alloc (export "nova_ext_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr)
+  )
+
+  (func $nova_ext_free (export "nova_ext_free") (param i32 i32) nop)
+
+  (func (export "nova_ext_abi_version") (result i32) (i32.const 1))
+  (func (export "nova_ext_capabilities") (result i32) (i32.const 1))
+
+  (data (i32.const 0) "not-json")
+
+  (func (export "nova_ext_diagnostics") (param i32 i32) (result i64)
+    (local $out_ptr i32)
+    (local $out_len i32)
+    (local.set $out_len (i32.const 8))
+    (local.set $out_ptr (call $nova_ext_alloc (local.get $out_len)))
+    (memory.copy (local.get $out_ptr) (i32.const 0) (local.get $out_len))
+    (i64.or
+      (i64.shl (i64.extend_i32_u (local.get $out_len)) (i64.const 32))
+      (i64.extend_i32_u (local.get $out_ptr))
+    )
+  )
+)
+"#;
+
+const WAT_TRAP_DIAGNOSTICS: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 1024))
+
+  (func $nova_ext_alloc (export "nova_ext_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr)
+  )
+
+  (func $nova_ext_free (export "nova_ext_free") (param i32 i32) nop)
+
+  (func (export "nova_ext_abi_version") (result i32) (i32.const 1))
+  (func (export "nova_ext_capabilities") (result i32) (i32.const 1))
+
+  (func (export "nova_ext_diagnostics") (param i32 i32) (result i64)
+    unreachable
   )
 )
 "#;
@@ -607,6 +664,90 @@ fn busy_loop_is_interrupted_by_timeout() {
         diags.is_empty(),
         "timeout should be treated as provider failure"
     );
+}
+
+#[test]
+fn invalid_json_failures_are_reported_to_registry_and_trip_breaker() {
+    let plugin = Arc::new(
+        WasmPlugin::from_wat(
+            "invalid-json",
+            WAT_INVALID_JSON,
+            WasmPluginConfig::default(),
+        )
+        .expect("load module"),
+    );
+
+    let mut registry = ExtensionRegistry::<TestDb>::default();
+    registry.options_mut().circuit_breaker_failure_threshold = 1;
+    registry.options_mut().circuit_breaker_cooldown = Duration::from_secs(60);
+    plugin.register(&mut registry).unwrap();
+
+    let file = FileId::from_raw(1);
+    let db = Arc::new(TestDb {
+        text: "hello".to_string(),
+        path: None,
+    });
+
+    assert!(registry
+        .diagnostics(ctx(Arc::clone(&db)), DiagnosticParams { file })
+        .is_empty());
+    assert!(registry
+        .diagnostics(ctx(db), DiagnosticParams { file })
+        .is_empty());
+
+    let stats = registry.stats();
+    let provider_stats = stats
+        .diagnostic
+        .get(plugin.id())
+        .expect("stats for wasm provider");
+    assert_eq!(provider_stats.calls_total, 1);
+    assert_eq!(provider_stats.invalid_responses_total, 1);
+    assert_eq!(
+        provider_stats.last_error,
+        Some(ProviderLastError::InvalidResponse)
+    );
+    assert_eq!(provider_stats.skipped_total, 1);
+    assert!(provider_stats.circuit_open_until.is_some());
+}
+
+#[test]
+fn traps_are_reported_to_registry_and_trip_breaker() {
+    let plugin = Arc::new(
+        WasmPlugin::from_wat("trap", WAT_TRAP_DIAGNOSTICS, WasmPluginConfig::default())
+            .expect("load module"),
+    );
+
+    let mut registry = ExtensionRegistry::<TestDb>::default();
+    registry.options_mut().circuit_breaker_failure_threshold = 1;
+    registry.options_mut().circuit_breaker_cooldown = Duration::from_secs(60);
+    plugin.register(&mut registry).unwrap();
+
+    let file = FileId::from_raw(1);
+    let db = Arc::new(TestDb {
+        text: "hello".to_string(),
+        path: None,
+    });
+
+    assert!(registry
+        .diagnostics(ctx(Arc::clone(&db)), DiagnosticParams { file })
+        .is_empty());
+    assert!(registry
+        .diagnostics(ctx(db), DiagnosticParams { file })
+        .is_empty());
+
+    let stats = registry.stats();
+    let provider_stats = stats
+        .diagnostic
+        .get(plugin.id())
+        .expect("stats for wasm provider");
+    assert_eq!(provider_stats.calls_total, 1);
+    assert_eq!(provider_stats.panics_total, 1);
+    assert_eq!(
+        provider_stats.last_error,
+        Some(ProviderLastError::PanicTrap)
+    );
+    assert_eq!(provider_stats.skipped_total, 1);
+    assert!(provider_stats.circuit_open_until.is_some());
 }
 
 #[test]

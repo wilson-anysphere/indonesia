@@ -1,9 +1,11 @@
 use crate::context::ExtensionContext;
+use crate::outcome::{ProviderError, ProviderErrorKind};
 use crate::traits::{
     CodeActionParams, CodeActionProvider, CompletionParams, CompletionProvider, DiagnosticParams,
     DiagnosticProvider, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
 };
 use crate::types::{CodeAction, InlayHint, NavigationTarget};
+use nova_metrics::MetricsRegistry;
 use nova_scheduler::{run_with_timeout, TaskError};
 use nova_types::{CompletionItem, Diagnostic};
 use std::collections::BTreeMap;
@@ -19,6 +21,9 @@ pub struct ExtensionRegistryOptions {
     pub code_action_timeout: Duration,
     pub navigation_timeout: Duration,
     pub inlay_hint_timeout: Duration,
+
+    pub circuit_breaker_failure_threshold: u32,
+    pub circuit_breaker_cooldown: Duration,
 
     pub max_diagnostics: usize,
     pub max_completions: usize,
@@ -42,6 +47,9 @@ impl Default for ExtensionRegistryOptions {
             navigation_timeout: Duration::from_millis(50),
             inlay_hint_timeout: Duration::from_millis(50),
 
+            circuit_breaker_failure_threshold: 3,
+            circuit_breaker_cooldown: Duration::from_secs(30),
+
             max_diagnostics: 1024,
             max_completions: 1024,
             max_code_actions: 1024,
@@ -63,10 +71,23 @@ const PROVIDER_KIND_CODE_ACTION: &str = "code_action";
 const PROVIDER_KIND_NAVIGATION: &str = "navigation";
 const PROVIDER_KIND_INLAY_HINT: &str = "inlay_hint";
 
+const CAPABILITY_DIAGNOSTICS: &str = "diagnostics";
+const CAPABILITY_COMPLETIONS: &str = "completions";
+const CAPABILITY_CODE_ACTIONS: &str = "code_actions";
+const CAPABILITY_NAVIGATION: &str = "navigation";
+const CAPABILITY_INLAY_HINTS: &str = "inlay_hints";
+
+const METRICS_KEY_DIAGNOSTICS: &str = "ext/diagnostics";
+const METRICS_KEY_COMPLETIONS: &str = "ext/completions";
+const METRICS_KEY_CODE_ACTIONS: &str = "ext/code_actions";
+const METRICS_KEY_NAVIGATION: &str = "ext/navigation";
+const METRICS_KEY_INLAY_HINTS: &str = "ext/inlay_hints";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderLastError {
     Timeout,
-    Panic,
+    PanicTrap,
+    InvalidResponse,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -74,9 +95,14 @@ pub struct ProviderStats {
     pub calls_total: u64,
     pub timeouts_total: u64,
     pub panics_total: u64,
+    pub invalid_responses_total: u64,
     pub last_ok_at: Option<SystemTime>,
     pub last_error: Option<ProviderLastError>,
     pub last_duration: Option<Duration>,
+    pub consecutive_failures: u32,
+    pub circuit_open_until: Option<Instant>,
+    pub circuit_opened_total: u64,
+    pub skipped_total: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -99,6 +125,52 @@ impl ExtensionRegistryStats {
             _ => unreachable!("unknown provider kind: {kind}"),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderInvocationOutcome {
+    Ok,
+    Timeout,
+    Cancelled,
+    PanicTrap,
+    InvalidResponse,
+}
+
+impl ProviderInvocationOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProviderInvocationOutcome::Ok => "ok",
+            ProviderInvocationOutcome::Timeout => "timeout",
+            ProviderInvocationOutcome::Cancelled => "cancelled",
+            ProviderInvocationOutcome::PanicTrap => "panic_trap",
+            ProviderInvocationOutcome::InvalidResponse => "invalid_response",
+        }
+    }
+
+    fn last_error(self) -> Option<ProviderLastError> {
+        match self {
+            ProviderInvocationOutcome::Ok | ProviderInvocationOutcome::Cancelled => None,
+            ProviderInvocationOutcome::Timeout => Some(ProviderLastError::Timeout),
+            ProviderInvocationOutcome::PanicTrap => Some(ProviderLastError::PanicTrap),
+            ProviderInvocationOutcome::InvalidResponse => Some(ProviderLastError::InvalidResponse),
+        }
+    }
+
+    fn is_failure(self) -> bool {
+        matches!(
+            self,
+            ProviderInvocationOutcome::Timeout
+                | ProviderInvocationOutcome::PanicTrap
+                | ProviderInvocationOutcome::InvalidResponse
+        )
+    }
+}
+
+#[derive(Debug)]
+enum ProviderInvokeResult<T> {
+    Ok(T),
+    Failed,
+    Cancelled,
 }
 
 pub struct ExtensionRegistry<DB: ?Sized + Send + Sync + 'static> {
@@ -196,13 +268,38 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         map.entry(id.to_string()).or_default();
     }
 
+    fn should_skip_provider(&self, kind: &'static str, id: &str) -> bool {
+        let mut stats = self
+            .stats
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = stats.map_mut(kind);
+        let entry = map
+            .entry(id.to_string())
+            .or_insert_with(ProviderStats::default);
+
+        let Some(open_until) = entry.circuit_open_until else {
+            return false;
+        };
+
+        if Instant::now() < open_until {
+            entry.skipped_total = entry.skipped_total.saturating_add(1);
+            return true;
+        }
+
+        // Cooldown elapsed; close the circuit and allow new attempts.
+        entry.circuit_open_until = None;
+        entry.consecutive_failures = 0;
+        false
+    }
+
     fn record_provider_call(
         &self,
         kind: &'static str,
         id: &str,
-        result: Result<(), ProviderLastError>,
+        outcome: ProviderInvocationOutcome,
         elapsed: Duration,
-    ) {
+    ) -> bool {
         let mut stats = self
             .stats
             .lock()
@@ -215,21 +312,171 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             map.get_mut(id).expect("just inserted provider stats")
         };
 
-        entry.calls_total += 1;
+        entry.calls_total = entry.calls_total.saturating_add(1);
         entry.last_duration = Some(elapsed);
 
-        match result {
-            Ok(()) => {
+        match outcome {
+            ProviderInvocationOutcome::Ok => {
                 entry.last_ok_at = Some(SystemTime::now());
                 entry.last_error = None;
+                entry.consecutive_failures = 0;
+                entry.circuit_open_until = None;
             }
-            Err(error) => {
+            ProviderInvocationOutcome::Cancelled => {}
+            outcome => {
+                let Some(error) = outcome.last_error() else {
+                    return false;
+                };
+
                 match error {
-                    ProviderLastError::Timeout => entry.timeouts_total += 1,
-                    ProviderLastError::Panic => entry.panics_total += 1,
+                    ProviderLastError::Timeout => {
+                        entry.timeouts_total = entry.timeouts_total.saturating_add(1);
+                    }
+                    ProviderLastError::PanicTrap => {
+                        entry.panics_total = entry.panics_total.saturating_add(1);
+                    }
+                    ProviderLastError::InvalidResponse => {
+                        entry.invalid_responses_total =
+                            entry.invalid_responses_total.saturating_add(1);
+                    }
                 }
                 entry.last_error = Some(error);
+                entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
             }
+        }
+
+        if !outcome.is_failure() {
+            return false;
+        }
+
+        if self.options.circuit_breaker_failure_threshold == 0 {
+            return false;
+        }
+
+        if entry.circuit_open_until.is_some() {
+            return false;
+        }
+
+        if entry.consecutive_failures >= self.options.circuit_breaker_failure_threshold {
+            entry.circuit_open_until = Some(Instant::now() + self.options.circuit_breaker_cooldown);
+            entry.circuit_opened_total = entry.circuit_opened_total.saturating_add(1);
+            return true;
+        }
+
+        false
+    }
+
+    fn invoke_provider<T, F>(
+        &self,
+        kind: &'static str,
+        capability: &'static str,
+        metrics_key: &'static str,
+        id: &str,
+        timeout: Duration,
+        cancel: nova_scheduler::CancellationToken,
+        f: F,
+    ) -> ProviderInvokeResult<Vec<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<Vec<T>, ProviderError> + Send + 'static,
+    {
+        let span = tracing::info_span!(
+            "nova_ext.provider",
+            extension_id = %id,
+            provider_id = %id,
+            capability,
+            outcome = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        );
+        let span_for_closure = span.clone();
+        let started_at = Instant::now();
+        let result = run_with_timeout(timeout, cancel, move |_token| {
+            let _guard = span_for_closure.enter();
+            f()
+        });
+        let elapsed = started_at.elapsed();
+
+        MetricsRegistry::global().record_request(metrics_key, elapsed);
+
+        let mut provider_error: Option<ProviderError> = None;
+        let (outcome, call_result) = match result {
+            Ok(Ok(items)) => (ProviderInvocationOutcome::Ok, Some(items)),
+            Ok(Err(err)) => {
+                let outcome = match err.kind {
+                    ProviderErrorKind::Timeout => ProviderInvocationOutcome::Timeout,
+                    ProviderErrorKind::Trap => ProviderInvocationOutcome::PanicTrap,
+                    ProviderErrorKind::InvalidResponse | ProviderErrorKind::Other => {
+                        ProviderInvocationOutcome::InvalidResponse
+                    }
+                };
+                provider_error = Some(err);
+                (outcome, None)
+            }
+            Err(TaskError::Cancelled) => (ProviderInvocationOutcome::Cancelled, None),
+            Err(TaskError::DeadlineExceeded(_)) => (ProviderInvocationOutcome::Timeout, None),
+            Err(TaskError::Panicked) => (ProviderInvocationOutcome::PanicTrap, None),
+        };
+
+        span.record("outcome", outcome.as_str());
+        span.record("elapsed_ms", elapsed.as_millis() as u64);
+
+        let circuit_opened = self.record_provider_call(kind, id, outcome, elapsed);
+
+        match outcome {
+            ProviderInvocationOutcome::Timeout => {
+                MetricsRegistry::global().record_timeout(metrics_key)
+            }
+            ProviderInvocationOutcome::PanicTrap => {
+                MetricsRegistry::global().record_panic(metrics_key)
+            }
+            ProviderInvocationOutcome::InvalidResponse => {
+                MetricsRegistry::global().record_error(metrics_key)
+            }
+            ProviderInvocationOutcome::Ok | ProviderInvocationOutcome::Cancelled => {}
+        }
+
+        {
+            let _guard = span.enter();
+            match outcome {
+                ProviderInvocationOutcome::Timeout => {
+                    if let Some(err) = provider_error.as_ref() {
+                        tracing::warn!(timeout = ?timeout, error = %err, "extension provider timed out");
+                    } else {
+                        tracing::warn!(timeout = ?timeout, "extension provider timed out");
+                    }
+                }
+                ProviderInvocationOutcome::PanicTrap => {
+                    if let Some(err) = provider_error.as_ref() {
+                        tracing::error!(error = %err, "extension provider trapped");
+                    } else {
+                        tracing::error!(timeout = ?timeout, "extension provider panicked");
+                    }
+                }
+                ProviderInvocationOutcome::InvalidResponse => {
+                    if let Some(err) = provider_error.as_ref() {
+                        tracing::warn!(error = %err, "extension provider returned invalid response");
+                    } else {
+                        tracing::warn!("extension provider returned invalid response");
+                    }
+                }
+                ProviderInvocationOutcome::Ok | ProviderInvocationOutcome::Cancelled => {}
+            }
+
+            if circuit_opened {
+                tracing::warn!(
+                    failure_threshold = self.options.circuit_breaker_failure_threshold,
+                    cooldown = ?self.options.circuit_breaker_cooldown,
+                    "opening extension provider circuit breaker"
+                );
+            }
+        }
+
+        match outcome {
+            ProviderInvocationOutcome::Ok => {
+                ProviderInvokeResult::Ok(call_result.unwrap_or_default())
+            }
+            ProviderInvocationOutcome::Cancelled => ProviderInvokeResult::Cancelled,
+            _ => ProviderInvokeResult::Failed,
         }
     }
 
@@ -316,22 +563,24 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             if !provider.is_applicable(&ctx) {
                 continue;
             }
+            if self.should_skip_provider(PROVIDER_KIND_DIAGNOSTIC, id) {
+                continue;
+            }
 
             let provider_cancel = ctx.cancel.child_token();
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            let started_at = Instant::now();
-            let result = run_with_timeout(
+            match self.invoke_provider(
+                PROVIDER_KIND_DIAGNOSTIC,
+                CAPABILITY_DIAGNOSTICS,
+                METRICS_KEY_DIAGNOSTICS,
+                id,
                 self.options.diagnostic_timeout,
                 provider_cancel,
-                move |_token| provider.provide_diagnostics(provider_ctx, params),
-            );
-            let elapsed = started_at.elapsed();
-
-            match result {
-                Ok(mut diagnostics) => {
-                    self.record_provider_call(PROVIDER_KIND_DIAGNOSTIC, id, Ok(()), elapsed);
+                move || provider.try_provide_diagnostics(provider_ctx, params),
+            ) {
+                ProviderInvokeResult::Ok(mut diagnostics) => {
                     diagnostics.truncate(self.options.max_diagnostics_per_provider);
                     out.extend(diagnostics);
                     if out.len() >= self.options.max_diagnostics {
@@ -339,40 +588,9 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_)) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_DIAGNOSTIC,
-                        id,
-                        Err(ProviderLastError::Timeout),
-                        elapsed,
-                    );
-                    tracing::warn!(
-                        provider_kind = PROVIDER_KIND_DIAGNOSTIC,
-                        provider_id = %id,
-                        timeout = ?self.options.diagnostic_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider timed out"
-                    );
-                    continue;
-                }
-                Err(TaskError::Panicked) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_DIAGNOSTIC,
-                        id,
-                        Err(ProviderLastError::Panic),
-                        elapsed,
-                    );
-                    tracing::error!(
-                        provider_kind = PROVIDER_KIND_DIAGNOSTIC,
-                        provider_id = %id,
-                        timeout = ?self.options.diagnostic_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider panicked"
-                    );
-                    continue;
-                }
-            }
+                ProviderInvokeResult::Cancelled => break,
+                ProviderInvokeResult::Failed => continue,
+            };
         }
 
         out
@@ -391,22 +609,24 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             if !provider.is_applicable(&ctx) {
                 continue;
             }
+            if self.should_skip_provider(PROVIDER_KIND_COMPLETION, id) {
+                continue;
+            }
 
             let provider_cancel = ctx.cancel.child_token();
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            let started_at = Instant::now();
-            let result = run_with_timeout(
+            match self.invoke_provider(
+                PROVIDER_KIND_COMPLETION,
+                CAPABILITY_COMPLETIONS,
+                METRICS_KEY_COMPLETIONS,
+                id,
                 self.options.completion_timeout,
                 provider_cancel,
-                move |_token| provider.provide_completions(provider_ctx, params),
-            );
-            let elapsed = started_at.elapsed();
-
-            match result {
-                Ok(mut completions) => {
-                    self.record_provider_call(PROVIDER_KIND_COMPLETION, id, Ok(()), elapsed);
+                move || provider.try_provide_completions(provider_ctx, params),
+            ) {
+                ProviderInvokeResult::Ok(mut completions) => {
                     completions.truncate(self.options.max_completions_per_provider);
                     out.extend(completions);
                     if out.len() >= self.options.max_completions {
@@ -414,40 +634,9 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_)) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_COMPLETION,
-                        id,
-                        Err(ProviderLastError::Timeout),
-                        elapsed,
-                    );
-                    tracing::warn!(
-                        provider_kind = PROVIDER_KIND_COMPLETION,
-                        provider_id = %id,
-                        timeout = ?self.options.completion_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider timed out"
-                    );
-                    continue;
-                }
-                Err(TaskError::Panicked) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_COMPLETION,
-                        id,
-                        Err(ProviderLastError::Panic),
-                        elapsed,
-                    );
-                    tracing::error!(
-                        provider_kind = PROVIDER_KIND_COMPLETION,
-                        provider_id = %id,
-                        timeout = ?self.options.completion_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider panicked"
-                    );
-                    continue;
-                }
-            }
+                ProviderInvokeResult::Cancelled => break,
+                ProviderInvokeResult::Failed => continue,
+            };
         }
 
         out
@@ -466,22 +655,24 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             if !provider.is_applicable(&ctx) {
                 continue;
             }
+            if self.should_skip_provider(PROVIDER_KIND_CODE_ACTION, id) {
+                continue;
+            }
 
             let provider_cancel = ctx.cancel.child_token();
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            let started_at = Instant::now();
-            let result = run_with_timeout(
+            match self.invoke_provider(
+                PROVIDER_KIND_CODE_ACTION,
+                CAPABILITY_CODE_ACTIONS,
+                METRICS_KEY_CODE_ACTIONS,
+                id,
                 self.options.code_action_timeout,
                 provider_cancel,
-                move |_token| provider.provide_code_actions(provider_ctx, params),
-            );
-            let elapsed = started_at.elapsed();
-
-            match result {
-                Ok(mut actions) => {
-                    self.record_provider_call(PROVIDER_KIND_CODE_ACTION, id, Ok(()), elapsed);
+                move || provider.try_provide_code_actions(provider_ctx, params),
+            ) {
+                ProviderInvokeResult::Ok(mut actions) => {
                     actions.truncate(self.options.max_code_actions_per_provider);
                     out.extend(actions);
                     if out.len() >= self.options.max_code_actions {
@@ -489,40 +680,9 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_)) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_CODE_ACTION,
-                        id,
-                        Err(ProviderLastError::Timeout),
-                        elapsed,
-                    );
-                    tracing::warn!(
-                        provider_kind = PROVIDER_KIND_CODE_ACTION,
-                        provider_id = %id,
-                        timeout = ?self.options.code_action_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider timed out"
-                    );
-                    continue;
-                }
-                Err(TaskError::Panicked) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_CODE_ACTION,
-                        id,
-                        Err(ProviderLastError::Panic),
-                        elapsed,
-                    );
-                    tracing::error!(
-                        provider_kind = PROVIDER_KIND_CODE_ACTION,
-                        provider_id = %id,
-                        timeout = ?self.options.code_action_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider panicked"
-                    );
-                    continue;
-                }
-            }
+                ProviderInvokeResult::Cancelled => break,
+                ProviderInvokeResult::Failed => continue,
+            };
         }
 
         out
@@ -541,22 +701,24 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             if !provider.is_applicable(&ctx) {
                 continue;
             }
+            if self.should_skip_provider(PROVIDER_KIND_NAVIGATION, id) {
+                continue;
+            }
 
             let provider_cancel = ctx.cancel.child_token();
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            let started_at = Instant::now();
-            let result = run_with_timeout(
+            match self.invoke_provider(
+                PROVIDER_KIND_NAVIGATION,
+                CAPABILITY_NAVIGATION,
+                METRICS_KEY_NAVIGATION,
+                id,
                 self.options.navigation_timeout,
                 provider_cancel,
-                move |_token| provider.provide_navigation(provider_ctx, params),
-            );
-            let elapsed = started_at.elapsed();
-
-            match result {
-                Ok(mut targets) => {
-                    self.record_provider_call(PROVIDER_KIND_NAVIGATION, id, Ok(()), elapsed);
+                move || provider.try_provide_navigation(provider_ctx, params),
+            ) {
+                ProviderInvokeResult::Ok(mut targets) => {
                     targets.truncate(self.options.max_navigation_targets_per_provider);
                     out.extend(targets);
                     if out.len() >= self.options.max_navigation_targets {
@@ -564,40 +726,9 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_)) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_NAVIGATION,
-                        id,
-                        Err(ProviderLastError::Timeout),
-                        elapsed,
-                    );
-                    tracing::warn!(
-                        provider_kind = PROVIDER_KIND_NAVIGATION,
-                        provider_id = %id,
-                        timeout = ?self.options.navigation_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider timed out"
-                    );
-                    continue;
-                }
-                Err(TaskError::Panicked) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_NAVIGATION,
-                        id,
-                        Err(ProviderLastError::Panic),
-                        elapsed,
-                    );
-                    tracing::error!(
-                        provider_kind = PROVIDER_KIND_NAVIGATION,
-                        provider_id = %id,
-                        timeout = ?self.options.navigation_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider panicked"
-                    );
-                    continue;
-                }
-            }
+                ProviderInvokeResult::Cancelled => break,
+                ProviderInvokeResult::Failed => continue,
+            };
         }
 
         out
@@ -616,22 +747,24 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             if !provider.is_applicable(&ctx) {
                 continue;
             }
+            if self.should_skip_provider(PROVIDER_KIND_INLAY_HINT, id) {
+                continue;
+            }
 
             let provider_cancel = ctx.cancel.child_token();
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            let started_at = Instant::now();
-            let result = run_with_timeout(
+            match self.invoke_provider(
+                PROVIDER_KIND_INLAY_HINT,
+                CAPABILITY_INLAY_HINTS,
+                METRICS_KEY_INLAY_HINTS,
+                id,
                 self.options.inlay_hint_timeout,
                 provider_cancel,
-                move |_token| provider.provide_inlay_hints(provider_ctx, params),
-            );
-            let elapsed = started_at.elapsed();
-
-            match result {
-                Ok(mut hints) => {
-                    self.record_provider_call(PROVIDER_KIND_INLAY_HINT, id, Ok(()), elapsed);
+                move || provider.try_provide_inlay_hints(provider_ctx, params),
+            ) {
+                ProviderInvokeResult::Ok(mut hints) => {
                     hints.truncate(self.options.max_inlay_hints_per_provider);
                     out.extend(hints);
                     if out.len() >= self.options.max_inlay_hints {
@@ -639,40 +772,9 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_)) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_INLAY_HINT,
-                        id,
-                        Err(ProviderLastError::Timeout),
-                        elapsed,
-                    );
-                    tracing::warn!(
-                        provider_kind = PROVIDER_KIND_INLAY_HINT,
-                        provider_id = %id,
-                        timeout = ?self.options.inlay_hint_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider timed out"
-                    );
-                    continue;
-                }
-                Err(TaskError::Panicked) => {
-                    self.record_provider_call(
-                        PROVIDER_KIND_INLAY_HINT,
-                        id,
-                        Err(ProviderLastError::Panic),
-                        elapsed,
-                    );
-                    tracing::error!(
-                        provider_kind = PROVIDER_KIND_INLAY_HINT,
-                        provider_id = %id,
-                        timeout = ?self.options.inlay_hint_timeout,
-                        elapsed = ?elapsed,
-                        "extension provider panicked"
-                    );
-                    continue;
-                }
-            }
+                ProviderInvokeResult::Cancelled => break,
+                ProviderInvokeResult::Failed => continue,
+            };
         }
 
         out
@@ -781,6 +883,7 @@ impl std::error::Error for RegisterError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outcome::{ProviderError, ProviderErrorKind, ProviderResult};
     use crate::traits::{CompletionParams, CompletionProvider, DiagnosticProvider};
     use nova_config::NovaConfig;
     use nova_core::{FileId, ProjectId};
@@ -1253,6 +1356,214 @@ mod tests {
         assert_eq!(panic_stats.calls_total, 1);
         assert_eq!(panic_stats.timeouts_total, 0);
         assert_eq!(panic_stats.panics_total, 1);
-        assert_eq!(panic_stats.last_error, Some(ProviderLastError::Panic));
+        assert_eq!(panic_stats.last_error, Some(ProviderLastError::PanicTrap));
+    }
+
+    #[test]
+    fn provider_errors_are_accounted_and_contribute_no_results() {
+        struct ErrorProvider;
+        impl DiagnosticProvider<()> for ErrorProvider {
+            fn id(&self) -> &str {
+                "a.error"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                vec![diag("should-not-surface")]
+            }
+
+            fn try_provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> ProviderResult<Vec<Diagnostic>> {
+                Err(ProviderError::new(
+                    ProviderErrorKind::InvalidResponse,
+                    "boom",
+                ))
+            }
+        }
+
+        struct FastProvider;
+        impl DiagnosticProvider<()> for FastProvider {
+            fn id(&self) -> &str {
+                "b.fast"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                vec![diag("fast")]
+            }
+        }
+
+        let mut registry = ExtensionRegistry::default();
+        registry
+            .register_diagnostic_provider(Arc::new(ErrorProvider))
+            .unwrap();
+        registry
+            .register_diagnostic_provider(Arc::new(FastProvider))
+            .unwrap();
+
+        let out = registry.diagnostics(
+            ctx(),
+            DiagnosticParams {
+                file: FileId::from_raw(1),
+            },
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].message, "fast");
+
+        let stats = registry.stats();
+        let error_stats = stats
+            .diagnostic
+            .get("a.error")
+            .expect("stats for error provider");
+        assert_eq!(error_stats.calls_total, 1);
+        assert_eq!(error_stats.timeouts_total, 0);
+        assert_eq!(error_stats.panics_total, 0);
+        assert_eq!(error_stats.invalid_responses_total, 1);
+        assert_eq!(
+            error_stats.last_error,
+            Some(ProviderLastError::InvalidResponse)
+        );
+        assert_eq!(error_stats.consecutive_failures, 1);
+        assert!(error_stats.circuit_open_until.is_none());
+    }
+
+    #[test]
+    fn circuit_breaker_opens_after_failures_and_skips_invocations() {
+        struct FailingProvider {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl DiagnosticProvider<()> for FailingProvider {
+            fn id(&self) -> &str {
+                "breaker"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                Vec::new()
+            }
+
+            fn try_provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> ProviderResult<Vec<Diagnostic>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(ProviderError::new(
+                    ProviderErrorKind::InvalidResponse,
+                    "boom",
+                ))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = ExtensionRegistry::default();
+        registry.options_mut().circuit_breaker_failure_threshold = 2;
+        registry.options_mut().circuit_breaker_cooldown = Duration::from_secs(60);
+        registry
+            .register_diagnostic_provider(Arc::new(FailingProvider {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+
+        let params = DiagnosticParams {
+            file: FileId::from_raw(1),
+        };
+        let _ = registry.diagnostics(ctx(), params);
+        let _ = registry.diagnostics(ctx(), params);
+        let _ = registry.diagnostics(ctx(), params);
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "provider should be skipped after circuit opens"
+        );
+
+        let stats = registry.stats();
+        let provider_stats = stats
+            .diagnostic
+            .get("breaker")
+            .expect("stats for breaker provider");
+        assert_eq!(provider_stats.calls_total, 2);
+        assert_eq!(provider_stats.skipped_total, 1);
+        assert_eq!(provider_stats.circuit_opened_total, 1);
+        assert!(provider_stats.circuit_open_until.is_some());
+    }
+
+    #[test]
+    fn circuit_breaker_resets_after_cooldown() {
+        struct FailingProvider {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl DiagnosticProvider<()> for FailingProvider {
+            fn id(&self) -> &str {
+                "cooldown"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                Vec::new()
+            }
+
+            fn try_provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> ProviderResult<Vec<Diagnostic>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(ProviderError::new(
+                    ProviderErrorKind::InvalidResponse,
+                    "boom",
+                ))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = ExtensionRegistry::default();
+        registry.options_mut().circuit_breaker_failure_threshold = 1;
+        registry.options_mut().circuit_breaker_cooldown = Duration::from_millis(20);
+        registry
+            .register_diagnostic_provider(Arc::new(FailingProvider {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+
+        let params = DiagnosticParams {
+            file: FileId::from_raw(1),
+        };
+        let _ = registry.diagnostics(ctx(), params);
+        let _ = registry.diagnostics(ctx(), params);
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = registry.diagnostics(ctx(), params);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let stats = registry.stats();
+        let provider_stats = stats
+            .diagnostic
+            .get("cooldown")
+            .expect("stats for cooldown provider");
+        assert_eq!(provider_stats.calls_total, 2);
+        assert_eq!(provider_stats.skipped_total, 1);
+        assert_eq!(provider_stats.circuit_opened_total, 2);
     }
 }
