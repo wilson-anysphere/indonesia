@@ -63,16 +63,8 @@ mod semantic_search_index_status_stdio;
 #[cfg(feature = "ai")]
 #[path = "suite/semantic_search_workspace_indexing.rs"]
 mod semantic_search_workspace_indexing;
-#[cfg(feature = "ai")]
-#[path = "suite/stdio_ai_completion_more.rs"]
-mod stdio_ai_completion_more;
-#[cfg(feature = "ai")]
-#[path = "suite/stdio_ai_env_overrides.rs"]
-mod stdio_ai_env_overrides;
 #[path = "suite/stdio_call_hierarchy.rs"]
 mod stdio_call_hierarchy;
-#[path = "suite/stdio_codelens.rs"]
-mod stdio_codelens;
 #[path = "suite/stdio_did_save.rs"]
 mod stdio_did_save;
 #[path = "suite/stdio_distributed_workspace_symbol.rs"]
@@ -145,6 +137,20 @@ mod watched_files;
 mod workspace_config;
 #[path = "suite/workspace_notifications.rs"]
 mod workspace_notifications;
+
+// Some CI/scripts run tests by filtering on `suite::<module>` (e.g.
+// `cargo test --test tests suite::stdio_codelens`). Keep those modules nested to
+// make the filter stable without changing the on-disk layout.
+mod suite {
+    #[cfg(feature = "ai")]
+    #[path = "stdio_ai_completion_more.rs"]
+    mod stdio_ai_completion_more;
+    #[cfg(feature = "ai")]
+    #[path = "stdio_ai_env_overrides.rs"]
+    mod stdio_ai_env_overrides;
+    #[path = "stdio_codelens.rs"]
+    mod stdio_codelens;
+}
 
 #[test]
 fn tests_dir_contains_only_tests_rs_at_root() {
