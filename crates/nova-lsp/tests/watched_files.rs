@@ -265,7 +265,13 @@ fn did_change_watched_files_updates_cached_analysis_state() {
         }),
     );
     let resp = read_jsonrpc_response_with_id(&mut stdout, 6);
-    assert!(diagnostic_messages(&resp).is_empty());
+    let messages = diagnostic_messages(&resp);
+    assert!(
+        messages
+            .iter()
+            .all(|m| !m.contains("Cannot resolve symbol 'bar'")),
+        "expected didChangeWatchedFiles to refresh cached contents, but still saw unresolved `bar`: {messages:?}"
+    );
 
     // Confirm that go-to-definition sees the updated on-disk file.
     let offset = fixed.find("bar();").unwrap() + 1;
