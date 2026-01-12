@@ -3,7 +3,7 @@
 //! Nova's long-term architecture is query-driven and will use proper syntax trees
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -1430,6 +1430,387 @@ struct SimpleReceiverExpr {
 struct DotCompletionContext {
     dot_offset: usize,
     receiver: Option<SimpleReceiverExpr>,
+}
+
+// -----------------------------------------------------------------------------
+// JPMS `module-info.java` completions (best-effort)
+// -----------------------------------------------------------------------------
+
+fn is_module_descriptor(db: &dyn Database, file: FileId, text: &str) -> bool {
+    // Prefer filename-based detection; it is cheap and unambiguous.
+    if db.file_path(file).is_some_and(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "module-info.java")
+    }) {
+        return true;
+    }
+
+    // Fallback: best-effort for virtual/in-memory buffers.
+    let trimmed = text.trim_start();
+    trimmed.starts_with("module ") || trimmed.starts_with("open module ")
+}
+
+fn module_info_body_range(text: &str) -> Option<(usize, usize)> {
+    // Best-effort: module descriptors should have a single top-level `{ ... }`
+    // body. If the closing brace is missing (incomplete editing), treat EOF as
+    // the end of the body so completions still work.
+    let open = text.find('{')?;
+    let close = text.rfind('}').unwrap_or(text.len());
+    Some((open + 1, close))
+}
+
+fn module_info_statement_start(text: &str, body_start: usize, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    let before = &text[body_start..offset];
+    let rel = before.rfind(|c| c == ';' || c == '{' || c == '}');
+    body_start + rel.map(|idx| idx + 1).unwrap_or(0)
+}
+
+fn module_info_directive_snippets(prefix: &str) -> Vec<CompletionItem> {
+    let items = [
+        (
+            "requires",
+            "requires ${1:module};$0",
+            "JPMS requires directive",
+        ),
+        ("exports", "exports ${1:package};$0", "JPMS exports directive"),
+        ("opens", "opens ${1:package};$0", "JPMS opens directive"),
+        ("uses", "uses ${1:service};$0", "JPMS uses directive"),
+        (
+            "provides",
+            "provides ${1:service} with ${2:impl};$0",
+            "JPMS provides directive",
+        ),
+    ];
+
+    let mut out = Vec::new();
+    for (label, snippet, detail) in items {
+        out.push(CompletionItem {
+            label: label.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some(detail.to_string()),
+            insert_text: Some(snippet.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut out, &ranking_ctx);
+    out
+}
+
+fn module_info_keyword_item(label: &str) -> CompletionItem {
+    CompletionItem {
+        label: label.to_string(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        ..Default::default()
+    }
+}
+
+fn module_info_module_name_candidates(db: &dyn Database, file: FileId) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    out.insert("java.base".to_string());
+
+    let Some(path) = db.file_path(file) else {
+        return out;
+    };
+    let root = framework_cache::project_root_for_path(path);
+    let Some(config) = framework_cache::project_config(&root) else {
+        return out;
+    };
+
+    for module in &config.jpms_modules {
+        out.insert(module.name.as_str().to_string());
+    }
+    if let Some(workspace) = &config.jpms_workspace {
+        for (name, _info) in workspace.graph.iter() {
+            out.insert(name.as_str().to_string());
+        }
+        for name in workspace.module_roots.keys() {
+            out.insert(name.as_str().to_string());
+        }
+    }
+
+    out
+}
+
+fn dotted_qualifier(text: &str, segment_start: usize) -> (usize, String) {
+    let bytes = text.as_bytes();
+    let mut start = segment_start.min(bytes.len());
+    while start > 0 {
+        let ch = bytes[start - 1] as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    (start, text[start..segment_start].to_string())
+}
+
+fn module_info_module_name_completions(
+    candidates: &BTreeSet<String>,
+    qualifier: &str,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let typed = format!("{qualifier}{prefix}");
+    let mut out = Vec::new();
+    const MAX_MATCHES: usize = 512;
+
+    for name in candidates {
+        if !name.starts_with(&typed) {
+            continue;
+        }
+        let insert_text = name
+            .get(qualifier.len()..)
+            .unwrap_or(name.as_str())
+            .to_string();
+        out.push(CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::MODULE),
+            insert_text: Some(insert_text),
+            ..Default::default()
+        });
+        if out.len() >= MAX_MATCHES {
+            break;
+        }
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut out, &ranking_ctx);
+    out
+}
+
+fn module_info_package_segment_completions(
+    db: &dyn Database,
+    file: FileId,
+    qualifier: &str,
+    segment_prefix: &str,
+) -> Vec<CompletionItem> {
+    let parent_prefix = qualifier.trim_end_matches('.');
+    let parent_segments: Vec<&str> = if parent_prefix.is_empty() {
+        Vec::new()
+    } else {
+        parent_prefix.split('.').collect()
+    };
+
+    let mut candidates: HashMap<String, bool> = HashMap::new();
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        for pkg in env.workspace_index().packages() {
+            add_package_segment_candidates(
+                &mut candidates,
+                pkg,
+                &parent_segments,
+                segment_prefix,
+            );
+        }
+    }
+
+    let mut entries: Vec<(String, bool)> = candidates.into_iter().collect();
+    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let mut items = Vec::with_capacity(entries.len());
+    for (segment, has_children) in entries {
+        let insert_text = if has_children {
+            format!("{segment}.")
+        } else {
+            segment.clone()
+        };
+        items.push(CompletionItem {
+            label: insert_text.clone(),
+            kind: Some(CompletionItemKind::MODULE),
+            insert_text: Some(insert_text),
+            ..Default::default()
+        });
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(segment_prefix, &mut items, &ranking_ctx);
+    items
+}
+
+fn module_info_completion_items(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    offset: usize,
+    prefix_start: usize,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let Some((body_start, body_end)) = module_info_body_range(text) else {
+        return Vec::new();
+    };
+    if offset < body_start || offset > body_end {
+        return Vec::new();
+    }
+
+    let stmt_start = module_info_statement_start(text, body_start, offset);
+    let stmt = &text[stmt_start..offset];
+
+    #[derive(Debug, Clone)]
+    enum TokKind<'a> {
+        Ident(&'a str),
+        Symbol(char),
+    }
+
+    #[derive(Debug, Clone)]
+    struct Tok<'a> {
+        kind: TokKind<'a>,
+        span: Span,
+    }
+
+    fn tokenize_stmt(stmt: &str, base: usize) -> Vec<Tok<'_>> {
+        let bytes = stmt.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let ch = bytes[i] as char;
+            if ch.is_ascii_whitespace() {
+                i += 1;
+                continue;
+            }
+            if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    let c = bytes[i] as char;
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(s) = stmt.get(start..i) {
+                    out.push(Tok {
+                        kind: TokKind::Ident(s),
+                        span: Span::new(base + start, base + i),
+                    });
+                }
+                continue;
+            }
+            if matches!(ch, ',' | ';' | '{' | '}' | '@') {
+                out.push(Tok {
+                    kind: TokKind::Symbol(ch),
+                    span: Span::new(base + i, base + i + 1),
+                });
+            }
+            i += 1;
+        }
+        out
+    }
+
+    let tokens = tokenize_stmt(stmt, stmt_start);
+    let directive = tokens.iter().find_map(|t| match t.kind {
+        TokKind::Ident("requires") => Some("requires"),
+        TokKind::Ident("exports") => Some("exports"),
+        TokKind::Ident("opens") => Some("opens"),
+        TokKind::Ident("uses") => Some("uses"),
+        TokKind::Ident("provides") => Some("provides"),
+        _ => None,
+    });
+
+    let Some(directive) = directive else {
+        return module_info_directive_snippets(prefix);
+    };
+
+    match directive {
+        "requires" => {
+            let mut has_static = false;
+            let mut has_transitive = false;
+            let mut after_requires = false;
+            for tok in &tokens {
+                match tok.kind {
+                    TokKind::Ident("requires") => after_requires = true,
+                    TokKind::Ident("static") if after_requires => has_static = true,
+                    TokKind::Ident("transitive") if after_requires => has_transitive = true,
+                    _ => {}
+                }
+            }
+
+            let mut items = Vec::new();
+            if !has_static {
+                items.push(module_info_keyword_item("static"));
+            }
+            if !has_transitive {
+                items.push(module_info_keyword_item("transitive"));
+            }
+
+            let candidates = module_info_module_name_candidates(db, file);
+            let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
+            items.extend(module_info_module_name_completions(&candidates, &qualifier, prefix));
+            items
+        }
+        "exports" | "opens" => {
+            let has_to = tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokKind::Ident("to")));
+
+            let mut package_span: Option<Span> = None;
+            let mut saw_directive = false;
+            for tok in &tokens {
+                match tok.kind {
+                    TokKind::Ident(d) if d == directive => {
+                        saw_directive = true;
+                    }
+                    TokKind::Ident(name) if saw_directive && package_span.is_none() => {
+                        if name != "to" {
+                            package_span = Some(tok.span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if !has_to {
+                let completing_package = package_span.is_none()
+                    || package_span.is_some_and(|span| offset <= span.end);
+                if completing_package {
+                    let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
+                    return module_info_package_segment_completions(db, file, &qualifier, prefix);
+                }
+                return vec![module_info_keyword_item("to")];
+            }
+
+            let candidates = module_info_module_name_candidates(db, file);
+            let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
+            module_info_module_name_completions(&candidates, &qualifier, prefix)
+        }
+        "provides" => {
+            let has_with = tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokKind::Ident("with")));
+            if has_with {
+                return Vec::new();
+            }
+
+            let mut saw_provides = false;
+            let mut service_span: Option<Span> = None;
+            for tok in &tokens {
+                match tok.kind {
+                    TokKind::Ident("provides") => {
+                        saw_provides = true;
+                    }
+                    TokKind::Ident(name) if saw_provides && service_span.is_none() => {
+                        if name != "with" {
+                            service_span = Some(tok.span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(service) = service_span {
+                if offset > service.end {
+                    return vec![module_info_keyword_item("with")];
+                }
+            }
+
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
 }
 
 const MAX_NEW_TYPE_COMPLETIONS: usize = 100;
@@ -2882,6 +3263,14 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 }
             }
             return Vec::new();
+        }
+    }
+
+    // JPMS `module-info.java` completions (keywords/directives/modules/packages).
+    if is_module_descriptor(db, file, text) {
+        let items = module_info_completion_items(db, file, text, offset, prefix_start, &prefix);
+        if !items.is_empty() {
+            return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
 

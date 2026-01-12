@@ -827,6 +827,37 @@ fn completion_in_package_declaration_uses_workspace_packages_and_replaces_segmen
 }
 
 #[test]
+fn completion_in_module_info_requires_suggests_java_base() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(module_path, "module my.mod { requires ja<|> }", vec![]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"java.base"),
+        "expected module-info completion to contain java.base; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_exports_suggests_workspace_package_segment() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/com/example/api/A.java");
+
+    let java_text = "package com.example.api; class A {}".to_string();
+    let module_text = "module my.mod { exports com.example.a<|> }";
+
+    let (db, file, pos) = fixture_multi(module_path, module_text, vec![(java_path, java_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| *l == "api" || *l == "api."),
+        "expected module-info exports completion to contain api; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
     let (db, file, pos) = fixture("class A { void m(){ new Arr<|> } }");
 
