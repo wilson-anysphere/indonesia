@@ -4867,7 +4867,7 @@ class C {
 #[test]
 fn lambda_param_type_is_inferred_from_function_target() {
     let src = r#"
- import java.util.function.Function;
+  import java.util.function.Function;
 class C {
     void m() {
         Function<String, Integer> f = s -> s.length();
@@ -4882,6 +4882,49 @@ class C {
         "expected lambda body method call to resolve after parameter inference, got {diags:?}"
     );
 
+    let offset = src
+        .find("s.length")
+        .expect("snippet should contain lambda parameter usage");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn lambda_param_type_is_inferred_from_assignment_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, Integer> f;
+        f = s -> s.length();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("s.length")
+        .expect("snippet should contain lambda parameter usage");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn lambda_param_type_is_inferred_from_return_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    Function<String, Integer> m() {
+        return s -> s.length();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
     let offset = src
         .find("s.length")
         .expect("snippet should contain lambda parameter usage");

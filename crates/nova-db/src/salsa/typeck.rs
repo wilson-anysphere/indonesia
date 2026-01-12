@@ -603,6 +603,27 @@ fn type_of_expr_demand_result(
                         {
                             expected_ty = Some(checker.expected_return.clone());
                         }
+
+                        // If we are hovering inside a returned lambda, seed the lambda parameters
+                        // from the method's return type (target typing) without walking the entire
+                        // body.
+                        if matches!(body.exprs[*ret], HirExpr::Lambda { .. }) {
+                            let ret_range = body.exprs[*ret].range();
+                            let may_contain = ret_range.start <= target_range.start
+                                && target_range.end <= ret_range.end;
+                            if may_contain
+                                && contains_expr_in_expr(&body, *ret, target_expr)
+                                && !checker.expected_return.is_errorish()
+                            {
+                                let expected_return = checker.expected_return.clone();
+                                seed_lambda_params_from_target(
+                                    &mut checker,
+                                    &mut loader,
+                                    *ret,
+                                    &expected_return,
+                                );
+                            }
+                        }
                     }
                 }
                 HirStmt::If {
@@ -616,8 +637,45 @@ fn type_of_expr_demand_result(
                     }
                 }
                 HirStmt::While { body: b, .. } => stack.push(*b),
-                HirStmt::For { init, body: b, .. } => {
+                HirStmt::For {
+                    init,
+                    update,
+                    body: b,
+                    ..
+                } => {
                     stack.extend(init.iter().rev().copied());
+
+                    // Assignment statements inside `for` update clauses should still get expected
+                    // type seeding (e.g. `f = s -> s.length()`).
+                    for upd in update {
+                        let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*upd] else {
+                            continue;
+                        };
+                        if *op != AssignOp::Assign {
+                            continue;
+                        }
+
+                        let rhs_range = body.exprs[*rhs].range();
+                        let may_contain = rhs_range.start <= target_range.start
+                            && target_range.end <= rhs_range.end;
+                        if !may_contain || !contains_expr_in_expr(&body, *rhs, target_expr) {
+                            continue;
+                        }
+
+                        let lhs_ty = checker.infer_expr(&mut loader, *lhs).ty;
+                        if lhs_ty.is_errorish() {
+                            continue;
+                        }
+
+                        if *rhs == target_expr {
+                            expected_ty = Some(lhs_ty.clone());
+                        }
+
+                        if matches!(body.exprs[*rhs], HirExpr::Lambda { .. }) {
+                            seed_lambda_params_from_target(&mut checker, &mut loader, *rhs, &lhs_ty);
+                        }
+                    }
+
                     stack.push(*b);
                 }
                 HirStmt::ForEach { body: b, .. } => stack.push(*b),
@@ -636,7 +694,36 @@ fn type_of_expr_demand_result(
                         stack.push(*finally);
                     }
                 }
-                HirStmt::Expr { .. }
+                HirStmt::Expr { expr: stmt_expr, .. } => {
+                    // Best-effort: propagate expected types through simple assignments in
+                    // expression statements, primarily so target-typed lambdas get parameter types.
+                    let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*stmt_expr] else {
+                        continue;
+                    };
+                    if *op != AssignOp::Assign {
+                        continue;
+                    }
+
+                    let rhs_range = body.exprs[*rhs].range();
+                    let may_contain =
+                        rhs_range.start <= target_range.start && target_range.end <= rhs_range.end;
+                    if !may_contain || !contains_expr_in_expr(&body, *rhs, target_expr) {
+                        continue;
+                    }
+
+                    let lhs_ty = checker.infer_expr(&mut loader, *lhs).ty;
+                    if lhs_ty.is_errorish() {
+                        continue;
+                    }
+
+                    if *rhs == target_expr {
+                        expected_ty = Some(lhs_ty.clone());
+                    }
+
+                    if matches!(body.exprs[*rhs], HirExpr::Lambda { .. }) {
+                        seed_lambda_params_from_target(&mut checker, &mut loader, *rhs, &lhs_ty);
+                    }
+                }
                 | HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
