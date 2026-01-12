@@ -380,6 +380,12 @@ fn matches_protected_indent_token(kind: SyntaxKind) -> bool {
         // Multi-line literals: leading whitespace after embedded newlines is semantically
         // meaningful.
         SyntaxKind::TextBlock
+            | SyntaxKind::StringTemplateText
+            // Template delimiters are currently lexed as distinct tokens. Even when they don't
+            // span multiple lines, treating them as protected is a safe fallback.
+            | SyntaxKind::StringTemplateStart
+            | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateEnd
             // The lexer represents unterminated text blocks as `Error` tokens that may span
             // multiple lines; preserve verbatim.
             | SyntaxKind::Error
@@ -553,6 +559,18 @@ fn has_blank_line(text: &str) -> bool {
 }
 
 fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
+    // String templates lex their delimiters/text as dedicated tokens. These tokens should never
+    // be treated as word-like for spacing heuristics: inserting spaces inside template payloads
+    // can change semantics (e.g. `STR."Hello \{name}"`).
+    if matches!(
+        kind,
+        SyntaxKind::StringTemplateStart
+            | SyntaxKind::StringTemplateText
+            | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateEnd
+    ) {
+        return false;
+    }
     if matches!(
         kind,
         SyntaxKind::StringLiteral
