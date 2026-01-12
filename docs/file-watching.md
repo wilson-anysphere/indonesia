@@ -182,16 +182,12 @@ When a component accepts a `nova_vfs::FileWatcher`, tests can pass a determinist
 implementation (`ManualFileWatcher`) and explicitly enqueue events. This also lets tests assert
 which paths were registered via `watch_path(.., WatchMode::...)` without involving the OS.
 
-Note: `ManualFileWatcher` uses a **bounded** internal queue and `push(...)` is non-blocking. If a
-test enqueues too many events without draining the receiver, `push` will return an
-`io::ErrorKind::WouldBlock` error.
-
 If the watcher itself is moved into another thread (e.g. a background watcher driver), create a
 `ManualFileWatcherHandle` via `watcher.handle()` and use the handle to inject events after the move.
 
-Note: `ManualFileWatcher` uses a **bounded** internal queue. If a test enqueues many events without
-draining the receiver, `push(...)` / `push_error(...)` may return `io::ErrorKind::WouldBlock`. Drain
-the receiver (or reduce event volume) to keep tests deterministic.
+Note: `ManualFileWatcher` uses a **bounded** internal queue and `push(...)` / `push_error(...)` are
+non-blocking. If a test enqueues many events without draining the receiver, these may return
+`io::ErrorKind::WouldBlock`. Drain the receiver (or reduce event volume) to keep tests deterministic.
 
 Conceptually:
 
