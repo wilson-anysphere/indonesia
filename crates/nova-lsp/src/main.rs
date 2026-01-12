@@ -4195,12 +4195,14 @@ fn handle_code_action(
     }
     // AI code actions (gracefully degrade when AI isn't configured).
     let ai_enabled = state.ai.is_some();
-    let ai_excluded = ai_enabled
-        && doc_path
-            .as_deref()
-            .is_some_and(|path| is_ai_excluded_path(state, path));
+    let ai_excluded = doc_path
+        .as_deref()
+        .is_some_and(|path| is_ai_excluded_path(state, path));
 
     if ai_enabled {
+        let allow_code_edit_actions =
+            nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
+
         // Explain error (diagnostic-driven).
         //
         // For `excluded_paths`, we still offer the action but omit the code snippet so the
@@ -4222,12 +4224,9 @@ fn handle_code_action(
             actions.push(code_action_to_lsp(action));
         }
 
-        // AI code-editing actions.
-        //
-        // We intentionally do *not* gate these on `enforce_code_edit_policy` at code-action time so
-        // users can still discover the feature and receive actionable error messages when
-        // attempting to execute it (policy is enforced in the executeCommand handlers).
-        if !ai_excluded {
+        // Patch-based AI code actions are only offered when (a) privacy policy allows code edits
+        // and (b) the file path is not excluded via `ai.privacy.excluded_paths`.
+        if allow_code_edit_actions && !ai_excluded {
             if let Some(text) = text {
                 if let Some(selected) = extract_range_text(text, &params.range) {
                     // Generate method body (empty method selection).
@@ -7696,7 +7695,7 @@ mod tests {
     }
 
     #[test]
-    fn excluded_paths_disable_ai_completions_and_code_actions() {
+    fn excluded_paths_disable_ai_completions_and_code_edit_actions() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path();
         let src_dir = root.join("src");
@@ -7796,11 +7795,19 @@ mod tests {
             "expected explain action to omit code snippet for excluded file; got: {explain_code:?}"
         );
         assert!(
-            !excluded_actions.iter().any(|action| {
-                action
+            excluded_actions.iter().any(|action| {
+                action.get("kind").and_then(|kind| kind.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN)
+            }),
+            "expected explain-only AI code action to remain available for excluded file"
+        );
+        assert!(
+            excluded_actions.iter().all(|action| {
+                !action
                     .get("kind")
                     .and_then(|kind| kind.as_str())
-                    .is_some_and(|kind| kind == CODE_ACTION_KIND_AI_GENERATE || kind == CODE_ACTION_KIND_AI_TESTS)
+                    .is_some_and(|kind| {
+                        kind == CODE_ACTION_KIND_AI_GENERATE || kind == CODE_ACTION_KIND_AI_TESTS
+                    })
             }),
             "expected no AI code-edit actions for excluded file"
         );
@@ -8296,7 +8303,11 @@ fn run_ai_explain_error(
         )
     };
     let mut ctx = build_context_request_from_args(
-        state, uri, range, code, /*fallback_enclosing=*/ None,
+        state,
+        uri,
+        range,
+        code,
+        /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
     ctx.diagnostics.push(ContextDiagnostic {

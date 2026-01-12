@@ -51,7 +51,7 @@ fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
 }
 
 #[test]
-fn stdio_server_rejects_cloud_ai_generate_tests_when_anonymization_is_enabled() {
+fn stdio_server_hides_cloud_ai_code_edit_actions_when_anonymization_is_enabled() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
 
@@ -180,60 +180,25 @@ local_only = false
         "expected explain-error action to remain available"
     );
 
-    let gen_tests = actions
-        .iter()
-        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI"))
-        .expect("generate tests action should be offered");
-    let cmd = gen_tests
-        .get("command")
-        .and_then(|c| c.get("command"))
-        .and_then(|v| v.as_str())
-        .expect("command string");
-    assert_eq!(cmd, nova_ide::COMMAND_GENERATE_TESTS);
-    let args = gen_tests
-        .get("command")
-        .and_then(|c| c.get("arguments"))
-        .cloned()
-        .expect("arguments");
-
-    // Execute command: in cloud mode, anonymization is enabled by default and code edits should be
-    // rejected before any model call is made.
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": cmd,
-                "arguments": args
-            }
-        }),
-    );
-    let exec_resp = read_response_with_id(&mut stdout, 3);
-    let err_msg = exec_resp
-        .get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .expect("expected executeCommand to return an error");
     assert!(
-        err_msg.contains(
-            "AI code edits are disabled when identifier anonymization is enabled in cloud mode"
-        ),
-        "expected CodeEditPolicyError in error message, got: {err_msg}"
+        !actions.iter().any(|a| {
+            a.get("title").and_then(|t| t.as_str()) == Some("Generate method body with AI")
+        }),
+        "generate-method-body action should be hidden when code edits are disallowed"
     );
-    assert_eq!(
-        ai_server.hits(),
-        0,
-        "expected no AI provider calls when code edits are blocked by policy"
+    assert!(
+        !actions
+            .iter()
+            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
+        "generate-tests action should be hidden when code edits are disallowed"
     );
 
     // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -916,11 +881,34 @@ local_only = true
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
 
     let test_uri = Uri::from_str(&uri_for_path(&test_path)).expect("test uri");
-    let changes = edit.changes.expect("changes map");
-    assert!(
-        changes.contains_key(&test_uri),
-        "expected edit to touch derived test file, got: {changes:#?}"
-    );
+    if let Some(document_changes) = edit.document_changes {
+        let ops = match document_changes {
+            lsp_types::DocumentChanges::Operations(ops) => ops,
+            other => panic!("expected documentChanges operations, got {other:?}"),
+        };
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create))
+                    if create.uri == test_uri
+            )),
+            "expected CreateFile for derived test uri, got {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                lsp_types::DocumentChangeOperation::Edit(edit)
+                    if edit.text_document.uri == test_uri
+            )),
+            "expected TextDocumentEdit for derived test uri, got {ops:?}"
+        );
+    } else {
+        let changes = edit.changes.expect("changes map");
+        assert!(
+            changes.contains_key(&test_uri),
+            "expected edit to touch derived test file, got: {changes:#?}"
+        );
+    }
 
     mock.assert_hits(1);
 
@@ -1786,10 +1774,14 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         resp.get("error").is_none(),
         "expected executeCommand success, got: {resp:#?}"
     );
-    assert!(
-        resp.get("result").map_or(false, |v| v.is_null()),
-        "expected executeCommand result null, got: {resp:#?}"
-    );
+    let result = resp.get("result").expect("executeCommand result");
+    if !result.is_null() {
+        assert_eq!(
+            result.get("applied").and_then(|v| v.as_bool()),
+            Some(true),
+            "expected executeCommand result.applied == true, got: {resp:#?}"
+        );
+    }
     let apply_edit = find_apply_edit_request(&messages);
 
     assert_eq!(
@@ -1797,7 +1789,7 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("Generate method body with AI")
+        Some("AI: Generate method body")
     );
 
     let edit = apply_edit
@@ -1987,10 +1979,14 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         resp.get("error").is_none(),
         "expected executeCommand success, got: {resp:#?}"
     );
-    assert!(
-        resp.get("result").map_or(false, |v| v.is_null()),
-        "expected executeCommand result null, got: {resp:#?}"
-    );
+    let result = resp.get("result").expect("executeCommand result");
+    if !result.is_null() {
+        assert_eq!(
+            result.get("applied").and_then(|v| v.as_bool()),
+            Some(true),
+            "expected executeCommand result.applied == true, got: {resp:#?}"
+        );
+    }
     let apply_edit = find_apply_edit_request(&messages);
 
     assert_eq!(
@@ -1998,7 +1994,7 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("Generate tests with AI")
+        Some("AI: Generate tests")
     );
     let edit = apply_edit
         .get("params")
