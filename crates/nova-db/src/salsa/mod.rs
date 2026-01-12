@@ -73,6 +73,7 @@ use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
+use nova_syntax::SyntaxTreeStore;
 use nova_vfs::OpenDocuments;
 
 use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
@@ -205,7 +206,7 @@ pub trait HasItemTreeStore {
 /// When present, Salsa query implementations may use the store to *pin* syntax
 /// trees for open documents and/or reuse trees across memo eviction.
 pub trait HasSyntaxTreeStore {
-    fn syntax_tree_store(&self) -> Option<Arc<nova_syntax::SyntaxTreeStore>>;
+    fn syntax_tree_store(&self) -> Option<Arc<SyntaxTreeStore>>;
 }
 
 /// File-keyed memoized query results tracked for memory accounting.
@@ -607,8 +608,8 @@ pub struct RootDatabase {
     persistence: Persistence,
     file_paths: Arc<RwLock<HashMap<FileId, Arc<String>>>>,
     item_tree_store: Option<Arc<ItemTreeStore>>,
+    syntax_tree_store: Option<Arc<SyntaxTreeStore>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
-    syntax_tree_store: Option<Arc<nova_syntax::SyntaxTreeStore>>,
 }
 
 impl Default for RootDatabase {
@@ -630,8 +631,8 @@ impl RootDatabase {
             persistence: Persistence::new(&project_root, persistence),
             file_paths: Arc::new(RwLock::new(HashMap::new())),
             item_tree_store: None,
-            memo_footprint: Arc::new(SalsaMemoFootprint::default()),
             syntax_tree_store: None,
+            memo_footprint: Arc::new(SalsaMemoFootprint::default()),
         };
 
         // Provide a sensible default `ProjectConfig` so callers can start
@@ -741,12 +742,23 @@ impl HasItemTreeStore for RootDatabase {
     }
 }
 
+impl HasItemTreeStore for ra_salsa::Snapshot<RootDatabase> {
+    fn item_tree_store(&self) -> Option<Arc<ItemTreeStore>> {
+        std::ops::Deref::deref(self).item_tree_store.clone()
+    }
+}
+
 impl HasSyntaxTreeStore for RootDatabase {
-    fn syntax_tree_store(&self) -> Option<Arc<nova_syntax::SyntaxTreeStore>> {
+    fn syntax_tree_store(&self) -> Option<Arc<SyntaxTreeStore>> {
         self.syntax_tree_store.clone()
     }
 }
 
+impl HasSyntaxTreeStore for ra_salsa::Snapshot<RootDatabase> {
+    fn syntax_tree_store(&self) -> Option<Arc<SyntaxTreeStore>> {
+        std::ops::Deref::deref(self).syntax_tree_store.clone()
+    }
+}
 impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
         match event.kind {
@@ -809,8 +821,8 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             persistence: self.persistence.clone(),
             file_paths: self.file_paths.clone(),
             item_tree_store: self.item_tree_store.clone(),
-            memo_footprint: self.memo_footprint.clone(),
             syntax_tree_store: self.syntax_tree_store.clone(),
+            memo_footprint: self.memo_footprint.clone(),
         })
     }
 }
@@ -944,8 +956,8 @@ impl MemoryEvictor for SalsaMemoEvictor {
                 persistence,
                 file_paths,
                 item_tree_store,
-                memo_footprint: self.footprint.clone(),
                 syntax_tree_store,
+                memo_footprint: self.footprint.clone(),
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -1567,8 +1579,8 @@ impl Database {
                 persistence,
                 file_paths,
                 item_tree_store,
-                memo_footprint: self.memo_footprint.clone(),
                 syntax_tree_store,
+                memo_footprint: self.memo_footprint.clone(),
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -1934,6 +1946,8 @@ mod tests {
     use nova_cache::{CacheConfig, Fingerprint};
     use nova_hir::hir::{Body, Expr, ExprId};
     use nova_memory::{MemoryBudget, MemoryPressure};
+    use nova_syntax::SyntaxTreeStore;
+    use nova_vfs::OpenDocuments;
     use std::collections::BTreeMap;
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
@@ -3013,6 +3027,55 @@ class Foo {
         assert!(
             Arc::ptr_eq(&it_before, &it_after),
             "expected open-document ItemTreeStore to reuse item_tree result across memo eviction"
+        );
+    }
+
+    #[test]
+    fn open_document_reuses_parse_after_salsa_memo_eviction() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+
+        let store = SyntaxTreeStore::new(&manager, open_docs);
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store);
+
+        let text = Arc::new("class Foo { int x; }".to_string());
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text);
+
+        let before = db.snapshot().parse(file);
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let after = db.snapshot().parse(file);
+
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "expected open document parse to be reused after memo eviction"
+        );
+    }
+
+    #[test]
+    fn closed_document_does_not_reuse_parse_after_salsa_memo_eviction() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let file = FileId::from_raw(1);
+
+        let store = SyntaxTreeStore::new(&manager, open_docs);
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store);
+
+        let text = Arc::new("class Foo { int x; }".to_string());
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text);
+
+        let before = db.snapshot().parse(file);
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let after = db.snapshot().parse(file);
+
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "expected closed document parse to be recomputed after memo eviction"
         );
     }
 

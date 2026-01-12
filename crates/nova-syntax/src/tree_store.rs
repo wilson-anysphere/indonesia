@@ -71,6 +71,12 @@ impl SyntaxTreeStore {
     }
 
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<ParseResult>) {
+        // Only keep parses for documents that are currently open; otherwise we'd retain parse
+        // results for the entire workspace and duplicate Salsa's memo tables.
+        if !self.open_docs.is_open(file) {
+            return;
+        }
+
         let mut inner = self.inner.lock().unwrap();
         inner.insert(file, StoredTree { text, parse });
         self.update_tracker_locked(&inner);
@@ -87,6 +93,13 @@ impl SyntaxTreeStore {
         } else {
             None
         }
+    }
+
+    /// Returns the stored parse result if it corresponds to `text`.
+    ///
+    /// Alias for [`SyntaxTreeStore::get_if_current`].
+    pub fn get_if_text_matches(&self, file: FileId, text: &Arc<String>) -> Option<Arc<ParseResult>> {
+        self.get_if_current(file, text)
     }
 
     pub fn remove(&self, file: FileId) {
@@ -113,10 +126,7 @@ impl SyntaxTreeStore {
             return;
         };
         // Approximate parse memory by source length (stored in the root node).
-        let total: u64 = inner
-            .values()
-            .map(|stored| stored.parse.root.text_len as u64)
-            .sum();
+        let total: u64 = inner.values().map(|stored| stored.parse.root.text_len as u64).sum();
         tracker.set_bytes(total);
     }
 }
