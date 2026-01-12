@@ -214,7 +214,12 @@ impl FrameworkAnalyzer for SpringAnalyzer {
                 ty: Type::Named(bean.ty.clone()),
             })
             .collect();
-        beans.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| format!("{:?}", a.ty).cmp(&format!("{:?}", b.ty))));
+        beans.sort_by(|a, b| {
+            a.name.cmp(&b.name).then_with(|| match (&a.ty, &b.ty) {
+                (Type::Named(a), Type::Named(b)) => a.cmp(b),
+                _ => std::cmp::Ordering::Equal,
+            })
+        });
         beans.dedup_by(|a, b| a.name == b.name && a.ty == b.ty);
 
         if beans.is_empty() {
