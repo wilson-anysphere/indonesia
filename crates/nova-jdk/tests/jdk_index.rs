@@ -236,7 +236,10 @@ fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>>
     // to win.
     let bogus = fake.join("bogus");
     let _java_home = EnvVarGuard::set("JAVA_HOME", &bogus);
-    let cfg = JdkConfig { home: Some(fake) };
+    let cfg = JdkConfig {
+        home: Some(fake),
+        ..Default::default()
+    };
 
     let install = JdkInstallation::discover(Some(&cfg))?;
     assert_eq!(install.root(), cfg.home.as_deref().unwrap());

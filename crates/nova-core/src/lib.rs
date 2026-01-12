@@ -264,10 +264,28 @@ impl fmt::Debug for StaticMemberId {
 ///
 /// This is intentionally minimal for now, but avoids confusion with
 /// `nova_project::ProjectConfig` (the build graph + source roots).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JdkToolchain {
+    /// Java feature release associated with this toolchain (e.g. 8, 17, 21).
+    pub release: u16,
+    /// Root directory of the JDK installation to use for this release.
+    pub home: PathBuf,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct JdkConfig {
     /// Optional override for the JDK installation to use.
     pub home: Option<PathBuf>,
+
+    /// Default Java feature release used for `--release`-style API selection when callers don't
+    /// provide one explicitly.
+    pub release: Option<u16>,
+
+    /// Per-release JDK installation overrides.
+    ///
+    /// When the requested API release matches a toolchain's `release`, Nova should prefer the
+    /// associated `home` over any other discovered installation.
+    pub toolchains: Vec<JdkToolchain>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

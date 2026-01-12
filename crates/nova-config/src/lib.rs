@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io;
 use std::io::Write;
@@ -53,6 +53,21 @@ pub struct JdkConfig {
     #[serde(default, alias = "jdk_home")]
     #[schemars(with = "Option<String>")]
     pub home: Option<PathBuf>,
+
+    /// Default Java feature release used for `--release`-style API selection when callers don't
+    /// provide one explicitly.
+    #[serde(default, alias = "target_release")]
+    pub release: Option<u16>,
+
+    /// Per-release JDK installation overrides.
+    ///
+    /// The TOML representation is a table mapping `release -> jdk_home`:
+    /// ```toml
+    /// [jdk]
+    /// toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
+    /// ```
+    #[serde(default)]
+    pub toolchains: BTreeMap<String, PathBuf>,
 }
 
 fn default_generated_sources_enabled() -> bool {
@@ -1061,8 +1076,37 @@ impl NovaConfig {
     }
 
     pub fn jdk_config(&self) -> nova_core::JdkConfig {
+        // Toolchains are represented in TOML as a map whose keys are releases. Invalid keys are
+        // ignored with a warning instead of failing config parsing, since the rest of the config
+        // may still be usable.
+        //
+        // If multiple keys parse to the same numeric release (for example `"8"` and `"08"`), the
+        // last one processed wins.
+        let mut toolchains_by_release: BTreeMap<u16, PathBuf> = BTreeMap::new();
+        for (release_key, home) in &self.jdk.toolchains {
+            match release_key.parse::<u16>() {
+                Ok(release) => {
+                    toolchains_by_release.insert(release, home.clone());
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        target: "nova.config",
+                        key = %release_key,
+                        "ignoring non-numeric JDK toolchain release key"
+                    );
+                }
+            }
+        }
+
+        let toolchains = toolchains_by_release
+            .into_iter()
+            .map(|(release, home)| nova_core::JdkToolchain { release, home })
+            .collect();
+
         nova_core::JdkConfig {
             home: self.jdk.home.clone(),
+            release: self.jdk.release,
+            toolchains,
         }
     }
 }
@@ -1743,5 +1787,91 @@ wasm_paths = ["extensions"]
 
         assert!(!config.is_extension_allowed("com.good.one"));
         assert!(!config.is_extension_allowed("com.evil.one"));
+    }
+
+    #[test]
+    fn toml_jdk_home_alias_parses() {
+        let text = r#"
+[jdk]
+jdk_home = "/opt/jdks/jdk-21"
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        let jdk = config.jdk_config();
+
+        assert_eq!(jdk.home, Some(PathBuf::from("/opt/jdks/jdk-21")));
+        assert_eq!(jdk.release, None);
+        assert!(jdk.toolchains.is_empty());
+    }
+
+    #[test]
+    fn toml_jdk_release_parses() {
+        let config: NovaConfig = toml::from_str(
+            r#"
+[jdk]
+release = 17
+"#,
+        )
+        .expect("config should parse");
+        assert_eq!(config.jdk_config().release, Some(17));
+
+        let config: NovaConfig = toml::from_str(
+            r#"
+[jdk]
+target_release = 11
+"#,
+        )
+        .expect("config should parse");
+        assert_eq!(config.jdk_config().release, Some(11));
+    }
+
+    #[test]
+    fn toml_jdk_toolchains_table_parses_into_core_config() {
+        let config: NovaConfig = toml::from_str(
+            r#"
+[jdk]
+home = "/opt/jdks/jdk-21"
+release = 17
+toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
+"#,
+        )
+        .expect("config should parse");
+
+        let jdk = config.jdk_config();
+        assert_eq!(jdk.home, Some(PathBuf::from("/opt/jdks/jdk-21")));
+        assert_eq!(jdk.release, Some(17));
+        assert_eq!(
+            jdk.toolchains,
+            vec![
+                nova_core::JdkToolchain {
+                    release: 8,
+                    home: PathBuf::from("/opt/jdks/jdk8")
+                },
+                nova_core::JdkToolchain {
+                    release: 17,
+                    home: PathBuf::from("/opt/jdks/jdk-17")
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn toml_jdk_toolchains_invalid_key_is_ignored() {
+        let config: NovaConfig = toml::from_str(
+            r#"
+[jdk]
+toolchains = { "bogus" = "/opt/jdks/bogus", "17" = "/opt/jdks/jdk-17" }
+"#,
+        )
+        .expect("config should parse");
+
+        let jdk = config.jdk_config();
+        assert_eq!(
+            jdk.toolchains,
+            vec![nova_core::JdkToolchain {
+                release: 17,
+                home: PathBuf::from("/opt/jdks/jdk-17")
+            }]
+        );
     }
 }
