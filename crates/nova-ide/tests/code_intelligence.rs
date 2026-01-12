@@ -248,3 +248,50 @@ class A {
         "expected completion list to contain `true`; got {labels:?}"
     );
 }
+
+#[test]
+fn completion_filters_incompatible_items_in_string_initializer() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = "";
+    int n = 0;
+    String x = <|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"s"),
+        "expected completion list to contain `s`; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"n"),
+        "expected completion list to not contain incompatible `n`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_keeps_compatible_items_in_int_initializer() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int n = 0;
+    int x = <|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"n"),
+        "expected completion list to contain `n`; got {labels:?}"
+    );
+}

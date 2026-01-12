@@ -4337,6 +4337,8 @@ fn general_completions(
         .map(|ty| nova_types::format_type(&types, ty))
         .or_else(|| infer_expected_type(&analysis, offset, prefix_start, &in_scope_types));
 
+    filter_completions_by_expected_type(&analysis, expected_type.as_deref(), &mut items);
+
     let ctx = CompletionRankingContext {
         expected_type,
         last_used_offsets,
@@ -4579,6 +4581,101 @@ fn call_argument_index(text: &str, open_paren: usize, offset: usize) -> usize {
     commas
 }
 
+fn filter_completions_by_expected_type(
+    analysis: &Analysis,
+    expected_src: Option<&str>,
+    items: &mut Vec<CompletionItem>,
+) {
+    let Some(expected_src) = expected_src else {
+        return;
+    };
+
+    let mut types = type_store_for_completion(analysis);
+    let expected_ty = parse_source_type(&mut types, expected_src);
+    if !is_resolved_type(&types, &expected_ty) {
+        return;
+    }
+
+    items.retain(|item| {
+        let Some(kind) = item.kind else {
+            return true;
+        };
+
+        let candidate_src: Option<&str> = match kind {
+            CompletionItemKind::VARIABLE
+            | CompletionItemKind::FIELD
+            | CompletionItemKind::PROPERTY
+            | CompletionItemKind::VALUE
+            | CompletionItemKind::CONSTANT => item.detail.as_deref(),
+            CompletionItemKind::METHOD
+            | CompletionItemKind::FUNCTION
+            | CompletionItemKind::CONSTRUCTOR => item
+                .detail
+                .as_deref()
+                .and_then(|detail| detail.split_whitespace().next()),
+            _ => return true, // keywords/snippets/types remain.
+        };
+
+        let Some(candidate_src) = candidate_src else {
+            return true;
+        };
+
+        let candidate_ty = parse_source_type(&mut types, candidate_src);
+        if !is_resolved_type(&types, &candidate_ty) {
+            return true;
+        }
+
+        nova_types::assignment_conversion(&types, &candidate_ty, &expected_ty).is_some()
+    });
+}
+
+fn type_store_for_completion(analysis: &Analysis) -> TypeStore {
+    let mut types = TypeStore::with_minimal_jdk();
+    define_local_interfaces(&mut types, &analysis.tokens);
+
+    // Best-effort: add source types from the current file so `Foo x = ...` can be
+    // treated as a resolved class type.
+    let object = Type::class(types.well_known().object, vec![]);
+    for class in &analysis.classes {
+        if types.class_id(&class.name).is_some() {
+            continue;
+        }
+        types.add_class(nova_types::ClassDef {
+            name: class.name.clone(),
+            kind: ClassKind::Class,
+            type_params: Vec::new(),
+            super_class: Some(object.clone()),
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            constructors: Vec::new(),
+            methods: Vec::new(),
+        });
+    }
+
+    for class in &analysis.classes {
+        let Some(super_name) = class.extends.as_deref() else {
+            continue;
+        };
+        let Some(id) = types.class_id(&class.name) else {
+            continue;
+        };
+        let super_ty = parse_source_type(&mut types, super_name);
+        if let Some(class_def) = types.class_mut(id) {
+            class_def.super_class = Some(super_ty);
+        }
+    }
+
+    types
+}
+
+fn is_resolved_type(env: &dyn TypeEnv, ty: &Type) -> bool {
+    match ty {
+        Type::Unknown | Type::Error => false,
+        Type::Named(name) => env.lookup_class(name).is_some(),
+        Type::Array(elem) => is_resolved_type(env, elem),
+        _ => true,
+    }
+}
 fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
     match kind {
         Some(
@@ -4841,51 +4938,147 @@ fn infer_expected_type(
 ) -> Option<String> {
     let _ = offset;
 
-    let token_before = analysis
-        .tokens
+    // 1) Best-effort: inside same-file call argument list, use the callee's parameter type.
+    if let Some(call) = analysis
+        .calls
         .iter()
-        .enumerate()
-        .filter(|(_, t)| t.span.end <= prefix_start)
-        .last();
-
-    // `x = <cursor>` / `T x = <cursor>`: infer expected type from lhs identifier.
-    if let Some((idx, tok)) = token_before {
-        if tok.kind == TokenKind::Symbol('=') {
-            let lhs_ident = analysis.tokens[..idx]
+        .filter(|c| c.name_span.start <= prefix_start && prefix_start <= c.close_paren)
+        .min_by_key(|c| c.close_paren.saturating_sub(c.name_span.start))
+    {
+        if call.receiver.is_none() {
+            let arg_idx = call
+                .arg_starts
                 .iter()
-                .rev()
-                .find(|t| t.kind == TokenKind::Ident)?;
-            if let Some(ty) = in_scope_types.get(&lhs_ident.text) {
-                return Some(ty.clone());
+                .position(|start| *start == prefix_start)
+                .unwrap_or_else(|| call.arg_starts.iter().filter(|s| **s < prefix_start).count());
+            if let Some(method) = analysis.methods.iter().find(|m| m.name == call.name) {
+                if let Some(param) = method.params.get(arg_idx) {
+                    return Some(param.ty.clone());
+                }
             }
         }
     }
 
-    // Best-effort: inside call argument list, infer expected type from same-file method params.
-    let call = analysis
-        .calls
+    // 2) `return <cursor>`: infer expected type from the enclosing method's declared return type.
+    if let Some(method) = analysis
+        .methods
         .iter()
-        .filter(|c| c.name_span.start <= prefix_start && prefix_start <= c.close_paren)
-        .min_by_key(|c| c.close_paren.saturating_sub(c.name_span.start));
+        .find(|m| span_contains(m.body_span, prefix_start))
+    {
+        let mut return_idx = None;
+        for (idx, tok) in analysis.tokens.iter().enumerate() {
+            if tok.span.start < method.body_span.start {
+                continue;
+            }
+            if tok.span.start >= prefix_start {
+                break;
+            }
+            if tok.span.start > method.body_span.end {
+                break;
+            }
+            if tok.kind == TokenKind::Ident && tok.text == "return" {
+                return_idx = Some(idx);
+            }
+        }
 
-    let call = call?;
-    if call.receiver.is_some() {
-        return None;
+        if let Some(return_idx) = return_idx {
+            let has_semicolon = analysis
+                .tokens
+                .iter()
+                .skip(return_idx + 1)
+                .take_while(|t| t.span.start < prefix_start)
+                .any(|t| t.kind == TokenKind::Symbol(';'));
+            if !has_semicolon {
+                return Some(method.ret_ty.clone());
+            }
+        }
     }
 
-    let arg_idx = call
-        .arg_starts
+    // 3) Assignment/initializer RHS (`x = ...` / `T x = ...`): walk backwards to find an
+    // assignment `=` within the current statement and infer the lhs identifier's type.
+    //
+    // This is intentionally heuristic (token-based) but works well for MVP contexts.
+    let token_before_idx = analysis
+        .tokens
         .iter()
-        .position(|start| *start == prefix_start)
-        .unwrap_or_else(|| {
-            call.arg_starts
-                .iter()
-                .filter(|s| **s < prefix_start)
-                .count()
-        });
+        .enumerate()
+        .filter(|(_, t)| t.span.end <= prefix_start)
+        .map(|(idx, _)| idx)
+        .last();
 
-    let method = analysis.methods.iter().find(|m| m.name == call.name)?;
-    method.params.get(arg_idx).map(|p| p.ty.clone())
+    let Some(token_before_idx) = token_before_idx else {
+        return None;
+    };
+
+    let mut eq_idx = None;
+    for idx in (0..=token_before_idx).rev() {
+        let tok = &analysis.tokens[idx];
+
+        // Stop at statement/block boundaries.
+        if matches!(
+            tok.kind,
+            TokenKind::Symbol(';') | TokenKind::Symbol('{') | TokenKind::Symbol('}')
+        ) {
+            break;
+        }
+
+        if tok.kind != TokenKind::Symbol('=') {
+            continue;
+        }
+
+        let adjacent = |a: &Token, b: &Token| a.span.end == b.span.start;
+
+        // Skip `==`.
+        if analysis
+            .tokens
+            .get(idx + 1)
+            .is_some_and(|next| next.kind == TokenKind::Symbol('=') && adjacent(tok, next))
+        {
+            continue;
+        }
+        if analysis
+            .tokens
+            .get(idx.wrapping_sub(1))
+            .is_some_and(|prev| prev.kind == TokenKind::Symbol('=') && adjacent(prev, tok))
+        {
+            continue;
+        }
+
+        // Skip `!=`.
+        if analysis
+            .tokens
+            .get(idx.wrapping_sub(1))
+            .is_some_and(|prev| prev.kind == TokenKind::Symbol('!') && adjacent(prev, tok))
+        {
+            continue;
+        }
+
+        // Skip `<=` / `>=`, but keep shift-assignments like `<<=` / `>>=` / `>>>=`.
+        if let Some(prev) = analysis.tokens.get(idx.wrapping_sub(1)) {
+            if adjacent(prev, tok) && matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol('>')) {
+                let is_shift = analysis
+                    .tokens
+                    .get(idx.wrapping_sub(2))
+                    .is_some_and(|prev2| prev2.kind == prev.kind && adjacent(prev2, prev));
+                if !is_shift {
+                    continue;
+                }
+            }
+        }
+
+        eq_idx = Some(idx);
+        break;
+    }
+
+    let Some(eq_idx) = eq_idx else {
+        return None;
+    };
+
+    let lhs_ident = analysis.tokens[..eq_idx]
+        .iter()
+        .rev()
+        .find(|t| t.kind == TokenKind::Ident)?;
+    in_scope_types.get(&lhs_ident.text).cloned()
 }
 
 fn brace_stack_at_offset(tokens: &[Token], offset: usize) -> Vec<usize> {
@@ -7211,7 +7404,7 @@ fn analyze(text: &str) -> Analysis {
         i += 1;
     }
 
-    // Methods (very small heuristic): <ret> <name> '(' ... ')' '{' body '}'.
+    // Methods (very small heuristic): (modifiers/annotations)* <ret> <name> '(' ... ')' '{' body '}'.
     let mut i = 0usize;
     let mut brace_depth: i32 = 0;
     while i < tokens.len() {
@@ -7222,40 +7415,72 @@ fn analyze(text: &str) -> Analysis {
         }
 
         if brace_depth == 1 && i + 4 < tokens.len() {
-            let ret = &tokens[i];
-            let name = &tokens[i + 1];
-            let l_paren = &tokens[i + 2];
-            if ret.kind == TokenKind::Ident
-                && name.kind == TokenKind::Ident
-                && l_paren.kind == TokenKind::Symbol('(')
-            {
-                let (r_paren_idx, close_paren) = match find_matching_paren(&tokens, i + 2) {
-                    Some(v) => v,
-                    None => {
-                        i += 1;
+            // Skip modifiers/annotations/type params.
+            let mut j = i;
+            while j < tokens.len() {
+                match &tokens[j] {
+                    Token {
+                        kind: TokenKind::Ident,
+                        text,
+                        ..
+                    } if is_method_modifier(text) => {
+                        j += 1;
                         continue;
                     }
-                };
-
-                if r_paren_idx + 1 < tokens.len()
-                    && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{')
-                {
-                    let params = parse_params(&tokens[(i + 3)..r_paren_idx]);
-                    if let Some((body_end_idx, body_span)) =
-                        find_matching_brace(&tokens, r_paren_idx + 1)
-                    {
-                        analysis.methods.push(MethodDecl {
-                            ret_ty: ret.text.clone(),
-                            name: name.text.clone(),
-                            name_span: name.span,
-                            params,
-                            body_span,
-                        });
-                        i = body_end_idx;
-                        brace_depth = 1;
+                    Token {
+                        kind: TokenKind::Symbol('@'),
+                        ..
+                    } => {
+                        j = skip_annotation(&tokens, j);
+                        continue;
                     }
+                    Token {
+                        kind: TokenKind::Symbol('<'),
+                        ..
+                    } => {
+                        j = skip_type_params(&tokens, j);
+                        continue;
+                    }
+                    _ => break,
                 }
-                let _ = close_paren;
+            }
+
+            if j + 2 < tokens.len() {
+                let ret = &tokens[j];
+                let name = &tokens[j + 1];
+                let l_paren = &tokens[j + 2];
+                if ret.kind == TokenKind::Ident
+                    && name.kind == TokenKind::Ident
+                    && l_paren.kind == TokenKind::Symbol('(')
+                {
+                    let (r_paren_idx, close_paren) = match find_matching_paren(&tokens, j + 2) {
+                        Some(v) => v,
+                        None => {
+                            i += 1;
+                            continue;
+                        }
+                    };
+
+                    if r_paren_idx + 1 < tokens.len()
+                        && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{')
+                    {
+                        let params = parse_params(&tokens[(j + 3)..r_paren_idx]);
+                        if let Some((body_end_idx, body_span)) =
+                            find_matching_brace(&tokens, r_paren_idx + 1)
+                        {
+                            analysis.methods.push(MethodDecl {
+                                ret_ty: ret.text.clone(),
+                                name: name.text.clone(),
+                                name_span: name.span,
+                                params,
+                                body_span,
+                            });
+                            i = body_end_idx;
+                            brace_depth = 1;
+                        }
+                    }
+                    let _ = close_paren;
+                }
             }
         }
 
@@ -7599,6 +7824,75 @@ fn find_matching_brace(tokens: &[Token], open_idx: usize) -> Option<(usize, Span
         }
     }
     None
+}
+
+fn is_method_modifier(ident: &str) -> bool {
+    matches!(
+        ident,
+        "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "final"
+            | "abstract"
+            | "native"
+            | "synchronized"
+            | "strictfp"
+            | "default"
+    )
+}
+
+fn skip_annotation(tokens: &[Token], at_idx: usize) -> usize {
+    // `@Foo` or `@foo.Bar(...)` => skip until after the optional argument list.
+    let mut i = at_idx.saturating_add(1);
+    if i >= tokens.len() {
+        return tokens.len();
+    }
+
+    if tokens[i].kind == TokenKind::Ident {
+        i += 1;
+        while i + 1 < tokens.len()
+            && tokens[i].kind == TokenKind::Symbol('.')
+            && tokens[i + 1].kind == TokenKind::Ident
+        {
+            i += 2;
+        }
+    }
+
+    if i < tokens.len() && tokens[i].kind == TokenKind::Symbol('(') {
+        if let Some((close_idx, _)) = find_matching_paren(tokens, i) {
+            return close_idx + 1;
+        }
+    }
+
+    i
+}
+
+fn skip_type_params(tokens: &[Token], start_idx: usize) -> usize {
+    let Some(tok) = tokens.get(start_idx) else {
+        return start_idx;
+    };
+    if tok.kind != TokenKind::Symbol('<') {
+        return start_idx;
+    }
+
+    let mut depth = 0i32;
+    let mut i = start_idx;
+    while i < tokens.len() {
+        match tokens[i].kind {
+            TokenKind::Symbol('<') => depth += 1,
+            TokenKind::Symbol('>') => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    i
 }
 
 fn parse_params(tokens: &[Token]) -> Vec<ParamDecl> {
