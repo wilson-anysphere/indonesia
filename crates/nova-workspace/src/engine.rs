@@ -3642,9 +3642,9 @@ fn reload_project_and_sync(
 
     // 1) Load/reload workspace model via the shared `WorkspaceLoader`.
     //
-    // Capture the previous single-project config (when possible) so Maven/Gradle build-derived
+    // Capture the previous per-project configs/indexes (when possible) so Maven/Gradle build-derived
     // config fields can be reused on reloads that do not modify build inputs.
-    let (projects, previous_config, previous_classpath_index) = {
+    let (projects, previous_configs, previous_classpath_indexes) = {
         let mut loader = workspace_loader
             .lock()
             .expect("workspace loader mutex poisoned");
@@ -3658,18 +3658,19 @@ fn reload_project_and_sync(
         } else {
             Vec::new()
         };
-        let previous_config = if should_reload && previous_projects.len() == 1 {
-            Some(query_db.with_snapshot(|snap| snap.project_config(previous_projects[0])))
-        } else {
-            None
-        };
-        let previous_classpath_index = if should_reload && previous_projects.len() == 1 {
+        let (previous_configs, previous_classpath_indexes) = if should_reload {
             query_db.with_snapshot(|snap| {
-                snap.classpath_index(previous_projects[0])
-                    .map(|index| index.0)
+                let mut configs: HashMap<ProjectId, Arc<ProjectConfig>> = HashMap::new();
+                let mut indexes: HashMap<ProjectId, Option<Arc<nova_classpath::ClasspathIndex>>> =
+                    HashMap::new();
+                for project in &previous_projects {
+                    configs.insert(*project, snap.project_config(*project));
+                    indexes.insert(*project, snap.classpath_index(*project).map(|index| index.0));
+                }
+                (configs, indexes)
             })
         } else {
-            None
+            (HashMap::new(), HashMap::new())
         };
 
         // Treat an empty `changed_files` slice as an unknown change set (full rescan). In that
@@ -3696,25 +3697,24 @@ fn reload_project_and_sync(
                 })?;
         }
 
-        (loader.projects(), previous_config, previous_classpath_index)
+        (loader.projects(), previous_configs, previous_classpath_indexes)
     };
 
     // 2) Optional build tool integration (Maven/Gradle).
     //
     // This is intentionally best-effort: failures should not prevent the workspace from loading.
-    //
-    // NOTE: For now, only attempt build integration in single-module workspaces. Multi-module
-    // build integration requires module-aware invocations (Maven module path / Gradle project
-    // path) which are not yet wired through this loader path.
-    if projects.len() == 1 {
-        let project = projects[0];
-        let current_config = query_db.with_snapshot(|snap| snap.project_config(project));
-        let module_roots: Vec<PathBuf> = current_config
-            .modules
+    if !projects.is_empty() {
+        let loaded_project_configs: Vec<(ProjectId, Arc<ProjectConfig>)> = query_db
+            .with_snapshot(|snap| projects.iter().map(|&project| (project, snap.project_config(project))).collect());
+
+        let mut module_roots: Vec<PathBuf> = loaded_project_configs
             .iter()
-            .map(|m| m.root.clone())
+            .flat_map(|(_project, cfg)| cfg.modules.iter().map(|m| m.root.clone()))
             .collect();
-        let refresh_build =
+        module_roots.sort();
+        module_roots.dedup();
+
+        let refresh_build_by_files =
             should_refresh_build_config(workspace_root, &module_roots, changed_files);
         let invalidate_build_cache = !changed_files.is_empty()
             && changed_files.iter().any(|path| {
@@ -3735,105 +3735,151 @@ fn reload_project_and_sync(
                 is_build_tool_input_file(rel)
             });
 
-        if matches!(
-            current_config.build_system,
-            BuildSystem::Maven | BuildSystem::Gradle
-        ) {
-            let build_integration_cfg = &workspace_config.build;
-            let (mode, timeout, kind) = match current_config.build_system {
-                BuildSystem::Maven => (
-                    build_integration_cfg.maven_mode(),
-                    build_integration_cfg.maven_timeout(),
-                    BuildSystemKind::Maven,
-                ),
-                BuildSystem::Gradle => (
-                    build_integration_cfg.gradle_mode(),
-                    build_integration_cfg.gradle_timeout(),
-                    BuildSystemKind::Gradle,
-                ),
-                _ => unreachable!("build integration only applies to Maven/Gradle"),
-            };
+        let build_integration_cfg = &workspace_config.build;
+        let maven_mode = build_integration_cfg.maven_mode();
+        let gradle_mode = build_integration_cfg.gradle_mode();
+        let maven_timeout = build_integration_cfg.maven_timeout();
+        let gradle_timeout = build_integration_cfg.gradle_timeout();
 
-            // Treat build integration mode changes (e.g. `auto` -> `on`) as a signal to refresh
-            // build metadata even when the file change set doesn't include build tool inputs.
-            // Otherwise, the workspace would keep using heuristic classpaths until a build file
-            // changes (or the workspace is restarted).
-            let previous_mode = match current_config.build_system {
-                BuildSystem::Maven => previous_maven_mode,
-                BuildSystem::Gradle => previous_gradle_mode,
-                _ => BuildIntegrationMode::Off,
-            };
-            let mode_rank = |mode: BuildIntegrationMode| match mode {
-                BuildIntegrationMode::Off => 0u8,
-                BuildIntegrationMode::Auto => 1u8,
-                BuildIntegrationMode::On => 2u8,
-            };
-            let refresh_build = refresh_build || mode_rank(mode) > mode_rank(previous_mode);
+        let mode_rank = |mode: BuildIntegrationMode| match mode {
+            BuildIntegrationMode::Off => 0u8,
+            BuildIntegrationMode::Auto => 1u8,
+            BuildIntegrationMode::On => 2u8,
+        };
 
-            if refresh_build {
-                if invalidate_build_cache {
-                    let cache_dir = build_cache_dir(workspace_root, query_db);
-                    // Best-effort invalidation: if removing the cache fails (permissions, etc),
-                    // continue with the existing workspace config rather than failing reload.
-                    let build = BuildManager::new(cache_dir);
-                    if let Err(err) = build.reload_project(workspace_root) {
-                        tracing::warn!(
-                            "failed to invalidate nova-build cache for {}: {err}",
-                            workspace_root.display()
-                        );
-                    }
+        // Treat build integration mode changes (e.g. `auto` -> `on`) as a signal to refresh build
+        // metadata even when the file change set doesn't include build tool inputs. Otherwise, the
+        // workspace would keep using heuristic classpaths until a build file changes (or the
+        // workspace is restarted).
+        let refresh_maven = refresh_build_by_files
+            || mode_rank(maven_mode) > mode_rank(previous_maven_mode);
+        let refresh_gradle = refresh_build_by_files
+            || mode_rank(gradle_mode) > mode_rank(previous_gradle_mode);
+
+        let has_build_projects = loaded_project_configs.iter().any(|(_, cfg)| {
+            matches!(
+                cfg.build_system,
+                BuildSystem::Maven | BuildSystem::Gradle
+            )
+        });
+
+        if invalidate_build_cache && has_build_projects {
+            let cache_dir = build_cache_dir(workspace_root, query_db);
+            // Best-effort invalidation: if removing the cache fails (permissions, etc), continue
+            // with the existing workspace config rather than failing reload.
+            let build = BuildManager::new(cache_dir);
+            if let Err(err) = build.reload_project(workspace_root) {
+                tracing::warn!(
+                    "failed to invalidate nova-build cache for {}: {err}",
+                    workspace_root.display()
+                );
+            }
+        }
+
+        let apply_compile_config = |project: ProjectId,
+                                    base: &ProjectConfig,
+                                    cfg: &nova_build::JavaCompileConfig| {
+            let base = base.clone();
+            let updated =
+                apply_java_compile_config_to_project_config(base.clone(), cfg, &base);
+            query_db.set_project_config(project, Arc::new(updated.clone()));
+
+            let requested_release = Some(updated.java.target.0)
+                .filter(|release| *release >= 1)
+                .or_else(|| Some(updated.java.source.0).filter(|release| *release >= 1));
+
+            let classpath_entries: Vec<nova_classpath::ClasspathEntry> = updated
+                .classpath
+                .iter()
+                .chain(updated.module_path.iter())
+                .map(nova_classpath::ClasspathEntry::from)
+                .collect();
+
+            if classpath_entries.is_empty() {
+                query_db.set_classpath_index(project, None);
+            } else {
+                let classpath_cache_dir = query_db.classpath_cache_dir();
+                match nova_classpath::ClasspathIndex::build_with_options(
+                    &classpath_entries,
+                    classpath_cache_dir.as_deref(),
+                    nova_classpath::IndexOptions {
+                        target_release: requested_release,
+                    },
+                ) {
+                    Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
+                    Err(_) => query_db.set_classpath_index(project, None),
                 }
+            }
+        };
 
-                match mode {
+        // ---------------------------------------------------------------------
+        // Maven integration.
+        // ---------------------------------------------------------------------
+        let maven_projects: Vec<(ProjectId, Arc<ProjectConfig>)> = loaded_project_configs
+            .iter()
+            .filter(|(_, cfg)| cfg.build_system == BuildSystem::Maven)
+            .cloned()
+            .collect();
+
+        if !maven_projects.is_empty() {
+            if refresh_maven {
+                match maven_mode {
                     BuildIntegrationMode::Off => {}
                     BuildIntegrationMode::Auto => {
                         let cache_dir = build_cache_dir(workspace_root, query_db);
-                        if let Some(cfg) =
-                            cached_java_compile_config(workspace_root, kind, &cache_dir)
-                        {
-                            let base = (*current_config).clone();
-                            let updated = apply_java_compile_config_to_project_config(
-                                base.clone(),
-                                &cfg,
-                                &base,
-                            );
-                            query_db.set_project_config(project, Arc::new(updated.clone()));
+                        if let Ok(files) = nova_build::collect_maven_build_files(workspace_root) {
+                            if let Ok(fingerprint) =
+                                BuildFileFingerprint::from_files(workspace_root, files)
+                            {
+                                let cache = BuildCache::new(cache_dir.as_path());
+                                let single_maven_project = maven_projects.len() == 1;
+                                for (project, current_config) in &maven_projects {
+                                    let Some(module_root) =
+                                        current_config.modules.first().map(|m| m.root.as_path())
+                                    else {
+                                        continue;
+                                    };
+                                    let module_key = if module_root == workspace_root {
+                                        if single_maven_project {
+                                            "<root>".to_string()
+                                        } else {
+                                            ".".to_string()
+                                        }
+                                    } else {
+                                        let Ok(rel) = module_root.strip_prefix(workspace_root)
+                                        else {
+                                            continue;
+                                        };
+                                        rel.to_string_lossy().to_string()
+                                    };
 
-                            let requested_release = Some(updated.java.target.0)
-                                .filter(|release| *release >= 1)
-                                .or_else(|| {
-                                    Some(updated.java.source.0).filter(|release| *release >= 1)
-                                });
-
-                            let classpath_entries: Vec<nova_classpath::ClasspathEntry> = updated
-                                .classpath
-                                .iter()
-                                .chain(updated.module_path.iter())
-                                .map(nova_classpath::ClasspathEntry::from)
-                                .collect();
-
-                            if classpath_entries.is_empty() {
-                                query_db.set_classpath_index(project, None);
-                            } else {
-                                let classpath_cache_dir = query_db.classpath_cache_dir();
-                                match nova_classpath::ClasspathIndex::build_with_options(
-                                    &classpath_entries,
-                                    classpath_cache_dir.as_deref(),
-                                    nova_classpath::IndexOptions {
-                                        target_release: requested_release,
-                                    },
-                                ) {
-                                    Ok(index) => {
-                                        query_db.set_classpath_index(project, Some(Arc::new(index)))
+                                    let module = cache
+                                        .get_module(
+                                            workspace_root,
+                                            BuildSystemKind::Maven,
+                                            &fingerprint,
+                                            &module_key,
+                                        )
+                                        .ok()
+                                        .flatten();
+                                    let Some(module) = module else {
+                                        continue;
+                                    };
+                                    if let Some(cfg) = module.java_compile_config.or_else(|| {
+                                        module.classpath.map(|classpath| nova_build::JavaCompileConfig {
+                                            compile_classpath: classpath,
+                                            ..nova_build::JavaCompileConfig::default()
+                                        })
+                                    }) {
+                                        apply_compile_config(*project, current_config, &cfg);
                                     }
-                                    Err(_) => query_db.set_classpath_index(project, None),
                                 }
                             }
                         }
                     }
                     BuildIntegrationMode::On => {
                         let cache_dir = build_cache_dir(workspace_root, query_db);
-                        let deadline = Instant::now() + timeout;
+                        let deadline = Instant::now() + maven_timeout;
                         let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
                             #[cfg(not(test))]
                             {
@@ -3862,84 +3908,318 @@ fn reload_project_and_sync(
                         };
 
                         let build = BuildManager::with_runner(cache_dir, runner);
+                        let single_maven_project = maven_projects.len() == 1;
 
-                        let compile_config = match current_config.build_system {
-                            BuildSystem::Maven => {
-                                build.java_compile_config_maven(workspace_root, None)
-                            }
-                            BuildSystem::Gradle => {
-                                build.java_compile_config_gradle(workspace_root, None)
-                            }
-                            _ => unreachable!("build integration only applies to Maven/Gradle"),
-                        };
+                        for (project, current_config) in &maven_projects {
+                            let Some(module_root) =
+                                current_config.modules.first().map(|m| m.root.as_path())
+                            else {
+                                continue;
+                            };
+                            let module_rel = if module_root == workspace_root {
+                                PathBuf::from(".")
+                            } else {
+                                let Ok(rel) = module_root.strip_prefix(workspace_root) else {
+                                    continue;
+                                };
+                                rel.to_path_buf()
+                            };
 
-                        match compile_config {
-                            Ok(cfg) => {
-                                let base = (*current_config).clone();
-                                let updated = apply_java_compile_config_to_project_config(
-                                    base.clone(),
-                                    &cfg,
-                                    &base,
-                                );
-                                query_db.set_project_config(project, Arc::new(updated.clone()));
+                            let module_relative = if module_root == workspace_root
+                                && single_maven_project
+                            {
+                                None
+                            } else {
+                                Some(module_rel.as_path())
+                            };
 
-                                let requested_release = Some(updated.java.target.0)
-                                    .filter(|release| *release >= 1)
-                                    .or_else(|| {
-                                        Some(updated.java.source.0).filter(|release| *release >= 1)
-                                    });
-
-                                let classpath_entries: Vec<nova_classpath::ClasspathEntry> =
-                                    updated
-                                        .classpath
-                                        .iter()
-                                        .chain(updated.module_path.iter())
-                                        .map(nova_classpath::ClasspathEntry::from)
-                                        .collect();
-
-                                if classpath_entries.is_empty() {
-                                    query_db.set_classpath_index(project, None);
-                                } else {
-                                    let classpath_cache_dir = query_db.classpath_cache_dir();
-                                    match nova_classpath::ClasspathIndex::build_with_options(
-                                        &classpath_entries,
-                                        classpath_cache_dir.as_deref(),
-                                        nova_classpath::IndexOptions {
-                                            target_release: requested_release,
-                                        },
-                                    ) {
-                                        Ok(index) => query_db
-                                            .set_classpath_index(project, Some(Arc::new(index))),
-                                        Err(_) => query_db.set_classpath_index(project, None),
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                publish_to_subscribers(
+                            match build.java_compile_config_maven(workspace_root, module_relative) {
+                                Ok(cfg) => apply_compile_config(*project, current_config, &cfg),
+                                Err(err) => publish_to_subscribers(
                                     subscribers,
                                     WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
                                         "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
                                     ))),
-                                );
+                                ),
                             }
                         }
                     }
                 }
-            } else if mode != BuildIntegrationMode::Off
-                && !gradle_snapshot_changed
-                && previous_config.as_ref().is_some_and(|previous_config| {
-                    previous_config.build_system == current_config.build_system
-                        && previous_config.workspace_root == current_config.workspace_root
-                        && !previous_config.workspace_root.as_os_str().is_empty()
-                })
-            {
-                if let Some(previous_config) = previous_config.as_ref() {
-                    let merged = reuse_previous_build_config_fields(
-                        (*current_config).clone(),
-                        previous_config,
-                    );
-                    query_db.set_project_config(project, Arc::new(merged));
-                    query_db.set_classpath_index(project, previous_classpath_index.clone());
+            } else if maven_mode != BuildIntegrationMode::Off {
+                for (project, current_config) in &maven_projects {
+                    let previous_config = previous_configs.get(project);
+                    let previous_config_ok = previous_config.is_some_and(|previous_config| {
+                        previous_config.build_system == current_config.build_system
+                            && previous_config.workspace_root == current_config.workspace_root
+                            && !previous_config.workspace_root.as_os_str().is_empty()
+                    });
+                    if !previous_config_ok {
+                        continue;
+                    }
+                    if let Some(previous_config) = previous_config {
+                        let merged = reuse_previous_build_config_fields(
+                            (**current_config).clone(),
+                            previous_config,
+                        );
+                        query_db.set_project_config(*project, Arc::new(merged));
+                        let index = previous_classpath_indexes
+                            .get(project)
+                            .cloned()
+                            .unwrap_or(None);
+                        query_db.set_classpath_index(*project, index);
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Gradle integration.
+        // ---------------------------------------------------------------------
+        let gradle_projects: Vec<(ProjectId, Arc<ProjectConfig>)> = loaded_project_configs
+            .iter()
+            .filter(|(_, cfg)| cfg.build_system == BuildSystem::Gradle)
+            .cloned()
+            .collect();
+
+        let canonicalize = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        if !gradle_projects.is_empty() {
+            if refresh_gradle {
+                match gradle_mode {
+                    BuildIntegrationMode::Off => {}
+                    BuildIntegrationMode::Auto => {
+                        let cache_dir = build_cache_dir(workspace_root, query_db);
+                        // Preserve existing single-project behavior: use the `<root>` cache entry
+                        // (written by `java_compile_config_gradle(project_path=None)`) instead of
+                        // requiring cached Gradle project directory metadata.
+                        if gradle_projects.len() == 1 {
+                            if let Some(cfg) = cached_java_compile_config(
+                                workspace_root,
+                                BuildSystemKind::Gradle,
+                                &cache_dir,
+                            ) {
+                                let (project, current_config) = &gradle_projects[0];
+                                apply_compile_config(*project, current_config, &cfg);
+                            }
+                        } else if let Ok(files) = nova_build::collect_gradle_build_files(workspace_root)
+                        {
+                            if let Ok(fingerprint) =
+                                BuildFileFingerprint::from_files(workspace_root, files)
+                            {
+                                let cache = BuildCache::new(cache_dir.as_path());
+                                let data = cache
+                                    .load(workspace_root, BuildSystemKind::Gradle, &fingerprint)
+                                    .ok()
+                                    .flatten();
+                                if let Some(data) = data {
+                                    if let Some(projects) = data.projects {
+                                        let mut dir_to_path: HashMap<PathBuf, String> =
+                                            HashMap::new();
+                                        for project in projects {
+                                            dir_to_path
+                                                .entry(canonicalize(&project.dir))
+                                                .or_insert(project.path);
+                                        }
+
+                                        for (project, current_config) in &gradle_projects {
+                                            let Some(module_root) = current_config
+                                                .modules
+                                                .first()
+                                                .map(|m| m.root.as_path())
+                                            else {
+                                                continue;
+                                            };
+                                            let module_root = canonicalize(module_root);
+                                            let Some(project_path) = dir_to_path.get(&module_root)
+                                            else {
+                                                continue;
+                                            };
+
+                                            let module = if project_path.as_str() == ":" {
+                                                cache
+                                                    .get_module(
+                                                        workspace_root,
+                                                        BuildSystemKind::Gradle,
+                                                        &fingerprint,
+                                                        ":",
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                                    .or_else(|| {
+                                                        cache
+                                                            .get_module(
+                                                                workspace_root,
+                                                                BuildSystemKind::Gradle,
+                                                                &fingerprint,
+                                                                "<root>",
+                                                            )
+                                                            .ok()
+                                                            .flatten()
+                                                    })
+                                            } else {
+                                                cache
+                                                    .get_module(
+                                                        workspace_root,
+                                                        BuildSystemKind::Gradle,
+                                                        &fingerprint,
+                                                        project_path,
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                            };
+                                            let Some(module) = module else {
+                                                continue;
+                                            };
+                                            if let Some(cfg) =
+                                                module.java_compile_config.or_else(|| {
+                                                    module.classpath.map(|classpath| {
+                                                        nova_build::JavaCompileConfig {
+                                                            compile_classpath: classpath,
+                                                            ..nova_build::JavaCompileConfig::default()
+                                                        }
+                                                    })
+                                                })
+                                            {
+                                                apply_compile_config(
+                                                    *project,
+                                                    current_config,
+                                                    &cfg,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    BuildIntegrationMode::On => {
+                        let cache_dir = build_cache_dir(workspace_root, query_db);
+                        let deadline = Instant::now() + gradle_timeout;
+                        let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
+                            #[cfg(not(test))]
+                            {
+                                Arc::new(DeadlineCommandRunner {
+                                    deadline,
+                                    cancellation: cancellation.clone(),
+                                    inner: DeadlineCommandRunnerInner::Default,
+                                })
+                            }
+                            #[cfg(test)]
+                            {
+                                Arc::new(DeadlineCommandRunner {
+                                    deadline,
+                                    cancellation: cancellation.clone(),
+                                    inner: DeadlineCommandRunnerInner::Custom(Arc::clone(
+                                        build_runner,
+                                    )),
+                                })
+                            }
+                        } else {
+                            Arc::new(DeadlineCommandRunner {
+                                deadline,
+                                cancellation: cancellation.clone(),
+                                inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
+                            })
+                        };
+
+                        let build = BuildManager::with_runner(cache_dir.clone(), runner);
+
+                        // Preserve existing single-project behavior: invoke the per-root Gradle
+                        // query (`NOVA_JSON_BEGIN/END`) instead of requiring the batch JSON output.
+                        if gradle_projects.len() == 1 {
+                            let (project, current_config) = &gradle_projects[0];
+                            match build.java_compile_config_gradle(workspace_root, None) {
+                                Ok(cfg) => apply_compile_config(*project, current_config, &cfg),
+                                Err(err) => publish_to_subscribers(
+                                    subscribers,
+                                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                        "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
+                                    ))),
+                                ),
+                            }
+                        } else {
+                            let configs = match build.java_compile_configs_all_gradle(workspace_root)
+                            {
+                                Ok(configs) => configs,
+                                Err(err) => {
+                                    publish_to_subscribers(
+                                        subscribers,
+                                        WorkspaceEvent::Status(WorkspaceStatus::IndexingError(
+                                            format!(
+                                                "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
+                                            ),
+                                        )),
+                                    );
+                                    Vec::new()
+                                }
+                            };
+
+                            let configs_by_path: HashMap<String, nova_build::JavaCompileConfig> =
+                                configs.into_iter().collect();
+
+                            // Map module roots to Gradle project paths using cached Gradle project
+                            // directories (written by `java_compile_configs_all_gradle`).
+                            let gradle_dir_map: Option<HashMap<PathBuf, String>> = (|| {
+                                let files =
+                                    nova_build::collect_gradle_build_files(workspace_root).ok()?;
+                                let fingerprint =
+                                    BuildFileFingerprint::from_files(workspace_root, files).ok()?;
+                                let cache = BuildCache::new(&cache_dir);
+                                let data = cache
+                                    .load(workspace_root, BuildSystemKind::Gradle, &fingerprint)
+                                    .ok()
+                                    .flatten()?;
+                                let projects = data.projects?;
+                                let mut map = HashMap::new();
+                                for project in projects {
+                                    map.insert(canonicalize(&project.dir), project.path);
+                                }
+                                Some(map)
+                            })();
+
+                            if let Some(dir_to_path) = gradle_dir_map {
+                                for (project, current_config) in &gradle_projects {
+                                    let Some(module_root) =
+                                        current_config.modules.first().map(|m| m.root.as_path())
+                                    else {
+                                        continue;
+                                    };
+                                    let module_root = canonicalize(module_root);
+                                    let Some(project_path) = dir_to_path.get(&module_root) else {
+                                        continue;
+                                    };
+                                    let Some(cfg) = configs_by_path.get(project_path) else {
+                                        continue;
+                                    };
+                                    apply_compile_config(*project, current_config, cfg);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if gradle_mode != BuildIntegrationMode::Off && !gradle_snapshot_changed {
+                for (project, current_config) in &gradle_projects {
+                    let previous_config = previous_configs.get(project);
+                    let previous_config_ok = previous_config.is_some_and(|previous_config| {
+                        previous_config.build_system == current_config.build_system
+                            && previous_config.workspace_root == current_config.workspace_root
+                            && !previous_config.workspace_root.as_os_str().is_empty()
+                    });
+                    if !previous_config_ok {
+                        continue;
+                    }
+                    if let Some(previous_config) = previous_config {
+                        let merged = reuse_previous_build_config_fields(
+                            (**current_config).clone(),
+                            previous_config,
+                        );
+                        query_db.set_project_config(*project, Arc::new(merged));
+                        let index = previous_classpath_indexes
+                            .get(project)
+                            .cloned()
+                            .unwrap_or(None);
+                        query_db.set_classpath_index(*project, index);
+                    }
                 }
             }
         }
