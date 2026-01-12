@@ -1,7 +1,7 @@
 pub(crate) fn explain_error_prompt(diagnostic_message: &str, context: &str) -> String {
     format!(
         "Explain the following Java compiler error in plain language.\n\n\
-         Error:\n{diagnostic_message}\n\n\
+         Error:\n```text\n{diagnostic_message}\n```\n\n\
          Code context:\n{context}\n\n\
          Provide:\n\
          1) What the error means\n\
@@ -13,7 +13,7 @@ pub(crate) fn explain_error_prompt(diagnostic_message: &str, context: &str) -> S
 pub(crate) fn generate_method_body_prompt(method_signature: &str, context: &str) -> String {
     format!(
         "Implement the following Java method.\n\n\
-         Method signature:\n{method_signature}\n\n\
+         Method signature:\n```java\n{method_signature}\n```\n\n\
          Context:\n{context}\n\n\
          Return ONLY the method body contents (no surrounding braces, no markdown).\n"
     )
@@ -22,7 +22,7 @@ pub(crate) fn generate_method_body_prompt(method_signature: &str, context: &str)
 pub(crate) fn generate_tests_prompt(target: &str, context: &str) -> String {
     format!(
         "Generate unit tests (JUnit 5) for the following target.\n\n\
-         Target:\n{target}\n\n\
+         Target:\n```text\n{target}\n```\n\n\
          Context:\n{context}\n\n\
          Include tests for normal cases, edge cases, and error conditions.\n\
          Return ONLY Java code (no markdown).\n"

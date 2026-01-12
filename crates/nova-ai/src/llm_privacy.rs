@@ -267,4 +267,45 @@ class Foo {
         assert!(!out.contains("secret"), "{out}");
         assert!(!out.contains("sk-verysecret"), "{out}");
     }
+
+    #[test]
+    fn nova_ai_prompts_do_not_leak_identifiers_outside_code_fences_in_cloud_mode() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(true),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let secret = "SecretService";
+        let context = "## Focal code\nclass Foo {}\n";
+
+        let explain_prompt =
+            crate::actions::explain_error_prompt(&format!("cannot find symbol: {secret}"), context);
+        assert!(explain_prompt.contains(secret), "prompt should include raw input");
+        let explain_out = filter.sanitize_prompt_text(&mut session, &explain_prompt);
+        assert!(
+            !explain_out.contains(secret),
+            "sanitized prompt should not leak identifiers: {explain_out}"
+        );
+
+        let method_sig = format!("public {secret} make({secret} svc)");
+        let method_prompt = crate::actions::generate_method_body_prompt(&method_sig, context);
+        assert!(method_prompt.contains(secret), "prompt should include raw input");
+        let method_out = filter.sanitize_prompt_text(&mut session, &method_prompt);
+        assert!(
+            !method_out.contains(secret),
+            "sanitized prompt should not leak identifiers: {method_out}"
+        );
+
+        let target = format!("Generate tests for {secret}#run");
+        let tests_prompt = crate::actions::generate_tests_prompt(&target, context);
+        assert!(tests_prompt.contains(secret), "prompt should include raw input");
+        let tests_out = filter.sanitize_prompt_text(&mut session, &tests_prompt);
+        assert!(
+            !tests_out.contains(secret),
+            "sanitized prompt should not leak identifiers: {tests_out}"
+        );
+    }
 }
