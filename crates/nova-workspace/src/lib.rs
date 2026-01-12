@@ -79,48 +79,42 @@ impl Workspace {
         Self::open_with_memory_overrides(path, MemoryBudgetOverrides::default())
     }
 
-    pub fn open_with_config(path: impl AsRef<Path>, config: &nova_config::NovaConfig) -> Result<Self> {
+    pub fn open_with_config(
+        path: impl AsRef<Path>,
+        config: &nova_config::NovaConfig,
+    ) -> Result<Self> {
         Self::open_with_memory_overrides(path, config.memory_budget_overrides())
+    }
+
+    /// Open a workspace rooted at `path`, using a caller-provided [`MemoryManager`].
+    ///
+    /// This is intended for higher-level hosts (e.g. a server process) that want
+    /// multiple components (workspace, query cache, symbol search index, etc.) to
+    /// account against a single shared memory manager.
+    pub fn open_with_memory_manager(path: impl AsRef<Path>, memory: MemoryManager) -> Result<Self> {
+        Self::open_with_memory_manager_and_persistence(path, memory, PersistenceConfig::from_env())
+    }
+
+    /// Like [`Self::open_with_memory_manager`], but allows overriding persistence configuration.
+    pub fn open_with_memory_manager_and_persistence(
+        path: impl AsRef<Path>,
+        memory: MemoryManager,
+        persistence: PersistenceConfig,
+    ) -> Result<Self> {
+        let root = resolve_workspace_root(path.as_ref())?;
+        Self::open_from_root_with_memory_manager(root, memory, persistence)
     }
 
     pub fn open_with_memory_overrides(
         path: impl AsRef<Path>,
         config_memory_overrides: MemoryBudgetOverrides,
     ) -> Result<Self> {
-        let path = path.as_ref();
-        let meta = fs::metadata(path)
-            .with_context(|| format!("failed to read metadata for {}", path.display()))?;
-        let root = if meta.is_dir() {
-            path.to_path_buf()
-        } else {
-            path.parent()
-                .map(|p| p.to_path_buf())
-                .context("file path has no parent directory")?
-        };
-        let root = fs::canonicalize(&root)
-            .with_context(|| format!("failed to canonicalize {}", root.display()))?;
-        let root = find_project_root(&root);
-
+        let root = resolve_workspace_root(path.as_ref())?;
         let memory_budget = MemoryBudget::default_for_system()
             .apply_overrides(config_memory_overrides)
             .apply_overrides(MemoryBudgetOverrides::from_env());
         let memory = MemoryManager::new(memory_budget);
-        let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
-        let engine_config = engine::WorkspaceEngineConfig {
-            workspace_root: root.clone(),
-            persistence: PersistenceConfig::from_env(),
-            memory: memory.clone(),
-        };
-        let engine = Arc::new(engine::WorkspaceEngine::new(engine_config));
-        engine
-            .set_workspace_root(&root)
-            .with_context(|| format!("failed to initialize workspace at {}", root.display()))?;
-        Ok(Self {
-            root,
-            engine,
-            memory,
-            symbol_searcher,
-        })
+        Self::open_from_root_with_memory_manager(root, memory, PersistenceConfig::from_env())
     }
 
     pub fn root(&self) -> &Path {
@@ -1282,6 +1276,38 @@ mod fuzzy_symbol_tests {
     }
 }
 
+#[cfg(test)]
+mod memory_manager_injection_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_uses_injected_memory_manager_for_budget_and_registrations() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join("src")).expect("mkdir");
+        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).expect("write");
+
+        let budget = MemoryBudget::from_total(8 * nova_memory::MB);
+        let memory = MemoryManager::new(budget);
+
+        let workspace = Workspace::open_with_memory_manager(root, memory.clone()).expect("open");
+
+        assert_eq!(workspace.memory.budget(), budget);
+
+        let (_report, components) = memory.report_detailed();
+        assert!(
+            components.iter().any(|c| c.name == "salsa_memos"),
+            "expected Salsa memo evictor to register with injected memory manager; got {components:?}"
+        );
+        assert!(
+            components.iter().any(|c| c.name == "symbol_search_index"),
+            "expected symbol search index to register with injected memory manager; got {components:?}"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexReport {
     pub root: PathBuf,
@@ -1505,4 +1531,44 @@ fn current_rss_bytes() -> Option<u64> {
 
 fn find_project_root(start: &Path) -> PathBuf {
     nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
+}
+
+fn resolve_workspace_root(path: &Path) -> Result<PathBuf> {
+    let meta = fs::metadata(path)
+        .with_context(|| format!("failed to read metadata for {}", path.display()))?;
+    let root = if meta.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(|p| p.to_path_buf())
+            .context("file path has no parent directory")?
+    };
+    let root = fs::canonicalize(&root)
+        .with_context(|| format!("failed to canonicalize {}", root.display()))?;
+    Ok(find_project_root(&root))
+}
+
+impl Workspace {
+    fn open_from_root_with_memory_manager(
+        root: PathBuf,
+        memory: MemoryManager,
+        persistence: PersistenceConfig,
+    ) -> Result<Self> {
+        let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
+        let engine_config = engine::WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence,
+            memory: memory.clone(),
+        };
+        let engine = Arc::new(engine::WorkspaceEngine::new(engine_config));
+        engine
+            .set_workspace_root(&root)
+            .with_context(|| format!("failed to initialize workspace at {}", root.display()))?;
+        Ok(Self {
+            root,
+            engine,
+            memory,
+            symbol_searcher,
+        })
+    }
 }
