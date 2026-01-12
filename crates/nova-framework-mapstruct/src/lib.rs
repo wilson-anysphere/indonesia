@@ -702,13 +702,39 @@ fn span_contains_inclusive(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
 }
 
-fn looks_like_mapstruct_source(text: &str) -> bool {
+pub fn looks_like_mapstruct_source(text: &str) -> bool {
     // Best-effort, cheap guard to avoid building the full workspace model when the
     // file clearly isn't participating in MapStruct.
     //
     // We intentionally keep this conservative (false negatives are acceptable) and bias toward
     // avoiding false positives for other frameworks that also use `@Mapper` (e.g. MyBatis).
-    text.contains("org.mapstruct")
+    //
+    // Fast path for the overwhelmingly common case: well-formatted imports/annotations with no
+    // trivia inside the qualified name.
+    if text.contains("org.mapstruct") {
+        return true;
+    }
+
+    // Avoid doing any parsing unless the file at least mentions `mapstruct` somewhere.
+    if !text.contains("mapstruct") {
+        return false;
+    }
+
+    // Handle edge cases where trivia splits the qualified name (e.g. `import org . mapstruct . Mapper;`).
+    // This is still conservative: we only accept files that actually import something from
+    // `org.mapstruct`.
+    let Ok(tree) = parse_java(text) else {
+        return false;
+    };
+    let imports = imports_of_source(tree.root_node(), text);
+    imports
+        .explicit
+        .values()
+        .any(|pkg| pkg.starts_with("org.mapstruct"))
+        || imports
+            .wildcard
+            .iter()
+            .any(|pkg| pkg.starts_with("org.mapstruct"))
 }
 
 fn mapping_property_completions(
@@ -879,12 +905,36 @@ fn package_of_source(root: Node<'_>, source: &str) -> Option<String> {
                 .or_else(|| find_named_child(child, "scoped_identifier"))
                 .or_else(|| find_named_child(child, "identifier"));
             if let Some(name_node) = name_node {
-                package = Some(node_text(source, name_node).trim().to_string());
+                package = java_qualified_name(source, name_node)
+                    .or_else(|| Some(node_text(source, name_node).trim().to_string()));
             }
             break;
         }
     }
     package
+}
+
+fn java_qualified_name(source: &str, node: Node<'_>) -> Option<String> {
+    // Tree-sitter node ranges include trivia between children (whitespace/comments), so slicing the
+    // raw byte range can yield `org /*c*/ . mapstruct . Mapper`.
+    //
+    // Reconstruct the name from the identifier nodes instead so we get a canonical
+    // `org.mapstruct.Mapper` string even in the presence of trivia.
+    let mut parts: Vec<String> = Vec::new();
+    visit_nodes(node, &mut |n| match n.kind() {
+        "identifier" | "type_identifier" => {
+            let text = node_text(source, n).trim();
+            if !text.is_empty() {
+                parts.push(text.to_string());
+            }
+        }
+        _ => {}
+    });
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -915,10 +965,9 @@ fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
         let Some(name_node) = name_node else {
             continue;
         };
-        let raw_name = node_text(source, name_node).trim();
-        if raw_name.is_empty() {
+        let Some(raw_name) = java_qualified_name(source, name_node) else {
             continue;
-        }
+        };
 
         let mut has_star = false;
         let mut is_static = false;
@@ -937,7 +986,7 @@ fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
         }
 
         if has_star {
-            out.wildcard.insert(raw_name.to_string());
+            out.wildcard.insert(raw_name);
             continue;
         }
 

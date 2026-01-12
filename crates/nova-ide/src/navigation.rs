@@ -146,7 +146,7 @@ fn mapstruct_fallback_locations(
     if path.extension().and_then(|e| e.to_str()) != Some("java") {
         return Vec::new();
     }
-    if !text.contains("org.mapstruct") {
+    if !nova_framework_mapstruct::looks_like_mapstruct_source(text) {
         return Vec::new();
     }
 

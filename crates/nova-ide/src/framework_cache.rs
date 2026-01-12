@@ -227,10 +227,7 @@ pub fn framework_diagnostics(
     //
     // Gate behind a cheap text heuristic so we don't hit the filesystem / parser for the vast
     // majority of Java files.
-    let maybe_mapstruct_file = text.contains("@Mapper")
-        || text.contains("@org.mapstruct.Mapper")
-        || text.contains("@Mapping")
-        || text.contains("org.mapstruct");
+    let maybe_mapstruct_file = nova_framework_mapstruct::looks_like_mapstruct_source(text);
     if maybe_mapstruct_file {
         if cancel.is_cancelled() {
             return diagnostics;
@@ -449,7 +446,7 @@ pub fn framework_completions(
     // MapStruct `@Mapping(target="...")` / `@Mapping(source="...")` property completions.
     //
     // Guard with a cheap text heuristic to avoid filesystem scans on unrelated files.
-    let maybe_mapstruct_file = text.contains("org.mapstruct");
+    let maybe_mapstruct_file = nova_framework_mapstruct::looks_like_mapstruct_source(text);
     if maybe_mapstruct_file {
         if cancel.is_cancelled() {
             return Vec::new();

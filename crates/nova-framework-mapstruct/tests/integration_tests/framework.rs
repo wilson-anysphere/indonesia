@@ -58,6 +58,45 @@ package com.example;
 }
 
 #[test]
+fn missing_dependency_diagnostic_when_mapper_present_with_trivia_in_import() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    // Ensure `nova_project::workspace_root` can find the project root.
+    std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
+
+    let java_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&java_dir).expect("mkdir java dir");
+
+    // `org.mapstruct` is split by trivia so naive substring checks fail.
+    let mapper = r#"
+package com.example;
+
+import org . mapstruct . Mapper;
+
+@Mapper
+public interface FooMapper {}
+"#;
+
+    let mapper_path = java_dir.join("FooMapper.java");
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    write_file(&mapper_path, mapper);
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path.clone(), mapper);
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(MapStructAnalyzer::new()));
+
+    let diags = registry.framework_diagnostics(&db, mapper_file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        "expected MAPSTRUCT_MISSING_DEPENDENCY diagnostic, got: {diags:#?}"
+    );
+}
+
+#[test]
 fn diagnostics_do_not_require_db_file_enumeration() {
     struct NoAllFilesDb {
         inner: MemoryDatabase,

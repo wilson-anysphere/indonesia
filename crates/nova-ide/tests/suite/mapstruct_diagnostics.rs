@@ -66,6 +66,64 @@ class Target {
 }
 
 #[test]
+fn maven_mapper_with_trivia_in_import_emits_missing_dependency() {
+    let dir = tempdir().expect("tempdir");
+
+    std::fs::write(
+        dir.path().join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+</project>"#,
+    )
+    .expect("write pom.xml");
+
+    let mapper_path = dir.path().join("src/main/java/com/example/MyMapper.java");
+    std::fs::create_dir_all(mapper_path.parent().expect("mapper parent")).expect("mkdirs");
+
+    // `org.mapstruct` is split by trivia so naive substring checks fail.
+    let mapper_text = r#"package com.example;
+
+import org . mapstruct . Mapper;
+
+@Mapper
+public interface MyMapper {
+  Target map(Source source);
+}
+
+class Source {
+  public int id;
+}
+
+class Target {
+  public int id;
+}
+"#;
+    std::fs::write(&mapper_path, mapper_text).expect("write mapper java");
+
+    let mut db = InMemoryFileStore::new();
+    let mapper_file = db.file_id_for_path(&mapper_path);
+    db.set_file_text(mapper_file, mapper_text.to_string());
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
+
+    let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY" && d.severity == Severity::Error),
+        "expected MAPSTRUCT_MISSING_DEPENDENCY; got {diags:#?}"
+    );
+}
+
+#[test]
 fn maven_mapper_with_mapstruct_dependency_does_not_emit_missing_dependency() {
     let dir = tempdir().expect("tempdir");
 

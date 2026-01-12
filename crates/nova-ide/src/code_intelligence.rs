@@ -1940,12 +1940,7 @@ pub fn file_diagnostics_with_semantic_db(
     //
     // Use a cheap text guard to avoid running MapStruct parsing + filesystem scanning for files
     // that obviously aren't participating in MapStruct.
-    let maybe_mapstruct = text.contains("@Mapper")
-        || text.contains("@org.mapstruct.Mapper")
-        || text.contains("@Mapping")
-        || text.contains("org.mapstruct");
-
-    if is_java && maybe_mapstruct {
+    if is_java && nova_framework_mapstruct::looks_like_mapstruct_source(text) {
         if let Some(path) = db.file_path(file) {
             let root = crate::framework_cache::project_root_for_path(path);
             let has_mapstruct_dependency = crate::framework_cache::project_config(&root)
@@ -6201,7 +6196,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     // MapStruct `@Mapping(source="...")` / `@Mapping(target="...")` completions inside Java source.
-    if is_java && text.contains("org.mapstruct") {
+    if is_java && nova_framework_mapstruct::looks_like_mapstruct_source(text) {
         if let Some(path) = db.file_path(file) {
             let root = crate::framework_cache::project_root_for_path(path);
             if let Ok(items) =
@@ -13638,7 +13633,7 @@ fn looks_like_mapstruct_file(text: &str) -> bool {
     //
     // Keep this heuristic narrow: other frameworks (e.g. MyBatis) also use `@Mapper`,
     // so prefer MapStruct-specific markers.
-    text.contains("org.mapstruct") || text.contains("@Mapping") || text.contains("@Mappings")
+    nova_framework_mapstruct::looks_like_mapstruct_source(text)
 }
 
 pub fn find_references(

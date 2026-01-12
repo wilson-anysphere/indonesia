@@ -424,13 +424,11 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     let method_decl = nav_core::method_decl_at(parsed, offset);
 
     // MapStruct: prioritize "go to implementation" from mapper interface methods into generated
-    // implementation methods when the generated file exists on disk.
+    // `*MapperImpl` methods when the generated file exists on disk.
     if method_decl.is_some() {
         if let Some(path) = db.file_path(file) {
             if path.extension().and_then(|e| e.to_str()) == Some("java")
-                && (parsed.text.contains("@Mapper")
-                    || parsed.text.contains("@Mapping")
-                    || parsed.text.contains("org.mapstruct"))
+                && nova_framework_mapstruct::looks_like_mapstruct_source(&parsed.text)
             {
                 let root = framework_cache::project_root_for_path(path);
                 if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
@@ -440,8 +438,15 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
                     offset,
                 ) {
                     if let Some(target) = targets.into_iter().next() {
-                        if let Some(location) = mapstruct_target_location(db, &index, target) {
-                            return vec![location];
+                        if target
+                            .file
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.ends_with("Impl.java"))
+                        {
+                            if let Some(location) = mapstruct_target_location(db, &index, target) {
+                                return vec![location];
+                            }
                         }
                     }
                 }
@@ -567,7 +572,7 @@ fn mapstruct_fallback_locations(
     if path.extension().and_then(|e| e.to_str()) != Some("java") {
         return Vec::new();
     }
-    if !text.contains("org.mapstruct") {
+    if !nova_framework_mapstruct::looks_like_mapstruct_source(text) {
         return Vec::new();
     }
 
