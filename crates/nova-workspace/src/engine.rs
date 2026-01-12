@@ -780,9 +780,10 @@ impl WorkspaceEngine {
             }
         }
 
-        // A move can have two effects on ids:
+        // A move can have three effects on ids:
         // - Typical case: preserve `id_from` at `to`.
         // - Destination already known: keep destination id and orphan `id_from`.
+        // - Open document moved onto an existing destination: preserve `id_from` and orphan `id_to`.
         //
         // Keep Salsa inputs consistent by explicitly marking orphaned ids as deleted and removing
         // them from `project_files`.
@@ -1552,9 +1553,9 @@ mod tests {
         let id_a = engine.vfs.get_id(&vfs_a).unwrap();
         let id_b = engine.vfs.get_id(&vfs_b).unwrap();
 
-        // Open A (overlay). When an open document is moved to an existing path, the open
-        // document's FileId is preserved (the editor knows this id) and the destination id
-        // is orphaned.
+        // Open A (overlay). When an open document is moved onto an existing destination path that
+        // is not open in the overlay, the VFS preserves the open document's `FileId` (the editor
+        // knows this id) and orphans the destination id.
         let opened = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
         assert_eq!(opened, id_a);
         assert!(engine.vfs.open_documents().is_open(id_a));
