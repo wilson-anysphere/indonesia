@@ -32,3 +32,4 @@ async fn wire_stream_eval_define_class_methods_and_invoke_stage0() {
     assert_eq!(calls[0].name, "Injected");
     assert_eq!(calls[0].bytecode_len, bytecode.len());
 }
+

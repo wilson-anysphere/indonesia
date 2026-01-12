@@ -1,6 +1,6 @@
 // Consolidated integration test suite.
 //
-// This module is compiled by `tests/tests.rs` so `cargo test -p nova-dap --tests`
+// This module is compiled by `tests/real_jvm.rs` so `cargo test -p nova-dap --tests`
 // builds a single integration test binary (see repo guidance about using one
 // integration test harness per crate).
 mod cancel;
@@ -23,6 +23,7 @@ mod real_jvm;
 mod source_mapping;
 mod stream_debug;
 mod wire_stream_debug;
+mod wire_stream_eval;
 mod wire_breakpoint_mapping;
 mod wire_format;
 mod wire_variables_preview;
