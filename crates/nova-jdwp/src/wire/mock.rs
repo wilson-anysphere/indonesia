@@ -1019,7 +1019,7 @@ async fn read_packet(
     }
 
     let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    if length < HEADER_LEN || length > crate::MAX_JDWP_PACKET_BYTES {
+    if crate::validate_jdwp_packet_length(length).is_err() {
         return Ok(None);
     }
     let id = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
