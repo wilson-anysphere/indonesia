@@ -87,6 +87,16 @@ pub fn reparse_java(
         ReparseTarget::TypeParameters => parse_type_parameters_fragment(fragment_text),
     };
 
+    // Fragment parsing must be lossless. Some fragment parsers may stop early for recovery (e.g.
+    // mis-indented braces), leaving trailing tokens unconsumed. Splicing a truncated fragment into
+    // the previous tree would silently drop source text. Detect this by comparing the fragment
+    // syntax tree length to the fragment slice length and fall back to a full parse if they
+    // differ.
+    let fragment_syntax = fragment.syntax();
+    if u32::from(fragment_syntax.text_range().end()) as usize != fragment_text.len() {
+        return parse_java(new_text);
+    }
+
     // If the fragment ends in an unterminated string/comment/text block, the lexer would normally
     // continue tokenizing into the following text. Splicing the fragment into the previous tree
     // would leave the preserved portion tokenized under the old lexer state, producing an
@@ -109,7 +119,7 @@ pub fn reparse_java(
         return parse_java(new_text);
     }
 
-    if fragment.syntax().kind() != plan.target_node.kind() {
+    if fragment_syntax.kind() != plan.target_node.kind() {
         return parse_java(new_text);
     }
 
