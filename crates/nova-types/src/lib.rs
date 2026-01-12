@@ -810,12 +810,6 @@ pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
     "java.util.function.Supplier",
     "java.util.function.Consumer",
     "java.util.function.Predicate",
-    // Additional core language constructs (kept in the minimal-JDK baseline to
-    // give `enum`, `record`, and `@interface` meaningful implicit supertypes even
-    // without an on-disk JDK).
-    "java.lang.Enum",
-    "java.lang.Record",
-    "java.lang.annotation.Annotation",
 ];
 
 impl TypeStore {

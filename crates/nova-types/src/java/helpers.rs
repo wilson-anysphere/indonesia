@@ -241,6 +241,25 @@ pub struct SamSignature {
 /// Applies type argument substitution so `Function<String, Integer>` yields `(String) -> Integer`.
 /// Returns `None` if `ty` is not (obviously) a functional interface.
 pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
+    fn normalize_type(env: &dyn TypeEnv, ty: Type) -> Type {
+        let ty = crate::canonicalize_named(env, &ty);
+        match ty {
+            Type::Intersection(_) => crate::make_intersection(env, vec![ty]),
+            other => other,
+        }
+    }
+
+    fn normalize_sig(env: &dyn TypeEnv, sig: SamSignature) -> SamSignature {
+        SamSignature {
+            params: sig
+                .params
+                .into_iter()
+                .map(|t| normalize_type(env, t))
+                .collect(),
+            return_type: normalize_type(env, sig.return_type),
+        }
+    }
+
     fn inner(
         env: &dyn TypeEnv,
         ty: &Type,
@@ -378,10 +397,7 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
             return None;
         }
         let ((_name, params), return_type) = candidates.into_iter().next()?;
-        Some(SamSignature {
-            params,
-            return_type,
-        })
+        Some(normalize_sig(env, SamSignature { params, return_type }))
     }
 
     let mut seen_type_vars = HashSet::new();
@@ -680,6 +696,62 @@ mod tests {
             .expect("type variable with functional interface bound should be functional");
         assert_eq!(sig.params, vec![string]);
         assert_eq!(sig.return_type, integer);
+    }
+
+    #[test]
+    fn sam_signature_accepts_type_var_with_equivalent_functional_bounds() {
+        let mut store = TypeStore::with_minimal_jdk();
+        let object = store.well_known().object;
+
+        let string = Type::class(store.well_known().string, vec![]);
+
+        let i_named = store.add_class(ClassDef {
+            name: "com.example.FuncNamed".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "apply".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::Named("java.lang.String".to_string()),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        let i_class = store.add_class(ClassDef {
+            name: "com.example.FuncClass".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "apply".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: string.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        let tv = store.add_type_param(
+            "F",
+            vec![Type::class(i_named, vec![]), Type::class(i_class, vec![])],
+        );
+
+        let sig = sam_signature(&store, &Type::TypeVar(tv))
+            .expect("equivalent functional bounds should still be treated as functional");
+        assert_eq!(sig.params, Vec::<Type>::new());
+        assert_eq!(sig.return_type, string);
     }
 
     #[test]
