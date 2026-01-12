@@ -308,6 +308,56 @@ fn analyze_dotted_expr(
                     break;
                 }
             }
+            "empty" if idx > 0 && arg_count == 0 => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                let kind = if class_expr.ends_with("IntStream") {
+                    Some(StreamValueKind::IntStream)
+                } else if class_expr.ends_with("LongStream") {
+                    Some(StreamValueKind::LongStream)
+                } else if class_expr.ends_with("DoubleStream") {
+                    Some(StreamValueKind::DoubleStream)
+                } else if class_expr.ends_with("Stream") {
+                    Some(StreamValueKind::Stream)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
+                    source_end = Some(idx);
+                    source = Some(StreamSource::StaticFactory {
+                        class_expr,
+                        stream_expr: dotted.prefix_source(idx),
+                        method: name.to_string(),
+                    });
+                    stream_kind = kind;
+                    break;
+                }
+            }
+            "concat" if idx > 0 && arg_count == 2 => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                let kind = if class_expr.ends_with("IntStream") {
+                    Some(StreamValueKind::IntStream)
+                } else if class_expr.ends_with("LongStream") {
+                    Some(StreamValueKind::LongStream)
+                } else if class_expr.ends_with("DoubleStream") {
+                    Some(StreamValueKind::DoubleStream)
+                } else if class_expr.ends_with("Stream") {
+                    Some(StreamValueKind::Stream)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
+                    source_end = Some(idx);
+                    source = Some(StreamSource::StaticFactory {
+                        class_expr,
+                        stream_expr: dotted.prefix_source(idx),
+                        method: name.to_string(),
+                    });
+                    stream_kind = kind;
+                    break;
+                }
+            }
             _ => {}
         }
     }
@@ -1295,6 +1345,32 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_int_stream_empty_chain() {
+        let expr = "IntStream.empty().count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "IntStream");
+                assert_eq!(stream_expr, "IntStream.empty()");
+                assert_eq!(method, "empty");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::IntStream);
+        assert_eq!(chain.intermediates.len(), 0);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
     fn recognizes_double_stream_chain() {
         let expr = "DoubleStream.of(1.0, 2.0).map(x -> x + 1).count()";
         let chain = analyze_stream_expression(expr).unwrap();
@@ -1315,6 +1391,35 @@ mod tests {
         assert_eq!(chain.stream_kind, StreamValueKind::DoubleStream);
         assert_eq!(chain.intermediates.len(), 1);
         assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Map);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
+    fn recognizes_double_stream_concat_chain() {
+        let expr = "DoubleStream.concat(DoubleStream.of(1.0), DoubleStream.of(2.0)).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "DoubleStream");
+                assert_eq!(
+                    stream_expr,
+                    "DoubleStream.concat(DoubleStream.of(1.0), DoubleStream.of(2.0))"
+                );
+                assert_eq!(method, "concat");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::DoubleStream);
+        assert_eq!(chain.intermediates.len(), 0);
         assert_eq!(
             chain.terminal.as_ref().unwrap().kind,
             StreamOperationKind::Count
