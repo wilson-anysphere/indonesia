@@ -36,12 +36,88 @@ Environment:
   NOVA_CARGO_LIMIT_AS     Address-space cap (default: 4G)
   NOVA_CARGO_LOCK_DIR     Lock directory
   NOVA_RUST_TEST_THREADS  RUST_TEST_THREADS for cargo test (default: min(nproc, 32))
+  NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow running unscoped `cargo test` (not recommended)
 
 Notes:
   - This wrapper enforces RAM caps via RLIMIT_AS (through scripts/run_limited.sh).
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
-  - ALWAYS scope test runs: -p <crate>, --test=<name>, --lib, or --bin <name>.
+  - `cargo test` is blocked unless scoped with `-p/--package` or `--manifest-path`.
+    To override (rare): NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 scripts/cargo_agent.sh test ...
 EOF
+}
+
+deny_unscoped_cargo_test() {
+  # Guardrail: block unscoped `cargo test` by default.
+  #
+  # Agent rules prohibit running workspace-wide `cargo test` because it can lead to huge builds and
+  # OOMs under the RLIMIT_AS ceiling. We enforce the simplest safe rule here: require an explicit
+  # package selector (-p/--package) or a manifest path (--manifest-path).
+  #
+  # Anything after `--` is forwarded to the test binary and must NOT be considered for scoping.
+  if [[ "${NOVA_CARGO_ALLOW_UNSCOPED_TEST:-}" == "1" ]]; then
+    return 0
+  fi
+
+  local args=("$@")
+  local idx=0
+  if [[ "${#args[@]}" -lt 1 ]]; then
+    return 0
+  fi
+  if [[ "${args[0]}" == +* ]]; then
+    idx=1
+  fi
+  if [[ "${#args[@]}" -le "${idx}" ]]; then
+    return 0
+  fi
+
+  local subcommand="${args[${idx}]}"
+  if [[ "${subcommand}" != "test" ]]; then
+    return 0
+  fi
+
+  local has_scope_selector=""
+  local arg
+  local i
+  for ((i = idx + 1; i < ${#args[@]}; i++)); do
+    arg="${args[${i}]}"
+    if [[ "${arg}" == "--" ]]; then
+      break
+    fi
+    case "${arg}" in
+      -p|--package|--manifest-path)
+        has_scope_selector=1
+        break
+        ;;
+      -p?*)
+        has_scope_selector=1
+        break
+        ;;
+      --package=*|--manifest-path=*)
+        has_scope_selector=1
+        break
+        ;;
+    esac
+  done
+
+  if [[ -z "${has_scope_selector}" ]]; then
+    cat >&2 <<'EOF'
+error: refusing to run unscoped `cargo test` via scripts/cargo_agent.sh
+
+This repository's agent rules prohibit workspace-wide test runs because they can trigger huge builds
+and OOM under the memory cap.
+
+Re-run with an explicit scope selector:
+  -p <crate> / --package <crate>
+  --manifest-path <path>
+
+Example:
+  scripts/cargo_agent.sh test -p nova-testing --lib
+
+To override (rare):
+  NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 scripts/cargo_agent.sh test [...]
+EOF
+    return 2
+  fi
 }
 
 if [[ $# -lt 1 ]]; then
@@ -53,6 +129,8 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+deny_unscoped_cargo_test "$@"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
