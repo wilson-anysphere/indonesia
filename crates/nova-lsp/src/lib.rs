@@ -462,10 +462,14 @@ pub fn goto_definition(
     if looks_like_mapstruct_file(text) {
         let file_path = db.file_path(file);
         let offset = position_to_offset(text, position);
-        if let (Some(file_path), Some(offset)) = (file_path, offset) {
-            let root = find_project_root(file_path);
-            if let Ok(targets) = nova_framework_mapstruct::goto_definition(&root, file_path, offset)
-            {
+            if let (Some(file_path), Some(offset)) = (file_path, offset) {
+                let root = find_project_root(file_path);
+            if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
+                &root,
+                file_path,
+                text,
+                offset,
+            ) {
                 if let Some(target) = targets.first() {
                     if let Some(uri) = uri_from_file_path(&target.file) {
                         let range = std::fs::read_to_string(&target.file)

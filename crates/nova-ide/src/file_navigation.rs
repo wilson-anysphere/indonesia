@@ -502,9 +502,9 @@ fn mapstruct_fallback_locations(
     if !(text.contains("@Mapper") || text.contains("org.mapstruct")) {
         return Vec::new();
     }
-
+ 
     let root = framework_cache::project_root_for_path(path);
-    let targets = match nova_framework_mapstruct::goto_definition(&root, path, offset) {
+    let targets = match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset) {
         Ok(targets) => targets,
         Err(_) => return Vec::new(),
     };

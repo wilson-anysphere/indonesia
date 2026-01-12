@@ -207,3 +207,78 @@ public class CarMapperImpl implements CarMapper {
     let dto_text = std::fs::read_to_string(&dto_path).unwrap();
     assert_eq!(range_text(&dto_text, location.range), "seatCount");
 }
+
+#[test]
+fn goto_definition_on_mapstruct_mapping_target_uses_in_memory_text() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    let src_dir = root.join("src/main/java/com/example");
+    let generated_dir = root.join("target/generated-sources/annotations/com/example");
+
+    let mapper_path = src_dir.join("CarMapper.java");
+    let mapper_source_on_disk = r#"package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+    @Mapping(source = "numberOfSeats", target = "seatCount")
+    CarDto carToCarDto(Car car);
+}
+"#;
+    write_file(&mapper_path, mapper_source_on_disk);
+
+    write_file(
+        &src_dir.join("Car.java"),
+        r#"package com.example;
+
+public class Car {
+    public int numberOfSeats;
+}
+"#,
+    );
+
+    let dto_path = src_dir.join("CarDto.java");
+    write_file(
+        &dto_path,
+        r#"package com.example;
+
+public class CarDto {
+    public int seatCount;
+    public String make;
+}
+"#,
+    );
+
+    // Create a generated impl so MapStruct navigation is "fully enabled" for this fixture.
+    write_file(
+        &generated_dir.join("CarMapperImpl.java"),
+        r#"package com.example;
+
+public class CarMapperImpl implements CarMapper {
+  @Override
+  public CarDto carToCarDto(Car car) {
+    return new CarDto();
+  }
+}
+"#,
+    );
+
+    // Simulate an unsaved edit: the on-disk file still has `seatCount`, but the
+    // in-memory buffer changed the mapping to `make`.
+    let mapper_source_in_memory = mapper_source_on_disk.replace("seatCount", "make");
+    let offset = mapper_source_in_memory.find("make").unwrap() + 1;
+    let position = offset_to_position(&mapper_source_in_memory, offset);
+
+    let mut db = InMemoryFileStore::new();
+    let file_id = db.file_id_for_path(&mapper_path);
+    db.set_file_text(file_id, mapper_source_in_memory);
+
+    let location = nova_lsp::goto_definition(&db, file_id, position).expect("definition");
+    assert!(location.uri.to_string().ends_with("CarDto.java"));
+
+    let dto_text = std::fs::read_to_string(&dto_path).unwrap();
+    assert_eq!(range_text(&dto_text, location.range), "make");
+}
