@@ -7026,6 +7026,8 @@ fn scan_call_expr_ending_at(
     let mut arg_starts = Vec::new();
     let mut expecting_arg = true;
     let mut paren_depth = 1i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
     for tok in analysis
         .tokens
         .iter()
@@ -7043,7 +7045,21 @@ fn scan_call_expr_ending_at(
                     break;
                 }
             }
-            TokenKind::Symbol(',') if paren_depth == 1 => {
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => {
+                if brace_depth > 0 {
+                    brace_depth -= 1;
+                }
+            }
+            TokenKind::Symbol('[') => bracket_depth += 1,
+            TokenKind::Symbol(']') => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+            }
+            TokenKind::Symbol(',')
+                if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 =>
+            {
                 expecting_arg = true;
             }
             _ => {
@@ -9510,19 +9526,33 @@ fn call_argument_index(text: &str, open_paren: usize, offset: usize) -> usize {
         return 0;
     }
 
-    let mut depth = 0i32;
+    let mut paren_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
     let mut commas = 0usize;
     let mut i = open_paren + 1;
     let end = offset.min(bytes.len());
     while i < end {
         match bytes[i] {
-            b'(' => depth += 1,
+            b'(' => paren_depth += 1,
             b')' => {
-                if depth > 0 {
-                    depth -= 1;
+                if paren_depth > 0 {
+                    paren_depth -= 1;
                 }
             }
-            b',' if depth == 0 => commas += 1,
+            b'{' => brace_depth += 1,
+            b'}' => {
+                if brace_depth > 0 {
+                    brace_depth -= 1;
+                }
+            }
+            b'[' => bracket_depth += 1,
+            b']' => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+            }
+            b',' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => commas += 1,
             _ => {}
         }
         i += 1;
@@ -12727,6 +12757,8 @@ fn active_parameter_for_call(analysis: &Analysis, call: &CallExpr, offset: usize
         .tokens
         .partition_point(|t| t.span.start < call.open_paren);
     let mut paren_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
     let mut commas = 0usize;
 
     for tok in analysis.tokens.iter().skip(start_idx) {
@@ -12736,8 +12768,28 @@ fn active_parameter_for_call(analysis: &Analysis, call: &CallExpr, offset: usize
 
         match tok.kind {
             TokenKind::Symbol('(') => paren_depth += 1,
-            TokenKind::Symbol(')') => paren_depth -= 1,
-            TokenKind::Symbol(',') if paren_depth == 1 => commas += 1,
+            TokenKind::Symbol(')') => {
+                if paren_depth > 0 {
+                    paren_depth -= 1;
+                }
+            }
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => {
+                if brace_depth > 0 {
+                    brace_depth -= 1;
+                }
+            }
+            TokenKind::Symbol('[') => bracket_depth += 1,
+            TokenKind::Symbol(']') => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+            }
+            TokenKind::Symbol(',')
+                if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 =>
+            {
+                commas += 1;
+            }
             _ => {}
         }
     }
@@ -14062,6 +14114,8 @@ fn analyze(text: &str) -> Analysis {
                 let mut expecting_arg = true;
                 let mut j = idx + 2;
                 let mut paren_depth = 1i32;
+                let mut brace_depth = 0i32;
+                let mut bracket_depth = 0i32;
                 let mut close_paren = next.span.end;
                 while j < body_tokens.len() {
                     let tok = body_tokens[j];
@@ -14077,7 +14131,21 @@ fn analyze(text: &str) -> Analysis {
                                 break;
                             }
                         }
-                        TokenKind::Symbol(',') if paren_depth == 1 => {
+                        TokenKind::Symbol('{') => brace_depth += 1,
+                        TokenKind::Symbol('}') => {
+                            if brace_depth > 0 {
+                                brace_depth -= 1;
+                            }
+                        }
+                        TokenKind::Symbol('[') => bracket_depth += 1,
+                        TokenKind::Symbol(']') => {
+                            if bracket_depth > 0 {
+                                bracket_depth -= 1;
+                            }
+                        }
+                        TokenKind::Symbol(',')
+                            if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 =>
+                        {
                             expecting_arg = true;
                         }
                         _ => {
@@ -14438,25 +14506,134 @@ fn skip_type_params(tokens: &[Token], start_idx: usize) -> usize {
 fn parse_params(tokens: &[Token]) -> Vec<ParamDecl> {
     let mut out = Vec::new();
     let mut i = 0usize;
-    while i + 1 < tokens.len() {
-        let ty = &tokens[i];
-        let name = &tokens[i + 1];
-        if ty.kind == TokenKind::Ident && name.kind == TokenKind::Ident {
-            out.push(ParamDecl {
-                ty: ty.text.clone(),
-                name: name.text.clone(),
-                name_span: name.span,
-            });
-            i += 2;
-            while i < tokens.len() && tokens[i].kind != TokenKind::Symbol(',') {
-                i += 1;
-            }
-            if i < tokens.len() && tokens[i].kind == TokenKind::Symbol(',') {
-                i += 1;
-            }
+    while i < tokens.len() {
+        // Skip delimiters between params.
+        if tokens[i].kind == TokenKind::Symbol(',') {
+            i += 1;
             continue;
         }
-        i += 1;
+
+        // Skip annotations / modifiers.
+        loop {
+            let Some(tok) = tokens.get(i) else {
+                break;
+            };
+            match tok.kind {
+                TokenKind::Symbol('@') => {
+                    i = skip_annotation(tokens, i);
+                    continue;
+                }
+                TokenKind::Ident if tok.text == "final" => {
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            break;
+        }
+
+        let Some(ty_tok) = tokens.get(i) else {
+            break;
+        };
+        if ty_tok.kind != TokenKind::Ident {
+            i += 1;
+            continue;
+        }
+
+        // Best-effort param type parsing:
+        // - qualified names: `java.util.List`
+        // - generic types: `List<String>` (we ignore the type args here)
+        // - arrays: `int[] xs` and `int xs[]`
+        // - varargs: `String... args`
+        let mut ty = ty_tok.text.clone();
+        let mut j = i + 1;
+
+        // Qualified name.
+        while j + 1 < tokens.len()
+            && tokens[j].kind == TokenKind::Symbol('.')
+            && tokens[j + 1].kind == TokenKind::Ident
+        {
+            ty.push('.');
+            ty.push_str(&tokens[j + 1].text);
+            j += 2;
+        }
+
+        // Skip generics to find the param name token.
+        if tokens
+            .get(j)
+            .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+        {
+            let mut depth = 0i32;
+            while j < tokens.len() {
+                match tokens[j].kind {
+                    TokenKind::Symbol('<') => depth += 1,
+                    TokenKind::Symbol('>') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            j += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+        }
+
+        // Array suffix: `Type[] name`.
+        while j + 1 < tokens.len()
+            && tokens[j].kind == TokenKind::Symbol('[')
+            && tokens[j + 1].kind == TokenKind::Symbol(']')
+        {
+            ty.push_str("[]");
+            j += 2;
+        }
+
+        // Varargs: `Type... name`.
+        if j + 2 < tokens.len()
+            && tokens[j].kind == TokenKind::Symbol('.')
+            && tokens[j + 1].kind == TokenKind::Symbol('.')
+            && tokens[j + 2].kind == TokenKind::Symbol('.')
+        {
+            ty.push_str("...");
+            j += 3;
+        }
+
+        // Name.
+        let Some(name_tok) = tokens.get(j) else {
+            break;
+        };
+        if name_tok.kind != TokenKind::Ident {
+            i += 1;
+            continue;
+        }
+        let name = name_tok.text.clone();
+        let name_span = name_tok.span;
+        j += 1;
+
+        // Array suffix after the name: `Type name[]`.
+        while j + 1 < tokens.len()
+            && tokens[j].kind == TokenKind::Symbol('[')
+            && tokens[j + 1].kind == TokenKind::Symbol(']')
+        {
+            ty.push_str("[]");
+            j += 2;
+        }
+
+        out.push(ParamDecl {
+            ty,
+            name,
+            name_span,
+        });
+
+        // Skip to next param.
+        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(',') {
+            j += 1;
+        }
+        if j < tokens.len() && tokens[j].kind == TokenKind::Symbol(',') {
+            j += 1;
+        }
+        i = j;
     }
     out
 }
@@ -14908,6 +15085,32 @@ class Foo {
         // Still inside the paren token (inclusive end).
         let t = token_at_offset(&tokens, 4).expect("token at offset");
         assert_eq!(t.text, "(");
+    }
+
+    #[test]
+    fn expected_argument_type_handles_commas_inside_array_initializer() {
+        let java = r#"
+class A {
+  void takeIntsString(int[] xs, String y) {}
+  void m() {
+    takeIntsString(new int[]{1, 2}, );
+  }
+}
+"#;
+
+        let offset = java.find(", )").expect("expected `, )` in fixture") + ", ".len();
+
+        let analysis = analyze(java);
+        let mut types = TypeStore::with_minimal_jdk();
+        let expected = expected_argument_type_for_completion(&mut types, &analysis, java, offset);
+
+        let expected = expected.unwrap_or_else(|| {
+            panic!(
+                "expected to infer argument type; got None. calls={:#?}",
+                analysis.calls
+            )
+        });
+        assert_eq!(nova_types::format_type(&types, &expected), "String");
     }
 
     #[test]

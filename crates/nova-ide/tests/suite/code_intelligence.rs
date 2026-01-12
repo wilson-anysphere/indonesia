@@ -823,6 +823,33 @@ class A {
 }
 
 #[test]
+fn completion_in_call_argument_ignores_commas_inside_array_initializer() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void takeIntsString(int[] xs, String y) {}
+  void m() {
+    String s = "";
+    int n = 0;
+    takeIntsString(new int[]{1, 2}, <|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"s"),
+        "expected completion list to contain String variable `s` for second parameter; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"n"),
+        "expected completion list to exclude int variable `n` for second parameter; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_filters_incompatible_items_in_string_initializer() {
     let (db, file, pos) = fixture(
         r#"
