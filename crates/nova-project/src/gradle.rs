@@ -39,6 +39,13 @@ fn root_project_has_sources(root: &Path) -> bool {
     })
 }
 
+fn is_gradle_marker_root(root: &Path) -> bool {
+    root.join("settings.gradle").is_file()
+        || root.join("settings.gradle.kts").is_file()
+        || root.join("build.gradle").is_file()
+        || root.join("build.gradle.kts").is_file()
+}
+
 /// Stable synthetic project path for Gradle's special `buildSrc/` build.
 ///
 /// `buildSrc` is not a normal Gradle subproject and does not appear in `settings.gradle`,
@@ -252,7 +259,7 @@ pub(crate) fn load_gradle_project(
         .filter(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
         .cloned()
         .collect();
-    let included_builds = append_included_build_module_refs(&mut module_refs, include_builds);
+    let included_builds = append_included_build_module_refs(&mut module_refs, root, include_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &buildsrc_builds);
 
@@ -605,7 +612,7 @@ pub(crate) fn load_gradle_workspace_model(
         .filter(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
         .cloned()
         .collect();
-    let included_builds = append_included_build_module_refs(&mut module_refs, include_builds);
+    let included_builds = append_included_build_module_refs(&mut module_refs, root, include_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &buildsrc_builds);
 
@@ -1195,6 +1202,7 @@ fn composite_build_root_project_path(project_path: &str) -> Option<&str> {
 
 fn append_included_build_module_refs(
     module_refs: &mut Vec<GradleModuleRef>,
+    workspace_root: &Path,
     dirs: Vec<String>,
 ) -> Vec<GradleModuleRef> {
     if dirs.is_empty() {
@@ -1209,6 +1217,11 @@ fn append_included_build_module_refs(
     let mut added = Vec::new();
     for dir_rel in dirs {
         if existing_dirs.contains(&dir_rel) {
+            continue;
+        }
+
+        let build_root = workspace_root.join(&dir_rel);
+        if !build_root.is_dir() || !is_gradle_marker_root(&build_root) {
             continue;
         }
 
@@ -3757,13 +3770,15 @@ fn sort_dedup_workspace_modules(modules: &mut Vec<WorkspaceModuleConfig>) {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::fs;
 
     use super::{
-        parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
-        parse_gradle_settings_included_builds, parse_gradle_settings_projects,
-        parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
-        GradleProperties,
+        append_included_build_module_refs, parse_gradle_dependencies_from_text,
+        parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
+        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
+        sort_dedup_dependencies, strip_gradle_comments, GradleModuleRef, GradleProperties,
     };
+    use tempfile::tempdir;
 
     #[test]
     fn parse_gradle_settings_projects_ignores_include_keywords_inside_strings() {
@@ -3849,12 +3864,46 @@ includeBuild("build-logic")
     #[test]
     fn parse_gradle_settings_included_builds_supports_multiline_parens() {
         let settings = r#"
-includeBuild(
-    "build-logic"
-)
-"#;
+ includeBuild(
+     "build-logic"
+ )
+ "#;
         let builds = parse_gradle_settings_included_builds(settings);
         assert_eq!(builds, vec!["build-logic".to_string()]);
+    }
+
+    #[test]
+    fn append_included_build_module_refs_ignores_missing_or_non_gradle_roots() {
+        let dir = tempdir().expect("tempdir");
+        let workspace_root = dir.path();
+        fs::create_dir_all(workspace_root.join("build-logic")).expect("create build-logic dir");
+        fs::write(
+            workspace_root.join("build-logic/settings.gradle"),
+            "rootProject.name = 'build-logic'",
+        )
+        .expect("write build-logic settings");
+
+        // Directory exists, but isn't a Gradle build (no `settings.gradle(.kts)` / `build.gradle(.kts)`).
+        fs::create_dir_all(workspace_root.join("not-a-build")).expect("create not-a-build dir");
+
+        let mut module_refs = vec![GradleModuleRef::root()];
+        let added = append_included_build_module_refs(
+            &mut module_refs,
+            workspace_root,
+            vec![
+                "build-logic".to_string(),
+                "not-a-build".to_string(),
+                "missing".to_string(),
+            ],
+        );
+
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].project_path, ":__includedBuild_build-logic");
+        assert_eq!(added[0].dir_rel, "build-logic");
+
+        assert!(module_refs.iter().any(|m| m.dir_rel == "build-logic"));
+        assert!(!module_refs.iter().any(|m| m.dir_rel == "not-a-build"));
+        assert!(!module_refs.iter().any(|m| m.dir_rel == "missing"));
     }
 
     #[test]

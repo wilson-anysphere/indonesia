@@ -121,6 +121,7 @@ fn gradle_included_build_roots_are_canonicalized_when_settings_uses_parent_dir_p
     write(&workspace_root.join("build.gradle"), "");
 
     // Included build lives outside the workspace root (sibling directory).
+    write(&included_build_root.join("build.gradle"), "");
     write(
         &included_build_root.join("src/main/java/com/example/buildlogic/BuildLogic.java"),
         "package com.example.buildlogic; class BuildLogic {}",
