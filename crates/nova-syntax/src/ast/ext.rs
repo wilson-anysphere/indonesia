@@ -40,6 +40,32 @@ impl super::Name {
     }
 }
 
+impl super::NamedType {
+    /// Returns the identifier-like tokens that form this type's name, in source order.
+    ///
+    /// This only includes the tokens that make up the `NamedType` itself (e.g. `java`, `util`,
+    /// `List`), and does **not** descend into type arguments (`List<String>` yields `List`).
+    pub fn name_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        support::ident_tokens(self.syntax())
+    }
+
+    /// Returns `true` if this named type is qualified (contains `.` segments).
+    pub fn is_qualified(&self) -> bool {
+        support::token(self.syntax(), SyntaxKind::Dot).is_some()
+    }
+
+    /// Returns the single name token for unqualified named types.
+    ///
+    /// If the type is qualified (e.g. `java.util.List`), this returns `None`.
+    pub fn simple_name_token(&self) -> Option<SyntaxToken> {
+        if self.is_qualified() {
+            None
+        } else {
+            self.name_tokens().next()
+        }
+    }
+}
+
 impl super::MethodDeclaration {
     pub fn parameters(&self) -> impl Iterator<Item = super::Parameter> + '_ {
         // `flat_map(|list| list.parameters())` does not compile because the iterator borrows

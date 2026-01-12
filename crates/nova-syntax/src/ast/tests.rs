@@ -1,7 +1,7 @@
 use crate::ast::{
     AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
     CompilationUnit, Expression, ExpressionFragment, FieldAccessExpression, FieldDeclaration,
-    ModuleDirectiveKind, NewExpression, RecordDeclaration, Statement, StatementFragment,
+    ModuleDirectiveKind, NamedType, NewExpression, RecordDeclaration, Statement, StatementFragment,
     StringTemplateExpression, SuperExpression, SwitchRuleBody, ThisExpression, TypeDeclaration,
 };
 use crate::SyntaxKind;
@@ -1264,6 +1264,51 @@ fn type_use_annotations_are_attached_to_types() {
         .map(|anno| anno.name().unwrap().text())
         .collect();
     assert_eq!(cast_annotations, vec!["C".to_string()]);
+}
+
+#[test]
+fn named_type_simple_name_token_helpers() {
+    fn parse_named_type(ty_src: &str) -> NamedType {
+        let fragment_parse = parse_java_class_member_fragment(&format!("{ty_src} x;"), 0);
+        assert!(
+            fragment_parse.parse.errors.is_empty(),
+            "parse errors: {:?}",
+            fragment_parse.parse.errors
+        );
+
+        let fragment =
+            ClassMemberFragment::cast(fragment_parse.parse.syntax()).expect("ClassMemberFragment");
+        let member = fragment.member().expect("class member");
+        let field = match member {
+            ClassMember::FieldDeclaration(field) => field,
+            other => panic!("expected FieldDeclaration, got {other:?}"),
+        };
+
+        field.ty().unwrap().named().unwrap()
+    }
+
+    let t = parse_named_type("T");
+    assert_eq!(t.simple_name_token().unwrap().text(), "T");
+    assert!(!t.is_qualified());
+
+    let java_list = parse_named_type("java.util.List");
+    assert!(java_list.simple_name_token().is_none());
+    assert!(java_list.is_qualified());
+
+    let list_string = parse_named_type("List<String>");
+    assert_eq!(list_string.simple_name_token().unwrap().text(), "List");
+    assert!(!list_string.is_qualified());
+    assert_eq!(
+        list_string
+            .name_tokens()
+            .map(|t| t.text().to_string())
+            .collect::<Vec<_>>(),
+        vec!["List"]
+    );
+
+    let outer_inner = parse_named_type("Outer.Inner<T>");
+    assert!(outer_inner.simple_name_token().is_none());
+    assert!(outer_inner.is_qualified());
 }
 
 #[test]
