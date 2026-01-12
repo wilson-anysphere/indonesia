@@ -151,11 +151,9 @@ export function registerNovaBuildFileWatchers(
 
     // Best-effort refresh hooks. These may not exist in older servers / builds.
     try {
-      await request('nova/build/diagnostics', { projectRoot, target: null }, { allowMethodFallback: true });
+      await vscode.commands.executeCommand('nova.build.refreshDiagnostics', { projectRoot, silent: true });
     } catch (err) {
-      if (!opts.isMethodNotFoundError(err)) {
-        opts.output.appendLine(`Nova: failed to refresh build diagnostics for ${projectRoot}: ${opts.formatError(err)}`);
-      }
+      opts.output.appendLine(`Nova: failed to refresh build diagnostics for ${projectRoot}: ${opts.formatError(err)}`);
     }
 
     try {

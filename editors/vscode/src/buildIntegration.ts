@@ -83,9 +83,10 @@ export function registerNovaBuildIntegration(
     formatError: FormatError;
     isMethodNotFoundError: IsMethodNotFoundError;
     projectModelCache?: ProjectModelCache;
+    output: vscode.OutputChannel;
   },
 ): void {
-  const { request, formatError, isMethodNotFoundError, projectModelCache } = deps;
+  const { request, formatError, isMethodNotFoundError, projectModelCache, output } = deps;
 
   const buildDiagnostics = vscode.languages.createDiagnosticCollection('Nova Build');
   context.subscriptions.push(buildDiagnostics);
@@ -336,7 +337,7 @@ export function registerNovaBuildIntegration(
 
   const refreshBuildDiagnostics = async (
     folder: vscode.WorkspaceFolder,
-    opts?: { target?: string },
+    opts?: { target?: string; silent?: boolean },
   ): Promise<NovaBuildDiagnosticsResult | undefined> => {
     const state = getWorkspaceState(folder);
     const projectRoot = folder.uri.fsPath;
@@ -381,15 +382,55 @@ export function registerNovaBuildIntegration(
       return response;
     } catch (err) {
       if (isMethodNotFoundError(err)) {
-        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/build/diagnostics'));
+        const msg = formatUnsupportedNovaMethodMessage('nova/build/diagnostics');
+        if (opts?.silent) {
+          output.appendLine(msg);
+        } else {
+          void vscode.window.showErrorMessage(msg);
+        }
         return undefined;
       }
 
       const message = formatError(err);
-      void vscode.window.showErrorMessage(`Nova: failed to fetch build diagnostics: ${message}`);
+      if (opts?.silent) {
+        output.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
+      } else {
+        void vscode.window.showErrorMessage(`Nova: failed to fetch build diagnostics: ${message}`);
+      }
       return undefined;
     }
   };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.build.refreshDiagnostics', async (args?: unknown) => {
+      const raw = args as { projectRoot?: unknown; silent?: unknown } | undefined;
+      const projectRoot = typeof raw?.projectRoot === 'string' ? raw.projectRoot : undefined;
+      const silent = typeof raw?.silent === 'boolean' ? raw.silent : true;
+
+      if (!projectRoot) {
+        if (!silent) {
+          void vscode.window.showErrorMessage('Nova: Missing projectRoot for build diagnostics refresh.');
+        } else {
+          output.appendLine('Nova: missing projectRoot for build diagnostics refresh.');
+        }
+        return;
+      }
+
+      const folder =
+        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(projectRoot)) ??
+        (vscode.workspace.workspaceFolders ?? []).find((f) => f.uri.fsPath === projectRoot);
+      if (!folder) {
+        if (!silent) {
+          void vscode.window.showErrorMessage(`Nova: Workspace folder not found for ${projectRoot}`);
+        } else {
+          output.appendLine(`Nova: workspace folder not found for build diagnostics refresh (${projectRoot})`);
+        }
+        return;
+      }
+
+      await refreshBuildDiagnostics(folder, { silent });
+    }),
+  );
 
   const pickWorkspaceFolder = async (placeHolder: string): Promise<vscode.WorkspaceFolder | undefined> => {
     const folders = getWorkspaceFolders();

@@ -2149,6 +2149,7 @@ export async function activate(context: vscode.ExtensionContext) {
     formatError,
     isMethodNotFoundError: isNovaMethodNotFoundError,
     projectModelCache,
+    output: serverOutput,
   });
 
   let restartPromptInFlight: Promise<void> | undefined;
