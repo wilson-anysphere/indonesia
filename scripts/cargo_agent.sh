@@ -300,7 +300,15 @@ run_cargo() {
   fi
 
   if [[ -n "${jobs}" ]]; then
-    cargo_cmd+=(-j "${jobs}")
+    # `-j/--jobs` is only valid for build-like subcommands. In particular, `cargo metadata`
+    # errors out with "unexpected argument '-j'".
+    #
+    # Some higher-level scripts (e.g. `scripts/check-repo-invariants.sh`) run `cargo metadata`
+    # via this wrapper; allow callers to set `NOVA_CARGO_JOBS` globally without breaking those
+    # scripts by skipping `-j` for `metadata`.
+    if [[ "${subcommand}" != "metadata" ]]; then
+      cargo_cmd+=(-j "${jobs}")
+    fi
   fi
 
   cargo_cmd+=("$@")
