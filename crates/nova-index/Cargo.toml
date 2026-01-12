@@ -26,3 +26,7 @@ criterion = "0.5"
 [[bench]]
 name = "mmap_storage"
 harness = false
+
+[[bench]]
+name = "symbol_search"
+harness = false
