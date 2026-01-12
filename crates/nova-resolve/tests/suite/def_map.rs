@@ -17,13 +17,14 @@ class Outer {
     class Inner {
         class Deep {}
     }
-}
+    }
 "#;
 
     let file = FileId::from_raw(0);
-    let parse = nova_syntax::java::parse(source);
     let rowan_parse = nova_syntax::parse_java(source);
-    let ast_id_map = AstIdMap::new(&rowan_parse.syntax());
+    let syntax = rowan_parse.syntax();
+    let parse = nova_syntax::java::parse_with_syntax(&syntax, source.len());
+    let ast_id_map = AstIdMap::new(&syntax);
     let tree = lower_item_tree(file, parse.compilation_unit(), &rowan_parse, &ast_id_map);
 
     let def_map = DefMap::from_item_tree(file, &tree);

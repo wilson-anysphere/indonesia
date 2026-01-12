@@ -54,8 +54,9 @@ impl SourceTypeProvider {
             id
         });
         let parse_java = nova_syntax::parse_java(text);
-        let ast_id_map = AstIdMap::new(&parse_java.syntax());
-        let parse = nova_syntax::java::parse(text);
+        let syntax = parse_java.syntax();
+        let ast_id_map = AstIdMap::new(&syntax);
+        let parse = nova_syntax::java::parse_with_syntax(&syntax, text.len());
         let tree = lower_item_tree(file_id, parse.compilation_unit(), &parse_java, &ast_id_map);
         let ctx = ResolveCtx::new(
             tree.package.as_ref().map(|p| p.name.as_str()),

@@ -23,8 +23,9 @@ pub trait HirDatabase {
     fn hir_item_tree(&self, file: FileId) -> Arc<ItemTree> {
         let text = self.file_text(file);
         let parse_java = nova_syntax::parse_java(&text);
-        let ast_id_map = AstIdMap::new(&parse_java.syntax());
-        let parse = nova_syntax::java::parse(&text);
+        let syntax = parse_java.syntax();
+        let ast_id_map = AstIdMap::new(&syntax);
+        let parse = nova_syntax::java::parse_with_syntax(&syntax, text.len());
         Arc::new(lower_item_tree(
             file,
             parse.compilation_unit(),

@@ -513,8 +513,9 @@ mod tests {
     fn lower_hir(text: &str) -> (nova_syntax::JavaParseResult, HirItemTree) {
         let file = FileId::from_raw(0);
         let parse_java = nova_syntax::parse_java(text);
-        let parse_light = nova_syntax::java::parse(text);
-        let ast_id_map = AstIdMap::new(&parse_java.syntax());
+        let syntax = parse_java.syntax();
+        let parse_light = nova_syntax::java::parse_with_syntax(&syntax, text.len());
+        let ast_id_map = AstIdMap::new(&syntax);
         let mut cancelled = || {};
         let hir = lower_item_tree_with(
             file,
