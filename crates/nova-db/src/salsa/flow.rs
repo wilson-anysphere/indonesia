@@ -16,6 +16,8 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
+use super::TrackedSalsaBodyMemo;
+use nova_resolve::ids::DefWithBodyId;
 
 #[ra_salsa::query_group(NovaFlowStorage)]
 pub trait NovaFlow: NovaHir + HasQueryStats {
@@ -46,10 +48,13 @@ fn flow_body(db: &dyn NovaFlow, method: MethodId) -> Arc<FlowBody> {
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Method(method);
+
     let tree = db.hir_item_tree(method.file);
     let method_data = tree.method(method);
     let Some(body_id) = method_data.body else {
         let result = Arc::new(FlowBody::empty(method_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body", start.elapsed());
         return result;
     };
@@ -57,13 +62,16 @@ fn flow_body(db: &dyn NovaFlow, method: MethodId) -> Arc<FlowBody> {
     let ast_id_map = db.hir_ast_id_map(method.file);
     let Some(ptr) = ast_id_map.ptr(body_id) else {
         let result = Arc::new(FlowBody::empty(method_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body", start.elapsed());
         return result;
     };
+    let approx_bytes = (ptr.range.end.saturating_sub(ptr.range.start) as u64).saturating_mul(2);
 
     let parse = db.parse_java(method.file);
     let Some(block) = find_block(&parse, ptr) else {
         let result = Arc::new(FlowBody::empty(method_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body", start.elapsed());
         return result;
     };
@@ -81,6 +89,7 @@ fn flow_body(db: &dyn NovaFlow, method: MethodId) -> Arc<FlowBody> {
 
     let lowered = lower_flow_body_with(&block, params, &mut check_cancelled);
     let result = Arc::new(lowered);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, approx_bytes);
     db.record_query_stat("flow_body", start.elapsed());
     result
 }
@@ -93,6 +102,7 @@ fn cfg(db: &dyn NovaFlow, method: MethodId) -> Arc<ControlFlowGraph> {
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Method(method);
     let body = db.flow_body(method);
 
     let mut steps: u32 = 0;
@@ -103,6 +113,8 @@ fn cfg(db: &dyn NovaFlow, method: MethodId) -> Arc<ControlFlowGraph> {
 
     let cfg = nova_flow::build_cfg_with(body.as_ref(), &mut check_cancelled);
     let result = Arc::new(cfg);
+    let approx_bytes = (result.blocks.len() as u64).saturating_mul(256);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::Cfg, approx_bytes);
     db.record_query_stat("cfg", start.elapsed());
     result
 }
@@ -138,10 +150,13 @@ fn flow_body_constructor(db: &dyn NovaFlow, ctor: ConstructorId) -> Arc<FlowBody
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Constructor(ctor);
+
     let tree = db.hir_item_tree(ctor.file);
     let ctor_data = tree.constructor(ctor);
     let Some(body_id) = ctor_data.body else {
         let result = Arc::new(FlowBody::empty(ctor_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body_constructor", start.elapsed());
         return result;
     };
@@ -149,13 +164,16 @@ fn flow_body_constructor(db: &dyn NovaFlow, ctor: ConstructorId) -> Arc<FlowBody
     let ast_id_map = db.hir_ast_id_map(ctor.file);
     let Some(ptr) = ast_id_map.ptr(body_id) else {
         let result = Arc::new(FlowBody::empty(ctor_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body_constructor", start.elapsed());
         return result;
     };
+    let approx_bytes = (ptr.range.end.saturating_sub(ptr.range.start) as u64).saturating_mul(2);
 
     let parse = db.parse_java(ctor.file);
     let Some(block) = find_block(&parse, ptr) else {
         let result = Arc::new(FlowBody::empty(ctor_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body_constructor", start.elapsed());
         return result;
     };
@@ -173,6 +191,7 @@ fn flow_body_constructor(db: &dyn NovaFlow, ctor: ConstructorId) -> Arc<FlowBody
 
     let lowered = lower_flow_body_with(&block, params, &mut check_cancelled);
     let result = Arc::new(lowered);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, approx_bytes);
     db.record_query_stat("flow_body_constructor", start.elapsed());
     result
 }
@@ -209,10 +228,13 @@ fn flow_body_initializer(db: &dyn NovaFlow, init: InitializerId) -> Arc<FlowBody
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Initializer(init);
+
     let tree = db.hir_item_tree(init.file);
     let init_data = tree.initializer(init);
     let Some(body_id) = init_data.body else {
         let result = Arc::new(FlowBody::empty(init_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body_initializer", start.elapsed());
         return result;
     };
@@ -220,13 +242,16 @@ fn flow_body_initializer(db: &dyn NovaFlow, init: InitializerId) -> Arc<FlowBody
     let ast_id_map = db.hir_ast_id_map(init.file);
     let Some(ptr) = ast_id_map.ptr(body_id) else {
         let result = Arc::new(FlowBody::empty(init_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body_initializer", start.elapsed());
         return result;
     };
+    let approx_bytes = (ptr.range.end.saturating_sub(ptr.range.start) as u64).saturating_mul(2);
 
     let parse = db.parse_java(init.file);
     let Some(block) = find_block(&parse, ptr) else {
         let result = Arc::new(FlowBody::empty(init_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, 0);
         db.record_query_stat("flow_body_initializer", start.elapsed());
         return result;
     };
@@ -239,6 +264,7 @@ fn flow_body_initializer(db: &dyn NovaFlow, init: InitializerId) -> Arc<FlowBody
 
     let lowered = lower_flow_body_with(&block, std::iter::empty(), &mut check_cancelled);
     let result = Arc::new(lowered);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::FlowBody, approx_bytes);
     db.record_query_stat("flow_body_initializer", start.elapsed());
     result
 }

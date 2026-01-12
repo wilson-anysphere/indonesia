@@ -14,7 +14,8 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::stats::HasQueryStats;
 use super::syntax::NovaSyntax;
-use super::TrackedSalsaMemo;
+use super::{TrackedSalsaBodyMemo, TrackedSalsaMemo};
+use nova_resolve::ids::DefWithBodyId;
 
 #[ra_salsa::query_group(NovaHirStorage)]
 pub trait NovaHir: NovaSyntax + HasQueryStats {
@@ -128,10 +129,13 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Method(method);
+
     let tree = db.hir_item_tree(method.file);
     let method_data = tree.method(method);
     let Some(body) = method_data.body else {
         let result = Arc::new(HirBody::empty(method_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_body", start.elapsed());
         return result;
     };
@@ -139,6 +143,7 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
     let ast_id_map = db.hir_ast_id_map(method.file);
     let Some(body_range) = ast_id_map.span(body) else {
         let result = Arc::new(HirBody::empty(method_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_body", start.elapsed());
         return result;
     };
@@ -151,6 +156,7 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
 
     let Some(block_text) = text.get(body_range.start..body_range.end) else {
         let result = Arc::new(HirBody::empty(method_data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_body", start.elapsed());
         return result;
     };
@@ -164,6 +170,11 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
     let body = lower_body_with(&block, &mut check_cancelled);
 
     let result = Arc::new(body);
+    // NOTE: Best-effort heuristic for query-cache accounting. Body lowering can allocate
+    // significantly more than the raw text (HIR nodes, spans, etc), so apply a small
+    // multiplier.
+    let approx_bytes = (block_text.len() as u64).saturating_mul(2);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, approx_bytes);
     db.record_query_stat("hir_body", start.elapsed());
     result
 }
@@ -177,16 +188,20 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Constructor(constructor);
+
     let tree = db.hir_item_tree(constructor.file);
     let data = tree.constructor(constructor);
     let Some(body_id) = data.body else {
         let result = Arc::new(HirBody::empty(data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_constructor_body", start.elapsed());
         return result;
     };
     let ast_id_map = db.hir_ast_id_map(constructor.file);
     let Some(body_range) = ast_id_map.span(body_id) else {
         let result = Arc::new(HirBody::empty(data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_constructor_body", start.elapsed());
         return result;
     };
@@ -199,6 +214,7 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
 
     let Some(block_text) = text.get(body_range.start..body_range.end) else {
         let result = Arc::new(HirBody::empty(data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_constructor_body", start.elapsed());
         return result;
     };
@@ -212,6 +228,8 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
     let body = lower_body_with(&block, &mut check_cancelled);
 
     let result = Arc::new(body);
+    let approx_bytes = (block_text.len() as u64).saturating_mul(2);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, approx_bytes);
     db.record_query_stat("hir_constructor_body", start.elapsed());
     result
 }
@@ -225,16 +243,20 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
 
     cancel::check_cancelled(db);
 
+    let owner = DefWithBodyId::Initializer(initializer);
+
     let tree = db.hir_item_tree(initializer.file);
     let data = tree.initializer(initializer);
     let Some(body_id) = data.body else {
         let result = Arc::new(HirBody::empty(data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_initializer_body", start.elapsed());
         return result;
     };
     let ast_id_map = db.hir_ast_id_map(initializer.file);
     let Some(body_range) = ast_id_map.span(body_id) else {
         let result = Arc::new(HirBody::empty(data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_initializer_body", start.elapsed());
         return result;
     };
@@ -247,6 +269,7 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
 
     let Some(block_text) = text.get(body_range.start..body_range.end) else {
         let result = Arc::new(HirBody::empty(data.range));
+        db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, 0);
         db.record_query_stat("hir_initializer_body", start.elapsed());
         return result;
     };
@@ -260,6 +283,8 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
     let body = lower_body_with(&block, &mut check_cancelled);
 
     let result = Arc::new(body);
+    let approx_bytes = (block_text.len() as u64).saturating_mul(2);
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::HirBody, approx_bytes);
     db.record_query_stat("hir_initializer_body", start.elapsed());
     result
 }

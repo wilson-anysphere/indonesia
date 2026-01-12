@@ -132,6 +132,39 @@ impl ExprScopes {
         }
         None
     }
+
+    /// Best-effort estimate of heap memory usage of this scope map in bytes.
+    ///
+    /// This is intended for cheap, deterministic memory accounting (e.g. Nova's
+    /// `nova-memory` budgets). The heuristic is not exact; it intentionally
+    /// prioritizes stability over precision.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add((self.scopes.capacity() * size_of::<ScopeData>()) as u64);
+        for scope in &self.scopes {
+            bytes = bytes.saturating_add(
+                (scope.entries.capacity() * size_of::<(Name, ResolvedValue)>()) as u64,
+            );
+            bytes = bytes.saturating_add(scope.entries.capacity() as u64); // HashMap ctrl bytes (best-effort)
+            for (name, _) in &scope.entries {
+                bytes = bytes.saturating_add(name.as_str().len() as u64);
+            }
+        }
+
+        bytes = bytes
+            .saturating_add((self.expr_scopes.capacity() * size_of::<(ExprId, ScopeId)>()) as u64);
+        bytes = bytes.saturating_add(self.expr_scopes.capacity() as u64); // ctrl bytes
+
+        bytes = bytes
+            .saturating_add((self.stmt_scopes.capacity() * size_of::<(StmtId, ScopeId)>()) as u64);
+        bytes = bytes.saturating_add(self.stmt_scopes.capacity() as u64); // ctrl bytes
+
+        bytes
+    }
 }
 
 struct Builder {

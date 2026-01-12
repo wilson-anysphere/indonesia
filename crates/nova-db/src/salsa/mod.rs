@@ -80,6 +80,7 @@ use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
+use nova_resolve::ids::DefWithBodyId;
 use nova_syntax::{SyntaxTreeStore, TextEdit};
 use nova_vfs::OpenDocuments;
 
@@ -295,6 +296,23 @@ pub enum TrackedSalsaProjectMemo {
     ProjectIndexes,
     /// Workspace-wide type namespace for a project produced by [`NovaResolve::workspace_def_map`].
     WorkspaceDefMap,
+    /// Project-scoped base `TypeStore` produced by [`NovaTypeck::project_base_type_store`].
+    ProjectBaseTypeStore,
+}
+
+/// Body-keyed memoized query results tracked for memory accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrackedSalsaBodyMemo {
+    /// HIR body lowered for a single method/constructor/initializer.
+    HirBody,
+    /// Flow-oriented body lowered for control-flow analysis.
+    FlowBody,
+    /// Control-flow graph produced by [`NovaFlow::cfg`].
+    Cfg,
+    /// Lexical scopes for a single body produced by [`NovaTypeck::expr_scopes`].
+    ExprScopes,
+    /// Type-checking results for a single body produced by [`NovaTypeck::typeck_body`].
+    TypeckBody,
 }
 
 /// Database functionality needed by query implementations to record memo sizes.
@@ -303,6 +321,14 @@ pub enum TrackedSalsaProjectMemo {
 /// panic if accounting fails.
 pub trait HasSalsaMemoStats {
     fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64);
+
+    fn record_salsa_body_memo_bytes(
+        &self,
+        _owner: DefWithBodyId,
+        _memo: TrackedSalsaBodyMemo,
+        _bytes: u64,
+    ) {
+    }
 
     fn record_salsa_project_memo_bytes(
         &self,
@@ -336,6 +362,7 @@ struct SalsaInputFootprint {
 struct SalsaMemoFootprintInner {
     by_file: HashMap<FileId, FileMemoBytes>,
     by_project: HashMap<ProjectId, ProjectMemoBytes>,
+    by_body: HashMap<DefWithBodyId, BodyMemoBytes>,
     total_bytes: u64,
 }
 
@@ -397,11 +424,30 @@ struct ProjectMemoBytes {
     project_index_shards: u64,
     project_indexes: u64,
     workspace_def_map: u64,
+    project_base_type_store: u64,
 }
 
 impl ProjectMemoBytes {
     fn total(self) -> u64 {
-        self.project_index_shards + self.project_indexes + self.workspace_def_map
+        self.project_index_shards
+            + self.project_indexes
+            + self.workspace_def_map
+            + self.project_base_type_store
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BodyMemoBytes {
+    hir_body: u64,
+    flow_body: u64,
+    cfg: u64,
+    expr_scopes: u64,
+    typeck_body: u64,
+}
+
+impl BodyMemoBytes {
+    fn total(self) -> u64 {
+        self.hir_body + self.flow_body + self.cfg + self.expr_scopes + self.typeck_body
     }
 }
 
@@ -449,6 +495,7 @@ impl SalsaMemoFootprint {
         let mut inner = self.lock_inner();
         inner.by_file.clear();
         inner.by_project.clear();
+        inner.by_body.clear();
         inner.total_bytes = 0;
         drop(inner);
         self.refresh_tracker();
@@ -490,6 +537,29 @@ impl SalsaMemoFootprint {
             TrackedSalsaProjectMemo::ProjectIndexShards => entry.project_index_shards = bytes,
             TrackedSalsaProjectMemo::ProjectIndexes => entry.project_indexes = bytes,
             TrackedSalsaProjectMemo::WorkspaceDefMap => entry.workspace_def_map = bytes,
+            TrackedSalsaProjectMemo::ProjectBaseTypeStore => entry.project_base_type_store = bytes,
+        }
+
+        let next_total = entry.total();
+        inner.total_bytes = inner
+            .total_bytes
+            .saturating_sub(prev_total)
+            .saturating_add(next_total);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record_body(&self, owner: DefWithBodyId, memo: TrackedSalsaBodyMemo, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let entry = inner.by_body.entry(owner).or_default();
+        let prev_total = entry.total();
+
+        match memo {
+            TrackedSalsaBodyMemo::HirBody => entry.hir_body = bytes,
+            TrackedSalsaBodyMemo::FlowBody => entry.flow_body = bytes,
+            TrackedSalsaBodyMemo::Cfg => entry.cfg = bytes,
+            TrackedSalsaBodyMemo::ExprScopes => entry.expr_scopes = bytes,
+            TrackedSalsaBodyMemo::TypeckBody => entry.typeck_body = bytes,
         }
 
         let next_total = entry.total();
@@ -1564,6 +1634,15 @@ impl HasQueryStats for RootDatabase {
 impl HasSalsaMemoStats for RootDatabase {
     fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64) {
         self.memo_footprint.record(file, memo, bytes);
+    }
+
+    fn record_salsa_body_memo_bytes(
+        &self,
+        owner: DefWithBodyId,
+        memo: TrackedSalsaBodyMemo,
+        bytes: u64,
+    ) {
+        self.memo_footprint.record_body(owner, memo, bytes);
     }
 
     fn record_salsa_project_memo_bytes(
@@ -5122,13 +5201,15 @@ class Foo {
     fn salsa_memo_footprint_tracks_hir_and_indexing_memos() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
         let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+        db.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
 
         let files: Vec<FileId> = (0..64).map(FileId::from_raw).collect();
         for (idx, file) in files.iter().copied().enumerate() {
             db.set_file_text(
                 file,
                 format!(
-                    "package test;\nimport java.util.List;\nimport static java.lang.Math.max;\nclass C{idx} {{ int x = {idx}; int y = {idx}; }}"
+                    "package test;\nimport java.util.List;\nimport static java.lang.Math.max;\nclass C{idx} {{ int x = {idx}; int y = {idx}; int foo(int a) {{ int b = a + x; return b; }} }}"
                 ),
             );
             db.set_file_rel_path(file, Arc::new(format!("src/C{idx}.java")));
@@ -5238,7 +5319,6 @@ class Foo {
         );
 
         // New tracking: project-wide index shards + merged indexes.
-        let project = ProjectId::from_raw(0);
         db.with_snapshot(|snap| {
             let _ = snap.project_indexes(project);
         });
@@ -5260,9 +5340,66 @@ class Foo {
             "expected workspace_def_map memos to increase tracked bytes"
         );
 
+        let (method, owner) = db.with_snapshot(|snap| {
+            let tree = snap.hir_item_tree(files[0]);
+            let ast_id = *tree
+                .methods
+                .keys()
+                .min()
+                .expect("expected at least one method in test file");
+            let method = nova_hir::ids::MethodId::new(files[0], ast_id);
+            let owner = nova_resolve::ids::DefWithBodyId::Method(method);
+            (method, owner)
+        });
+
+        // New tracking: body-level HIR.
+        db.with_snapshot(|snap| {
+            let _ = snap.hir_body(method);
+        });
+
+        let after_hir_body_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_hir_body_bytes > after_workspace_bytes,
+            "expected hir_body memos to increase tracked bytes"
+        );
+
+        // New tracking: per-body ExprScopes.
+        db.with_snapshot(|snap| {
+            let _ = snap.expr_scopes(owner);
+        });
+
+        let after_expr_scopes_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_expr_scopes_bytes > after_hir_body_bytes,
+            "expected expr_scopes memos to increase tracked bytes"
+        );
+
+        // New tracking: per-body type checking results and project base TypeStore.
+        db.with_snapshot(|snap| {
+            let _ = snap.typeck_body(owner);
+        });
+
+        let after_typeck_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_typeck_bytes > after_expr_scopes_bytes,
+            "expected typeck_body/project_base_type_store memos to increase tracked bytes"
+        );
+
+        // New tracking: flow IR + CFG.
+        db.with_snapshot(|snap| {
+            let _ = snap.flow_body(method);
+            let _ = snap.cfg(method);
+        });
+
+        let after_flow_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_flow_bytes > after_typeck_bytes,
+            "expected flow_body/cfg memos to increase tracked bytes"
+        );
+
         assert_eq!(
             manager.report().usage.query_cache,
-            after_workspace_bytes,
+            after_flow_bytes,
             "memory manager should see tracked salsa memo usage (including HIR + indexing)"
         );
 
@@ -5270,6 +5407,12 @@ class Foo {
         let scope_exec_before = executions(&db.inner.lock(), "scope_graph");
         let def_map_exec_before = executions(&db.inner.lock(), "def_map");
         let import_map_exec_before = executions(&db.inner.lock(), "import_map");
+        let hir_body_exec_before = executions(&db.inner.lock(), "hir_body");
+        let expr_scopes_exec_before = executions(&db.inner.lock(), "expr_scopes");
+        let base_store_exec_before = executions(&db.inner.lock(), "project_base_type_store");
+        let typeck_exec_before = executions(&db.inner.lock(), "typeck_body");
+        let flow_body_exec_before = executions(&db.inner.lock(), "flow_body");
+        let cfg_exec_before = executions(&db.inner.lock(), "cfg");
         let delta_exec_before = executions(&db.inner.lock(), "file_index_delta");
         let shard_exec_before = executions(&db.inner.lock(), "project_index_shards");
         let project_exec_before = executions(&db.inner.lock(), "project_indexes");
@@ -5286,6 +5429,12 @@ class Foo {
             }
             let _ = snap.project_indexes(project);
             let _ = snap.workspace_def_map(project);
+            let _ = snap.hir_body(method);
+            let _ = snap.expr_scopes(owner);
+            let _ = snap.project_base_type_store(project);
+            let _ = snap.typeck_body(owner);
+            let _ = snap.flow_body(method);
+            let _ = snap.cfg(method);
         });
         assert_eq!(
             executions(&db.inner.lock(), "hir_item_tree"),
@@ -5327,6 +5476,36 @@ class Foo {
             workspace_exec_before,
             "expected cached workspace_def_map results prior to eviction"
         );
+        assert_eq!(
+            executions(&db.inner.lock(), "hir_body"),
+            hir_body_exec_before,
+            "expected cached hir_body results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "expr_scopes"),
+            expr_scopes_exec_before,
+            "expected cached expr_scopes results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "project_base_type_store"),
+            base_store_exec_before,
+            "expected cached project_base_type_store results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "typeck_body"),
+            typeck_exec_before,
+            "expected cached typeck_body results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "flow_body"),
+            flow_body_exec_before,
+            "expected cached flow_body results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "cfg"),
+            cfg_exec_before,
+            "expected cached cfg results prior to eviction"
+        );
 
         manager.enforce();
 
@@ -5341,6 +5520,12 @@ class Foo {
         let scope_exec_after_evict = executions(&db.inner.lock(), "scope_graph");
         let def_map_exec_after_evict = executions(&db.inner.lock(), "def_map");
         let import_map_exec_after_evict = executions(&db.inner.lock(), "import_map");
+        let hir_body_exec_after_evict = executions(&db.inner.lock(), "hir_body");
+        let expr_scopes_exec_after_evict = executions(&db.inner.lock(), "expr_scopes");
+        let base_store_exec_after_evict = executions(&db.inner.lock(), "project_base_type_store");
+        let typeck_exec_after_evict = executions(&db.inner.lock(), "typeck_body");
+        let flow_body_exec_after_evict = executions(&db.inner.lock(), "flow_body");
+        let cfg_exec_after_evict = executions(&db.inner.lock(), "cfg");
         let delta_exec_after_evict = executions(&db.inner.lock(), "file_index_delta");
         let shard_exec_after_evict = executions(&db.inner.lock(), "project_index_shards");
         let project_exec_after_evict = executions(&db.inner.lock(), "project_indexes");
@@ -5353,6 +5538,12 @@ class Foo {
             let _ = snap.file_index_delta(files[0]);
             let _ = snap.project_indexes(project);
             let _ = snap.workspace_def_map(project);
+            let _ = snap.hir_body(method);
+            let _ = snap.expr_scopes(owner);
+            let _ = snap.project_base_type_store(project);
+            let _ = snap.typeck_body(owner);
+            let _ = snap.flow_body(method);
+            let _ = snap.cfg(method);
         });
         assert!(
             executions(&db.inner.lock(), "hir_item_tree") > hir_exec_after_evict,
@@ -5385,6 +5576,30 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "workspace_def_map") > workspace_exec_after_evict,
             "expected workspace_def_map to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "hir_body") > hir_body_exec_after_evict,
+            "expected hir_body to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "expr_scopes") > expr_scopes_exec_after_evict,
+            "expected expr_scopes to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "project_base_type_store") > base_store_exec_after_evict,
+            "expected project_base_type_store to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "typeck_body") > typeck_exec_after_evict,
+            "expected typeck_body to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "flow_body") > flow_body_exec_after_evict,
+            "expected flow_body to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "cfg") > cfg_exec_after_evict,
+            "expected cfg to re-execute after memo eviction"
         );
     }
 

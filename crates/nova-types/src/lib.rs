@@ -748,6 +748,50 @@ pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
 ];
 
 impl TypeStore {
+    /// Approximate heap memory usage of this store in bytes.
+    ///
+    /// This is intended for cheap, deterministic memory accounting (e.g. Nova's
+    /// `nova-memory` budgets). The heuristic is not exact; it intentionally
+    /// prioritizes stability over precision.
+    ///
+    /// NOTE: This function intentionally avoids walking every class/member
+    /// definition, as the store may be cloned per body and used in hot paths.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        const AVG_NAME_BYTES: u64 = 64;
+
+        let mut bytes = 0u64;
+
+        // Backing storage for `classes`.
+        bytes = bytes.saturating_add((self.classes.capacity() * size_of::<ClassDef>()) as u64);
+
+        // Backing storage for `class_by_name` + control bytes.
+        bytes = bytes.saturating_add(
+            (self.class_by_name.capacity() * size_of::<(String, ClassId)>()) as u64,
+        );
+        bytes = bytes.saturating_add(self.class_by_name.capacity() as u64);
+
+        // Backing storage for `tombstones` + control bytes.
+        bytes = bytes
+            .saturating_add((self.tombstones.capacity() * size_of::<(String, ClassId)>()) as u64);
+        bytes = bytes.saturating_add(self.tombstones.capacity() as u64);
+
+        // Backing storage for `type_params`.
+        bytes =
+            bytes.saturating_add((self.type_params.capacity() * size_of::<TypeParamDef>()) as u64);
+
+        // Heap allocations behind strings.
+        bytes = bytes.saturating_add((self.classes.len() as u64).saturating_mul(AVG_NAME_BYTES));
+        bytes =
+            bytes.saturating_add((self.class_by_name.len() as u64).saturating_mul(AVG_NAME_BYTES));
+        bytes = bytes.saturating_add((self.tombstones.len() as u64).saturating_mul(AVG_NAME_BYTES));
+        bytes = bytes.saturating_add((self.type_params.len() as u64).saturating_mul(32));
+
+        bytes
+    }
+
     pub fn with_minimal_jdk() -> Self {
         let mut store = TypeStore::default();
 

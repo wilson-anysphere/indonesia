@@ -31,8 +31,7 @@ use super::cancellation as cancel;
 use super::jpms::{module_for_file, JpmsProjectIndex, JpmsTypeProvider};
 use super::resolve::NovaResolve;
 use super::stats::HasQueryStats;
-use super::ArcEq;
-use super::HasClassInterner;
+use super::{ArcEq, HasClassInterner, TrackedSalsaBodyMemo, TrackedSalsaProjectMemo};
 
 struct WorkspaceFirstIndex<'a> {
     workspace: &'a nova_resolve::WorkspaceDefMap,
@@ -2477,7 +2476,9 @@ fn expr_scopes(db: &dyn NovaTypeck, owner: DefWithBodyId) -> ArcEq<ExprScopes> {
     let param_ids = params_for_owner(&tree, owner);
     let scopes = ExprScopes::new(&body, &param_ids, |id| param_name_lookup(&tree, id));
 
+    let approx_bytes = scopes.estimated_bytes();
     let result = ArcEq::new(Arc::new(scopes));
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::ExprScopes, approx_bytes);
     db.record_query_stat("expr_scopes", start.elapsed());
     result
 }
@@ -2855,6 +2856,11 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
         store.intern_class_id(name.as_str());
     }
 
+    db.record_salsa_project_memo_bytes(
+        project,
+        TrackedSalsaProjectMemo::ProjectBaseTypeStore,
+        store.estimated_bytes(),
+    );
     db.record_query_stat("project_base_type_store", start.elapsed());
     ArcEq::new(Arc::new(store))
 }
@@ -3133,6 +3139,19 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let diagnostics = checker.diagnostics;
 
     drop(loader);
+    let store_bytes = store.estimated_bytes();
+    let expr_types_bytes = (expr_types.capacity() * std::mem::size_of::<Type>()) as u64;
+    let call_resolutions_bytes =
+        (call_resolutions.capacity() * std::mem::size_of::<Option<ResolvedMethod>>()) as u64;
+    let diagnostics_bytes = (diagnostics.capacity() * std::mem::size_of::<Diagnostic>()) as u64
+        + diagnostics
+            .iter()
+            .map(|diag| diag.message.len() as u64)
+            .sum::<u64>();
+    let approx_bytes = store_bytes
+        .saturating_add(expr_types_bytes)
+        .saturating_add(call_resolutions_bytes)
+        .saturating_add(diagnostics_bytes);
     let env = ArcEq::new(Arc::new(store));
 
     let result = Arc::new(BodyTypeckResult {
@@ -3143,6 +3162,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         expected_return,
     });
 
+    db.record_salsa_body_memo_bytes(owner, TrackedSalsaBodyMemo::TypeckBody, approx_bytes);
     db.record_query_stat("typeck_body", start.elapsed());
     result
 }
