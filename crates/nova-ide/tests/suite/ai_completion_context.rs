@@ -1,5 +1,3 @@
-#![cfg(feature = "ai")]
-
 use nova_db::InMemoryFileStore;
 use nova_ide::multi_token_completion_context;
 use std::path::PathBuf;

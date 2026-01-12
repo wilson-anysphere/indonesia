@@ -1,4 +1,6 @@
+#[cfg(feature = "ai")]
 mod ai_completion_context;
+mod analysis;
 mod code_intelligence;
 mod dagger_intel;
 mod file_navigation;
