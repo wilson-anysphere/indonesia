@@ -1,9 +1,19 @@
 import * as fs from 'node:fs/promises';
 import * as ts from 'typescript';
 
+const sourceFileCache = new Map<string, Promise<ts.SourceFile>>();
+
 export async function readTsSourceFile(filePath: string): Promise<ts.SourceFile> {
-  const contents = await fs.readFile(filePath, 'utf8');
-  return ts.createSourceFile(filePath, contents, ts.ScriptTarget.ESNext, true);
+  const existing = sourceFileCache.get(filePath);
+  if (existing) {
+    return await existing;
+  }
+  const task = (async () => {
+    const contents = await fs.readFile(filePath, 'utf8');
+    return ts.createSourceFile(filePath, contents, ts.ScriptTarget.ESNext, true);
+  })();
+  sourceFileCache.set(filePath, task);
+  return await task;
 }
 
 /**
@@ -49,4 +59,3 @@ export function unwrapExpression(expr: ts.Expression): ts.Expression {
   }
   return out;
 }
-

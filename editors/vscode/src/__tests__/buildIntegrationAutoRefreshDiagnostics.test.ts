@@ -7,13 +7,8 @@ import { readTsSourceFile, unwrapExpression } from './tsAstUtils';
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUILD_INTEGRATION_PATH = path.resolve(TEST_DIR, '..', 'buildIntegration.ts');
 
-let buildIntegrationSourceFile: Promise<ts.SourceFile> | undefined;
-
 async function loadBuildIntegrationSourceFile(): Promise<ts.SourceFile> {
-  buildIntegrationSourceFile ??= (async () => {
-    return await readTsSourceFile(BUILD_INTEGRATION_PATH);
-  })();
-  return await buildIntegrationSourceFile;
+  return await readTsSourceFile(BUILD_INTEGRATION_PATH);
 }
 
 function isSilentTrueObject(expr: ts.Expression): boolean {
