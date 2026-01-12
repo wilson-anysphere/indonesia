@@ -103,17 +103,17 @@ impl TcpJdwpClient {
             )));
         }
 
-        let mut buf = Vec::with_capacity(length);
-        buf.extend_from_slice(&(length as u32).to_be_bytes());
-        buf.extend_from_slice(&id.to_be_bytes());
-        buf.push(0); // flags
-        buf.push(command_set);
-        buf.push(command);
-        buf.extend_from_slice(data);
-
         {
             let stream = self.stream_mut()?;
-            stream.write_all(&buf)?;
+            let mut header = [0u8; crate::JDWP_HEADER_LEN];
+            header[0..4].copy_from_slice(&(length as u32).to_be_bytes());
+            header[4..8].copy_from_slice(&id.to_be_bytes());
+            header[8] = 0; // flags
+            header[9] = command_set;
+            header[10] = command;
+
+            stream.write_all(&header)?;
+            stream.write_all(data)?;
             stream.flush()?;
         }
 

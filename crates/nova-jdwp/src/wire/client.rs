@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     codec::{
-        encode_command, signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN,
+        signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN,
     },
     inspect::InspectCache,
     types::{
@@ -247,10 +247,17 @@ impl JdwpClient {
             pending.insert(id, tx);
         }
 
-        let packet = encode_command(id, command_set, command, &payload);
         {
             let mut writer = self.inner.writer.lock().await;
-            writer.write_all(&packet).await?;
+            let mut header = [0u8; HEADER_LEN];
+            header[0..4].copy_from_slice(&(length as u32).to_be_bytes());
+            header[4..8].copy_from_slice(&id.to_be_bytes());
+            header[8] = 0; // flags
+            header[9] = command_set;
+            header[10] = command;
+
+            writer.write_all(&header).await?;
+            writer.write_all(&payload).await?;
         }
 
         // Prefer delivering a reply over treating a concurrently-cancelled shutdown token
