@@ -202,22 +202,41 @@ pub fn generate_stream_eval_helper_java_source(
         if import.is_empty() {
             continue;
         }
-        let import = import.strip_prefix("import ").unwrap_or(import).trim();
-        // Normalize semicolons/comments:
-        // - `import foo.Bar;` -> `foo.Bar`
-        // - `import foo.Bar; // comment` -> `foo.Bar`
-        // - `foo.Bar;` -> `foo.Bar`
-        let import = import
-            .split_once(';')
-            .map(|(before, _after)| before)
-            .unwrap_or(import)
-            .trim();
-        if import.is_empty() {
+
+        // Normalize import lines so callers can pass:
+        // - `java.util.*`
+        // - `import java.util.*;`
+        // - `import\tstatic java.util.stream.Collectors.*; // comment`
+        //
+        // and we always emit `import <spec>;` without duplicating `import`.
+        let mut spec = import;
+
+        // Drop `// ...` trailing comments first (common in import sections).
+        spec = spec.split_once("//").map(|(before, _after)| before).unwrap_or(spec);
+        spec = spec.trim();
+
+        // Drop anything after the first `;` to remove trailing comments like `import Foo; // ...`.
+        spec = spec.split_once(';').map(|(before, _after)| before).unwrap_or(spec);
+        spec = spec.trim();
+
+        // Strip a leading `import` keyword followed by *any* whitespace (spaces/tabs).
+        if let Some(rest) = spec.strip_prefix("import") {
+            if rest.chars().next().is_some_and(|ch| ch.is_whitespace()) {
+                spec = rest.trim_start();
+            }
+        }
+        spec = spec.trim();
+
+        // Canonicalize whitespace so `import  static  foo.Bar.*;` and `import static foo.Bar.*;`
+        // dedupe to the same key.
+        let spec = spec.split_whitespace().collect::<Vec<_>>().join(" ");
+        if spec.is_empty() {
             continue;
         }
-        if seen_imports.insert(import.to_string()) {
+
+        if seen_imports.insert(spec.clone()) {
             out.push_str("import ");
-            out.push_str(import);
+            out.push_str(&spec);
             out.push_str(";\n");
         }
     }
@@ -801,14 +820,17 @@ mod tests {
         let src = generate_stream_eval_helper_java_source(
             "com.example",
             "__NovaStreamEvalHelper",
-            &[
-                // Simulate best-effort imports scraped from the paused source file.
-                "import com.acme.Foo".to_string(),
-                "import static com.acme.Util.*".to_string(),
-                // Duplicates should not produce repeated import lines (semicolons normalized).
-                "import com.acme.Foo;".to_string(),
-                "import java.util.*;".to_string(),
-            ],
+             &[
+                 // Simulate best-effort imports scraped from the paused source file.
+                 "import com.acme.Foo".to_string(),
+                 // Exercise whitespace/canonicalization (`import\tstatic` should still work).
+                 "import\tstatic com.acme.Util.*".to_string(),
+                 // Duplicates should not produce repeated import lines (semicolons normalized).
+                 "import com.acme.Foo;".to_string(),
+                 // Tabbed imports should not cause us to emit `import import\t...;`.
+                 "import\tcom.acme.Tabbed; // trailing comment".to_string(),
+                 "import java.util.*;".to_string(),
+             ],
             &[
                 ("this".to_string(), "com.example.Foo".to_string()),
                 ("foo-bar".to_string(), "int".to_string()),
@@ -827,11 +849,13 @@ mod tests {
         assert!(src.contains("import java.util.function.*;"));
         assert!(src.contains("import static java.util.stream.Collectors.*;"));
         // Best-effort file imports should be preserved.
-        assert!(src.contains("import com.acme.Foo;"));
-        assert!(src.contains("import static com.acme.Util.*;"));
-        // Dedupe (semicolons normalized).
-        assert_eq!(src.matches("import com.acme.Foo;").count(), 1);
-        assert_eq!(src.matches("import java.util.*;").count(), 1);
+         assert!(src.contains("import com.acme.Foo;"));
+         assert!(src.contains("import com.acme.Tabbed;"));
+         assert!(src.contains("import static com.acme.Util.*;"));
+         // Dedupe (semicolons normalized).
+         assert_eq!(src.matches("import com.acme.Foo;").count(), 1);
+         assert_eq!(src.matches("import com.acme.Tabbed;").count(), 1);
+         assert_eq!(src.matches("import java.util.*;").count(), 1);
         assert!(src.contains("public final class __NovaStreamEvalHelper"));
 
         assert!(
