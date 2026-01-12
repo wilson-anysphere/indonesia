@@ -2836,6 +2836,26 @@ class C {
 }
 
 #[test]
+fn super_invocation_resolves_ctor_with_generic_superclass_args() {
+    let src = r#"
+class Base<T> {
+    Base(T t) {}
+}
+
+class C extends Base<String> {
+    C() { super("x"); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected super(\"x\") to resolve against Base<String>(String); got {diags:?}"
+    );
+}
+
+#[test]
 fn unqualified_method_call_resolves_against_enclosing_class() {
     let src = r#"
 class C {

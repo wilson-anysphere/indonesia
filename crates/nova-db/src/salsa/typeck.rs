@@ -8192,8 +8192,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             };
         };
 
+        let expected_for_call = match &target_ty {
+            Type::Class(nova_types::ClassType { def, .. }) if *def == class_id => Some(&target_ty),
+            _ => None,
+        };
+
         let env_ro: &dyn TypeEnv = &*loader.store;
-        match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, None) {
+        match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, expected_for_call) {
             MethodResolution::Found(method) => {
                 for (arg, param_ty) in args.iter().zip(method.params.iter()) {
                     // Target-typed expressions like lambdas and method references may need the
