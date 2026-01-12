@@ -1687,7 +1687,9 @@ pub fn file_diagnostics_with_semantic_db(
 /// Aggregate all diagnostics for a single file.
 ///
 /// This is a convenience wrapper that computes semantic diagnostics using a
-/// best-effort Salsa database seeded with only the current file.
+/// Salsa database. If the host [`Database`] exposes a long-lived Salsa DB via
+/// [`Database::salsa_db`], that database is reused; otherwise Nova constructs a
+/// best-effort single-file Salsa database for semantic diagnostics.
 pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     let text = db.file_content(file);
     with_salsa_snapshot_for_single_file(db, file, text, |snap| {
