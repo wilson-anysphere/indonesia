@@ -6,6 +6,7 @@ use nova_ext::{
     ProjectId, Span, Symbol,
 };
 use nova_framework::{
+    AnalyzerRegistry,
     CompletionContext as FrameworkCompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
     Symbol as FrameworkSymbol,
 };
@@ -146,6 +147,260 @@ where
             .collect()
     }
 }
+
+pub const FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID: &str = "nova.framework.analyzer_registry";
+
+/// `nova-ext` provider that runs a `nova_framework::AnalyzerRegistry` against a best-effort
+/// `nova_framework::Database` adapter (see [`crate::framework_db`]).
+pub struct FrameworkAnalyzerRegistryProvider {
+    registry: Arc<AnalyzerRegistry>,
+}
+
+impl FrameworkAnalyzerRegistryProvider {
+    pub fn new(registry: Arc<AnalyzerRegistry>) -> Self {
+        Self { registry }
+    }
+
+    pub fn into_arc(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    fn framework_db(
+        &self,
+        db: Arc<dyn nova_db::Database + Send + Sync>,
+        file: nova_ext::FileId,
+        cancel: &CancellationToken,
+    ) -> Option<Arc<dyn nova_framework::Database + Send + Sync>> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        crate::framework_db::framework_db_for_file(db, file, cancel)
+    }
+}
+
+impl<DB> DiagnosticProvider<DB> for FrameworkAnalyzerRegistryProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
+        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
+            return Vec::new();
+        };
+        self.registry.framework_diagnostics(fw_db.as_ref(), params.file)
+    }
+}
+
+impl<DB> CompletionProvider<DB> for FrameworkAnalyzerRegistryProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_completions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
+        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
+            return Vec::new();
+        };
+
+        let project = fw_db.project_of_file(params.file);
+        let completion_ctx = FrameworkCompletionContext {
+            project,
+            file: params.file,
+            offset: params.offset,
+        };
+        self.registry
+            .framework_completions(fw_db.as_ref(), &completion_ctx)
+    }
+}
+
+impl<DB> NavigationProvider<DB> for FrameworkAnalyzerRegistryProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_navigation(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: NavigationParams,
+    ) -> Vec<NavigationTarget> {
+        let file = match params.symbol {
+            Symbol::File(file) => file,
+            // `nova-ext` navigation currently doesn't provide a way to recover the owning file for a
+            // `ClassId`, so we can't safely pick a root-scoped framework DB here.
+            Symbol::Class(_) => return Vec::new(),
+        };
+
+        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let Some(fw_db) = self.framework_db(host_db, file, &ctx.cancel) else {
+            return Vec::new();
+        };
+
+        let symbol = match params.symbol {
+            Symbol::File(file) => FrameworkSymbol::File(file),
+            Symbol::Class(class) => FrameworkSymbol::Class(class),
+        };
+
+        self.registry
+            .framework_navigation_targets(fw_db.as_ref(), &symbol)
+            .into_iter()
+            .map(|target| NavigationTarget {
+                file: target.file,
+                span: target.span,
+                label: target.label,
+            })
+            .collect()
+    }
+}
+
+impl<DB> InlayHintProvider<DB> for FrameworkAnalyzerRegistryProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_inlay_hints(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: InlayHintParams,
+    ) -> Vec<InlayHint> {
+        let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
+        let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
+            return Vec::new();
+        };
+
+        self.registry
+            .framework_inlay_hints(fw_db.as_ref(), params.file)
+            .into_iter()
+            .map(|hint| InlayHint {
+                span: hint.span,
+                label: hint.label,
+            })
+            .collect()
+    }
+}
+
+impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
+        let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
+            return Vec::new();
+        };
+        self.registry.framework_diagnostics(fw_db.as_ref(), params.file)
+    }
+}
+
+impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_completions(
+        &self,
+        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
+        let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
+            return Vec::new();
+        };
+
+        let project = fw_db.project_of_file(params.file);
+        let completion_ctx = FrameworkCompletionContext {
+            project,
+            file: params.file,
+            offset: params.offset,
+        };
+        self.registry
+            .framework_completions(fw_db.as_ref(), &completion_ctx)
+    }
+}
+
+impl NavigationProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_navigation(
+        &self,
+        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        params: NavigationParams,
+    ) -> Vec<NavigationTarget> {
+        let file = match params.symbol {
+            Symbol::File(file) => file,
+            Symbol::Class(_) => return Vec::new(),
+        };
+
+        let Some(fw_db) = self.framework_db(ctx.db.clone(), file, &ctx.cancel) else {
+            return Vec::new();
+        };
+
+        let symbol = match params.symbol {
+            Symbol::File(file) => FrameworkSymbol::File(file),
+            Symbol::Class(class) => FrameworkSymbol::Class(class),
+        };
+
+        self.registry
+            .framework_navigation_targets(fw_db.as_ref(), &symbol)
+            .into_iter()
+            .map(|target| NavigationTarget {
+                file: target.file,
+                span: target.span,
+                label: target.label,
+            })
+            .collect()
+    }
+}
+
+impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
+    fn id(&self) -> &str {
+        FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
+    }
+
+    fn provide_inlay_hints(
+        &self,
+        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        params: InlayHintParams,
+    ) -> Vec<InlayHint> {
+        let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
+            return Vec::new();
+        };
+
+        self.registry
+            .framework_inlay_hints(fw_db.as_ref(), params.file)
+            .into_iter()
+            .map(|hint| InlayHint {
+                span: hint.span,
+                label: hint.label,
+            })
+            .collect()
+    }
+}
 pub struct IdeExtensions<DB: ?Sized + Send + Sync + 'static> {
     db: Arc<DB>,
     config: Arc<NovaConfig>,
@@ -264,6 +519,18 @@ where
         let registry = this.registry_mut();
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
+
+        let mut fw_registry = AnalyzerRegistry::new();
+        fw_registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
+
+        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
+        let _ = registry.register_diagnostic_provider(provider.clone());
+        let _ = registry.register_completion_provider(provider.clone());
+        let _ = registry.register_navigation_provider(provider.clone());
+        let _ = registry.register_inlay_hint_provider(provider);
         this
     }
 }
@@ -278,6 +545,18 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let registry = this.registry_mut();
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
+
+        let mut fw_registry = AnalyzerRegistry::new();
+        fw_registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
+
+        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
+        let _ = registry.register_diagnostic_provider(provider.clone());
+        let _ = registry.register_completion_provider(provider.clone());
+        let _ = registry.register_navigation_provider(provider.clone());
+        let _ = registry.register_inlay_hint_provider(provider);
         this
     }
 }
