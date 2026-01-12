@@ -1042,7 +1042,7 @@ impl Lowerer {
                 range,
                 body_range,
                 members,
-             }),
+            }),
             SyntaxKind::RecordDeclaration => ast::TypeDecl::Record(ast::RecordDecl {
                 name,
                 name_range,

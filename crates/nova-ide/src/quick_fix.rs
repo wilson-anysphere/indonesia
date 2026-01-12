@@ -189,7 +189,10 @@ fn create_field_action(uri: &Uri, source: &str, name: &str) -> Option<CodeAction
         // `}` is on its own (possibly indented) line. Insert before the indentation so the closing
         // brace remains aligned, and indent the new field one level deeper.
         let close_indent = line_indent(source, line_start);
-        (line_start, format!("{close_indent}  private Object {name};\n"))
+        (
+            line_start,
+            format!("{close_indent}  private Object {name};\n"),
+        )
     } else {
         // Single-line files (or brace-with-code-on-the-same-line): insert before the final `}`.
         // Use a fixed 2-space indent, per requirements.

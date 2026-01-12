@@ -2307,7 +2307,8 @@ fn record_body_references(
                 let method_name = Name::from(name.as_str());
                 if let Some(methods) = def.methods.get(&method_name) {
                     if let Some(method) = methods.first().map(|method| method.id) {
-                        if let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
+                        if let Some(&symbol) =
+                            resolution_to_symbol.get(&ResolutionKey::Method(method))
                         {
                             let range = TextRange::new(name_range.start, name_range.end);
                             record(file, symbol, range, references, spans);

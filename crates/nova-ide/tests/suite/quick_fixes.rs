@@ -218,7 +218,10 @@ fn create_field_quick_fix_in_single_line_file_inserts_before_final_brace() {
         .find(|action| action.title == "Create field 'y'")
         .expect("expected Create field quick fix");
 
-    let field_edit = field.edit.as_ref().expect("field quick fix should have edit");
+    let field_edit = field
+        .edit
+        .as_ref()
+        .expect("field quick fix should have edit");
     let updated = apply_workspace_edit(source, field_edit);
 
     assert!(

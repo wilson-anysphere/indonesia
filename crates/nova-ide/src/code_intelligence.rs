@@ -7346,14 +7346,8 @@ fn maybe_add_lambda_snippet_completion(
     // for most non-SAM contexts.
     let mut fast_types = TypeStore::with_minimal_jdk();
     define_local_interfaces(&mut fast_types, &analysis.tokens);
-    let expected_fast = expected_type_for_completion(
-        &mut fast_types,
-        None,
-        text,
-        analysis,
-        prefix_start,
-        offset,
-    );
+    let expected_fast =
+        expected_type_for_completion(&mut fast_types, None, text, analysis, prefix_start, offset);
 
     let needs_workspace_fallback = if let Some(expected) = expected_fast {
         ensure_type_methods_loaded(&mut fast_types, &expected);
@@ -7446,11 +7440,7 @@ fn expected_type_for_completion(
                         .map(|f| f.ty.as_str())
                 })
             {
-                return Some(parse_source_type_for_expected(
-                    types,
-                    workspace_index,
-                    ty,
-                ));
+                return Some(parse_source_type_for_expected(types, workspace_index, ty));
             }
         }
     }
@@ -7458,7 +7448,11 @@ fn expected_type_for_completion(
     // 2) Return: `return <cursor>`
     let (_, kw) = identifier_prefix(text, before);
     if kw == "return" {
-        if let Some(method) = analysis.methods.iter().find(|m| span_contains(m.body_span, offset)) {
+        if let Some(method) = analysis
+            .methods
+            .iter()
+            .find(|m| span_contains(m.body_span, offset))
+        {
             return Some(parse_source_type_for_expected(
                 types,
                 workspace_index,
@@ -7488,7 +7482,11 @@ fn expected_type_for_call_argument(
 
     let Some(receiver) = call.receiver.as_deref() else {
         // Receiverless calls: fall back to same-file method declarations (best-effort).
-        let candidates: Vec<&MethodDecl> = analysis.methods.iter().filter(|m| m.name == call.name).collect();
+        let candidates: Vec<&MethodDecl> = analysis
+            .methods
+            .iter()
+            .filter(|m| m.name == call.name)
+            .collect();
         if candidates.len() != 1 {
             return None;
         }
