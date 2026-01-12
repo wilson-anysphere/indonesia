@@ -337,19 +337,25 @@ pub fn extract_variable(
         "var".to_string()
     } else {
         let parser_ty = infer_expr_type(&expr);
-        match best_type_at_range_display(db, &params.file, text, expr_range) {
+        if let Some(typeck_ty) = best_type_at_range_display(db, &params.file, text, expr_range) {
             // `Object` is our parser-only fallback for unknown expressions. Only let typeck
             // override a non-`Object` parser inference when it found something more specific.
             //
-            // Note: `null` is a real type in the type system, but it is not a valid type for a
-            // Java variable declaration (`null x = null;` does not compile). Prefer parser/context
-            // inference in that case.
-            Some(typeck_ty)
-                if typeck_ty != "null" && (typeck_ty != "Object" || parser_ty == "Object") =>
+            // When the parser already inferred a concrete type (for example from a `new Foo()`
+            // expression), prefer it over typeck display strings that only add a qualifier
+            // (`Foo` vs `pkg.Foo` / `Outer.Foo`).
+            if parser_ty != "Object"
+                && typeck_ty != "Object"
+                && typeck_ty_is_qualified_version_of(&parser_ty, &typeck_ty)
             {
+                parser_ty
+            } else if typeck_ty != "Object" || parser_ty == "Object" {
                 typeck_ty
+            } else {
+                parser_ty
             }
-            _ => parser_ty,
+        } else {
+            parser_ty
         }
     };
 
@@ -1809,6 +1815,23 @@ fn current_indent(text: &str, line_start: usize) -> String {
         }
     }
     indent
+}
+
+fn typeck_ty_is_qualified_version_of(parser_ty: &str, typeck_ty: &str) -> bool {
+    if typeck_ty == parser_ty {
+        return true;
+    }
+
+    if typeck_ty.len() <= parser_ty.len() {
+        return false;
+    }
+    if !typeck_ty.ends_with(parser_ty) {
+        return false;
+    }
+
+    // Only treat as a "qualified version" when the match is on a segment boundary.
+    let boundary = typeck_ty.len() - parser_ty.len() - 1;
+    typeck_ty.as_bytes().get(boundary) == Some(&b'.')
 }
 
 fn best_type_at_range_display(
