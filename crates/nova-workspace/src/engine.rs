@@ -10,7 +10,7 @@ use async_channel::{Receiver, Sender};
 use crossbeam_channel as channel;
 use lsp_types::Position;
 use nova_build::{BuildCache, BuildFileFingerprint, BuildManager, BuildSystemKind, CommandRunner};
-use nova_cache::{normalize_rel_path, Fingerprint};
+use nova_cache::normalize_rel_path;
 use nova_config::{BuildIntegrationMode, EffectiveConfig};
 use nova_core::{TextEdit, TextRange, TextSize};
 use nova_db::persistence::PersistenceConfig;
@@ -23,7 +23,7 @@ use nova_memory::{
 };
 use nova_project::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaVersion, LoadOptions, OutputDir,
-    OutputDirKind, ProjectConfig, ProjectError, SourceRoot, SourceRootKind, SourceRootOrigin,
+    OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
 #[cfg(test)]
 use nova_scheduler::SchedulerConfig;
