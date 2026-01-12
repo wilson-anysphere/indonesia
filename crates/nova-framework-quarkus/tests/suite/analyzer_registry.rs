@@ -74,6 +74,48 @@ fn registry_skips_cdi_diagnostics_for_non_java_files() {
 }
 
 #[test]
+fn registry_skips_config_property_completions_for_non_java_files() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "io.quarkus", "quarkus-smallrye-config");
+
+    let src = r#"
+        import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+        public class MyConfig {
+          @ConfigProperty(name="ser")
+          String prop;
+        }
+    "#;
+
+    let file = db.add_file_with_path_and_text(project, "src/main/resources/not-java.txt", src);
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/resources/application.properties",
+        "server.port=8080",
+    );
+
+    let cursor_base = src
+        .find("name=\"")
+        .expect("expected to find ConfigProperty name string")
+        + "name=\"".len();
+    let ctx = CompletionContext {
+        project,
+        file,
+        offset: cursor_base + 3, // after `ser`
+    };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let items = registry.framework_completions(&db, &ctx);
+    assert!(
+        items.is_empty(),
+        "expected no completions for non-java file, got: {items:#?}",
+    );
+}
+
+#[test]
 fn registry_completes_config_property_names_from_application_properties() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
