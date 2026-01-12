@@ -145,10 +145,7 @@ where
         &self.id
     }
 
-    fn is_applicable(
-        &self,
-        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-    ) -> bool {
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -213,10 +210,7 @@ where
         &self.id
     }
 
-    fn is_applicable(
-        &self,
-        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-    ) -> bool {
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -291,10 +285,7 @@ where
         &self.id
     }
 
-    fn is_applicable(
-        &self,
-        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-    ) -> bool {
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -383,10 +374,7 @@ where
         &self.id
     }
 
-    fn is_applicable(
-        &self,
-        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-    ) -> bool {
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
