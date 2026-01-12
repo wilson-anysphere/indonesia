@@ -718,6 +718,22 @@ impl Resolver {
             return None;
         }
 
+        // Constructor calls (`new Foo(...)` / `new p.Foo(...)`) are often misclassified as
+        // receiverless calls or member calls on the package segment. Detect this textual
+        // context and resolve the identifier as a type name instead.
+        //
+        // This is intentionally best-effort: we resolve by simple name only and return `None`
+        // when the type isn't found in the workspace index (allowing other navigation layers
+        // to handle JDK types).
+        if is_constructor_type_context(&parsed.text, ident_span) {
+            let def = self.index.resolve_type_definition(&ident)?;
+            return Some(ResolvedSymbol {
+                name: ident,
+                kind: ResolvedKind::Type,
+                def,
+            });
+        }
+
         let occurrence = classify_occurrence(&parsed.text, ident_span)?;
         let looks_like_type = matches!(occurrence, OccurrenceKind::Ident)
             && looks_like_type_usage(&parsed.text, ident_span);
@@ -935,6 +951,73 @@ fn looks_like_type_usage(text: &str, ident_span: Span) -> bool {
     }
 
     false
+}
+
+/// Returns true when `ident_span` is the last segment of a `new ...` expression:
+///
+/// - `new Foo(...)`
+/// - `new p.Foo(...)`
+///
+/// This is a textual heuristic used by core navigation to avoid misclassifying constructor
+/// calls as receiverless/member method calls.
+fn is_constructor_type_context(text: &str, ident_span: Span) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = ident_span.start.min(bytes.len());
+
+    // Scan left over whitespace.
+    while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+        i -= 1;
+    }
+
+    // Scan left over a dotted identifier chain (qualified name), allowing whitespace around '.'.
+    loop {
+        // Allow whitespace between '.' and the identifier.
+        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+            i -= 1;
+        }
+
+        // Look for `.` before the current segment.
+        if i == 0 || bytes[i - 1] != b'.' {
+            break;
+        }
+
+        // Skip `.` and any whitespace before it.
+        i -= 1;
+        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+            i -= 1;
+        }
+
+        // Consume the previous identifier segment.
+        let seg_end = i;
+        while i > 0 && is_ident_continue(bytes[i - 1]) {
+            i -= 1;
+        }
+
+        // Invalid chain: `.` not preceded by an identifier.
+        if i == seg_end {
+            return false;
+        }
+    }
+
+    // After the chain, scan left over whitespace and check for `new`.
+    while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+        i -= 1;
+    }
+
+    if i < 3 || &bytes[i - 3..i] != b"new" {
+        return false;
+    }
+
+    // Identifier boundary before `new`.
+    if i >= 4 && is_ident_continue(bytes[i - 4]) {
+        return false;
+    }
+    // Identifier boundary after `new`.
+    if i < bytes.len() && is_ident_continue(bytes[i]) {
+        return false;
+    }
+
+    true
 }
 
 fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
