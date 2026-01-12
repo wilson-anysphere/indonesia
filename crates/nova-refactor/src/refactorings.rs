@@ -923,39 +923,183 @@ fn rename_field_with_accessors(
 
     let accessors = [("get", 0usize), ("is", 0usize), ("set", 1usize)];
 
-    let mut accessor_changes = Vec::new();
+    #[derive(Clone, Debug)]
+    struct MethodDeclInfo {
+        name: String,
+        param_types: Vec<String>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct FileMethodIndex {
+        method_decls: HashMap<TextRange, MethodDeclInfo>,
+        method_calls: HashMap<TextRange, usize>,
+    }
+
+    fn file_method_index<'a>(
+        db: &dyn RefactorDatabase,
+        cache: &'a mut HashMap<FileId, FileMethodIndex>,
+        file: &FileId,
+    ) -> Result<&'a FileMethodIndex, RefactorError> {
+        if cache.contains_key(file) {
+            return Ok(cache.get(file).expect("checked contains_key"));
+        }
+
+        let text = db
+            .file_text(file)
+            .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
+        let parsed = parse_java(text);
+        let root = parsed.syntax();
+
+        let mut method_decls: HashMap<TextRange, MethodDeclInfo> = HashMap::new();
+        for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
+            let Some(name_tok) = method.name_token() else {
+                continue;
+            };
+            let range = syntax_token_range(&name_tok);
+            let name = name_tok.text().to_string();
+            let param_types: Vec<String> = method
+                .parameter_list()
+                .map(|list| {
+                    list.parameters()
+                        .filter_map(|p| p.ty())
+                        .map(|ty| {
+                            let r = syntax_range(ty.syntax());
+                            text.get(r.start..r.end).unwrap_or_default().trim().to_string()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            method_decls.insert(
+                range,
+                MethodDeclInfo {
+                    name,
+                    param_types,
+                },
+            );
+        }
+
+        let mut method_calls: HashMap<TextRange, usize> = HashMap::new();
+        for call in root.descendants().filter_map(ast::MethodCallExpression::cast) {
+            let arg_count = call
+                .arguments()
+                .map(|args| args.arguments().count())
+                .unwrap_or(0);
+            let Some(callee) = call.callee() else {
+                continue;
+            };
+            let Some(name_tok) = callee
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind() == SyntaxKind::Identifier)
+                .last()
+            else {
+                continue;
+            };
+            method_calls.insert(syntax_token_range(&name_tok), arg_count);
+        }
+
+        cache.insert(
+            file.clone(),
+            FileMethodIndex {
+                method_decls,
+                method_calls,
+            },
+        );
+        Ok(cache.get(file).expect("just inserted"))
+    }
+
+    let mut accessor_edits: Vec<TextEdit> = Vec::new();
+    let mut parse_cache: HashMap<FileId, FileMethodIndex> = HashMap::new();
 
     for (prefix, arity) in accessors {
         let old_name = format!("{prefix}{old_suffix}");
         let new_name = format!("{prefix}{new_suffix}");
 
         for method in db.resolve_methods_in_scope(scope, &old_name) {
-            let Some(sig) = db.method_signature(method) else {
+            if db.symbol_kind(method) != Some(JavaSymbolKind::Method) {
                 continue;
-            };
-            if sig.arity() != arity {
+            }
+            // Only rename accessors on the owning type.
+            if db.symbol_scope(method) != Some(scope) {
+                continue;
+            }
+
+            // Collect every semantic occurrence of the old method symbol (definition + references),
+            // then filter by syntactic arity so we only rename JavaBean-like accessors:
+            // - get*/is*: 0 args
+            // - set*: 1 arg
+            //
+            // Note: method overloads are grouped by name in the semantic symbol space, so we must
+            // inspect each occurrence to avoid renaming unrelated overloads (e.g. `getName(int)`).
+            let mut occurrences: HashSet<(FileId, TextRange)> = HashSet::new();
+            if let Some(method_def) = db.symbol_definition(method) {
+                occurrences.insert((method_def.file, method_def.name_range));
+            }
+            for r in db.find_references(method) {
+                occurrences.insert((r.file, r.range));
+            }
+
+            // Track the set of method declaration signatures we plan to rename so we can detect
+            // collisions against pre-existing methods with the destination accessor name.
+            let mut renaming_signatures: Vec<Vec<String>> = Vec::new();
+
+            for (file, range) in &occurrences {
+                let index = file_method_index(db, &mut parse_cache, file)?;
+
+                if let Some(info) = index.method_decls.get(range) {
+                    if info.name == old_name && info.param_types.len() == arity {
+                        renaming_signatures.push(info.param_types.clone());
+                        accessor_edits.push(TextEdit::replace(
+                            file.clone(),
+                            *range,
+                            new_name.clone(),
+                        ));
+                    }
+                    continue;
+                }
+
+                if let Some(arg_count) = index.method_calls.get(range) {
+                    if *arg_count == arity {
+                        accessor_edits.push(TextEdit::replace(
+                            file.clone(),
+                            *range,
+                            new_name.clone(),
+                        ));
+                    }
+                }
+            }
+
+            if renaming_signatures.is_empty() {
                 continue;
             }
 
             // Collision check: new accessor name + same signature must not already exist in the
             // declaring type.
-            for existing in db.resolve_methods_in_scope(scope, &new_name) {
-                if existing == method {
+            let owner_index = file_method_index(db, &mut parse_cache, &def.file)?;
+            for (decl_range, info) in &owner_index.method_decls {
+                if info.name != new_name {
                     continue;
                 }
-                if db.method_signature(existing).as_ref() == Some(&sig) {
+
+                let Some(existing_symbol) = db.symbol_at(&def.file, decl_range.start) else {
+                    continue;
+                };
+                if db.symbol_scope(existing_symbol) != Some(scope) {
+                    continue;
+                }
+
+                if renaming_signatures
+                    .iter()
+                    .any(|sig| *sig == info.param_types)
+                {
                     conflicts.push(Conflict::NameCollision {
                         file: def.file.clone(),
                         name: new_name.clone(),
-                        existing_symbol: existing,
+                        existing_symbol,
                     });
                 }
             }
-
-            accessor_changes.push(SemanticChange::Rename {
-                symbol: method,
-                new_name: new_name.clone(),
-            });
         }
     }
 
@@ -963,13 +1107,16 @@ fn rename_field_with_accessors(
         return Err(RefactorError::Conflicts(conflicts));
     }
 
-    let mut changes = Vec::with_capacity(1 + accessor_changes.len());
-    changes.push(SemanticChange::Rename {
-        symbol: params.symbol,
-        new_name: params.new_name,
-    });
-    changes.extend(accessor_changes);
-    Ok(materialize(db, changes)?)
+    let mut edit = materialize(
+        db,
+        [SemanticChange::Rename {
+            symbol: params.symbol,
+            new_name: params.new_name,
+        }],
+    )?;
+    edit.text_edits.extend(accessor_edits);
+    edit.normalize()?;
+    Ok(edit)
 }
 
 fn java_bean_suffix(field_name: &str) -> Option<String> {
