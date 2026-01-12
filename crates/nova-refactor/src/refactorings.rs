@@ -1850,6 +1850,16 @@ pub fn inline_variable(
                 return Err(RefactorError::InlineNotSupported);
             };
 
+            // `try (r) { ... }` resource specifications only allow effectively-final local variables;
+            // they are not general expression positions. Inlining a variable here would produce
+            // invalid Java like `try (new Foo()) { ... }` and/or change resource lifetime semantics.
+            if parent.ancestors().any(|node| {
+                ast::ResourceSpecification::cast(node.clone()).is_some()
+                    || ast::Resource::cast(node).is_some()
+            }) {
+                return Err(RefactorError::InlineNotSupported);
+            }
+
             let Some(lambda) = parent.ancestors().find_map(ast::LambdaExpression::cast) else {
                 return Ok(None);
             };

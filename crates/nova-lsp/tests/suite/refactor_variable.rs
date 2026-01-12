@@ -907,6 +907,31 @@ class C {
 }
 
 #[test]
+fn inline_variable_not_offered_inside_try_with_resources_resource_specification() {
+    let source = r#"
+class C {
+    java.io.InputStream make() { return null; }
+    void m() throws Exception {
+        java.io.InputStream r = make();
+        try (r) {
+            r.read();
+        }
+    }
+}
+"#;
+
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let offset = source.find("try (r)").expect("try-with-resources") + "try (".len();
+    let position = offset_to_position(source, offset);
+
+    let actions = inline_variable_code_actions(&uri, source, position);
+    assert!(
+        actions.is_empty(),
+        "expected no inline-variable actions in try-with-resources resource spec, got: {actions:?}"
+    );
+}
+
+#[test]
 fn inline_variable_code_actions_apply_expected_edits() {
     let source = r#"
 class C {

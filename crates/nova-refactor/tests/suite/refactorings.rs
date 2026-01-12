@@ -7694,6 +7694,36 @@ fn inline_variable_try_with_resources_declaration_is_not_supported() {
 }
 
 #[test]
+fn inline_variable_rejects_try_with_resources_resource_specification() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  java.io.InputStream make() { return null; }
+  void m() throws Exception {
+    java.io.InputStream r = make();
+    try (r) {
+      r.read();
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("InputStream r =").unwrap() + "InputStream ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at r");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
 fn inline_variable_reassigned_variable_is_not_supported() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
