@@ -64,6 +64,15 @@ test('isSafeModeError matches canonical safe-mode guard messages', () => {
   );
 });
 
+test('isSafeModeError matches fallback guard messages without explicit "safe mode" phrasing', () => {
+  assert.equal(
+    isSafeModeError(
+      new Error('Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now.'),
+    ),
+    true,
+  );
+});
+
 test('SAFE_MODE_EXEMPT_REQUESTS includes nova/java/organizeImports', () => {
   assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/java/organizeImports'), true);
 });
