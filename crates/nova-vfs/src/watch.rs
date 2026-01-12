@@ -978,17 +978,6 @@ mod notify_impl {
             }
             assert!(overflowed.load(Ordering::Acquire));
 
-            // Ensure the drain loop has actually observed the overflow before we start receiving
-            // messages. If we block on `recv` too early, the sender may deliver events directly to a
-            // waiting receiver (bypassing the bounded queue) and we won't overflow deterministically.
-            let deadline = Instant::now() + Duration::from_secs(1);
-            while !overflowed.load(Ordering::Acquire) {
-                if Instant::now() >= deadline {
-                    panic!("expected watcher events queue overflow");
-                }
-                std::thread::yield_now();
-            }
-
             let msg = events_rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("expected watcher message")
