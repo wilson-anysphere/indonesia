@@ -182,10 +182,11 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
     if (opts?.forceRefresh) {
       for (const folder of folders) {
         const promises: Array<Promise<unknown>> = [this.cache.getProjectModel(folder, { forceRefresh: true })];
-        // When refreshing a specific workspace (e.g. from an error banner), also refresh the
-        // cached project configuration snapshot. For global refreshes we keep things lightweight
-        // and allow the configuration node to refresh lazily when expanded.
-        if (opts.workspace) {
+
+        // Also refresh project configuration if it's already been fetched (e.g. the node is expanded),
+        // or when a specific workspace is being refreshed from an inline error banner.
+        const shouldRefreshConfiguration = Boolean(opts.workspace) || Boolean(this.cache.peekProjectConfiguration(folder).value);
+        if (shouldRefreshConfiguration) {
           promises.push(this.cache.getProjectConfiguration(folder, { forceRefresh: true }));
         }
         for (const promise of promises) {
