@@ -1888,4 +1888,61 @@ mod tests {
             .iter()
             .any(|a| a == "-Dexpression=project.compileModulePathElements")));
     }
+
+    #[test]
+    fn java_compile_config_is_cached_including_module_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        std::fs::write(
+            project_root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(project_root.join("src/main/java")).unwrap();
+        std::fs::create_dir_all(project_root.join("src/test/java")).unwrap();
+
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+        );
+        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
+
+        outputs.insert(
+            "project.compileModulePathElements".to_string(),
+            format!("[{}]\n", named.display()),
+        );
+        outputs.insert("project.testCompileModulePathElements".to_string(), "[]\n".to_string());
+
+        let runner = Arc::new(StaticMavenRunner::new(outputs));
+        let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+        let cache = BuildCache::new(tmp.path().join("cache"));
+
+        let cfg1 = build
+            .java_compile_config(&project_root, None, &cache)
+            .unwrap();
+        assert_eq!(cfg1.module_path, vec![named, automatic]);
+
+        let invocations_first = runner.invocations();
+        assert!(!invocations_first.is_empty());
+
+        let cfg2 = build
+            .java_compile_config(&project_root, None, &cache)
+            .unwrap();
+        assert_eq!(cfg2, cfg1);
+
+        let invocations_second = runner.invocations();
+        assert_eq!(invocations_second.len(), invocations_first.len());
+    }
 }
