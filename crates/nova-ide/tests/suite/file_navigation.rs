@@ -405,6 +405,25 @@ class Main { void test(){ Derived d = new Derived(); d.$0baz.toString(); } }
 }
 
 #[test]
+fn go_to_type_definition_supports_dollar_in_identifier() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo$Bar.java
+class $1Foo$Bar {}
+//- /Main.java
+class Main { Foo$Bar x = new Foo$Bar(); $0Foo$Bar y = x; }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_declaration_on_override_returns_interface_declaration() {
     let fixture = FileIdFixture::parse(
         r#"
