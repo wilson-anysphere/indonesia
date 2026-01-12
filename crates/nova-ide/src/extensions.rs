@@ -886,6 +886,7 @@ where
                 self.db.as_ref().as_dyn_nova_db(),
                 file,
                 source,
+                &cancel,
                 &uri,
                 span,
             ));
@@ -978,6 +979,7 @@ fn type_mismatch_quick_fixes(
     db: &dyn nova_db::Database,
     file: nova_ext::FileId,
     source: &str,
+    cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     selection: Span,
 ) -> Vec<lsp_types::CodeActionOrCommand> {
