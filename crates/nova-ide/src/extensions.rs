@@ -2,13 +2,11 @@ use nova_config::NovaConfig;
 use nova_ext::{
     CodeAction, CodeActionParams, CompletionItem, CompletionParams, CompletionProvider, Diagnostic,
     DiagnosticParams, DiagnosticProvider, ExtensionContext, ExtensionRegistry, InlayHint,
-    InlayHintParams, NavigationParams, NavigationTarget, ProjectId, Span, Symbol,
     InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider, NavigationTarget,
     ProjectId, Span, Symbol,
 };
 use nova_framework::{
     CompletionContext as FrameworkCompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
-    InlayHint as FrameworkInlayHint, NavigationTarget as FrameworkNavigationTarget,
     Symbol as FrameworkSymbol,
 };
 use nova_scheduler::CancellationToken;
@@ -110,7 +108,11 @@ where
         self.analyzer
             .navigation(ctx.db.as_ref(), &symbol)
             .into_iter()
-            .map(FrameworkNavigationTarget::into)
+            .map(|target| NavigationTarget {
+                file: target.file,
+                span: target.span,
+                label: target.label,
+            })
             .collect()
     }
 }
@@ -135,27 +137,11 @@ where
         self.analyzer
             .inlay_hints(ctx.db.as_ref(), params.file)
             .into_iter()
-            .map(FrameworkInlayHint::into)
+            .map(|hint| InlayHint {
+                span: hint.span,
+                label: hint.label,
+            })
             .collect()
-    }
-}
-
-impl From<FrameworkNavigationTarget> for NavigationTarget {
-    fn from(value: FrameworkNavigationTarget) -> Self {
-        Self {
-            file: value.file,
-            span: value.span,
-            label: value.label,
-        }
-    }
-}
-
-impl From<FrameworkInlayHint> for InlayHint {
-    fn from(value: FrameworkInlayHint) -> Self {
-        Self {
-            span: value.span,
-            label: value.label,
-        }
     }
 }
 
