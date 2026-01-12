@@ -29,7 +29,6 @@ mod rename_package;
 mod rename_type;
 mod rename_type_conflicts;
 mod rename_type_inheritance_and_body_types;
-mod rename_type_parameters;
 mod rename_type_qualified_this_super;
 mod rename_types;
 mod safe_delete;

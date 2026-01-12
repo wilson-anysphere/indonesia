@@ -505,3 +505,90 @@ fn rename_method_overloads_renames_all_declarations_and_calls() {
     assert!(after.contains("bar(1);"), "{after}");
     assert!(!after.contains("foo"), "{after}");
 }
+
+#[test]
+fn rename_record_component_updates_compact_constructor_parameter_references_from_header() {
+    let file = FileId::new("Test.java");
+    let src = r#"record R(int x) {
+    R {
+        System.out.println(x);
+    }
+}
+
+class Use {
+    void m() {
+        R r = new R(1);
+        System.out.println(r.x());
+        System.out.println(new R(2).x());
+    }
+}"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("record R(int x").unwrap() + "record R(int ".len();
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at record component x");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("record R(int y)"), "{after}");
+    assert!(after.contains("println(y)"), "{after}");
+    assert!(after.contains("r.y()"), "{after}");
+    assert!(after.contains("new R(2).y()"), "{after}");
+    assert!(!after.contains("println(x)"), "{after}");
+    assert!(!after.contains(".x()"), "{after}");
+    assert!(!after.contains("int x"), "{after}");
+}
+
+#[test]
+fn rename_record_component_updates_compact_constructor_parameter_references_from_constructor_body()
+{
+    let file = FileId::new("Test.java");
+    let src = r#"record R(int x) {
+    R {
+        System.out.println(x);
+    }
+}
+
+class Use {
+    void m() {
+        R r = new R(1);
+        System.out.println(r.x());
+        System.out.println(new R(2).x());
+    }
+}"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("println(x)").unwrap() + "println(".len();
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at record component x reference in compact constructor body");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("record R(int y)"), "{after}");
+    assert!(after.contains("println(y)"), "{after}");
+    assert!(after.contains("r.y()"), "{after}");
+    assert!(after.contains("new R(2).y()"), "{after}");
+    assert!(!after.contains("println(x)"), "{after}");
+    assert!(!after.contains(".x()"), "{after}");
+    assert!(!after.contains("int x"), "{after}");
+}

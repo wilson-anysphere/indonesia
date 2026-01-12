@@ -273,6 +273,7 @@ impl RefactorJavaDatabase {
         let mut type_constructor_refs: HashMap<ItemId, Vec<(FileId, TextRange)>> = HashMap::new();
         let mut method_signatures: HashMap<MethodId, OverrideMethodSignature> = HashMap::new();
         let mut method_owners: HashMap<MethodId, ItemId> = HashMap::new();
+        let mut record_component_param_aliases: Vec<(ResolutionKey, FieldId)> = Vec::new();
 
         // Build per-file scope graphs + symbol definitions.
         for (file, file_id) in &file_ids {
@@ -331,6 +332,23 @@ impl RefactorJavaDatabase {
                     &mut method_owners,
                 );
             }
+
+            // Record header components are modeled as both (1) a `Field` with
+            // `FieldKind::RecordComponent` and (2) constructor parameters for compact constructors.
+            // For semantic rename, we want these to behave as a single symbol. We therefore alias
+            // compact-constructor parameters back to their corresponding record component fields by
+            // matching the shared `name_range` (which points into the record header).
+            let record_component_fields: HashMap<nova_types::Span, FieldId> = tree
+                .fields
+                .iter()
+                .filter_map(|(ast_id, field)| {
+                    if !matches!(field.kind, nova_hir::item_tree::FieldKind::RecordComponent) {
+                        return None;
+                    }
+                    Some((field.name_range, FieldId::new(*file_id, *ast_id)))
+                })
+                .collect();
+            let ast_id_map = snap.hir_ast_id_map(*file_id);
 
             // Parameters live in method/constructor scopes.
             let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
@@ -402,12 +420,22 @@ impl RefactorJavaDatabase {
                         method_signature: None,
                     });
                 }
+                let is_compact = ast_id_map
+                    .ptr(ctor.ast_id)
+                    .is_some_and(|ptr| ptr.kind == nova_syntax::SyntaxKind::CompactConstructorDeclaration);
                 for (idx, param) in ctor_data.params.iter().enumerate() {
+                    let key = ResolutionKey::Param(ParamRef {
+                        owner: ParamOwner::Constructor(ctor),
+                        index: idx,
+                    });
+                    if is_compact {
+                        if let Some(&field_id) = record_component_fields.get(&param.name_range) {
+                            record_component_param_aliases.push((key, field_id));
+                            continue;
+                        }
+                    }
                     candidates.push(SymbolCandidate {
-                        key: ResolutionKey::Param(ParamRef {
-                            owner: ParamOwner::Constructor(ctor),
-                            index: idx,
-                        }),
+                        key,
                         file: file.clone(),
                         name: param.name.clone(),
                         name_range: TextRange::new(param.name_range.start, param.name_range.end),
@@ -659,6 +687,16 @@ impl RefactorJavaDatabase {
             if let ResolutionKey::Method(method_id) = key {
                 method_to_symbol.insert(*method_id, *symbol);
             }
+        }
+
+        // Alias compact-constructor parameters for record components back to the corresponding
+        // `Field` symbol so renaming a record component updates implicit parameter references
+        // inside compact constructor bodies.
+        for (param_key, field_id) in record_component_param_aliases {
+            let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field_id)) else {
+                continue;
+            };
+            resolution_to_symbol.insert(param_key, symbol);
         }
 
         // Treat constructor declarations as references to their enclosing type so `rename` on a
