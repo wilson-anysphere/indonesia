@@ -4599,11 +4599,11 @@ pub(crate) fn core_completions(
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
-    if type_position_completion_applicable(text, prefix_start, &prefix) {
+    if let Some(kind) = type_position_completion_kind(text, prefix_start, &prefix) {
         if cancel.is_cancelled() {
             return Vec::new();
         }
-        let items = type_name_completions(db, file, text, &text_index, &prefix);
+        let items = type_name_completions(db, file, text, &text_index, &prefix, kind);
         if !items.is_empty() {
             if cancel.is_cancelled() {
                 return Vec::new();
@@ -5100,8 +5100,8 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
-    if type_position_completion_applicable(text, prefix_start, &prefix) {
-        let items = type_name_completions(db, file, text, &text_index, &prefix);
+    if let Some(kind) = type_position_completion_kind(text, prefix_start, &prefix) {
+        let items = type_name_completions(db, file, text, &text_index, &prefix, kind);
         if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
@@ -7298,28 +7298,44 @@ enum TypePositionTrigger {
     Ambiguous,
 }
 
-fn type_position_completion_applicable(text: &str, prefix_start: usize, prefix: &str) -> bool {
-    if prefix.is_empty() {
-        return false;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypePositionKind {
+    Generic,
+    Extends,
+    Implements,
+    Throws,
+    CatchParam,
+}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TypePositionContext {
+    trigger: TypePositionTrigger,
+    kind: TypePositionKind,
+}
+
+fn type_position_completion_kind(
+    text: &str,
+    prefix_start: usize,
+    prefix: &str,
+) -> Option<TypePositionKind> {
     // Generic type arguments: `List<Str|>`, `Map<Str, Arr|>`.
     if type_context_from_prev_char(text, prefix_start) {
-        return looks_like_reference_type_prefix(prefix);
+        return (!prefix.is_empty() && looks_like_reference_type_prefix(prefix))
+            .then_some(TypePositionKind::Generic);
     }
 
     let tokens = tokenize(text);
-    let Some(cur_idx) = token_index_at_offset(&tokens, prefix_start) else {
-        return false;
+    let Some(cur_idx) = token_index_at_or_after_offset(&tokens, prefix_start) else {
+        return None;
     };
 
-    let Some(trigger) = type_position_trigger(&tokens, cur_idx) else {
-        return false;
-    };
+    let ctx = type_position_context(&tokens, cur_idx, prefix_start)?;
 
-    match trigger {
-        TypePositionTrigger::Unambiguous => true,
-        TypePositionTrigger::Ambiguous => looks_like_reference_type_prefix(prefix),
+    match ctx.trigger {
+        TypePositionTrigger::Unambiguous => Some(ctx.kind),
+        TypePositionTrigger::Ambiguous => {
+            (!prefix.is_empty() && looks_like_reference_type_prefix(prefix)).then_some(ctx.kind)
+        }
     }
 }
 
@@ -7330,9 +7346,37 @@ fn looks_like_reference_type_prefix(prefix: &str) -> bool {
         .is_some_and(|c| c.is_ascii_uppercase())
 }
 
-fn type_position_trigger(tokens: &[Token], cur_idx: usize) -> Option<TypePositionTrigger> {
+fn token_index_at_or_after_offset(tokens: &[Token], offset: usize) -> Option<usize> {
+    tokens
+        .iter()
+        .enumerate()
+        .find(|(_, t)| t.span.start <= offset && offset < t.span.end)
+        .map(|(idx, _)| idx)
+        .or_else(|| {
+            tokens
+                .iter()
+                .enumerate()
+                .find(|(_, t)| t.span.start >= offset)
+                .map(|(idx, _)| idx)
+        })
+}
+
+fn type_position_context(
+    tokens: &[Token],
+    cur_idx: usize,
+    cursor_offset: usize,
+) -> Option<TypePositionContext> {
+    if catch_param_type_position(tokens, cur_idx, cursor_offset) {
+        return Some(TypePositionContext {
+            trigger: TypePositionTrigger::Unambiguous,
+            kind: TypePositionKind::CatchParam,
+        });
+    }
     if cur_idx == 0 {
-        return Some(TypePositionTrigger::Ambiguous);
+        return Some(TypePositionContext {
+            trigger: TypePositionTrigger::Ambiguous,
+            kind: TypePositionKind::Generic,
+        });
     }
 
     // Walk backwards over modifiers/annotations to find the "real" syntactic predecessor.
@@ -7358,30 +7402,153 @@ fn type_position_trigger(tokens: &[Token], cur_idx: usize) -> Option<TypePositio
     }
 
     if j < 0 {
-        return Some(TypePositionTrigger::Ambiguous);
+        return Some(TypePositionContext {
+            trigger: TypePositionTrigger::Ambiguous,
+            kind: TypePositionKind::Generic,
+        });
     }
 
     let prev = &tokens[j as usize];
     match prev.kind {
         TokenKind::Ident => match prev.text.as_str() {
-            "extends" | "implements" | "throws" | "instanceof" | "new" => {
-                Some(TypePositionTrigger::Unambiguous)
-            }
+            "extends" => Some(TypePositionContext {
+                trigger: TypePositionTrigger::Unambiguous,
+                kind: extends_keyword_kind(tokens, j as usize),
+            }),
+            "implements" => Some(TypePositionContext {
+                trigger: TypePositionTrigger::Unambiguous,
+                kind: TypePositionKind::Implements,
+            }),
+            "throws" => Some(TypePositionContext {
+                trigger: TypePositionTrigger::Unambiguous,
+                kind: TypePositionKind::Throws,
+            }),
+            "instanceof" | "new" => Some(TypePositionContext {
+                trigger: TypePositionTrigger::Unambiguous,
+                kind: TypePositionKind::Generic,
+            }),
             _ => None,
         },
         TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}') => {
-            Some(TypePositionTrigger::Ambiguous)
+            Some(TypePositionContext {
+                trigger: TypePositionTrigger::Ambiguous,
+                kind: TypePositionKind::Generic,
+            })
         }
         TokenKind::Symbol(',') => {
             // Potentially inside `implements Foo, Bar` / `throws A, B` / `interface X extends A, B`.
-            comma_in_type_list(tokens, j as usize).then_some(TypePositionTrigger::Unambiguous)
+            comma_in_type_list_kind(tokens, j as usize).map(|kind| TypePositionContext {
+                trigger: TypePositionTrigger::Unambiguous,
+                kind,
+            })
         }
         TokenKind::Symbol('(') => {
             // Potential cast: `(Foo) expr` (avoid method-call `foo(...)` cases).
-            is_likely_cast_paren(tokens, j as usize).then_some(TypePositionTrigger::Ambiguous)
+            is_likely_cast_paren(tokens, j as usize).then_some(TypePositionContext {
+                trigger: TypePositionTrigger::Ambiguous,
+                kind: TypePositionKind::Generic,
+            })
         }
         _ => None,
     }
+}
+
+fn catch_param_type_position(tokens: &[Token], cur_idx: usize, cursor_offset: usize) -> bool {
+    // Best-effort detection for `catch (<cursor> e)` contexts. We look for a `catch (` pair and
+    // ensure the cursor is within its parentheses (to avoid completing inside the catch body).
+    let mut i = cur_idx;
+    while i > 0 {
+        i -= 1;
+        let tok = &tokens[i];
+
+        if tok.kind == TokenKind::Symbol('(')
+            && i > 0
+            && tokens[i - 1].kind == TokenKind::Ident
+            && tokens[i - 1].text == "catch"
+        {
+            let open_end = tok.span.end;
+            if cursor_offset < open_end {
+                return false;
+            }
+
+            let mut j = i + 1;
+            while j < tokens.len() {
+                match tokens[j].kind {
+                    TokenKind::Symbol(')') => {
+                        let close_start = tokens[j].span.start;
+                        return cursor_offset <= close_start;
+                    }
+                    TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}') => {
+                        break;
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+
+            // Unterminated catch clause (incomplete code) - still treat as inside the parameter
+            // list if we're after the opening paren.
+            return true;
+        }
+
+        // Bail when we hit a brace/statement boundary before finding a `catch (` opener.
+        if matches!(
+            tok.kind,
+            TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}')
+        ) {
+            break;
+        }
+    }
+    false
+}
+
+fn extends_keyword_kind(tokens: &[Token], extends_idx: usize) -> TypePositionKind {
+    // If `extends` appears inside `<...>` (type parameters / type arguments), don't apply
+    // class-vs-interface filtering; treat it as a generic type position.
+    if within_angle_brackets(tokens, extends_idx) {
+        return TypePositionKind::Generic;
+    }
+
+    let mut i = extends_idx;
+    while i > 0 {
+        i -= 1;
+        let tok = &tokens[i];
+
+        if tok.kind == TokenKind::Ident {
+            match tok.text.as_str() {
+                "class" => return TypePositionKind::Extends,
+                "interface" => return TypePositionKind::Implements,
+                _ => {}
+            }
+        }
+
+        if matches!(
+            tok.kind,
+            TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}')
+        ) {
+            break;
+        }
+    }
+
+    TypePositionKind::Generic
+}
+
+fn within_angle_brackets(tokens: &[Token], idx: usize) -> bool {
+    let mut depth = 0i32;
+    let mut i = 0usize;
+    while i < tokens.len() && i < idx {
+        match tokens[i].kind {
+            TokenKind::Symbol('<') => depth += 1,
+            TokenKind::Symbol('>') => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    depth > 0
 }
 
 fn is_decl_modifier(ident: &str) -> bool {
@@ -7421,22 +7588,22 @@ fn annotation_at_token(tokens: &[Token], end_ident_idx: usize) -> Option<usize> 
     }
 }
 
-fn comma_in_type_list(tokens: &[Token], comma_idx: usize) -> bool {
+fn comma_in_type_list_kind(tokens: &[Token], comma_idx: usize) -> Option<TypePositionKind> {
     let mut i = comma_idx;
     while i > 0 {
         i -= 1;
         let tok = &tokens[i];
         match tok.kind {
-            TokenKind::Ident
-                if matches!(tok.text.as_str(), "implements" | "throws" | "extends") =>
-            {
-                return true;
+            TokenKind::Ident if tok.text == "implements" => return Some(TypePositionKind::Implements),
+            TokenKind::Ident if tok.text == "throws" => return Some(TypePositionKind::Throws),
+            TokenKind::Ident if tok.text == "extends" => {
+                return Some(extends_keyword_kind(tokens, i));
             }
             TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}') => break,
             _ => {}
         }
     }
-    false
+    None
 }
 
 fn is_likely_cast_paren(tokens: &[Token], l_paren_idx: usize) -> bool {
@@ -7462,6 +7629,7 @@ fn type_name_completions(
     text: &str,
     text_index: &TextIndex<'_>,
     prefix: &str,
+    position_kind: TypePositionKind,
 ) -> Vec<CompletionItem> {
     // Only offer Java type names inside Java files.
     if db
@@ -7471,11 +7639,17 @@ fn type_name_completions(
         return Vec::new();
     }
 
+    #[derive(Debug)]
+    struct Candidate {
+        item: CompletionItem,
+        class_kind: Option<ClassKind>,
+    }
+
     let import_ctx = java_import_context(text);
     let imports = parse_java_imports(text);
 
-    let mut items = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
 
     // 1) Workspace types.
     //
@@ -7503,11 +7677,20 @@ fn type_name_completions(
             Some(pkg) => format!("{pkg}.{}", ty.name),
             None => ty.name.clone(),
         };
-        items.push(CompletionItem {
-            label: ty.name.clone(),
-            kind: Some(ty.kind),
-            detail: Some(fqn),
-            ..Default::default()
+
+        let class_kind = match ty.kind {
+            CompletionItemKind::INTERFACE => Some(ClassKind::Interface),
+            _ => Some(ClassKind::Class),
+        };
+
+        candidates.push(Candidate {
+            item: CompletionItem {
+                label: ty.name.clone(),
+                kind: Some(ty.kind),
+                detail: Some(fqn),
+                ..Default::default()
+            },
+            class_kind,
         });
     }
 
@@ -7527,6 +7710,11 @@ fn type_name_completions(
             continue;
         }
 
+        let class_kind = match ty.kind {
+            CompletionItemKind::INTERFACE => Some(ClassKind::Interface),
+            _ => Some(ClassKind::Class),
+        };
+
         let mut item = CompletionItem {
             label: ty.name.clone(),
             kind: Some(ty.kind),
@@ -7534,20 +7722,35 @@ fn type_name_completions(
             ..Default::default()
         };
         item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &fqn)]);
-        items.push(item);
+        candidates.push(Candidate { item, class_kind });
     }
 
     // 2) Explicit imports (can refer to workspace or classpath/JDK types).
     for fqn in &import_ctx.explicit {
         let simple = fqn.rsplit('.').next().unwrap_or(fqn).to_string();
-        if simple.starts_with(prefix) && seen.insert(simple.clone()) {
-            items.push(CompletionItem {
+        if !simple.starts_with(prefix) {
+            continue;
+        }
+        if !seen.insert(simple.clone()) {
+            continue;
+        }
+
+        let class_kind = resolve_class_kind_for_binary_name(db, fqn);
+        let kind = match class_kind {
+            Some(ClassKind::Interface) => CompletionItemKind::INTERFACE,
+            Some(ClassKind::Class) => CompletionItemKind::CLASS,
+            None => CompletionItemKind::CLASS,
+        };
+
+        candidates.push(Candidate {
+            item: CompletionItem {
                 label: simple,
-                kind: Some(CompletionItemKind::CLASS),
+                kind: Some(kind),
                 detail: Some(fqn.clone()),
                 ..Default::default()
-            });
-        }
+            },
+            class_kind,
+        });
     }
 
     // 3) JDK types from `java.lang.*` + `java.util.*` + wildcard imports.
@@ -7572,7 +7775,7 @@ fn type_name_completions(
         packages.dedup();
 
         for pkg in packages {
-            if items.len() >= MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE * 4 {
+            if candidates.len() >= MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE * 4 {
                 break;
             }
             let pkg_prefix = format!("{pkg}.");
@@ -7599,18 +7802,19 @@ fn type_name_completions(
                     continue;
                 }
 
-                let kind = jdk
-                    .lookup_type(binary)
-                    .ok()
-                    .flatten()
-                    .map(|stub| {
-                        if stub.access_flags & ACC_INTERFACE != 0 {
-                            CompletionItemKind::INTERFACE
-                        } else {
-                            CompletionItemKind::CLASS
-                        }
-                    })
-                    .unwrap_or(CompletionItemKind::CLASS);
+                let class_kind = jdk.lookup_type(binary).ok().flatten().map(|stub| {
+                    if stub.access_flags & ACC_INTERFACE != 0 {
+                        ClassKind::Interface
+                    } else {
+                        ClassKind::Class
+                    }
+                });
+
+                let kind = match class_kind {
+                    Some(ClassKind::Interface) => CompletionItemKind::INTERFACE,
+                    Some(ClassKind::Class) => CompletionItemKind::CLASS,
+                    None => CompletionItemKind::CLASS,
+                };
 
                 let mut item = CompletionItem {
                     label: simple,
@@ -7622,16 +7826,320 @@ fn type_name_completions(
                     item.additional_text_edits =
                         Some(vec![java_import_text_edit(text, text_index, binary)]);
                 }
-                items.push(item);
+
+                candidates.push(Candidate { item, class_kind });
                 added_for_pkg += 1;
             }
         }
     }
 
-    let ctx = CompletionRankingContext::default();
-    rank_completions(prefix, &mut items, &ctx);
+    let mut throwable_env: Option<(TypeStore, Type)> = None;
+    if matches!(position_kind, TypePositionKind::Throws | TypePositionKind::CatchParam) {
+        let mut types = TypeStore::with_minimal_jdk();
+        let base = ensure_class_id(&mut types, "java.lang.Throwable")
+            .or_else(|| ensure_class_id(&mut types, "java.lang.Exception"))
+            .map(|id| Type::class(id, vec![]));
+
+        if let Some(base) = base {
+            populate_type_store_with_workspace_decls(&mut types, db);
+            throwable_env = Some((types, base));
+        }
+    }
+
+    let mut matcher = FuzzyMatcher::new(prefix);
+    let mut scored: Vec<(
+        CompletionItem,
+        nova_fuzzy::MatchScore,
+        i32,
+        i32,
+        i32,
+        String,
+    )> = Vec::new();
+
+    for cand in candidates {
+        let Some(score) = matcher.score(&cand.item.label) else {
+            continue;
+        };
+
+        let (filter_out, bonus) = match position_kind {
+            TypePositionKind::Implements => match cand.class_kind {
+                Some(ClassKind::Interface) => (false, 50),
+                Some(ClassKind::Class) => (true, 0),
+                None => (false, -50),
+            },
+            TypePositionKind::Extends => match cand.class_kind {
+                Some(ClassKind::Class) => (false, 50),
+                Some(ClassKind::Interface) => (true, 0),
+                None => (false, -50),
+            },
+            TypePositionKind::Throws | TypePositionKind::CatchParam => {
+                if let Some((types, base)) = throwable_env.as_mut() {
+                    let ty_src = cand
+                        .item
+                        .detail
+                        .as_deref()
+                        .unwrap_or(cand.item.label.as_str());
+                    let ty = parse_source_type(types, ty_src);
+                    let is_throwable = nova_types::is_subtype(types, &ty, base);
+                    (false, if is_throwable { 50 } else { -50 })
+                } else {
+                    (false, 0)
+                }
+            }
+            TypePositionKind::Generic => (false, 0),
+        };
+
+        if filter_out {
+            continue;
+        }
+
+        let workspace = workspace_completion_bonus(&cand.item);
+        let weight = kind_weight(cand.item.kind);
+        let kind_key = format!("{:?}", cand.item.kind);
+        scored.push((cand.item, score, bonus, workspace, weight, kind_key));
+    }
+
+    scored.sort_by(
+        |(a_item, a_score, a_bonus, a_workspace, a_weight, a_kind),
+         (b_item, b_score, b_bonus, b_workspace, b_weight, b_kind)| {
+            b_score
+                .rank_key()
+                .cmp(&a_score.rank_key())
+                .then_with(|| b_bonus.cmp(a_bonus))
+                .then_with(|| b_workspace.cmp(a_workspace))
+                .then_with(|| b_weight.cmp(a_weight))
+                .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+                .then_with(|| a_item.label.cmp(&b_item.label))
+                .then_with(|| a_kind.cmp(b_kind))
+        },
+    );
+
+    let mut items = scored
+        .into_iter()
+        .map(|(item, _, _, _, _, _)| item)
+        .collect::<Vec<_>>();
     items.truncate(MAX_TYPE_NAME_COMPLETIONS);
     items
+}
+
+fn resolve_class_kind_for_binary_name(db: &dyn Database, binary_name: &str) -> Option<ClassKind> {
+    if let Some(jdk) = JDK_INDEX.as_ref() {
+        if let Ok(Some(stub)) = jdk.lookup_type(binary_name) {
+            return Some(if stub.access_flags & ACC_INTERFACE != 0 {
+                ClassKind::Interface
+            } else {
+                ClassKind::Class
+            });
+        }
+    }
+
+    // Best-effort: scan workspace sources for a matching package + type name.
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+
+        let text = db.file_content(file_id);
+        let (pkg, types) = workspace_types_in_file(text);
+        let Some(pkg) = pkg else {
+            continue;
+        };
+        for (name, kind) in types {
+            let fqn = format!("{pkg}.{name}");
+            if fqn != binary_name {
+                continue;
+            }
+
+            return Some(match kind {
+                CompletionItemKind::INTERFACE => ClassKind::Interface,
+                _ => ClassKind::Class,
+            });
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceTypeDecl {
+    name: String,
+    kind: ClassKind,
+    super_class: Option<String>,
+    interfaces: Vec<String>,
+}
+
+fn populate_type_store_with_workspace_decls(types: &mut TypeStore, db: &dyn Database) {
+    let mut decls = Vec::new();
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+        let text = db.file_content(file_id);
+        decls.extend(workspace_type_decls_in_text(text));
+    }
+
+    decls.sort_by(|a, b| a.name.cmp(&b.name));
+    decls.dedup_by(|a, b| a.name == b.name);
+
+    let object_ty = Type::class(types.well_known().object, vec![]);
+    // Two-pass insertion so `parse_source_type` can resolve workspace names when we set up
+    // `extends`/`implements` edges.
+    for decl in &decls {
+        let super_class = match decl.kind {
+            ClassKind::Interface => None,
+            ClassKind::Class => Some(object_ty.clone()),
+        };
+        types.upsert_class(nova_types::ClassDef {
+            name: decl.name.clone(),
+            kind: decl.kind,
+            type_params: Vec::new(),
+            super_class,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            constructors: Vec::new(),
+            methods: Vec::new(),
+        });
+    }
+
+    for decl in &decls {
+        let super_class = match decl.kind {
+            ClassKind::Interface => None,
+            ClassKind::Class => Some(
+                decl.super_class
+                    .as_ref()
+                    .map(|s| parse_source_type(types, s))
+                    .unwrap_or_else(|| object_ty.clone()),
+            ),
+        };
+        let interfaces = decl
+            .interfaces
+            .iter()
+            .map(|name| parse_source_type(types, name))
+            .collect::<Vec<_>>();
+
+        types.upsert_class(nova_types::ClassDef {
+            name: decl.name.clone(),
+            kind: decl.kind,
+            type_params: Vec::new(),
+            super_class,
+            interfaces,
+            fields: Vec::new(),
+            constructors: Vec::new(),
+            methods: Vec::new(),
+        });
+    }
+}
+
+fn workspace_type_decls_in_text(text: &str) -> Vec<WorkspaceTypeDecl> {
+    let tokens = tokenize(text);
+    let mut out = Vec::new();
+
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let (keyword_idx, keyword) = match tokens.get(i) {
+            Some(tok) if tok.kind == TokenKind::Ident => (i, tok.text.as_str()),
+            Some(tok)
+                if tok.kind == TokenKind::Symbol('@')
+                    && tokens.get(i + 1).is_some_and(|t| {
+                        t.kind == TokenKind::Ident && t.text.as_str() == "interface"
+                    }) =>
+            {
+                (i + 1, "interface")
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        let kind = match keyword {
+            "class" | "enum" | "record" => Some(ClassKind::Class),
+            "interface" => Some(ClassKind::Interface),
+            _ => None,
+        };
+        let Some(kind) = kind else {
+            i += 1;
+            continue;
+        };
+
+        let name_tok = tokens.get(keyword_idx + 1).filter(|t| t.kind == TokenKind::Ident);
+        let Some(name_tok) = name_tok else {
+            i += 1;
+            continue;
+        };
+
+        let name = name_tok.text.clone();
+        let mut super_class = None;
+        let mut interfaces = Vec::new();
+
+        // Scan the header up to the body start.
+        let mut j = keyword_idx + 2;
+        // Skip type parameters.
+        if tokens.get(j).is_some_and(|t| t.kind == TokenKind::Symbol('<')) {
+            let mut depth = 0i32;
+            while j < tokens.len() {
+                match &tokens[j].kind {
+                    TokenKind::Symbol('<') => depth += 1,
+                    TokenKind::Symbol('>') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            j += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+        }
+
+        while j < tokens.len() {
+            let tok = &tokens[j];
+            if tok.kind == TokenKind::Symbol('{') || tok.kind == TokenKind::Symbol(';') {
+                break;
+            }
+
+            if tok.kind == TokenKind::Ident && tok.text == "extends" {
+                if let Some(next) = tokens.get(j + 1).filter(|t| t.kind == TokenKind::Ident) {
+                    match kind {
+                        ClassKind::Class => super_class = Some(next.text.clone()),
+                        ClassKind::Interface => interfaces.push(next.text.clone()),
+                    }
+                }
+            } else if tok.kind == TokenKind::Ident && tok.text == "implements" {
+                let mut k = j + 1;
+                while k < tokens.len() {
+                    let t = &tokens[k];
+                    if t.kind == TokenKind::Symbol('{') || t.kind == TokenKind::Symbol(';') {
+                        break;
+                    }
+                    if t.kind == TokenKind::Ident {
+                        interfaces.push(t.text.clone());
+                    }
+                    k += 1;
+                }
+            }
+
+            j += 1;
+        }
+
+        out.push(WorkspaceTypeDecl {
+            name,
+            kind,
+            super_class,
+            interfaces,
+        });
+
+        i = j;
+    }
+
+    out
 }
 
 fn java_import_context(text: &str) -> JavaImportContext {
@@ -10021,10 +10529,6 @@ fn var_decl_scope_end_offset(tokens: &[Token], var_name_offset: usize) -> Option
         "catch" => catch_statement_end_offset(tokens, open_paren - 1),
         _ => None,
     }
-}
-
-fn token_index_at_or_after_offset(tokens: &[Token], offset: usize) -> Option<usize> {
-    tokens.iter().position(|t| t.span.start >= offset)
 }
 
 fn statement_end_offset(tokens: &[Token], start_idx: usize) -> Option<usize> {

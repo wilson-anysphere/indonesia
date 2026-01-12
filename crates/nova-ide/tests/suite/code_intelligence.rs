@@ -1716,6 +1716,56 @@ class A extends Arr<|> {}
 }
 
 #[test]
+fn completion_type_position_in_implements_clause_prefers_interfaces() {
+    let (db, file, pos) = fixture(
+        r#"
+import foo.Bar;
+interface I {}
+class C implements I {}
+class A { class D implements <|> {} }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"I"),
+        "expected completion list to contain interface I; got {labels:?}"
+    );
+
+    let i_pos = items
+        .iter()
+        .position(|i| i.label == "I")
+        .expect("expected I to be present");
+    let first_class_pos = items
+        .iter()
+        .position(|i| i.kind == Some(lsp_types::CompletionItemKind::CLASS))
+        .expect("expected at least one class completion item");
+
+    assert!(
+        i_pos < first_class_pos,
+        "expected interface I to be ranked above class candidates; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_in_throws_clause_includes_exception_subtypes() {
+    let (db, file, pos) = fixture(
+        r#"
+class Ex extends Exception {}
+class A { void m() throws <|> {} }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Ex"),
+        "expected completion list to contain Ex; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_type_position_adds_import_edit_for_arraylist_without_imports() {
     let (db, file, pos) = fixture("class A { void m(){ Arr<|> xs; } }");
 
