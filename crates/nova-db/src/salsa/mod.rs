@@ -4299,6 +4299,55 @@ class Foo {
     }
 
     #[test]
+    fn unpin_syntax_tree_restores_salsa_memo_accounting() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = SyntaxTreeStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store);
+
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+
+        let text = "class Foo { int x; }\n".repeat(128);
+        let text_len = text.len() as u64;
+        db.set_file_text(file, text);
+
+        // Parse once while open: the result should be pinned and *not* counted as a Salsa memo.
+        let parse_before = db.snapshot().parse(file);
+        assert!(parse_before.errors.is_empty());
+
+        let report_open = manager.report();
+        assert!(
+            report_open.usage.syntax_trees > 0,
+            "expected pinned parse to be tracked under syntax_trees"
+        );
+        assert!(
+            report_open.usage.query_cache < text_len / 2,
+            "expected query_cache usage to suppress pinned parse memo bytes (query_cache={}, text_len={text_len})",
+            report_open.usage.query_cache
+        );
+
+        // Simulate closing the document and unpinning: the pinned tree should be removed and
+        // memo accounting should move back to the Salsa query cache category.
+        open_docs.close(file);
+        db.unpin_syntax_tree(file);
+
+        let report_closed = manager.report();
+        assert!(
+            report_closed.usage.syntax_trees < text_len / 2,
+            "expected syntax_trees usage to drop after unpin (syntax_trees={}, text_len={text_len})",
+            report_closed.usage.syntax_trees
+        );
+        assert!(
+            report_closed.usage.query_cache >= text_len,
+            "expected query_cache usage to restore parse memo bytes after unpin (query_cache={}, text_len={text_len})",
+            report_closed.usage.query_cache
+        );
+    }
+
+    #[test]
     fn open_document_reuses_parse_after_memory_manager_enforce() {
         // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
         // `SyntaxTreeStore` intact so open documents can reuse pinned parse results.
