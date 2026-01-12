@@ -665,6 +665,22 @@ mod tests {
     }
 
     #[test]
+    fn jar_constructor_fallback_uri_normalizes_archive_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("lib.jar");
+        let with_dotdot = dir.path().join("x").join("..").join("lib.jar");
+
+        let abs = AbsPathBuf::new(normalized).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+        let expected = format!("jar:{archive_uri}!/a/b/../c.class");
+
+        assert_eq!(
+            VfsPath::jar(with_dotdot, "a/b/../c.class"),
+            VfsPath::Uri(expected)
+        );
+    }
+
+    #[test]
     fn decompiled_uri_roundtrips() {
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let path = VfsPath::decompiled(hash, "com.example.Foo");
