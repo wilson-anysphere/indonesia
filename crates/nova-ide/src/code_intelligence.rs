@@ -4832,8 +4832,11 @@ fn postfix_completions(
         return Vec::new();
     }
 
+    let import_ctx = java_import_context_from_tokens(&analysis.tokens);
+
     let mut types = TypeStore::with_minimal_jdk();
-    let receiver_ty = infer_simple_expr_type(&mut types, &analysis, &receiver.expr, offset);
+    let receiver_ty =
+        infer_simple_expr_type(&mut types, &analysis, &import_ctx, &receiver.expr, offset);
 
     let is_boolean = receiver_ty.is_primitive_boolean();
     let is_reference = is_referenceish_type(&receiver_ty);
@@ -4843,10 +4846,13 @@ fn postfix_completions(
     // `Iterable`). We keep this best-effort by using the minimal JDK model + `is_subtype`.
     let iterable_ty = parse_source_type(&mut types, "java.lang.Iterable");
     let list_ty = parse_source_type(&mut types, "java.util.List");
+    let collection_ty = parse_source_type(&mut types, "java.util.Collection");
     let is_iterable =
         !receiver_ty.is_errorish() && nova_types::is_subtype(&types, &receiver_ty, &iterable_ty);
     let is_list =
         !receiver_ty.is_errorish() && nova_types::is_subtype(&types, &receiver_ty, &list_ty);
+    let is_collection =
+        !receiver_ty.is_errorish() && nova_types::is_subtype(&types, &receiver_ty, &collection_ty);
 
     let replace_range = Range::new(
         text_index.offset_to_position(receiver.span_to_dot.start),
@@ -4900,7 +4906,7 @@ fn postfix_completions(
     }
 
     // Collection-y templates.
-    if is_list {
+    if is_list || is_collection {
         items.push(postfix_completion_item(
             replace_range,
             "stream",
@@ -4927,6 +4933,7 @@ fn postfix_completion_item(range: Range, label: &str, snippet: String) -> Comple
 fn infer_simple_expr_type(
     types: &mut TypeStore,
     analysis: &Analysis,
+    import_ctx: &JavaImportContext,
     expr: &str,
     offset: usize,
 ) -> Type {
@@ -4955,7 +4962,7 @@ fn infer_simple_expr_type(
             && rest.chars().all(is_ident_continue)
         {
             if let Some(field) = analysis.fields.iter().find(|f| f.name == rest) {
-                return parse_source_type(types, &field.ty);
+                return parse_source_type_with_imports(types, import_ctx, &field.ty);
             }
         }
     }
@@ -4989,16 +4996,16 @@ fn infer_simple_expr_type(
                 })
                 .max_by_key(|v| v.name_span.start)
             {
-                return parse_source_type(types, &var.ty);
+                return parse_source_type_with_imports(types, import_ctx, &var.ty);
             }
 
             if let Some(param) = method.params.iter().find(|p| p.name == expr) {
-                return parse_source_type(types, &param.ty);
+                return parse_source_type_with_imports(types, import_ctx, &param.ty);
             }
         }
 
         if let Some(field) = analysis.fields.iter().find(|f| f.name == expr) {
-            return parse_source_type(types, &field.ty);
+            return parse_source_type_with_imports(types, import_ctx, &field.ty);
         }
     }
 
@@ -6507,13 +6514,17 @@ fn type_name_completions(
 
 fn java_import_context(text: &str) -> JavaImportContext {
     let tokens = tokenize(text);
+    java_import_context_from_tokens(&tokens)
+}
+
+fn java_import_context_from_tokens(tokens: &[Token]) -> JavaImportContext {
     let mut ctx = JavaImportContext::default();
 
     let mut i = 0usize;
     while i < tokens.len() {
         let tok = &tokens[i];
         if tok.kind == TokenKind::Ident && tok.text == "package" {
-            if let Some((pkg, end)) = parse_qualified_name_until_semicolon(&tokens, i + 1) {
+            if let Some((pkg, end)) = parse_qualified_name_until_semicolon(tokens, i + 1) {
                 ctx.package = Some(pkg);
                 i = end;
                 continue;
@@ -6530,7 +6541,7 @@ fn java_import_context(text: &str) -> JavaImportContext {
                 j += 1;
             }
 
-            if let Some((path, end, is_wildcard)) = parse_import_path(&tokens, j) {
+            if let Some((path, end, is_wildcard)) = parse_import_path(tokens, j) {
                 if is_wildcard {
                     ctx.wildcard_packages.push(path);
                 } else {
@@ -10583,6 +10594,92 @@ fn add_builtin_string_methods(types: &mut TypeStore, string: ClassId) {
             is_abstract: false,
         },
     ]);
+}
+
+fn resolve_imported_type_name(
+    types: &mut TypeStore,
+    import_ctx: &JavaImportContext,
+    simple: &str,
+) -> Option<String> {
+    let simple = simple.trim();
+    if simple.is_empty() {
+        return None;
+    }
+    if simple.contains('.') || simple.contains('/') {
+        return None;
+    }
+
+    // Prefer explicit imports (`import foo.bar.Baz;`) to wildcard imports.
+    if let Some(found) = import_ctx
+        .explicit
+        .iter()
+        .find(|imp| imp.ends_with(&format!(".{simple}")))
+    {
+        return Some(found.clone());
+    }
+
+    for pkg in &import_ctx.wildcard_packages {
+        let candidate = format!("{pkg}.{simple}");
+        if ensure_class_id(types, &candidate).is_some() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn parse_source_type_with_imports(
+    types: &mut TypeStore,
+    import_ctx: &JavaImportContext,
+    source: &str,
+) -> Type {
+    let mut s = source.trim();
+    if s.is_empty() {
+        return Type::Unknown;
+    }
+
+    // Strip generics.
+    if let Some(idx) = s.find('<') {
+        s = &s[..idx];
+    }
+
+    // Arrays.
+    let mut array_dims = 0usize;
+    while let Some(stripped) = s.strip_suffix("[]") {
+        array_dims += 1;
+        s = stripped.trim_end();
+    }
+
+    let mut ty = match s {
+        "void" => Type::Void,
+        "boolean" => Type::Primitive(PrimitiveType::Boolean),
+        "byte" => Type::Primitive(PrimitiveType::Byte),
+        "short" => Type::Primitive(PrimitiveType::Short),
+        "char" => Type::Primitive(PrimitiveType::Char),
+        "int" => Type::Primitive(PrimitiveType::Int),
+        "long" => Type::Primitive(PrimitiveType::Long),
+        "float" => Type::Primitive(PrimitiveType::Float),
+        "double" => Type::Primitive(PrimitiveType::Double),
+        other => {
+            if let Some(id) = ensure_class_id(types, other) {
+                Type::class(id, vec![])
+            } else if let Some(resolved) = resolve_imported_type_name(types, import_ctx, other) {
+                if let Some(id) = ensure_class_id(types, &resolved) {
+                    Type::class(id, vec![])
+                } else {
+                    Type::Named(resolved)
+                }
+            } else {
+                Type::Named(other.to_string())
+            }
+        }
+    };
+
+    for _ in 0..array_dims {
+        ty = Type::Array(Box::new(ty));
+    }
+
+    ty
 }
 
 fn parse_source_type(types: &mut TypeStore, source: &str) -> Type {
