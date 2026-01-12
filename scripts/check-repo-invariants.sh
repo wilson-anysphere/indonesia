@@ -334,3 +334,22 @@ for pat in "${banned_test_target_patterns[@]}"; do
     exit 1
   fi
 done
+
+# Enforce Cargo.lock reproducibility in command examples.
+#
+# Any package-scoped `cargo test` invocation should include `--locked` so CI + local runs resolve
+# the same dependency graph and fail fast when Cargo.lock is stale.
+#
+# NOTE: We intentionally keep this check narrow (only `cargo test`) to avoid false positives in
+# scripts that reference other cargo subcommands in error messages.
+bad_locked_test_examples="$(
+  git grep -n -E -- 'cargo test[^\n]*[[:space:]](-p|--package)[[:space:]]' -- \
+    ':!scripts/check-repo-invariants.sh' \
+    | grep -v -- '--locked' \
+    || true
+)"
+if [[ -n "${bad_locked_test_examples}" ]]; then
+  echo "repo invariant failed: found \`cargo test\` example(s) missing \`--locked\` (CI requires \`--locked\`):" >&2
+  echo "${bad_locked_test_examples}" >&2
+  exit 1
+fi
