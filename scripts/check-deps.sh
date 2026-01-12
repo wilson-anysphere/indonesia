@@ -18,4 +18,4 @@ trap 'rm -f "$tmp"' EXIT
 # Use `--locked` so CI + local runs agree on the resolved workspace graph.
 cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 
-cargo run -p nova-devtools -- check-deps --config crate-layers.toml --metadata-path "$tmp"
+cargo run --locked -p nova-devtools -- check-deps --config crate-layers.toml --metadata-path "$tmp"

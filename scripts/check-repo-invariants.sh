@@ -16,7 +16,7 @@ trap 'rm -f "$tmp"' EXIT
 cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 
 # Build once, then run the binary directly to avoid repeated `cargo run` overhead in CI.
-cargo build -p nova-devtools
+cargo build -p nova-devtools --locked
 
 target_dir="${CARGO_TARGET_DIR:-target}"
 bin="${target_dir}/debug/nova-devtools"
