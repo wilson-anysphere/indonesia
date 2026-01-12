@@ -2178,7 +2178,22 @@ async function sendNovaRequest<R>(
 ): Promise<R | undefined> {
   const c = await requireClient();
   if (method.startsWith('nova/')) {
-    const supported = isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, method);
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    const routedWorkspaceKey = routeWorkspaceFolderUri({
+      workspaceFolders: workspaces.map((workspace) => ({
+        name: workspace.name,
+        fsPath: workspace.uri.fsPath,
+        uri: workspace.uri.toString(),
+      })),
+      activeDocumentUri: vscode.window.activeTextEditor?.document.uri.toString(),
+      method,
+      params,
+    });
+
+    // If we can't unambiguously map the request to a workspace folder (multi-root), treat support
+    // as "unknown" so we don't incorrectly block requests when different workspace servers may
+    // advertise different capability sets.
+    const supported = routedWorkspaceKey ? isNovaRequestSupported(routedWorkspaceKey, method) : 'unknown';
     if (supported === false) {
       if (opts.allowMethodFallback) {
         throw createMethodNotFoundError(method);
