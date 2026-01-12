@@ -212,7 +212,9 @@ issues. For more details (timeouts, minimization, remote protocol fuzzers), see
 
 ```bash
 rustup toolchain install nightly --component llvm-tools-preview --component rust-src
-cargo +nightly install cargo-fuzz --locked
+# Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
+cargo install cargo-binstall --locked
+cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
 
 # Run from the repository root.
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
