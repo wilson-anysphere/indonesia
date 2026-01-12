@@ -80,18 +80,19 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Bundle schema is stable but currently Nova-specific; no cross-tool standardization.
 
 ### `nova-build`
-- **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics.
-- **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`).
+- **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics, including a background build queue/orchestrator (`BuildOrchestrator`) surfaced via `nova-lsp` (`nova/build/status`, `nova/build/diagnostics`).
+- **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`), `crates/nova-build/src/orchestrator.rs` (`BuildOrchestrator`, `BuildTaskState`, `BuildStatusSnapshot`, `BuildDiagnosticsSnapshot`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
-  - “Build status” is still stubbed at the LSP layer; no long-running build task tracking yet.
+  - Background build state/diagnostics are currently surfaced via custom `nova/*` endpoints (`nova/build/status`, `nova/build/diagnostics`) rather than being wired into Nova’s main workspace/Salsa diagnostics pipeline.
+  - Build tool invocation is still opt-in (explicit `nova/*` requests) rather than a continuously running, editor-driven build/compile service.
 
 ### `nova-build-bazel`
 - **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching).
 - **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - BSP support exists behind a feature flag but is not yet the primary integration path.
+  - BSP support exists behind the `bsp` Cargo feature; `nova-lsp` can use it (when configured, e.g. via `NOVA_BSP_PROGRAM`) to run Bazel builds and collect diagnostics, but the default metadata path is still `query`/`aquery`.
 
 ### `nova-cache`
 - **Purpose:** per-project persistent cache directory management + cache packaging (`tar.zst`).
@@ -389,7 +390,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - No async API yet (uses threads to drain stdout/stderr); callers that need cancellation must layer it externally.
 
 ### `nova-project`
-- **Purpose:** workspace discovery and project configuration (source roots, classpath, Java levels).
+- **Purpose:** workspace discovery and project configuration (source roots, classpath, Java levels), used by `nova-lsp` project metadata endpoints including `nova/projectConfiguration` and the normalized `nova/projectModel`.
 - **Key entry points:** `crates/nova-project/src/lib.rs` (`load_project`, `ProjectConfig`, `LoadOptions`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
