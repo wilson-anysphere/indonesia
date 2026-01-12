@@ -1313,14 +1313,20 @@ Notes:
 
 ---
 
-### `nova/refactor/moveMethod` (reserved; not implemented)
+### `nova/refactor/moveMethod`
 
 - **Kind:** request
 - **Stability:** experimental
 - **Rust types:** `crates/nova-lsp/src/refactor.rs` (`MoveMethodParams`), engine lives in
   `crates/nova-refactor/src/move_member.rs`
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; see `nova_lsp::MOVE_METHOD_METHOD`)
+
+Move an **instance method** from one Java class to another and update usages.
 
 #### Request params
+
+`MoveMethodParams` (camelCase):
+`{ fromClass: string, methodName: string, toClass: string }`
 
 ```json
 {
@@ -1332,22 +1338,36 @@ Notes:
 
 #### Response
 
-If/when implemented, the expected response is a standard LSP `WorkspaceEdit`.
+The response is a standard LSP `WorkspaceEdit`.
+
+Notes:
+
+- The current stdio server implementation operates on an in-memory workspace built from **open
+  documents only** (it calls `open_document_files(state)` before running the refactor). Clients must
+  ensure the relevant files are opened/synchronized first.
 
 #### Errors
 
-- Today: the request fails with `-32602` (“unknown (stateless) method: nova/refactor/moveMethod”).
+- `-32602` if params do not match the schema, or if required files/symbols cannot be found in the
+  open-document workspace snapshot.
+- `-32603` for internal errors (safe-mode, watchdog timeout, panic, serialization failures).
 
 ---
 
-### `nova/refactor/moveStaticMember` (reserved; not implemented)
+### `nova/refactor/moveStaticMember`
 
 - **Kind:** request
 - **Stability:** experimental
 - **Rust types:** `crates/nova-lsp/src/refactor.rs` (`MoveStaticMemberParams`), engine lives in
   `crates/nova-refactor/src/move_member.rs`
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; see `nova_lsp::MOVE_STATIC_MEMBER_METHOD`)
+
+Move a **static member** (method/field) from one Java class to another and update usages.
 
 #### Request params
+
+`MoveStaticMemberParams` (camelCase):
+`{ fromClass: string, memberName: string, toClass: string }`
 
 ```json
 {
@@ -1359,11 +1379,19 @@ If/when implemented, the expected response is a standard LSP `WorkspaceEdit`.
 
 #### Response
 
-If/when implemented, the expected response is a standard LSP `WorkspaceEdit`.
+The response is a standard LSP `WorkspaceEdit`.
+
+Notes:
+
+- The current stdio server implementation operates on an in-memory workspace built from **open
+  documents only** (it calls `open_document_files(state)` before running the refactor). Clients must
+  ensure the relevant files are opened/synchronized first.
 
 #### Errors
 
-- Today: the request fails with `-32602` (“unknown (stateless) method: nova/refactor/moveStaticMember”).
+- `-32602` if params do not match the schema, or if required files/symbols cannot be found in the
+  open-document workspace snapshot.
+- `-32603` for internal errors (safe-mode, watchdog timeout, panic, serialization failures).
 
 ---
 
