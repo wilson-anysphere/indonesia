@@ -1461,7 +1461,7 @@ impl Lowerer {
                 node.children()
                     .find(|child| is_statement_kind(child.kind()))
                     .and_then(|child| self.lower_stmt(&child))
-                    .or(Some(ast::Stmt::Empty(range)))
+                    .or_else(|| Some(ast::Stmt::Empty(range)))
             }
             SyntaxKind::LocalVariableDeclarationStatement => {
                 Some(ast::Stmt::LocalVar(self.lower_local_var_stmt(node)))
