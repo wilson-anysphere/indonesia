@@ -198,7 +198,10 @@ fn qualifies_as_type(name: &str) -> bool {
     matches!(
         name,
         "byte" | "short" | "int" | "long" | "float" | "double" | "boolean" | "char" | "void"
-    ) || name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+    ) || name
+        .chars()
+        .find(|&c| c != '$')
+        .is_some_and(|c| c.is_ascii_uppercase())
 }
 
 fn parse_type_ref(tokens: &[Token], mut i: usize, end: usize) -> Option<(String, Span, usize)> {
