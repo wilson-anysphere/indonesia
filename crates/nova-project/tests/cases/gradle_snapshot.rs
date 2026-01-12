@@ -7,8 +7,7 @@ use nova_project::{
 };
 
 fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
-    let build_files =
-        collect_gradle_build_files(workspace_root).expect("collect gradle build files");
+    let build_files = collect_gradle_build_files(workspace_root).expect("collect gradle build files");
     BuildFileFingerprint::from_files(workspace_root, build_files)
         .expect("compute gradle build fingerprint")
         .digest
@@ -92,12 +91,12 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     let snapshot_path = snapshot_dir.join("gradle.json");
 
     let snapshot_json = serde_json::json!({
-        "schemaVersion": 1,
-        "buildFingerprint": fingerprint,
-        "projects": [
-            { "path": ":", "projectDir": workspace_root.to_string_lossy() },
-            { "path": ":app", "projectDir": app_root.to_string_lossy() }
-        ],
+         "schemaVersion": 1,
+         "buildFingerprint": fingerprint.clone(),
+         "projects": [
+             { "path": ":", "projectDir": workspace_root.to_string_lossy() },
+             { "path": ":app", "projectDir": app_root.to_string_lossy() }
+         ],
         "javaCompileConfigs": {
             ":app": {
                 "projectDir": app_root.to_string_lossy(),
@@ -189,5 +188,30 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
             .iter()
             .any(|cp| cp.kind == ClasspathEntryKind::Jar && cp.path == jar),
         "workspace model classpath should include snapshot jar"
+    );
+
+    // Now mutate one of the extra build files that participates in the fingerprint and ensure the
+    // snapshot is rejected (fingerprint mismatch).
+    std::fs::write(workspace_root.join("deps.gradle.kts"), "// changed\n").unwrap();
+    let new_fingerprint = compute_gradle_fingerprint(workspace_root);
+    assert_ne!(
+        new_fingerprint, fingerprint,
+        "fingerprint should change after build-file modifications"
+    );
+    let project_no_snapshot =
+        load_project_with_options(workspace_root, &options).expect("reload gradle project");
+    assert!(
+        !project_no_snapshot
+            .classpath
+            .iter()
+            .any(|cp| cp.kind == ClasspathEntryKind::Jar && cp.path == jar),
+        "snapshot classpath should be ignored after build-file changes"
+    );
+    assert!(
+        !project_no_snapshot
+            .output_dirs
+            .iter()
+            .any(|out| out.kind == OutputDirKind::Main && out.path == main_out),
+        "snapshot output dirs should be ignored after build-file changes"
     );
 }
