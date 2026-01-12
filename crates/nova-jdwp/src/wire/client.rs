@@ -2140,6 +2140,14 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
         };
 
         if is_stop_event(&event) {
+            // `Vec::push` can abort the process on OOM when it needs to grow the backing buffer.
+            // Use fallible reservation so a malicious VM cannot trigger an allocation abort by
+            // stuffing a large number of stop events into a single composite packet.
+            if stop_events.len() == stop_events.capacity() {
+                stop_events.try_reserve(1).map_err(|_| {
+                    JdwpError::Protocol("unable to allocate stop event buffer".to_string())
+                })?;
+            }
             stop_events.push(event);
         } else {
             let _ = inner.events.send(event.clone());

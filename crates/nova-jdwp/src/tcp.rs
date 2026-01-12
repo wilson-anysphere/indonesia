@@ -778,6 +778,11 @@ impl TcpJdwpClient {
                     let _method_id = cursor.read_id(self.id_sizes.method_id)?;
                     let _index = cursor.read_i64()?;
 
+                    if stopped_events.len() == stopped_events.capacity() {
+                        stopped_events.try_reserve(1).map_err(|_| {
+                            JdwpError::Protocol("unable to allocate stop event buffer".to_string())
+                        })?;
+                    }
                     stopped_events.push((StopReason::Step, thread_id, request_id));
                 }
                 EVENT_KIND_BREAKPOINT => {
@@ -789,6 +794,11 @@ impl TcpJdwpClient {
                     let _method_id = cursor.read_id(self.id_sizes.method_id)?;
                     let _index = cursor.read_i64()?;
 
+                    if stopped_events.len() == stopped_events.capacity() {
+                        stopped_events.try_reserve(1).map_err(|_| {
+                            JdwpError::Protocol("unable to allocate stop event buffer".to_string())
+                        })?;
+                    }
                     stopped_events.push((StopReason::Breakpoint, thread_id, request_id));
                 }
                 EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE => {
