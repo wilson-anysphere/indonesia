@@ -1727,6 +1727,37 @@ fn resolve_method_call_demand(
             &mut expected_roots,
         );
 
+        fn find_enclosing_lambda(
+            body: &HirBody,
+            parent_expr: &[Option<HirExprId>],
+            start: HirExprId,
+        ) -> Option<HirExprId> {
+            let mut current = start;
+            while let Some(parent) = parent_expr.get(current.idx()).and_then(|p| *p) {
+                if matches!(&body.exprs[parent], HirExpr::Lambda { .. }) {
+                    return Some(parent);
+                }
+                current = parent;
+            }
+            None
+        }
+
+        fn is_descendant_of(
+            mut expr: HirExprId,
+            ancestor: HirExprId,
+            parent_expr: &[Option<HirExprId>],
+        ) -> bool {
+            while let Some(parent) = parent_expr.get(expr.idx()).and_then(|p| *p) {
+                if parent == ancestor {
+                    return true;
+                }
+                expr = parent;
+            }
+            false
+        }
+
+        let enclosing_lambda = find_enclosing_lambda(&body, &parent_expr, call_site.expr);
+
         // Choose a root expression to infer:
         // - If this call is nested inside a return expr / typed initializer expr, infer that root
         //   with the appropriate expected type.
@@ -1766,6 +1797,52 @@ fn resolve_method_call_demand(
         if expected.is_none() {
             if let Some(assign) = fallback_assignment {
                 root = assign;
+            }
+        }
+
+        // If we're resolving a call inside a lambda body, prefer inferring an enclosing expression
+        // that target-types the lambda so lambda parameter locals can be seeded from the SAM
+        // signature.
+        //
+        // This matters when the call is inside a block-bodied lambda that is itself target-typed by
+        // being passed as an argument (e.g. `use(s -> { return s.substring(1); })`) or when the
+        // call is within a typed initializer inside the lambda block (`String t = s.substring(1);`)
+        // and would otherwise become the chosen root before we reach the lambda.
+        if let Some(lambda_expr) = enclosing_lambda {
+            if is_descendant_of(root, lambda_expr, &parent_expr) {
+                if let Some(ty) = expected_roots
+                    .get(lambda_expr.idx())
+                    .and_then(|t| t.clone())
+                {
+                    // The lambda itself is directly target-typed by a statement (typed initializer
+                    // / return), so infer the lambda with that expected type.
+                    root = lambda_expr;
+                    expected = Some(ty);
+                } else if let Some(parent) = parent_expr.get(lambda_expr.idx()).and_then(|p| *p) {
+                    let mut candidate = None;
+                    match &body.exprs[parent] {
+                        HirExpr::Assign {
+                            rhs,
+                            op: AssignOp::Assign,
+                            ..
+                        } if *rhs == lambda_expr => {
+                            // Assignment conversion will pass the LHS type as the expected type for
+                            // the lambda RHS.
+                            candidate = Some(parent);
+                        }
+                        HirExpr::Call { args, .. } if args.iter().any(|a| *a == lambda_expr) => {
+                            // Overload resolution will pass the parameter type as the expected type
+                            // for the lambda argument.
+                            candidate = Some(parent);
+                        }
+                        _ => {}
+                    }
+
+                    if let Some(expr) = candidate {
+                        root = expr;
+                        expected = expected_roots.get(expr.idx()).and_then(|t| t.clone());
+                    }
+                }
             }
         }
 
