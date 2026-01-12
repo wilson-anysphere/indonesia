@@ -984,6 +984,34 @@ class C {
 }
 
 #[test]
+fn post_inc_preserves_typevar_type() {
+    let src = r#"
+class C {
+    <T extends java.lang.Integer> void m(T t) {
+        T u = t++;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `T u = t++` to type-check, got {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "invalid-inc-dec"),
+        "expected t++ to be accepted for type vars with unboxable numeric bounds, got {diags:?}"
+    );
+
+    let offset = src.find("++").expect("test source should contain ++");
+    let ty = db
+        .type_at_offset_display(file, (offset + 1) as u32)
+        .expect("expected type at offset");
+    assert_eq!(ty, "T");
+}
+
+#[test]
 fn reports_condition_not_boolean_for_if() {
     let src = r#"
 class C {

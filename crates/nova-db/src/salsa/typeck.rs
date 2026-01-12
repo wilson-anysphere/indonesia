@@ -4809,25 +4809,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec => {
                         if inner.is_errorish() {
                             inner
-                        } else {
-                            // JLS: the ++/-- expression has the type of its operand variable.
-                            //
-                            // The increment/decrement operation itself performs numeric promotion
-                            // internally, but the expression result type does *not* undergo unary
-                            // numeric promotion (`byte b; byte c = b++;` is valid Java).
-                            let is_numeric_operand = match &inner {
-                                Type::Primitive(p) => p.is_numeric(),
-                                Type::Class(nova_types::ClassType { def, .. }) => env_ro
-                                    .class(*def)
-                                    .and_then(|c| unbox_class_name(&c.name))
-                                    .is_some_and(|p| p.is_numeric()),
-                                Type::Named(name) => {
-                                    unbox_class_name(name).is_some_and(|p| p.is_numeric())
-                                }
-                                _ => false,
-                            };
-
-                            if is_numeric_operand {
+                        } else if let Some(primitive) = inner_prim {
+                            if primitive.is_numeric() {
+                                // JLS: the ++/-- expression has the type of its operand variable.
+                                //
+                                // The increment/decrement operation itself performs numeric
+                                // promotion internally, but the expression result type does *not*
+                                // undergo unary numeric promotion (`byte b; byte c = b++;` is
+                                // valid Java).
                                 inner
                             } else {
                                 self.diagnostics.push(Diagnostic::error(
@@ -4837,6 +4826,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 ));
                                 Type::Error
                             }
+                        } else {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-inc-dec",
+                                "increment/decrement requires a numeric operand",
+                                Some(self.body.exprs[*operand].range()),
+                            ));
+                            Type::Error
                         }
                     }
                 };
