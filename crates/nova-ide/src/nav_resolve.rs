@@ -1076,7 +1076,74 @@ fn is_constructor_type_context(text: &str, ident_span: Span) -> bool {
         }
     }
 
-    // After the chain, scan left over whitespace/comments and check for `new`.
+    // Type-use annotations can appear between `new` and the type:
+    //
+    // - `new @Deprecated Foo()`
+    // - `new @p.Ann(arg) Foo()`
+    //
+    // Best-effort: skip over one or more leading annotations before checking for `new`.
+    loop {
+        let mut j = skip_ws_and_comments_left(text, i);
+
+        if j == 0 {
+            i = j;
+            break;
+        }
+
+        // Skip a parenthesized annotation argument list, if present (`@Ann(...)`).
+        if bytes.get(j - 1) == Some(&b')') {
+            let close_paren_idx = j - 1;
+            let open_paren_idx = match matching_open_paren(bytes, close_paren_idx) {
+                Some(idx) => idx,
+                None => break,
+            };
+            j = open_paren_idx;
+            j = skip_ws_and_comments_left(text, j);
+        }
+
+        // Parse an identifier (or qualified identifier chain) before `j`.
+        let name_end = j;
+        let mut name_start = name_end;
+        while name_start > 0 && is_ident_continue(bytes[name_start - 1]) {
+            name_start -= 1;
+        }
+        if name_start == name_end {
+            i = j;
+            break;
+        }
+
+        // Consume preceding `.ident` segments, allowing whitespace/comments around `.`.
+        loop {
+            let mut k = skip_ws_and_comments_left(text, name_start);
+            if k == 0 || bytes[k - 1] != b'.' {
+                name_start = k;
+                break;
+            }
+            k -= 1;
+            k = skip_ws_and_comments_left(text, k);
+
+            let seg_end = k;
+            while k > 0 && is_ident_continue(bytes[k - 1]) {
+                k -= 1;
+            }
+            if k == seg_end {
+                return false;
+            }
+            name_start = k;
+        }
+
+        // Look for `@` immediately preceding the annotation name (allowing whitespace/comments).
+        let k = skip_ws_and_comments_left(text, name_start);
+        if k > 0 && bytes[k - 1] == b'@' {
+            i = k - 1;
+            continue;
+        }
+
+        i = j;
+        break;
+    }
+
+    // After the chain (and any annotations), scan left over whitespace/comments and check for `new`.
     i = skip_ws_and_comments_left(text, i);
 
     if i < 3 || &bytes[i - 3..i] != b"new" {
