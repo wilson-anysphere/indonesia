@@ -549,6 +549,11 @@ fn ast_formatting_is_idempotent_on_selected_fixtures() {
 }
 
 #[test]
+fn ast_formatting_is_idempotent_on_broken_fixture() {
+    assert_ast_idempotent(include_str!("fixtures/broken_code.java"));
+}
+
+#[test]
 fn ast_formatting_is_idempotent() {
     assert_ast_idempotent(
         r#"

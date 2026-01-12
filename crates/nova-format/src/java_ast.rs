@@ -16,7 +16,7 @@ use crate::{ends_with_line_break, minimal_text_edits, FormatConfig, NewlineStyle
 pub fn format_java_ast(parse: &JavaParseResult, source: &str, config: &FormatConfig) -> String {
     let newline = NewlineStyle::detect(source);
     let input_has_final_newline = ends_with_line_break(source);
-    let mut out = format_compilation_unit(parse, config, newline);
+    let mut out = format_compilation_unit(parse, source, config, newline);
 
     finalize_output(&mut out, config, input_has_final_newline, newline);
 
@@ -35,6 +35,7 @@ pub fn edits_for_formatting_ast(
 
 fn format_compilation_unit(
     parse: &JavaParseResult,
+    source: &str,
     config: &FormatConfig,
     newline: NewlineStyle,
 ) -> String {
@@ -61,6 +62,24 @@ fn format_compilation_unit(
             // aggressively collapse user-separated top-level items.
             state.pending_blank_line |= count_line_breaks(token.text()) >= 2;
             continue;
+        }
+
+        if is_unterminated_lex_error(token) {
+            // If the lexer encountered an unterminated string/comment/text block, formatting can
+            // change the tokenization boundary on subsequent passes (e.g. by removing a newline
+            // that terminated the recovery token). Stop formatting and preserve the remainder of
+            // the file verbatim to keep the formatter deterministic on broken input.
+            let start = u32::from(token.text_range().start()) as usize;
+            if let Some(rest) = source.get(start..) {
+                state.write_indent(&mut out);
+                if needs_space_between(state.last_sig.as_ref(), token.kind(), token.text()) {
+                    state.ensure_space(&mut out);
+                }
+                out.push_str(rest);
+            } else {
+                state.write_token(&mut out, &tokens, token_idx, token, None);
+            }
+            return out;
         }
 
         let at_top_level = state.indent_level == 0 && state.paren_depth == 0;
@@ -148,6 +167,14 @@ fn lookahead_import_is_static(tokens: &[SyntaxToken], mut idx: usize) -> bool {
         }
     }
     false
+}
+
+fn is_unterminated_lex_error(token: &SyntaxToken) -> bool {
+    if token.kind() != SyntaxKind::Error {
+        return false;
+    }
+    let text = token.text();
+    text.starts_with("\"\"\"") || text.starts_with('"') || text.starts_with('\'') || text.starts_with("/*")
 }
 
 fn next_significant(tokens: &[SyntaxToken], mut idx: usize) -> Option<&SyntaxToken> {
