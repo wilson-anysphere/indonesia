@@ -604,6 +604,48 @@ record Point(final int x, int y) {
 }
 
 #[test]
+fn lower_record_compact_constructor_params_with_generic_type_arguments() {
+    let source = r#"
+record R(java.util.Map<String, Integer> m) {
+    R { }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.constructors.len(), 1);
+    let ctor = tree.constructors.values().next().expect("constructor");
+    assert_eq!(ctor.params.len(), 1);
+    assert_eq!(ctor.params[0].ty, "java.util.Map<String,Integer>");
+    assert_eq!(ctor.params[0].name, "m");
+}
+
+#[test]
+fn lower_record_compact_constructor_params_with_nested_closing_angles() {
+    let source = r#"
+record R(java.util.Map<String, java.util.List<Integer>> m) {
+    R { }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.constructors.len(), 1);
+    let ctor = tree.constructors.values().next().expect("constructor");
+    assert_eq!(ctor.params.len(), 1);
+    assert_eq!(ctor.params[0].ty, "java.util.Map<String,java.util.List<Integer>>");
+    assert_eq!(ctor.params[0].name, "m");
+}
+
+#[test]
 fn lower_type_header_clauses_and_generics() {
     let source = r#"
 sealed class C<T> extends Base implements I, J permits A, B {}
