@@ -115,6 +115,12 @@ struct BreakpointEntry {
     request_id: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedLocation {
+    line: i32,
+    location: Location,
+}
+
 #[derive(Debug, Clone)]
 struct BreakpointMetadata {
     condition: Option<String>,
@@ -726,7 +732,7 @@ impl Debugger {
         for req in requests {
             check_cancel(cancel)?;
             let spec_line = req.spec.line;
-            let requested_line = req.requested_line;
+            let _requested_line = req.requested_line;
             let condition = normalize_breakpoint_string(req.spec.condition);
             let mut hit_condition = normalize_breakpoint_string(req.spec.hit_condition);
             let log_message = normalize_breakpoint_string(req.spec.log_message);
@@ -751,22 +757,17 @@ impl Debugger {
             let mut first_request_id: Option<i32> = None;
             let mut last_error: Option<String> = None;
             let mut saw_location = false;
+            let mut first_resolved_line = None;
+            let mut verified_resolved_line = None;
 
             for class in &class_candidates {
                 check_cancel(cancel)?;
-                let location = match self.location_for_line(cancel, class, spec_line).await? {
-                    Some(location) => Some(location),
-                    None if requested_line != spec_line => {
-                        self.location_for_line(cancel, class, requested_line)
-                            .await?
-                    }
-                    None => None,
-                };
-
-                match location {
-                    Some(location) => {
+                match self.location_for_line(cancel, class, spec_line).await? {
+                    Some(resolved) => {
+                        first_resolved_line.get_or_insert(resolved.line);
                         saw_location = true;
-                        let mut modifiers = vec![EventModifier::LocationOnly { location }];
+                        let mut modifiers =
+                            vec![EventModifier::LocationOnly { location: resolved.location }];
                         if let Some(count) = count_modifier {
                             modifiers.push(EventModifier::Count { count });
                         }
@@ -774,10 +775,11 @@ impl Debugger {
                             cancel,
                             self.jdwp.event_request_set(2, suspend_policy, modifiers),
                         )
-                        .await
+                            .await
                         {
                             Ok(request_id) => {
                                 verified = true;
+                                verified_resolved_line.get_or_insert(resolved.line);
                                 first_request_id.get_or_insert(request_id);
 
                                 all_entries.push(BreakpointEntry { request_id });
@@ -803,17 +805,21 @@ impl Debugger {
                 }
             }
             if verified {
+                let line = verified_resolved_line
+                    .or(first_resolved_line)
+                    .unwrap_or(spec_line);
                 let mut obj = serde_json::Map::new();
                 obj.insert("verified".to_string(), json!(true));
-                obj.insert("line".to_string(), json!(spec_line));
+                obj.insert("line".to_string(), json!(line));
                 if let Some(id) = first_request_id {
                     obj.insert("id".to_string(), json!(id));
                 }
                 results.push(Value::Object(obj));
             } else if saw_location {
+                let line = first_resolved_line.unwrap_or(spec_line);
                 results.push(json!({
                     "verified": false,
-                    "line": spec_line,
+                    "line": line,
                     "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
                 }));
             } else {
@@ -2606,7 +2612,7 @@ impl Debugger {
         cancel: &CancellationToken,
         class: &ClassInfo,
         line: i32,
-    ) -> Result<Option<Location>> {
+    ) -> Result<Option<ResolvedLocation>> {
         check_cancel(cancel)?;
         let methods = if let Some(methods) = self.methods_cache.get(&class.type_id) {
             methods.clone()
@@ -2617,34 +2623,81 @@ impl Debugger {
             methods
         };
 
+        let mut line_candidates: HashMap<i32, (u64, u64)> = HashMap::new();
+
         for method in methods {
             check_cancel(cancel)?;
-            let table = match cancellable_jdwp(
-                cancel,
-                self.jdwp.method_line_table(class.type_id, method.method_id),
-            )
-            .await
-            {
-                Ok(table) => Some(table),
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_) => None,
+            let key = (class.type_id, method.method_id);
+            let table = if let Some(t) = self.line_table_cache.get(&key) {
+                Some(t.clone())
+            } else {
+                match cancellable_jdwp(
+                    cancel,
+                    self.jdwp.method_line_table(class.type_id, method.method_id),
+                )
+                .await
+                {
+                    Ok(table) => {
+                        self.line_table_cache.insert(key, table.clone());
+                        Some(table)
+                    }
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_) => None,
+                }
             };
-            let Some(table) = table else {
-                continue;
-            };
+            let Some(table) = table else { continue };
+
             for entry in &table.lines {
                 check_cancel(cancel)?;
-                if entry.line == line {
-                    return Ok(Some(Location {
-                        type_tag: class.ref_type_tag,
-                        class_id: class.type_id,
-                        method_id: method.method_id,
-                        index: entry.code_index,
-                    }));
+                if entry.line <= 0 {
+                    continue;
                 }
+
+                line_candidates
+                    .entry(entry.line)
+                    .and_modify(|(best_method, best_index)| {
+                        if entry.code_index < *best_index
+                            || (entry.code_index == *best_index && method.method_id < *best_method)
+                        {
+                            *best_method = method.method_id;
+                            *best_index = entry.code_index;
+                        }
+                    })
+                    .or_insert((method.method_id, entry.code_index));
             }
         }
-        Ok(None)
+
+        let mut best: Option<(i64, bool, i32, u64, u64)> = None;
+        for (candidate_line, (method_id, code_index)) in line_candidates {
+            let distance = (candidate_line as i64 - line as i64).abs();
+            let is_previous_line = candidate_line < line;
+
+            let candidate_key = (distance, is_previous_line, candidate_line);
+            let replace = match best {
+                None => true,
+                Some((best_distance, best_is_previous, best_line, _, _)) => {
+                    candidate_key < (best_distance, best_is_previous, best_line)
+                }
+            };
+
+            if replace {
+                best = Some((distance, is_previous_line, candidate_line, method_id, code_index));
+            }
+        }
+
+        let Some((_distance, _is_previous, resolved_line, method_id, code_index)) = best else {
+            return Ok(None);
+        };
+
+        Ok(Some(ResolvedLocation {
+            line: resolved_line,
+            location: Location {
+                type_tag: class.ref_type_tag,
+                class_id: class.type_id,
+                method_id,
+                index: code_index,
+            },
+        }))
     }
 
     async fn on_class_prepare(&mut self, ref_type_tag: u8, type_id: ReferenceTypeId) -> Result<()> {
@@ -2691,8 +2744,9 @@ impl Debugger {
                     JDWP_SUSPEND_POLICY_EVENT_THREAD
                 };
 
-                if let Some(location) = self.location_for_line(&cancel, &class, spec_line).await? {
-                    let mut modifiers = vec![EventModifier::LocationOnly { location }];
+                if let Some(resolved) = self.location_for_line(&cancel, &class, spec_line).await? {
+                    let mut modifiers =
+                        vec![EventModifier::LocationOnly { location: resolved.location }];
                     if let Some(count) = count_modifier {
                         modifiers.push(EventModifier::Count { count });
                     }
