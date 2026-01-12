@@ -185,6 +185,49 @@ class C {}
 }
 
 #[test]
+fn unresolved_static_import_produces_diagnostic_with_span() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    let text = r#"
+package p;
+import static java.lang.Math.doesNotExist;
+
+class C {}
+"#;
+    set_file(&mut db, project, file, "src/C.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| {
+            d.code.as_ref() == "unresolved-import"
+                && d.message.contains("static java.lang.Math.doesNotExist")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected unresolved-import diagnostic for static java.lang.Math.doesNotExist, got {diags:?}"
+            )
+        });
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("java.lang.Math.doesNotExist"),
+        "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+}
+
+#[test]
 fn body_only_edit_does_not_recompute_resolution() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
@@ -521,6 +564,82 @@ class C {
         1,
         "import map should be reused via early-cutoff when only method bodies change"
     );
+}
+
+#[test]
+fn ambiguous_static_single_imports_produce_diagnostics() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+    let c_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/a/Util.java",
+        r#"
+package a;
+public class Util {
+    public static int max() { return 0; }
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/b/Util.java",
+        r#"
+package b;
+public class Util {
+    public static int max() { return 0; }
+}
+"#,
+    );
+
+    let text = r#"
+package c;
+import static a.Util.max;
+import static b.Util.max;
+
+class C {}
+"#;
+    set_file(&mut db, project, c_file, "src/c/C.java", text);
+    db.set_project_files(project, Arc::new(vec![a_file, b_file, c_file]));
+
+    let diags = db.import_diagnostics(c_file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "ambiguous-import")
+        .unwrap_or_else(|| panic!("expected ambiguous-import diagnostic, got {diags:?}"));
+    assert!(
+        diag.message.contains("`max`")
+            && diag.message.contains("a.Util.max")
+            && diag.message.contains("b.Util.max"),
+        "expected message to mention max and both candidates, got: {:?}",
+        diag.message
+    );
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("import static a.Util.max"),
+        "expected diagnostic span to cover the first import; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+
+    let scopes = db.scope_graph(c_file);
+    let resolved = db.resolve_name(c_file, scopes.file_scope, Name::from("max"));
+    assert_eq!(resolved, None);
 }
 
 #[test]
