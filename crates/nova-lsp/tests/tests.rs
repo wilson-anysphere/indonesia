@@ -103,6 +103,8 @@ mod stdio_jdk_type_definition;
 mod stdio_lifecycle;
 #[path = "suite/stdio_misc_language_features.rs"]
 mod stdio_misc_language_features;
+#[path = "suite/stdio_publish_diagnostics.rs"]
+mod stdio_publish_diagnostics;
 #[path = "suite/stdio_navigation.rs"]
 mod stdio_navigation;
 #[path = "suite/stdio_organize_imports.rs"]

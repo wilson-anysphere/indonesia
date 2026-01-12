@@ -29,7 +29,7 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │  LANGUAGE FEATURES                                               │
 │  ✓ Completion (+ completionItem/resolve)                         │
 │  ✓ Go to definition / declaration / type definition / impl      │
-│  ✓ Diagnostics (pull model: textDocument/diagnostic)            │
+│  ✓ Diagnostics (push: publishDiagnostics; pull: textDocument/diagnostic) │
 │  ✓ Document symbol                                              │
 │  ✓ Workspace symbol                                             │
 │  ✓ Code action (+ codeAction/resolve)                            │
@@ -69,7 +69,7 @@ Notes:
 
 - The server currently implements `$/cancelRequest` and uses request-scoped cancellation tokens internally.
 - Workspace folders are supported, but the stdio server currently treats the first workspace folder as the active project root (best-effort multi-root).
-- Diagnostics are provided via the LSP 3.17 **pull** model (`textDocument/diagnostic`). The server does not currently publish `textDocument/publishDiagnostics`.
+- Diagnostics are available via the LSP 3.17 **pull** model (`textDocument/diagnostic`) and are also pushed via `textDocument/publishDiagnostics` after document changes for broad editor compatibility.
 - The stdio server requests standard file-operation notifications via `initializeResult.capabilities.workspace.fileOperations` and supports a fallback `nova/workspace/renamePath` notification for clients that cannot send `workspace/didRenameFiles` (see `protocol-extensions.md`). Editor clients should prefer sending the standard file-operation notifications through their LSP client library (e.g. `vscode-languageclient`'s `fileOperations` feature) rather than manually forwarding editor file events, to avoid duplicate notifications.
 - `workspace/didChangeWatchedFiles` is handled, but the server does not dynamically register file watchers today; clients must configure watchers on their side if they want to send these notifications.
 - OS file watching for the workspace engine (used by `nova` CLI / `nova-workspace`) is implemented in `nova-vfs` behind `watch-notify`. See [`file-watching.md`](file-watching.md) for the watcher layering and deterministic testing guidance.

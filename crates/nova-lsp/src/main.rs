@@ -492,6 +492,7 @@ fn main() -> std::io::Result<()> {
                 }
                 flush_memory_status_notifications(&client, &mut state)?;
                 flush_safe_mode_notifications(&client, &mut state)?;
+                flush_publish_diagnostics(&client, &mut state)?;
             }
             IncomingMessage::Notification(notification) => {
                 let method = notification.method.clone();
@@ -534,6 +535,7 @@ fn main() -> std::io::Result<()> {
                 }
                 flush_memory_status_notifications(&client, &mut state)?;
                 flush_safe_mode_notifications(&client, &mut state)?;
+                flush_publish_diagnostics(&client, &mut state)?;
             }
             IncomingMessage::Response(_response) => {
                 // Best-effort: ignore server->client responses (we do not await them today).
@@ -1424,6 +1426,11 @@ impl SemanticSearchWorkspaceIndexStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingPublishDiagnosticsAction {
+    Compute,
+    Clear,
+}
 struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
@@ -1457,6 +1464,7 @@ struct ServerState {
     last_safe_mode_reason: Option<&'static str>,
     distributed_cli: Option<DistributedCliConfig>,
     distributed: Option<DistributedServerState>,
+    pending_publish_diagnostics: HashMap<LspUri, PendingPublishDiagnosticsAction>,
 }
 
 struct DistributedServerState {
@@ -1643,6 +1651,7 @@ impl ServerState {
             last_safe_mode_reason: None,
             distributed_cli: None,
             distributed: None,
+            pending_publish_diagnostics: HashMap::new(),
         };
         // Register Salsa memo eviction with the server's memory manager so memoized query results
         // cannot grow unbounded in long-lived databases.
@@ -2364,6 +2373,26 @@ impl ServerState {
         let id = self.next_outgoing_request_id;
         self.next_outgoing_request_id = self.next_outgoing_request_id.saturating_add(1);
         format!("nova:{id}")
+    }
+
+    fn queue_publish_diagnostics(&mut self, uri: LspUri) {
+        use std::collections::hash_map::Entry;
+
+        match self.pending_publish_diagnostics.entry(uri) {
+            Entry::Vacant(entry) => {
+                entry.insert(PendingPublishDiagnosticsAction::Compute);
+            }
+            Entry::Occupied(mut entry) => {
+                if *entry.get() != PendingPublishDiagnosticsAction::Clear {
+                    entry.insert(PendingPublishDiagnosticsAction::Compute);
+                }
+            }
+        }
+    }
+
+    fn queue_clear_diagnostics(&mut self, uri: LspUri) {
+        self.pending_publish_diagnostics
+            .insert(uri, PendingPublishDiagnosticsAction::Clear);
     }
 }
 
@@ -3632,6 +3661,7 @@ fn handle_notification(
                 .unwrap_or(uri_string);
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
+            state.queue_publish_diagnostics(uri);
         }
         "textDocument/didChange" => {
             let Ok(params) =
@@ -3680,6 +3710,7 @@ fn handle_notification(
                 .unwrap_or_else(|| uri_string);
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
+            state.queue_publish_diagnostics(params.text_document.uri);
         }
         "textDocument/willSave" => {
             let Ok(_params) =
@@ -3732,6 +3763,9 @@ fn handle_notification(
             let canonical_uri = path.to_uri().unwrap_or(uri_string);
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
+            if is_open {
+                state.queue_publish_diagnostics(uri);
+            }
         }
         "textDocument/didClose" => {
             let Ok(params) =
@@ -3748,6 +3782,7 @@ fn handle_notification(
             state.semantic_search_sync_file_id(file_id);
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
+            state.queue_clear_diagnostics(params.text_document.uri);
         }
         "workspace/didChangeWatchedFiles" => {
             let Ok(params) = serde_json::from_value::<LspDidChangeWatchedFilesParams>(params)
@@ -4083,6 +4118,101 @@ fn flush_safe_mode_notifications(
     .unwrap_or(serde_json::Value::Null);
     out.send_notification(nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION, params)?;
     Ok(())
+}
+
+fn flush_publish_diagnostics(client: &LspClient, state: &mut ServerState) -> std::io::Result<()> {
+    // LSP lifecycle: after `shutdown`, the client should only send `exit`. Avoid emitting new
+    // diagnostics during teardown (and drop any queued updates).
+    if state.shutdown_requested {
+        state.pending_publish_diagnostics.clear();
+        return Ok(());
+    }
+
+    if state.pending_publish_diagnostics.is_empty() {
+        return Ok(());
+    }
+
+    let pending = std::mem::take(&mut state.pending_publish_diagnostics);
+    for (uri, action) in pending {
+        let diagnostics = match action {
+            PendingPublishDiagnosticsAction::Clear => Vec::new(),
+            PendingPublishDiagnosticsAction::Compute => {
+                let cancel = CancellationToken::new();
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let file_id = state.analysis.ensure_loaded(&uri);
+                    publish_diagnostics_for_file(state, file_id, cancel)
+                })) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        tracing::error!(
+                            target = "nova.lsp",
+                            uri = uri.as_str(),
+                            "panic while computing publishDiagnostics"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+        };
+
+        let params = lsp_types::PublishDiagnosticsParams {
+            uri,
+            diagnostics,
+            version: None,
+        };
+        let params = serde_json::to_value(params).unwrap_or(serde_json::Value::Null);
+        client.notify("textDocument/publishDiagnostics", params)?;
+    }
+
+    Ok(())
+}
+
+fn publish_diagnostics_for_file(
+    state: &mut ServerState,
+    file_id: DbFileId,
+    cancel: CancellationToken,
+) -> Vec<lsp_types::Diagnostic> {
+    if !state.analysis.exists(file_id) {
+        return Vec::new();
+    }
+
+    let mut diagnostics = nova_lsp::diagnostics(&state.analysis, file_id);
+
+    let text = state.analysis.file_content(file_id).to_string();
+    let path = state.analysis.file_path(file_id).map(|p| p.to_path_buf());
+    let ext_db = Arc::new(SingleFileDb::new(file_id, path, text.clone()));
+    let ide_extensions = IdeExtensions::with_registry(
+        ext_db,
+        Arc::clone(&state.config),
+        nova_ext::ProjectId::new(0),
+        state.extensions_registry.clone(),
+    );
+    let ext_diags = ide_extensions.diagnostics(cancel, file_id);
+    diagnostics.extend(ext_diags.into_iter().map(|d| lsp_types::Diagnostic {
+        range: d
+            .span
+            .map(|span| lsp_types::Range {
+                start: offset_to_position_utf16(&text, span.start),
+                end: offset_to_position_utf16(&text, span.end),
+            })
+            .unwrap_or_else(|| {
+                lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(0, 0),
+                )
+            }),
+        severity: Some(match d.severity {
+            nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+            nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+            nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+        }),
+        code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+        source: Some("nova".into()),
+        message: d.message,
+        ..lsp_types::Diagnostic::default()
+    }));
+
+    diagnostics
 }
 
 #[derive(Debug, Clone, Deserialize)]
