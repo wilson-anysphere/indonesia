@@ -396,8 +396,12 @@ X-Other: also-ignored\n";
         let root = tmp.path();
         let src = root.join("src/main/java");
         std::fs::create_dir_all(&src).unwrap();
-        assert!(!main_source_roots_have_module_info(&[src.clone()]));
+        assert!(!main_source_roots_have_module_info(std::slice::from_ref(
+            &src
+        )));
         std::fs::write(src.join("module-info.java"), "module demo {}".as_bytes()).unwrap();
-        assert!(main_source_roots_have_module_info(&[src]));
+        assert!(main_source_roots_have_module_info(std::slice::from_ref(
+            &src
+        )));
     }
 }

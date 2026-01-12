@@ -18,10 +18,7 @@ fn maven_compiler_arg_contains_enable_preview(arg: &str) -> bool {
 }
 
 fn maven_compiler_arg_looks_like_jpms(arg: &str) -> bool {
-    compiler_arg_looks_like_jpms(arg)
-        || arg
-            .split_whitespace()
-            .any(|tok| compiler_arg_looks_like_jpms(tok))
+    compiler_arg_looks_like_jpms(arg) || arg.split_whitespace().any(compiler_arg_looks_like_jpms)
 }
 
 #[derive(Debug, Clone)]
@@ -1106,7 +1103,7 @@ fn find_maven_compiler_plugin<'a, 'i>(
         if let Some(plugin) = plugins.children().find(|n| {
             n.is_element()
                 && n.has_tag_name("plugin")
-                && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
+                && child_text(n, "artifactId").as_deref() == Some("maven-compiler-plugin")
         }) {
             return Some(plugin);
         }
@@ -1117,7 +1114,7 @@ fn find_maven_compiler_plugin<'a, 'i>(
             if let Some(plugin) = plugins.children().find(|n| {
                 n.is_element()
                     && n.has_tag_name("plugin")
-                    && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
+                    && child_text(n, "artifactId").as_deref() == Some("maven-compiler-plugin")
             }) {
                 return Some(plugin);
             }
@@ -1734,8 +1731,10 @@ mod tests {
 
     #[test]
     fn help_evaluate_args_injects_defaults_when_missing() {
-        let mut cfg = MavenConfig::default();
-        cfg.classpath_args = vec!["-Pdemo".into()];
+        let cfg = MavenConfig {
+            classpath_args: vec!["-Pdemo".into()],
+            ..MavenConfig::default()
+        };
         let build = MavenBuild::new(cfg);
         let args = build.help_evaluate_args("project.compileSourceRoots");
         assert_eq!(
@@ -1752,14 +1751,16 @@ mod tests {
 
     #[test]
     fn help_evaluate_args_dedupes_multiple_expression_flags() {
-        let mut cfg = MavenConfig::default();
-        cfg.classpath_args = vec![
-            "-q".into(),
-            "-DforceStdout".into(),
-            "-Dexpression=foo".into(),
-            "-Dexpression=bar".into(),
-            "help:evaluate".into(),
-        ];
+        let cfg = MavenConfig {
+            classpath_args: vec![
+                "-q".into(),
+                "-DforceStdout".into(),
+                "-Dexpression=foo".into(),
+                "-Dexpression=bar".into(),
+                "help:evaluate".into(),
+            ],
+            ..MavenConfig::default()
+        };
         let build = MavenBuild::new(cfg);
         let args = build.help_evaluate_args("project.build.outputDirectory");
         let expr_count = args
@@ -1789,9 +1790,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
 
-        let mut cfg = MavenConfig::default();
-        cfg.prefer_wrapper = true;
-        cfg.mvn_path = PathBuf::from("/custom/mvn");
+        let cfg = MavenConfig {
+            mvn_path: PathBuf::from("/custom/mvn"),
+            ..MavenConfig::default()
+        };
 
         let build = MavenBuild::new(cfg.clone());
         assert_eq!(build.mvn_executable(root), cfg.mvn_path);

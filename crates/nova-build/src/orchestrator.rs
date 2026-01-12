@@ -6,7 +6,7 @@ use nova_process::CancellationToken;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 pub type BuildTaskId = u64;
 
@@ -136,14 +136,12 @@ struct BuildOrchestratorState {
 struct QueuedBuild {
     id: BuildTaskId,
     request: BuildRequest,
-    queued_at: SystemTime,
 }
 
 #[derive(Debug)]
 struct RunningBuild {
     id: BuildTaskId,
     request: BuildRequest,
-    started_at: SystemTime,
     cancel: CancellationToken,
 }
 
@@ -152,8 +150,6 @@ struct CompletedBuild {
     id: BuildTaskId,
     request: BuildRequest,
     state: BuildTaskState,
-    started_at: SystemTime,
-    finished_at: SystemTime,
     result: Option<BuildResult>,
     error: Option<String>,
 }
@@ -230,7 +226,6 @@ impl BuildOrchestrator {
         state.queue.push_back(QueuedBuild {
             id,
             request: request.clone(),
-            queued_at: SystemTime::now(),
         });
         self.inner.wake.notify_all();
         id
@@ -354,18 +349,16 @@ fn worker_loop(inner: Arc<BuildOrchestratorInner>) {
             };
 
             let cancel = CancellationToken::new();
-            let started_at = SystemTime::now();
             state.running = Some(RunningBuild {
                 id: queued.id,
                 request: queued.request.clone(),
-                started_at,
                 cancel: cancel.clone(),
             });
 
             (queued.id, queued.request)
         };
 
-        let (started_at, cancel) = {
+        let cancel = {
             let state = inner
                 .state
                 .lock()
@@ -374,11 +367,10 @@ fn worker_loop(inner: Arc<BuildOrchestratorInner>) {
                 .running
                 .as_ref()
                 .expect("running build should be populated");
-            (running.started_at, running.cancel.clone())
+            running.cancel.clone()
         };
 
         let (state, result, error) = run_build(&inner, &request, cancel.clone());
-        let finished_at = SystemTime::now();
 
         let mut shared = inner
             .state
@@ -389,8 +381,6 @@ fn worker_loop(inner: Arc<BuildOrchestratorInner>) {
             id,
             request,
             state,
-            started_at,
-            finished_at,
             result,
             error,
         });

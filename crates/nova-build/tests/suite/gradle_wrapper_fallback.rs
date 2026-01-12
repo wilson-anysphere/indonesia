@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use nova_build::{BuildCache, CommandOutput, CommandRunner, GradleBuild, GradleConfig};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;

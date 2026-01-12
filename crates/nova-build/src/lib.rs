@@ -107,7 +107,7 @@ impl Classpath {
 /// This is intended to be sufficiently complete for IDE-like use cases (classpath,
 /// source roots, output directories, language level) while still being cheap to
 /// compute via build tool integration.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct JavaCompileConfig {
     pub compile_classpath: Vec<PathBuf>,
     pub test_classpath: Vec<PathBuf>,
@@ -122,24 +122,6 @@ pub struct JavaCompileConfig {
     pub release: Option<String>,
     /// Best-effort preview flag (e.g. `--enable-preview`).
     pub enable_preview: bool,
-}
-
-impl Default for JavaCompileConfig {
-    fn default() -> Self {
-        Self {
-            compile_classpath: Vec::new(),
-            test_classpath: Vec::new(),
-            module_path: Vec::new(),
-            main_source_roots: Vec::new(),
-            test_source_roots: Vec::new(),
-            main_output_dir: None,
-            test_output_dir: None,
-            source: None,
-            target: None,
-            release: None,
-            enable_preview: false,
-        }
-    }
 }
 
 impl JavaCompileConfig {

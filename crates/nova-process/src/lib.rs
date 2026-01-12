@@ -278,7 +278,7 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
 
     #[cfg(unix)]
     {
-        return run_command_spec_unix(child, stdout, stderr, opts);
+        run_command_spec_unix(child, stdout, stderr, opts)
     }
 
     #[cfg(not(unix))]
@@ -557,7 +557,9 @@ fn run_command_spec_unix(
                 }
             }
         } else if !sigkill_sent {
-            let started = terminate_started_at.expect("termination start set");
+            let Some(started) = terminate_started_at else {
+                unreachable!("terminate_started_at should be set while waiting for SIGKILL grace")
+            };
             if started.elapsed() >= opts.kill_grace {
                 sigkill_sent = true;
                 signal_process_group(child.id() as i32, libc::SIGKILL);

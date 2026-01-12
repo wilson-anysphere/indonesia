@@ -368,23 +368,24 @@ impl GradleBuild {
         // Optimization: for multi-project builds, fetch all module configs up-front when a
         // workspace-level query is requested. This avoids first running the root-only task and
         // then falling back to the batch task for aggregator roots.
-        if project_path.is_none() && gradle_settings_suggest_multi_project(project_root) {
-            if self.java_compile_configs_all(project_root, cache).is_ok() {
-                if let Some(cached) = cache.get_module(
-                    project_root,
-                    BuildSystemKind::Gradle,
-                    &fingerprint,
-                    module_key,
-                )? {
-                    if let Some(cfg) = cached.java_compile_config {
-                        return Ok(cfg);
-                    }
-                    if let Some(entries) = cached.classpath {
-                        return Ok(JavaCompileConfig {
-                            compile_classpath: entries,
-                            ..JavaCompileConfig::default()
-                        });
-                    }
+        if project_path.is_none()
+            && gradle_settings_suggest_multi_project(project_root)
+            && self.java_compile_configs_all(project_root, cache).is_ok()
+        {
+            if let Some(cached) = cache.get_module(
+                project_root,
+                BuildSystemKind::Gradle,
+                &fingerprint,
+                module_key,
+            )? {
+                if let Some(cfg) = cached.java_compile_config {
+                    return Ok(cfg);
+                }
+                if let Some(entries) = cached.classpath {
+                    return Ok(JavaCompileConfig {
+                        compile_classpath: entries,
+                        ..JavaCompileConfig::default()
+                    });
                 }
             }
         }
@@ -1717,8 +1718,6 @@ fn parse_gradle_annotation_processing_json(output: &str) -> Result<GradleAnnotat
 #[serde(rename_all = "camelCase")]
 struct GradleAnnotationProcessingJson {
     #[serde(default)]
-    project_path: Option<String>,
-    #[serde(default)]
     project_dir: Option<String>,
     #[serde(default)]
     main: Option<GradleJavaCompileAptJson>,
@@ -1756,17 +1755,24 @@ fn extract_json_payload(output: &str) -> Option<&str> {
 }
 
 fn annotation_processing_from_gradle(json: GradleJavaCompileAptJson) -> AnnotationProcessingConfig {
-    let mut config = AnnotationProcessingConfig::default();
-    config.processor_path = json
-        .annotation_processor_path
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    config.compiler_args = json.compiler_args.clone();
-    config.generated_sources_dir = json.generated_sources_dir.map(PathBuf::from);
+    let GradleJavaCompileAptJson {
+        annotation_processor_path,
+        compiler_args,
+        generated_sources_dir,
+    } = json;
+
+    let mut config = AnnotationProcessingConfig {
+        processor_path: annotation_processor_path
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+        compiler_args: compiler_args.clone(),
+        generated_sources_dir: generated_sources_dir.map(PathBuf::from),
+        ..AnnotationProcessingConfig::default()
+    };
 
     let mut proc_mode = None::<String>;
-    let mut compiler_args = json.compiler_args.into_iter().peekable();
+    let mut compiler_args = compiler_args.into_iter().peekable();
     while let Some(arg) = compiler_args.next() {
         match arg.as_str() {
             "-processor" => {
@@ -2550,12 +2556,9 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
-    let file_name = dest.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "destination path has no file name",
-        )
-    })?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {

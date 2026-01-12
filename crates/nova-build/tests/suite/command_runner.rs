@@ -74,12 +74,10 @@ impl CommandRunner for RoutingCommandRunner {
         });
 
         let task = args.last().cloned().unwrap_or_default();
-        self.outputs.get(&task).cloned().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("unexpected gradle task {task}"),
-            )
-        })
+        self.outputs
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| std::io::Error::other(format!("unexpected gradle task {task}")))
     }
 }
 

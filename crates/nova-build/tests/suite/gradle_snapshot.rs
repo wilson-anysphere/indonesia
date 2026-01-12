@@ -180,12 +180,23 @@ NOVA_JSON_END
     assert_eq!(cfg.release.as_deref(), Some("21"));
 
     assert!(cfg.main_source_roots.contains(&app_src));
+    assert!(cfg.test_source_roots.is_empty());
     assert_eq!(cfg.main_output_dir.as_ref(), Some(&main_output));
     assert_eq!(cfg.test_output_dir.as_ref(), Some(&test_output));
 
     assert!(cfg.compile_classpath.contains(&main_output));
     assert!(cfg.compile_classpath.contains(&dep_jar));
-    assert!(snapshot.projects.iter().any(|p| p.path == ":app"));
+
+    assert!(cfg.test_classpath.contains(&test_output));
+    assert!(cfg.test_classpath.contains(&main_output));
+    assert!(cfg.module_path.is_empty());
+
+    let app_project = snapshot
+        .projects
+        .iter()
+        .find(|p| p.path == ":app")
+        .expect("project entry for :app");
+    assert_eq!(app_project.project_dir, project_root.join("app"));
 }
 
 #[test]
