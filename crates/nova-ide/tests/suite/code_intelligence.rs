@@ -911,6 +911,10 @@ class A {}
         labels.contains(&"max"),
         "expected completion list to contain Math.max; got {labels:?}"
     );
+    assert!(
+        !labels.contains(&"*"),
+        "expected `*` to not be suggested while typing a member name; got {labels:?}"
+    );
 }
 
 #[test]
@@ -927,6 +931,10 @@ class A {}
     assert!(
         labels.contains(&"*"),
         "expected completion list to contain `*`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"max"),
+        "expected completion list to contain Math.max with empty member prefix; got {labels:?}"
     );
 }
 

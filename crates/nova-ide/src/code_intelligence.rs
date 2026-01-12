@@ -1688,6 +1688,8 @@ struct ImportContext {
     replace_start: usize,
     /// Prefix of the import path up to the cursor (binary-style, using `.` separators).
     prefix: String,
+    /// Whether this is an `import static ...;` statement.
+    is_static: bool,
     /// The already-complete portion of the import path before the current segment.
     base_prefix: String,
     /// The in-progress segment being completed (text between `replace_start..cursor`).
@@ -1740,6 +1742,7 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
 
     // Best-effort `import static ...;` support: treat it as a normal import by skipping `static`
     // when present.
+    let mut is_static = false;
     if text.get(path_start..)?.starts_with("static") {
         let static_end = path_start + "static".len();
         if text
@@ -1747,6 +1750,7 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
             .get(static_end)
             .is_none_or(|b| (*b as char).is_ascii_whitespace())
         {
+            is_static = true;
             path_start = skip_whitespace_forwards(text, static_end);
         }
     }
@@ -1780,6 +1784,7 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
     Some(ImportContext {
         replace_start,
         prefix: raw_prefix.to_string(),
+        is_static,
         base_prefix: text.get(path_start..replace_start)?.to_string(),
         segment_prefix: text.get(replace_start..offset)?.to_string(),
     })
@@ -1886,6 +1891,7 @@ fn import_completions(
     // Optional star import (`import foo.bar.*;`). Only offer when the cursor is at the start of a
     // segment (e.g. after a dot).
     if items.len() < MAX_ITEMS
+        && !ctx.is_static
         && ctx.segment_prefix.is_empty()
         && !ctx.base_prefix.is_empty()
         && ctx.base_prefix.ends_with('.')
