@@ -80,7 +80,7 @@ is rejected.
 │  CONTROL                                                        │
 │  ✓ Continue / Pause                                             │
 │  ✓ Step over / into / out                                       │
-│  ✓ Step back (with recording)                                   │
+│  ✗ Step back                                                    │
 │  ✓ Restart                                                      │
 │  ✓ Terminate                                                    │
 │                                                                  │
