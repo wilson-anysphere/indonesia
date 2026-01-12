@@ -319,7 +319,9 @@ impl GradleBuild {
 
                         let _ = update_gradle_snapshot(project_root, &fingerprint, |snapshot| {
                             snapshot.projects = snapshot_projects;
-                            snapshot.java_compile_configs = snapshot_configs;
+                            // Preserve any existing entries (e.g. synthetic buildSrc configs) while
+                            // refreshing the root build's known projects.
+                            snapshot.java_compile_configs.extend(snapshot_configs);
                         });
                     }
 
@@ -494,7 +496,9 @@ impl GradleBuild {
         // these resolved configs without invoking Gradle during project discovery.
         let snapshot_result = update_gradle_snapshot(project_root, &fingerprint, |snapshot| {
             snapshot.projects = snapshot_projects;
-            snapshot.java_compile_configs = snapshot_configs;
+            // Preserve any existing entries (e.g. synthetic buildSrc configs) while refreshing
+            // root build project configs.
+            snapshot.java_compile_configs.extend(snapshot_configs);
         });
         let store_result = cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data);
 
