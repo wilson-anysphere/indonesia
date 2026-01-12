@@ -259,7 +259,9 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
     )
     .unwrap();
 
-    std::fs::write(root.join("dep.jar"), "").unwrap();
+    let testdata_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+    std::fs::copy(testdata_dir.join("named-module.jar"), root.join("dep.jar")).unwrap();
 
     let mut outputs = HashMap::new();
     outputs.insert(
@@ -341,7 +343,9 @@ fn maven_java_compile_config_uses_evaluated_module_path_when_present() {
     )
     .unwrap();
 
-    std::fs::write(root.join("mods.jar"), "").unwrap();
+    let testdata_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+    std::fs::copy(testdata_dir.join("named-module.jar"), root.join("mods.jar")).unwrap();
 
     let mut outputs = HashMap::new();
     outputs.insert(
