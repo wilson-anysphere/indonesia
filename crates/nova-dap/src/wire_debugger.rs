@@ -2943,6 +2943,25 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 }
             };
 
+            // Best-effort: issue a minimal `InvokeMethod` call before sampling.
+            //
+            // `InvokeMethod` can interleave with asynchronous JDWP events (e.g. hitting a
+            // breakpoint mid-invoke). Stream debug marks the evaluation thread as being in
+            // internal-evaluation mode so the event task can auto-resume and suppress DAP events.
+            //
+            // The dummy `(class_id=0, method_id=0)` invoke is expected to fail on real JVMs; we
+            // ignore non-cancellation errors and fall back to the inspection-based runtime.
+            match cancellable_jdwp(
+                cancel,
+                jdwp.class_type_invoke_method(0, frame.thread, 0, &[JdwpValue::Int(1)], 0),
+            )
+            .await
+            {
+                Ok((_value, _exception)) => {}
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_err) => {}
+            }
+
             let original_name = name.trim();
             if original_name.is_empty() {
                 return Err(DebuggerError::InvalidRequest(format!(

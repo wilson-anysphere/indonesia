@@ -32,8 +32,8 @@ async fn stream_debug_does_not_deadlock_event_task_and_cancels_cleanly() {
     let jdwp = client
         .attach_mock_jdwp_with_config(MockJdwpServerConfig {
             delayed_replies: vec![DelayedReply {
-                command_set: 13,
-                command: 2, // ArrayReference.GetValues
+                command_set: 3,
+                command: 3, // ClassType.InvokeMethod
                 delay: Duration::from_secs(5),
             }],
             // Need one breakpoint event to stop on `continue`, and one more to fire during
