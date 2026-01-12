@@ -878,3 +878,66 @@ class C {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn extract_method_from_expression_in_return() {
+    let fixture = r#"
+class C {
+    int m(int a, int b) {
+        return /*start*/a + b/*end*/;
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "sum".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    int m(int a, int b) {
+        return sum(a, b);
+    }
+
+    private int sum(int a, int b) {
+        return a + b;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_rejects_mutating_expression() {
+    let fixture = r#"
+class C {
+    int m(int i) {
+        return /*start*/i++/*end*/;
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "bad".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection");
+    assert!(err.contains("InvalidSelection"));
+}

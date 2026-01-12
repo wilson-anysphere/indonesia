@@ -84,6 +84,8 @@ pub struct ExtractMethodAnalysis {
     pub region: ExtractRegionKind,
     pub parameters: Vec<Parameter>,
     pub return_value: Option<ReturnValue>,
+    /// Return type of the extracted method.
+    pub return_ty: String,
     pub thrown_exceptions: Vec<String>,
     pub hazards: Vec<ControlFlowHazard>,
     pub issues: Vec<ExtractMethodIssue>,
@@ -113,6 +115,7 @@ impl ExtractMethod {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
                 return_value: None,
+                return_ty: "void".to_string(),
                 thrown_exceptions: Vec::new(),
                 hazards: Vec::new(),
                 issues: vec![ExtractMethodIssue::InvalidSelection],
@@ -125,6 +128,7 @@ impl ExtractMethod {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
                 return_value: None,
+                return_ty: "void".to_string(),
                 thrown_exceptions: Vec::new(),
                 hazards: Vec::new(),
                 issues: vec![ExtractMethodIssue::InvalidSelection],
@@ -137,6 +141,7 @@ impl ExtractMethod {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
                 return_value: None,
+                return_ty: "void".to_string(),
                 thrown_exceptions: Vec::new(),
                 hazards: Vec::new(),
                 issues: vec![ExtractMethodIssue::InvalidSelection],
@@ -161,12 +166,100 @@ impl ExtractMethod {
             issues.push(ExtractMethodIssue::InvalidSelection);
         }
 
-        let Some(selection_info) = find_statement_selection(&method_body, selection) else {
+        if let Some(selection_info) = find_statement_selection(&method_body, selection) {
+            // Until lambdas are modeled in flow IR, selections inside lambda bodies are invalid.
+            //
+            // `nova_hir::body_lowering` intentionally skips lowering lambda bodies (they're lazily
+            // executed). If we allowed extraction from within a lambda body, we could end up analyzing
+            // the enclosing method while ignoring the selected code.
+            let body_range = syntax_range(method_body.syntax());
+            let selection_inside_lambda = selection_info.statements.iter().any(|stmt| {
+                let Some(lambda) = stmt
+                    .syntax()
+                    .ancestors()
+                    .find_map(ast::LambdaExpression::cast)
+                else {
+                    return false;
+                };
+
+                let lambda_range = syntax_range(lambda.syntax());
+                body_range.start <= lambda_range.start && lambda_range.end <= body_range.end
+            });
+            if selection_inside_lambda {
+                issues.push(ExtractMethodIssue::InvalidSelection);
+                return Ok(ExtractMethodAnalysis {
+                    region: ExtractRegionKind::Statements,
+                    parameters: Vec::new(),
+                    return_value: None,
+                    return_ty: "void".to_string(),
+                    thrown_exceptions: Vec::new(),
+                    hazards: Vec::new(),
+                    issues,
+                });
+            }
+
+            let mut hazards = Vec::new();
+            collect_control_flow_hazards(
+                &selection_info.statements,
+                selection,
+                &mut hazards,
+                &mut issues,
+            );
+
+            let type_map = collect_declared_types(source, &method, &method_body);
+
+            let flow_params = collect_method_param_spans(&method);
+            let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
+
+            let (reads_in_selection, writes_in_selection) =
+                collect_reads_writes_in_flow_selection(&flow_body, selection);
+
+            let live_after_selection = live_locals_after_selection(&flow_body, selection);
+
+            let return_value = compute_return_value(
+                &flow_body,
+                &type_map,
+                selection,
+                &writes_in_selection,
+                &live_after_selection,
+                &mut issues,
+            );
+
+            // Determine parameters in order of first appearance in the selection.
+            let mut parameters = Vec::new();
+            for local in reads_in_selection {
+                if local_declared_in_selection(&flow_body, local, selection) {
+                    continue;
+                }
+                let name = flow_body.locals()[local.index()].name.as_str().to_string();
+                let ty = type_for_local(&flow_body, &type_map, local, &mut issues);
+                parameters.push(Parameter { name, ty });
+            }
+
+            let return_ty = return_value
+                .as_ref()
+                .map(|r| r.ty.clone())
+                .unwrap_or_else(|| "void".to_string());
+
+            return Ok(ExtractMethodAnalysis {
+                region: ExtractRegionKind::Statements,
+                parameters,
+                return_value,
+                return_ty,
+                thrown_exceptions: Vec::new(),
+                hazards,
+                issues,
+            });
+        }
+
+        // Fall back to extracting an expression when the selection isn't a statement range.
+        let Some(selected_expr) = find_expression_exact(&method_body, selection) else {
             issues.push(ExtractMethodIssue::InvalidSelection);
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
                 return_value: None,
+                return_ty: "void".to_string(),
                 thrown_exceptions: Vec::new(),
                 hazards: Vec::new(),
                 issues,
@@ -174,79 +267,88 @@ impl ExtractMethod {
         };
 
         // Until lambdas are modeled in flow IR, selections inside lambda bodies are invalid.
-        //
-        // `nova_hir::body_lowering` intentionally skips lowering lambda bodies (they're lazily
-        // executed). If we allowed extraction from within a lambda body, we could end up analyzing
-        // the enclosing method while ignoring the selected code.
         let body_range = syntax_range(method_body.syntax());
-        let selection_inside_lambda = selection_info.statements.iter().any(|stmt| {
-            let Some(lambda) = stmt
-                .syntax()
-                .ancestors()
-                .find_map(ast::LambdaExpression::cast)
-            else {
-                return false;
-            };
-
+        let selection_inside_lambda = selected_expr.syntax().ancestors().find_map(ast::LambdaExpression::cast).is_some_and(|lambda| {
             let lambda_range = syntax_range(lambda.syntax());
             body_range.start <= lambda_range.start && lambda_range.end <= body_range.end
         });
         if selection_inside_lambda {
             issues.push(ExtractMethodIssue::InvalidSelection);
             return Ok(ExtractMethodAnalysis {
-                region: ExtractRegionKind::Statements,
+                region: ExtractRegionKind::Expression,
                 parameters: Vec::new(),
                 return_value: None,
+                return_ty: "Object".to_string(),
                 thrown_exceptions: Vec::new(),
                 hazards: Vec::new(),
                 issues,
             });
         }
 
-        let mut hazards = Vec::new();
-        collect_control_flow_hazards(
-            &selection_info.statements,
-            selection,
-            &mut hazards,
-            &mut issues,
-        );
+        if expression_has_local_mutation(&selected_expr) {
+            issues.push(ExtractMethodIssue::InvalidSelection);
+            return Ok(ExtractMethodAnalysis {
+                region: ExtractRegionKind::Expression,
+                parameters: Vec::new(),
+                return_value: None,
+                return_ty: "Object".to_string(),
+                thrown_exceptions: Vec::new(),
+                hazards: Vec::new(),
+                issues,
+            });
+        }
 
         let type_map = collect_declared_types(source, &method, &method_body);
 
         let flow_params = collect_method_param_spans(&method);
         let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
 
-        let (reads_in_selection, writes_in_selection) =
-            collect_reads_writes_in_flow_selection(&flow_body, selection);
+        let target_span = Span::new(selection.start, selection.end);
+        let Some(flow_expr_id) = find_flow_expr_exact(&flow_body, target_span) else {
+            issues.push(ExtractMethodIssue::InvalidSelection);
+            return Ok(ExtractMethodAnalysis {
+                region: ExtractRegionKind::Expression,
+                parameters: Vec::new(),
+                return_value: None,
+                return_ty: "Object".to_string(),
+                thrown_exceptions: Vec::new(),
+                hazards: Vec::new(),
+                issues,
+            });
+        };
 
-        let live_after_selection = live_locals_after_selection(&flow_body, selection);
-
-        let return_value = compute_return_value(
-            &flow_body,
-            &type_map,
-            selection,
-            &writes_in_selection,
-            &live_after_selection,
-            &mut issues,
-        );
-
-        // Determine parameters in order of first appearance in the selection.
         let mut parameters = Vec::new();
-        for local in reads_in_selection {
-            if local_declared_in_selection(&flow_body, local, selection) {
+        for local in collect_reads_in_flow_expr(&flow_body, flow_expr_id, selection) {
+            let local_data = &flow_body.locals()[local.index()];
+            if span_within_range(local_data.span, selection) {
                 continue;
             }
-            let name = flow_body.locals()[local.index()].name.as_str().to_string();
+            let name = local_data.name.as_str().to_string();
             let ty = type_for_local(&flow_body, &type_map, local, &mut issues);
             parameters.push(Parameter { name, ty });
         }
 
+        let mut return_ty = infer_expression_return_type(
+            source,
+            &selected_expr,
+            &flow_body,
+            Some(flow_expr_id),
+            &type_map,
+        );
+        if return_ty.is_none() {
+            issues.push(ExtractMethodIssue::UnknownType {
+                name: self.name.clone(),
+            });
+            return_ty = Some("Object".to_string());
+        }
+
         Ok(ExtractMethodAnalysis {
-            region: ExtractRegionKind::Statements,
+            region: ExtractRegionKind::Expression,
             parameters,
-            return_value,
+            return_value: None,
+            return_ty: return_ty.unwrap_or_else(|| "Object".to_string()),
             thrown_exceptions: Vec::new(),
-            hazards,
+            hazards: Vec::new(),
             issues,
         })
     }
@@ -291,27 +393,71 @@ impl ExtractMethod {
             .to_string();
 
         let new_body_indent = format!("{method_indent}    ");
-        let extracted_body = reindent(&extracted_text, &call_indent, &new_body_indent, newline);
+        let (method_body_text, replacement, return_ty) = match analysis.region {
+            ExtractRegionKind::Statements => {
+                let extracted_body = reindent(&extracted_text, &call_indent, &new_body_indent, newline);
 
-        let mut method_body_text = extracted_body;
-        if !method_body_text.ends_with(newline) {
-            method_body_text.push_str(newline);
-        }
+                let mut method_body_text = extracted_body;
+                if !method_body_text.ends_with(newline) {
+                    method_body_text.push_str(newline);
+                }
 
-        if let Some(ret) = &analysis.return_value {
-            let declared_as_param = analysis.parameters.iter().any(|p| p.name == ret.name);
-            if !ret.declared_in_selection && !declared_as_param {
-                let decl = format!("{new_body_indent}{} {};{newline}", ret.ty, ret.name);
-                method_body_text = format!("{decl}{method_body_text}");
+                if let Some(ret) = &analysis.return_value {
+                    let declared_as_param = analysis.parameters.iter().any(|p| p.name == ret.name);
+                    if !ret.declared_in_selection && !declared_as_param {
+                        let decl = format!("{new_body_indent}{} {};{newline}", ret.ty, ret.name);
+                        method_body_text = format!("{decl}{method_body_text}");
+                    }
+                    method_body_text.push_str(&format!(
+                        "{new_body_indent}return {};{newline}",
+                        ret.name
+                    ));
+                }
+
+                let return_ty = analysis.return_ty.clone();
+
+                let args = analysis
+                    .parameters
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let call_expr = format!("{}({})", self.name, args);
+
+                let replacement = if let Some(ret) = &analysis.return_value {
+                    if ret.declared_in_selection {
+                        format!("{} {} = {call_expr};", ret.ty, ret.name)
+                    } else {
+                        format!("{} = {call_expr};", ret.name)
+                    }
+                } else {
+                    format!("{call_expr};")
+                };
+
+                (method_body_text, replacement, return_ty)
             }
-            method_body_text.push_str(&format!("{new_body_indent}return {};{newline}", ret.name));
-        }
+            ExtractRegionKind::Expression => {
+                let mut expr_reindented =
+                    reindent(&extracted_text, &call_indent, &new_body_indent, newline);
+                expr_reindented = expr_reindented.trim_end().to_string();
 
-        let return_ty = analysis
-            .return_value
-            .as_ref()
-            .map(|r| r.ty.clone())
-            .unwrap_or_else(|| "void".to_string());
+                let expr_without_indent = expr_reindented
+                    .strip_prefix(&new_body_indent)
+                    .unwrap_or(expr_reindented.as_str());
+                let method_body_text =
+                    format!("{new_body_indent}return {expr_without_indent};{newline}");
+
+                let args = analysis
+                    .parameters
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let call_expr = format!("{}({})", self.name, args);
+
+                (method_body_text, call_expr, analysis.return_ty.clone())
+            }
+        };
 
         let params_sig = analysis
             .parameters
@@ -347,24 +493,6 @@ impl ExtractMethod {
         new_method_text.push_str(&method_body_text);
         new_method_text.push_str(&method_indent);
         new_method_text.push('}');
-
-        let args = analysis
-            .parameters
-            .iter()
-            .map(|p| p.name.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let call_expr = format!("{}({})", self.name, args);
-
-        let replacement = if let Some(ret) = &analysis.return_value {
-            if ret.declared_in_selection {
-                format!("{} {} = {call_expr};", ret.ty, ret.name)
-            } else {
-                format!("{} = {call_expr};", ret.name)
-            }
-        } else {
-            format!("{call_expr};")
-        };
 
         let file_id = FileId::new(self.file.clone());
         let mut edit = WorkspaceEdit::new(vec![
@@ -1384,5 +1512,257 @@ fn is_valid_java_identifier(name: &str) -> bool {
             eof.kind == SyntaxKind::Eof && tok.kind.is_identifier_like() && !tok.kind.is_keyword()
         }
         _ => false,
+    }
+}
+
+fn find_expression_exact(body: &ast::Block, selection: TextRange) -> Option<ast::Expression> {
+    body.syntax()
+        .descendants()
+        .filter_map(ast::Expression::cast)
+        .find(|expr| syntax_range(expr.syntax()) == selection)
+}
+
+fn expression_has_local_mutation(expr: &ast::Expression) -> bool {
+    if expr
+        .syntax()
+        .descendants()
+        .any(|node| node.kind() == SyntaxKind::AssignmentExpression)
+    {
+        return true;
+    }
+    expr.syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|tok| matches!(tok.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+}
+
+fn find_flow_expr_exact(body: &Body, target: Span) -> Option<ExprId> {
+    let mut found = None;
+    find_flow_expr_in_stmt(body, body.root(), target, &mut found);
+    found
+}
+
+fn find_flow_expr_in_stmt(body: &Body, stmt_id: StmtId, target: Span, found: &mut Option<ExprId>) {
+    if found.is_some() {
+        return;
+    }
+
+    let stmt = body.stmt(stmt_id);
+    match &stmt.kind {
+        StmtKind::Block(stmts) => {
+            for stmt in stmts {
+                find_flow_expr_in_stmt(body, *stmt, target, found);
+            }
+        }
+        StmtKind::Let { initializer, .. } => {
+            if let Some(init) = initializer {
+                find_flow_expr_in_expr(body, *init, target, found);
+            }
+        }
+        StmtKind::Assign { value, .. } => find_flow_expr_in_expr(body, *value, target, found),
+        StmtKind::Expr(expr) => find_flow_expr_in_expr(body, *expr, target, found),
+        StmtKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            find_flow_expr_in_expr(body, *condition, target, found);
+            find_flow_expr_in_stmt(body, *then_branch, target, found);
+            if let Some(else_branch) = else_branch {
+                find_flow_expr_in_stmt(body, *else_branch, target, found);
+            }
+        }
+        StmtKind::While { condition, body: inner } => {
+            find_flow_expr_in_expr(body, *condition, target, found);
+            find_flow_expr_in_stmt(body, *inner, target, found);
+        }
+        StmtKind::DoWhile { body: inner, condition } => {
+            find_flow_expr_in_stmt(body, *inner, target, found);
+            find_flow_expr_in_expr(body, *condition, target, found);
+        }
+        StmtKind::For {
+            init,
+            condition,
+            update,
+            body: inner,
+        } => {
+            if let Some(init) = init {
+                find_flow_expr_in_stmt(body, *init, target, found);
+            }
+            if let Some(cond) = condition {
+                find_flow_expr_in_expr(body, *cond, target, found);
+            }
+            if let Some(update) = update {
+                find_flow_expr_in_stmt(body, *update, target, found);
+            }
+            find_flow_expr_in_stmt(body, *inner, target, found);
+        }
+        StmtKind::Switch { expression, arms } => {
+            find_flow_expr_in_expr(body, *expression, target, found);
+            for arm in arms {
+                for value in &arm.values {
+                    find_flow_expr_in_expr(body, *value, target, found);
+                }
+                find_flow_expr_in_stmt(body, arm.body, target, found);
+            }
+        }
+        StmtKind::Try {
+            body: inner,
+            catches,
+            finally,
+        } => {
+            find_flow_expr_in_stmt(body, *inner, target, found);
+            for catch in catches {
+                find_flow_expr_in_stmt(body, *catch, target, found);
+            }
+            if let Some(finally) = finally {
+                find_flow_expr_in_stmt(body, *finally, target, found);
+            }
+        }
+        StmtKind::Return(expr) => {
+            if let Some(expr) = expr {
+                find_flow_expr_in_expr(body, *expr, target, found);
+            }
+        }
+        StmtKind::Throw(expr) => find_flow_expr_in_expr(body, *expr, target, found),
+        StmtKind::Break | StmtKind::Continue | StmtKind::Nop => {}
+    }
+}
+
+fn find_flow_expr_in_expr(body: &Body, expr_id: ExprId, target: Span, found: &mut Option<ExprId>) {
+    if found.is_some() {
+        return;
+    }
+
+    let expr = body.expr(expr_id);
+    if expr.span == target {
+        *found = Some(expr_id);
+        return;
+    }
+
+    match &expr.kind {
+        ExprKind::Local(_) | ExprKind::Null | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => {}
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                find_flow_expr_in_expr(body, *arg, target, found);
+            }
+        }
+        ExprKind::Unary { expr, .. } => find_flow_expr_in_expr(body, *expr, target, found),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            find_flow_expr_in_expr(body, *lhs, target, found);
+            find_flow_expr_in_expr(body, *rhs, target, found);
+        }
+        ExprKind::FieldAccess { receiver, .. } => {
+            find_flow_expr_in_expr(body, *receiver, target, found)
+        }
+        ExprKind::Call { receiver, args, .. } => {
+            if let Some(recv) = receiver {
+                find_flow_expr_in_expr(body, *recv, target, found);
+            }
+            for arg in args {
+                find_flow_expr_in_expr(body, *arg, target, found);
+            }
+        }
+        ExprKind::Invalid { children } => {
+            for child in children {
+                find_flow_expr_in_expr(body, *child, target, found);
+            }
+        }
+    }
+}
+
+fn collect_reads_in_flow_expr(body: &Body, expr_id: ExprId, selection: TextRange) -> Vec<LocalId> {
+    let mut reads: Vec<(LocalId, Span)> = Vec::new();
+    collect_reads_in_expr(body, expr_id, selection, &mut reads);
+
+    reads.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
+    let mut seen: HashSet<LocalId> = HashSet::new();
+    reads
+        .into_iter()
+        .filter(|(local, _)| seen.insert(*local))
+        .map(|(local, _)| local)
+        .collect()
+}
+
+fn infer_expression_return_type(
+    source: &str,
+    expr: &ast::Expression,
+    flow_body: &Body,
+    flow_expr: Option<ExprId>,
+    types_by_span: &HashMap<Span, String>,
+) -> Option<String> {
+    if let Some(flow_expr) = flow_expr {
+        if let ExprKind::Local(local_id) = &flow_body.expr(flow_expr).kind {
+            let local = &flow_body.locals()[local_id.index()];
+            if let Some(ty) = types_by_span.get(&local.span) {
+                return Some(ty.clone());
+            }
+        }
+    }
+
+    match expr {
+        ast::Expression::LiteralExpression(lit) => {
+            let tok = lit
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
+            match tok.kind() {
+                SyntaxKind::IntLiteral | SyntaxKind::Number => Some("int".to_string()),
+                SyntaxKind::StringLiteral => Some("String".to_string()),
+                SyntaxKind::CharLiteral => Some("char".to_string()),
+                SyntaxKind::TrueKw | SyntaxKind::FalseKw => Some("boolean".to_string()),
+                _ => None,
+            }
+        }
+        ast::Expression::ParenthesizedExpression(par) => par.expression().and_then(|inner| {
+            infer_expression_return_type(source, &inner, flow_body, flow_expr, types_by_span)
+        }),
+        ast::Expression::UnaryExpression(unary) => {
+            // `!x` is boolean; otherwise default numeric.
+            let is_not =
+                nova_syntax::ast::support::token(unary.syntax(), SyntaxKind::Bang).is_some();
+            if is_not {
+                return Some("boolean".to_string());
+            }
+            Some("int".to_string())
+        }
+        ast::Expression::BinaryExpression(_) | ast::Expression::NameExpression(_) => {
+            let range = syntax_range(expr.syntax());
+            let text = source
+                .get(range.start..range.end)
+                .unwrap_or_default()
+                .trim();
+            if text.contains('"') {
+                return Some("String".to_string());
+            }
+            // Comparison / boolean operators.
+            let has_bool_op = expr
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|it| it.into_token())
+                .any(|tok| {
+                    matches!(
+                        tok.kind(),
+                        SyntaxKind::EqEq
+                            | SyntaxKind::BangEq
+                            | SyntaxKind::AmpAmp
+                            | SyntaxKind::PipePipe
+                            | SyntaxKind::Less
+                            | SyntaxKind::LessEq
+                            | SyntaxKind::Greater
+                            | SyntaxKind::GreaterEq
+                    )
+                });
+            if has_bool_op {
+                return Some("boolean".to_string());
+            }
+            Some("int".to_string())
+        }
+        _ => None,
     }
 }
