@@ -620,6 +620,41 @@ fn loads_gradle_projectdir_mapping_workspace() {
 }
 
 #[test]
+fn loads_gradle_projectdir_mapping_kts_workspace() {
+    let root = testdata_path("gradle-projectdir-mapping-kts");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    let roots: BTreeSet<_> = config
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(roots.contains(&(
+        SourceRootKind::Main,
+        PathBuf::from("modules/app/src/main/java")
+    )));
+    assert!(roots.contains(&(
+        SourceRootKind::Main,
+        PathBuf::from("modules/lib/src/main/java")
+    )));
+}
+
+#[test]
 fn loads_gradle_custom_source_sets_workspace() {
     let root = testdata_path("gradle-custom-sourcesets");
     let gradle_home = tempdir().expect("tempdir");
@@ -1634,6 +1669,56 @@ fn loads_gradle_includebuild_subproject_project_dependencies_are_scoped_to_inclu
 #[test]
 fn loads_gradle_projectdir_mapping_workspace_model() {
     let root = testdata_path("gradle-projectdir-mapping");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let app = model.module_by_id("gradle::app").expect("app module");
+    let lib = model.module_by_id("gradle::lib").expect("lib module");
+
+    assert_eq!(
+        app.root
+            .strip_prefix(&model.workspace_root)
+            .unwrap()
+            .to_path_buf(),
+        PathBuf::from("modules/app")
+    );
+    assert_eq!(
+        lib.root
+            .strip_prefix(&model.workspace_root)
+            .unwrap()
+            .to_path_buf(),
+        PathBuf::from("modules/lib")
+    );
+
+    let app_file = model
+        .workspace_root
+        .join("modules/app/src/main/java/com/example/app/App.java");
+    let match_app = model
+        .module_for_path(&app_file)
+        .expect("module for App.java");
+    assert_eq!(match_app.module.id, "gradle::app");
+    assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
+
+    let lib_file = model
+        .workspace_root
+        .join("modules/lib/src/main/java/com/example/lib/Lib.java");
+    let match_lib = model
+        .module_for_path(&lib_file)
+        .expect("module for Lib.java");
+    assert_eq!(match_lib.module.id, "gradle::lib");
+    assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
+fn loads_gradle_projectdir_mapping_kts_workspace_model() {
+    let root = testdata_path("gradle-projectdir-mapping-kts");
     let gradle_home = tempdir().expect("tempdir");
     let options = LoadOptions {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
