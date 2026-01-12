@@ -276,84 +276,367 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
         return Err(io::Error::other("child stderr was not captured"));
     };
 
-    let max_bytes = opts.max_bytes;
-    // Thread creation can fail in constrained environments (low RLIMIT_NPROC / temporary `EAGAIN`).
-    // Avoid panicking from `std::thread::spawn` so callers can fall back gracefully (for example,
-    // `nova-workspace`'s JDK discovery falls back to a tiny built-in index).
-    let mut spawn_err: Option<io::Error> = None;
-    let stdout_handle = match thread::Builder::new()
-        .name("nova-process-stdout".to_string())
-        .spawn(move || read_bounded(stdout, max_bytes))
+    #[cfg(unix)]
     {
-        Ok(handle) => Some(handle),
-        Err(err) => {
-            spawn_err = Some(err);
-            None
-        }
-    };
-    let stderr_handle = match thread::Builder::new()
-        .name("nova-process-stderr".to_string())
-        .spawn(move || read_bounded(stderr, max_bytes))
-    {
-        Ok(handle) => Some(handle),
-        Err(err) => {
-            if spawn_err.is_none() {
-                spawn_err = Some(err);
-            }
-            None
-        }
-    };
-
-    if let Some(err) = spawn_err {
-        // Ensure the child is not left running with undrained pipes.
-        let _ = terminate_process_tree(&mut child, opts.kill_grace);
-        if let Some(handle) = stdout_handle {
-            let _ = handle.join();
-        }
-        if let Some(handle) = stderr_handle {
-            let _ = handle.join();
-        }
-        return Err(err);
+        return run_command_spec_unix(child, stdout, stderr, opts);
     }
 
-    let stdout_handle = stdout_handle.expect("stdout handle missing without spawn error");
-    let stderr_handle = stderr_handle.expect("stderr handle missing without spawn error");
+    #[cfg(not(unix))]
+    {
+        let max_bytes = opts.max_bytes;
+        // Thread creation can fail in constrained environments (low RLIMIT_NPROC / temporary
+        // `EAGAIN`). Avoid panicking from `std::thread::spawn` so callers can fall back gracefully
+        // (for example, `nova-workspace`'s JDK discovery falls back to a tiny built-in index).
+        let mut spawn_err: Option<io::Error> = None;
+        let stdout_handle = match thread::Builder::new()
+            .name("nova-process-stdout".to_string())
+            .spawn(move || read_bounded(stdout, max_bytes))
+        {
+            Ok(handle) => Some(handle),
+            Err(err) => {
+                spawn_err = Some(err);
+                None
+            }
+        };
+        let stderr_handle = match thread::Builder::new()
+            .name("nova-process-stderr".to_string())
+            .spawn(move || read_bounded(stderr, max_bytes))
+        {
+            Ok(handle) => Some(handle),
+            Err(err) => {
+                if spawn_err.is_none() {
+                    spawn_err = Some(err);
+                }
+                None
+            }
+        };
+
+        if let Some(err) = spawn_err {
+            // Ensure the child is not left running with undrained pipes.
+            let _ = terminate_process_tree(&mut child, opts.kill_grace);
+            if let Some(handle) = stdout_handle {
+                let _ = handle.join();
+            }
+            if let Some(handle) = stderr_handle {
+                let _ = handle.join();
+            }
+            return Err(err);
+        }
+
+        let stdout_handle = stdout_handle.expect("stdout handle missing without spawn error");
+        let stderr_handle = stderr_handle.expect("stderr handle missing without spawn error");
+
+        let start = Instant::now();
+        let mut timed_out = false;
+        let mut cancelled = false;
+
+        let status = if opts.timeout.is_some() || opts.cancellation.is_some() {
+            let poll = Duration::from_millis(50);
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    break status;
+                }
+
+                if let Some(token) = opts.cancellation.as_ref() {
+                    if token.is_cancelled() {
+                        cancelled = true;
+                        break terminate_process_tree(&mut child, opts.kill_grace)?;
+                    }
+                }
+
+                if let Some(timeout) = opts.timeout {
+                    if start.elapsed() >= timeout {
+                        timed_out = true;
+                        break terminate_process_tree(&mut child, opts.kill_grace)?;
+                    }
+
+                    thread::sleep(poll.min(timeout.saturating_sub(start.elapsed())));
+                } else {
+                    thread::sleep(poll);
+                }
+            }
+        } else {
+            child.wait()?
+        };
+
+        let (stdout_bytes, stdout_truncated) = join_reader(stdout_handle, "stdout")??;
+        let (stderr_bytes, stderr_truncated) = join_reader(stderr_handle, "stderr")??;
+
+        let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
+        let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+
+        Ok(CommandResult {
+            status,
+            output: BoundedOutput {
+                stdout,
+                stderr,
+                truncated: stdout_truncated || stderr_truncated,
+            },
+            timed_out,
+            cancelled,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn run_command_spec_unix(
+    mut child: std::process::Child,
+    mut stdout: std::process::ChildStdout,
+    mut stderr: std::process::ChildStderr,
+    opts: RunOptions,
+) -> io::Result<CommandResult> {
+    use std::os::unix::io::{AsRawFd, RawFd};
+
+    fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+        // SAFETY: `fcntl` is an async-signal-safe syscall wrapper. We only pass it valid file
+        // descriptors obtained from `ChildStdout/ChildStderr`.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    fn drain_stream(
+        reader: &mut impl Read,
+        dst: &mut Vec<u8>,
+        dst_truncated: &mut bool,
+        dst_eof: &mut bool,
+        max_bytes: usize,
+    ) -> io::Result<bool> {
+        if *dst_eof {
+            return Ok(false);
+        }
+
+        let mut made_progress = false;
+        let mut buf = [0u8; 8 * 1024];
+
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => {
+                    *dst_eof = true;
+                    made_progress = true;
+                    break;
+                }
+                Ok(n) => {
+                    made_progress = true;
+                    if dst.len() < max_bytes {
+                        let remaining = max_bytes - dst.len();
+                        let to_store = remaining.min(n);
+                        dst.extend_from_slice(&buf[..to_store]);
+                        if to_store < n {
+                            *dst_truncated = true;
+                        }
+                    } else {
+                        *dst_truncated = true;
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(made_progress)
+    }
+
+    fn poll_streams(fds: &mut [libc::pollfd], timeout: Duration) -> io::Result<()> {
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        loop {
+            // SAFETY: `poll` is called with a valid pointer and length.
+            let res =
+                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+            if res >= 0 {
+                return Ok(());
+            }
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+    }
+
+    fn signal_process_group(pid: i32, signal: libc::c_int) {
+        // Negative pid targets the process group, which we set to the child's pid via
+        // `setpgid(0, 0)` in `pre_exec`.
+        unsafe {
+            let _ = libc::kill(-pid, signal);
+        }
+    }
+
+    set_nonblocking(stdout.as_raw_fd())?;
+    set_nonblocking(stderr.as_raw_fd())?;
 
     let start = Instant::now();
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut stdout_truncated = false;
+    let mut stderr_truncated = false;
+    let mut stdout_eof = false;
+    let mut stderr_eof = false;
+
+    let mut status: Option<ExitStatus> = None;
     let mut timed_out = false;
     let mut cancelled = false;
 
-    let status = if opts.timeout.is_some() || opts.cancellation.is_some() {
-        let poll = Duration::from_millis(50);
-        loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+    let mut terminate_started_at: Option<Instant> = None;
+    let mut sigkill_sent = false;
+
+    // When the main process exits we *usually* see the pipes close quickly. However, some wrapper
+    // scripts leave descendant processes running with inherited stdout/stderr handles. The
+    // previous implementation would hang indefinitely waiting for EOF from the reader threads.
+    //
+    // To keep this helper robust, stop waiting for EOF once the child has exited *and* we have
+    // seen no stdout/stderr activity for a short grace period.
+    let drain_idle_grace = Duration::from_millis(250);
+    let mut drain_idle_deadline: Option<Instant> = None;
+
+    let poll_interval = Duration::from_millis(50);
+    loop {
+        let mut progress = false;
+        progress |= drain_stream(
+            &mut stdout,
+            &mut stdout_bytes,
+            &mut stdout_truncated,
+            &mut stdout_eof,
+            opts.max_bytes,
+        )?;
+        progress |= drain_stream(
+            &mut stderr,
+            &mut stderr_bytes,
+            &mut stderr_truncated,
+            &mut stderr_eof,
+            opts.max_bytes,
+        )?;
+
+        if status.is_none() {
+            if let Some(s) = child.try_wait()? {
+                status = Some(s);
+                progress = true;
+            }
+        }
+
+        if status.is_some() {
+            if stdout_eof && stderr_eof {
+                break;
             }
 
+            if progress {
+                drain_idle_deadline = Some(Instant::now() + drain_idle_grace);
+            } else if let Some(deadline) = drain_idle_deadline {
+                if Instant::now() >= deadline {
+                    break;
+                }
+            } else {
+                drain_idle_deadline = Some(Instant::now() + drain_idle_grace);
+            }
+        }
+
+        if terminate_started_at.is_none() {
             if let Some(token) = opts.cancellation.as_ref() {
                 if token.is_cancelled() {
                     cancelled = true;
-                    break terminate_process_tree(&mut child, opts.kill_grace)?;
+                    terminate_started_at = Some(Instant::now());
+                    signal_process_group(child.id() as i32, libc::SIGTERM);
                 }
             }
 
-            if let Some(timeout) = opts.timeout {
-                if start.elapsed() >= timeout {
-                    timed_out = true;
-                    break terminate_process_tree(&mut child, opts.kill_grace)?;
+            if terminate_started_at.is_none() {
+                if let Some(timeout) = opts.timeout {
+                    if start.elapsed() >= timeout {
+                        timed_out = true;
+                        terminate_started_at = Some(Instant::now());
+                        signal_process_group(child.id() as i32, libc::SIGTERM);
+                    }
                 }
-
-                thread::sleep(poll.min(timeout.saturating_sub(start.elapsed())));
-            } else {
-                thread::sleep(poll);
+            }
+        } else if !sigkill_sent {
+            let started = terminate_started_at.expect("termination start set");
+            if started.elapsed() >= opts.kill_grace {
+                sigkill_sent = true;
+                signal_process_group(child.id() as i32, libc::SIGKILL);
             }
         }
-    } else {
-        child.wait()?
-    };
 
-    let (stdout_bytes, stdout_truncated) = join_reader(stdout_handle, "stdout")??;
-    let (stderr_bytes, stderr_truncated) = join_reader(stderr_handle, "stderr")??;
+        // Pick a conservative wait time to avoid busy-spinning when there is no output.
+        let mut wait_for = poll_interval;
+        if terminate_started_at.is_some() {
+            wait_for = Duration::from_millis(25);
+        }
+        if let Some(deadline) = drain_idle_deadline {
+            wait_for = wait_for.min(deadline.saturating_duration_since(Instant::now()));
+        }
+        if let Some(timeout) = opts.timeout {
+            wait_for = wait_for.min(timeout.saturating_sub(start.elapsed()));
+        }
+        if wait_for.is_zero() {
+            wait_for = Duration::from_millis(1);
+        }
+
+        let mut pollfds = [
+            libc::pollfd {
+                fd: -1,
+                events: 0,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: -1,
+                events: 0,
+                revents: 0,
+            },
+        ];
+        let mut nfds = 0;
+        let events = (libc::POLLIN | libc::POLLHUP | libc::POLLERR) as libc::c_short;
+        if !stdout_eof {
+            pollfds[nfds] = libc::pollfd {
+                fd: stdout.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            nfds += 1;
+        }
+        if !stderr_eof {
+            pollfds[nfds] = libc::pollfd {
+                fd: stderr.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            nfds += 1;
+        }
+
+        if nfds == 0 {
+            thread::sleep(wait_for);
+        } else {
+            poll_streams(&mut pollfds[..nfds], wait_for)?;
+        }
+    }
+
+    // Best-effort final drain in case the last poll woke us up for EOF/data.
+    let _ = drain_stream(
+        &mut stdout,
+        &mut stdout_bytes,
+        &mut stdout_truncated,
+        &mut stdout_eof,
+        opts.max_bytes,
+    );
+    let _ = drain_stream(
+        &mut stderr,
+        &mut stderr_bytes,
+        &mut stderr_truncated,
+        &mut stderr_eof,
+        opts.max_bytes,
+    );
+
+    let status = match status {
+        Some(status) => status,
+        None => child.wait()?,
+    };
 
     let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
@@ -430,6 +713,7 @@ fn windows_cmd_quote_always(arg: &str) -> String {
     format!("\"{}\"", arg.replace('"', "\\\""))
 }
 
+#[cfg(not(unix))]
 fn terminate_process_tree(
     child: &mut std::process::Child,
     grace: Duration,
@@ -488,6 +772,7 @@ fn terminate_process_tree(
     }
 }
 
+#[cfg(not(unix))]
 fn join_reader(
     handle: thread::JoinHandle<io::Result<(Vec<u8>, bool)>>,
     stream: &'static str,
@@ -497,6 +782,7 @@ fn join_reader(
         .map_err(|_| io::Error::other(format!("{stream} reader thread panicked")))
 }
 
+#[cfg(not(unix))]
 fn read_bounded(mut reader: impl Read, max_bytes: usize) -> io::Result<(Vec<u8>, bool)> {
     let mut out = Vec::new();
     let mut truncated = false;

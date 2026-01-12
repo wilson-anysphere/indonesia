@@ -274,7 +274,6 @@ impl Drop for WatcherHandle {
     }
 }
 
-const RAW_WATCH_QUEUE_CAPACITY: usize = 4096;
 const BATCH_QUEUE_CAPACITY: usize = 256;
 const WATCH_COMMAND_QUEUE_CAPACITY: usize = 1;
 const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
@@ -4315,7 +4314,6 @@ mod tests {
             "expected parse_java results to be recomputed for closed documents after memo eviction"
         );
     }
-
     #[tokio::test(flavor = "current_thread")]
     async fn manual_watcher_propagates_disk_edits_into_workspace() {
         let dir = tempfile::tempdir().unwrap();
