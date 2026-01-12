@@ -10,6 +10,7 @@ mod jls_conversions;
 mod jls_generics;
 mod jls_inference;
 mod lub;
+mod minimal_jdk_binary_names;
 mod minimal_jdk_subtyping;
 mod overload_resolution;
 mod type_store_clone;

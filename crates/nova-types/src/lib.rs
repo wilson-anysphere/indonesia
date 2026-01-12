@@ -700,17 +700,80 @@ impl Default for TypeStore {
     }
 }
 
+/// Binary names of the classes materialized by [`TypeStore::with_minimal_jdk`].
+///
+/// This list is the single source of truth for Nova's "minimal JDK" model and is
+/// used by:
+/// - `nova-types` to eagerly reserve stable [`ClassId`]s before defining the
+///   placeholder class bodies, and
+/// - `nova-db`'s workspace loader to seed stable, host-managed `ClassId`
+///   assignments for these well-known JDK types.
+///
+/// The set is intentionally small and **must** stay in sync with
+/// `TypeStore::with_minimal_jdk()` (the implementation and the list are checked
+/// by tests).
+pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
+    // java.lang
+    "java.lang.Object",
+    "java.lang.Throwable",
+    "java.lang.String",
+    "java.lang.Integer",
+    "java.lang.Number",
+    "java.lang.Math",
+    "java.lang.Boolean",
+    "java.lang.Byte",
+    "java.lang.Short",
+    "java.lang.Character",
+    "java.lang.Long",
+    "java.lang.Float",
+    "java.lang.Double",
+    "java.lang.Cloneable",
+    "java.lang.Runnable",
+    "java.lang.Iterable",
+    "java.lang.Class",
+    "java.lang.System",
+    // java.io
+    "java.io.Serializable",
+    "java.io.PrintStream",
+    // java.util
+    "java.util.List",
+    "java.util.Collections",
+    "java.util.ArrayList",
+    // java.util.function
+    "java.util.function.Function",
+    "java.util.function.Supplier",
+    "java.util.function.Consumer",
+    "java.util.function.Predicate",
+];
+
 impl TypeStore {
     pub fn with_minimal_jdk() -> Self {
         let mut store = TypeStore::default();
 
+        // Reserve stable ids for all minimal JDK types up-front.
+        for &name in MINIMAL_JDK_BINARY_NAMES {
+            store.intern_class_id(name);
+        }
+
         // java.lang
-        let object = store.intern_class_id("java.lang.Object");
-        let throwable = store.intern_class_id("java.lang.Throwable");
-        let string = store.intern_class_id("java.lang.String");
-        let integer = store.intern_class_id("java.lang.Integer");
-        let cloneable = store.intern_class_id("java.lang.Cloneable");
-        let serializable = store.intern_class_id("java.io.Serializable");
+        let object = store
+            .lookup_class("java.lang.Object")
+            .expect("minimal JDK must contain java.lang.Object");
+        let throwable = store
+            .lookup_class("java.lang.Throwable")
+            .expect("minimal JDK must contain java.lang.Throwable");
+        let string = store
+            .lookup_class("java.lang.String")
+            .expect("minimal JDK must contain java.lang.String");
+        let integer = store
+            .lookup_class("java.lang.Integer")
+            .expect("minimal JDK must contain java.lang.Integer");
+        let cloneable = store
+            .lookup_class("java.lang.Cloneable")
+            .expect("minimal JDK must contain java.lang.Cloneable");
+        let serializable = store
+            .lookup_class("java.io.Serializable")
+            .expect("minimal JDK must contain java.io.Serializable");
 
         let object_ty = Type::class(object, vec![]);
         let string_ty = Type::class(string, vec![]);
@@ -847,176 +910,217 @@ impl TypeStore {
                 },
             ];
         }
-        let number = store.add_class(ClassDef {
-            name: "java.lang.Number".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let _math = store.add_class(ClassDef {
-            name: "java.lang.Math".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![
-                FieldDef {
-                    name: "PI".to_string(),
-                    ty: Type::Primitive(PrimitiveType::Double),
-                    is_static: true,
-                    is_final: true,
-                },
-                FieldDef {
-                    name: "E".to_string(),
-                    ty: Type::Primitive(PrimitiveType::Double),
-                    is_static: true,
-                    is_final: true,
-                },
-            ],
-            constructors: vec![],
-            methods: vec![
-                MethodDef {
-                    name: "max".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Int),
-                        Type::Primitive(PrimitiveType::Int),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Int),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "max".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Long),
-                        Type::Primitive(PrimitiveType::Long),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Long),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "max".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Float),
-                        Type::Primitive(PrimitiveType::Float),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Float),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "max".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Double),
-                        Type::Primitive(PrimitiveType::Double),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Double),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "min".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Int),
-                        Type::Primitive(PrimitiveType::Int),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Int),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "min".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Long),
-                        Type::Primitive(PrimitiveType::Long),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Long),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "min".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Float),
-                        Type::Primitive(PrimitiveType::Float),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Float),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "min".to_string(),
-                    type_params: vec![],
-                    params: vec![
-                        Type::Primitive(PrimitiveType::Double),
-                        Type::Primitive(PrimitiveType::Double),
-                    ],
-                    return_type: Type::Primitive(PrimitiveType::Double),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-            ],
-        });
-        let _boolean = store.add_class(ClassDef {
-            name: "java.lang.Boolean".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let _byte = store.add_class(ClassDef {
-            name: "java.lang.Byte".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(number, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let _short = store.add_class(ClassDef {
-            name: "java.lang.Short".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(number, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let _character = store.add_class(ClassDef {
-            name: "java.lang.Character".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        let number = store
+            .lookup_class("java.lang.Number")
+            .expect("minimal JDK must contain java.lang.Number");
+        store.define_class(
+            number,
+            ClassDef {
+                name: "java.lang.Number".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+
+        let math = store
+            .lookup_class("java.lang.Math")
+            .expect("minimal JDK must contain java.lang.Math");
+        store.define_class(
+            math,
+            ClassDef {
+                name: "java.lang.Math".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![
+                    FieldDef {
+                        name: "PI".to_string(),
+                        ty: Type::Primitive(PrimitiveType::Double),
+                        is_static: true,
+                        is_final: true,
+                    },
+                    FieldDef {
+                        name: "E".to_string(),
+                        ty: Type::Primitive(PrimitiveType::Double),
+                        is_static: true,
+                        is_final: true,
+                    },
+                ],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "max".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Int),
+                            Type::Primitive(PrimitiveType::Int),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Int),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "max".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Long),
+                            Type::Primitive(PrimitiveType::Long),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Long),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "max".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Float),
+                            Type::Primitive(PrimitiveType::Float),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Float),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "max".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Double),
+                            Type::Primitive(PrimitiveType::Double),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Double),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "min".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Int),
+                            Type::Primitive(PrimitiveType::Int),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Int),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "min".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Long),
+                            Type::Primitive(PrimitiveType::Long),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Long),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "min".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Float),
+                            Type::Primitive(PrimitiveType::Float),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Float),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "min".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            Type::Primitive(PrimitiveType::Double),
+                            Type::Primitive(PrimitiveType::Double),
+                        ],
+                        return_type: Type::Primitive(PrimitiveType::Double),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                ],
+            },
+        );
+
+        let boolean = store
+            .lookup_class("java.lang.Boolean")
+            .expect("minimal JDK must contain java.lang.Boolean");
+        store.define_class(
+            boolean,
+            ClassDef {
+                name: "java.lang.Boolean".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+
+        let byte = store
+            .lookup_class("java.lang.Byte")
+            .expect("minimal JDK must contain java.lang.Byte");
+        store.define_class(
+            byte,
+            ClassDef {
+                name: "java.lang.Byte".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(number, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+
+        let short = store
+            .lookup_class("java.lang.Short")
+            .expect("minimal JDK must contain java.lang.Short");
+        store.define_class(
+            short,
+            ClassDef {
+                name: "java.lang.Short".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(number, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+
+        let character = store
+            .lookup_class("java.lang.Character")
+            .expect("minimal JDK must contain java.lang.Character");
+        store.define_class(
+            character,
+            ClassDef {
+                name: "java.lang.Character".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
         store.define_class(
             integer,
             ClassDef {
@@ -1030,36 +1134,54 @@ impl TypeStore {
                 methods: vec![],
             },
         );
-        let _long = store.add_class(ClassDef {
-            name: "java.lang.Long".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(number, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let _float = store.add_class(ClassDef {
-            name: "java.lang.Float".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(number, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let _double = store.add_class(ClassDef {
-            name: "java.lang.Double".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(number, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        let long = store
+            .lookup_class("java.lang.Long")
+            .expect("minimal JDK must contain java.lang.Long");
+        store.define_class(
+            long,
+            ClassDef {
+                name: "java.lang.Long".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(number, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        let float = store
+            .lookup_class("java.lang.Float")
+            .expect("minimal JDK must contain java.lang.Float");
+        store.define_class(
+            float,
+            ClassDef {
+                name: "java.lang.Float".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(number, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        let double = store
+            .lookup_class("java.lang.Double")
+            .expect("minimal JDK must contain java.lang.Double");
+        store.define_class(
+            double,
+            ClassDef {
+                name: "java.lang.Double".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(number, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
         store.define_class(
             cloneable,
             ClassDef {
@@ -1088,120 +1210,150 @@ impl TypeStore {
         );
 
         // java.lang.Runnable
-        let _runnable = store.add_class(ClassDef {
-            name: "java.lang.Runnable".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![MethodDef {
-                name: "run".to_string(),
+        let runnable = store
+            .lookup_class("java.lang.Runnable")
+            .expect("minimal JDK must contain java.lang.Runnable");
+        store.define_class(
+            runnable,
+            ClassDef {
+                name: "java.lang.Runnable".to_string(),
+                kind: ClassKind::Interface,
                 type_params: vec![],
-                params: vec![],
-                return_type: Type::Void,
-                is_static: false,
-                is_varargs: false,
-                is_abstract: true,
-            }],
-        });
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![MethodDef {
+                    name: "run".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: Type::Void,
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                }],
+            },
+        );
 
         // java.lang.Iterable<T>
         //
         // This is used by richer typeck tests (e.g. foreach element inference)
         // without requiring a full on-disk JDK model.
         let iterable_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
-        let iterable = store.add_class(ClassDef {
-            name: "java.lang.Iterable".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![iterable_t],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        let iterable = store
+            .lookup_class("java.lang.Iterable")
+            .expect("minimal JDK must contain java.lang.Iterable");
+        store.define_class(
+            iterable,
+            ClassDef {
+                name: "java.lang.Iterable".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![iterable_t],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
 
         // java.io.PrintStream
-        let print_stream = store.add_class(ClassDef {
-            name: "java.io.PrintStream".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![
-                MethodDef {
-                    name: "println".to_string(),
-                    type_params: vec![],
-                    params: vec![Type::class(string, vec![])],
-                    return_type: Type::Void,
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "println".to_string(),
-                    type_params: vec![],
-                    params: vec![Type::Primitive(PrimitiveType::Int)],
-                    return_type: Type::Void,
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-            ],
-        });
+        let print_stream = store
+            .lookup_class("java.io.PrintStream")
+            .expect("minimal JDK must contain java.io.PrintStream");
+        store.define_class(
+            print_stream,
+            ClassDef {
+                name: "java.io.PrintStream".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "println".to_string(),
+                        type_params: vec![],
+                        params: vec![Type::class(string, vec![])],
+                        return_type: Type::Void,
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "println".to_string(),
+                        type_params: vec![],
+                        params: vec![Type::Primitive(PrimitiveType::Int)],
+                        return_type: Type::Void,
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                ],
+            },
+        );
 
         // java.lang.System
-        let _system = store.add_class(ClassDef {
-            name: "java.lang.System".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![FieldDef {
-                name: "out".to_string(),
-                ty: Type::class(print_stream, vec![]),
-                is_static: true,
-                is_final: true,
-            }],
-            constructors: vec![],
-            methods: vec![],
-        });
+        let system = store
+            .lookup_class("java.lang.System")
+            .expect("minimal JDK must contain java.lang.System");
+        store.define_class(
+            system,
+            ClassDef {
+                name: "java.lang.System".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![FieldDef {
+                    name: "out".to_string(),
+                    ty: Type::class(print_stream, vec![]),
+                    is_static: true,
+                    is_final: true,
+                }],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
 
         // java.util.List<E>
         let list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
-        let list = store.add_class(ClassDef {
-            name: "java.util.List".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![list_e],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![Type::class(iterable, vec![Type::TypeVar(list_e)])],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![
-                MethodDef {
-                    name: "get".to_string(),
-                    type_params: vec![],
-                    params: vec![Type::Primitive(PrimitiveType::Int)],
-                    return_type: Type::TypeVar(list_e),
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: true,
-                },
-                MethodDef {
-                    name: "add".to_string(),
-                    type_params: vec![],
-                    params: vec![Type::TypeVar(list_e)],
-                    return_type: Type::Primitive(PrimitiveType::Boolean),
-                    is_static: false,
-                    is_varargs: false,
-                    is_abstract: true,
-                },
-            ],
-        });
+        let list = store
+            .lookup_class("java.util.List")
+            .expect("minimal JDK must contain java.util.List");
+        store.define_class(
+            list,
+            ClassDef {
+                name: "java.util.List".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![list_e],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![Type::class(iterable, vec![Type::TypeVar(list_e)])],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "get".to_string(),
+                        type_params: vec![],
+                        params: vec![Type::Primitive(PrimitiveType::Int)],
+                        return_type: Type::TypeVar(list_e),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: true,
+                    },
+                    MethodDef {
+                        name: "add".to_string(),
+                        type_params: vec![],
+                        params: vec![Type::TypeVar(list_e)],
+                        return_type: Type::Primitive(PrimitiveType::Boolean),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: true,
+                    },
+                ],
+            },
+        );
 
         // java.util.Collections
         //
@@ -1210,150 +1362,192 @@ impl TypeStore {
         // type argument inference depends on the expected return type.
         let collections_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
         let collections_u = store.add_type_param("U", vec![Type::class(object, vec![])]);
-        let _collections = store.add_class(ClassDef {
-            name: "java.util.Collections".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![
-                MethodDef {
-                    name: "emptyList".to_string(),
-                    type_params: vec![collections_t],
-                    params: vec![],
-                    return_type: Type::class(list, vec![Type::TypeVar(collections_t)]),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-                MethodDef {
-                    name: "singletonList".to_string(),
-                    type_params: vec![collections_u],
-                    params: vec![Type::TypeVar(collections_u)],
-                    return_type: Type::class(list, vec![Type::TypeVar(collections_u)]),
-                    is_static: true,
-                    is_varargs: false,
-                    is_abstract: false,
-                },
-            ],
-        });
+        let collections = store
+            .lookup_class("java.util.Collections")
+            .expect("minimal JDK must contain java.util.Collections");
+        store.define_class(
+            collections,
+            ClassDef {
+                name: "java.util.Collections".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "emptyList".to_string(),
+                        type_params: vec![collections_t],
+                        params: vec![],
+                        return_type: Type::class(list, vec![Type::TypeVar(collections_t)]),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "singletonList".to_string(),
+                        type_params: vec![collections_u],
+                        params: vec![Type::TypeVar(collections_u)],
+                        return_type: Type::class(list, vec![Type::TypeVar(collections_u)]),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                ],
+            },
+        );
 
         // java.util.ArrayList<E> implements List<E>
         let array_list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
-        let _array_list = store.add_class(ClassDef {
-            name: "java.util.ArrayList".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![array_list_e],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![Type::class(list, vec![Type::TypeVar(array_list_e)])],
-            fields: vec![],
-            constructors: vec![ConstructorDef {
-                params: vec![],
-                is_varargs: false,
-                is_accessible: true,
-            }],
-            methods: vec![],
-        });
+        let array_list = store
+            .lookup_class("java.util.ArrayList")
+            .expect("minimal JDK must contain java.util.ArrayList");
+        store.define_class(
+            array_list,
+            ClassDef {
+                name: "java.util.ArrayList".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![array_list_e],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![Type::class(list, vec![Type::TypeVar(array_list_e)])],
+                fields: vec![],
+                constructors: vec![ConstructorDef {
+                    params: vec![],
+                    is_varargs: false,
+                    is_accessible: true,
+                }],
+                methods: vec![],
+            },
+        );
 
         // java.util.function.Function<T, R>
         let function_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
         let function_r = store.add_type_param("R", vec![Type::class(object, vec![])]);
-        let _function = store.add_class(ClassDef {
-            name: "java.util.function.Function".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![function_t, function_r],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![MethodDef {
-                name: "apply".to_string(),
-                type_params: vec![],
-                params: vec![Type::TypeVar(function_t)],
-                return_type: Type::TypeVar(function_r),
-                is_static: false,
-                is_varargs: false,
-                is_abstract: true,
-            }],
-        });
+        let function = store
+            .lookup_class("java.util.function.Function")
+            .expect("minimal JDK must contain java.util.function.Function");
+        store.define_class(
+            function,
+            ClassDef {
+                name: "java.util.function.Function".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![function_t, function_r],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![MethodDef {
+                    name: "apply".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::TypeVar(function_t)],
+                    return_type: Type::TypeVar(function_r),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                }],
+            },
+        );
 
         // java.util.function.Supplier<T>
         let supplier_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
-        let _supplier = store.add_class(ClassDef {
-            name: "java.util.function.Supplier".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![supplier_t],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![MethodDef {
-                name: "get".to_string(),
-                type_params: vec![],
-                params: vec![],
-                return_type: Type::TypeVar(supplier_t),
-                is_static: false,
-                is_varargs: false,
-                is_abstract: true,
-            }],
-        });
+        let supplier = store
+            .lookup_class("java.util.function.Supplier")
+            .expect("minimal JDK must contain java.util.function.Supplier");
+        store.define_class(
+            supplier,
+            ClassDef {
+                name: "java.util.function.Supplier".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![supplier_t],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![MethodDef {
+                    name: "get".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: Type::TypeVar(supplier_t),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                }],
+            },
+        );
 
         // java.util.function.Consumer<T>
         let consumer_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
-        let _consumer = store.add_class(ClassDef {
-            name: "java.util.function.Consumer".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![consumer_t],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![MethodDef {
-                name: "accept".to_string(),
-                type_params: vec![],
-                params: vec![Type::TypeVar(consumer_t)],
-                return_type: Type::Void,
-                is_static: false,
-                is_varargs: false,
-                is_abstract: true,
-            }],
-        });
+        let consumer = store
+            .lookup_class("java.util.function.Consumer")
+            .expect("minimal JDK must contain java.util.function.Consumer");
+        store.define_class(
+            consumer,
+            ClassDef {
+                name: "java.util.function.Consumer".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![consumer_t],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![MethodDef {
+                    name: "accept".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::TypeVar(consumer_t)],
+                    return_type: Type::Void,
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                }],
+            },
+        );
 
         // java.util.function.Predicate<T>
         let predicate_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
-        let _predicate = store.add_class(ClassDef {
-            name: "java.util.function.Predicate".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![predicate_t],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![MethodDef {
-                name: "test".to_string(),
-                type_params: vec![],
-                params: vec![Type::TypeVar(predicate_t)],
-                return_type: Type::Primitive(PrimitiveType::Boolean),
-                is_static: false,
-                is_varargs: false,
-                is_abstract: true,
-            }],
-        });
+        let predicate = store
+            .lookup_class("java.util.function.Predicate")
+            .expect("minimal JDK must contain java.util.function.Predicate");
+        store.define_class(
+            predicate,
+            ClassDef {
+                name: "java.util.function.Predicate".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![predicate_t],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![MethodDef {
+                    name: "test".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::TypeVar(predicate_t)],
+                    return_type: Type::Primitive(PrimitiveType::Boolean),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                }],
+            },
+        );
 
         // java.lang.Class<T>
         let class_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
-        let _class = store.add_class(ClassDef {
-            name: "java.lang.Class".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![class_t],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        let class = store
+            .lookup_class("java.lang.Class")
+            .expect("minimal JDK must contain java.lang.Class");
+        store.define_class(
+            class,
+            ClassDef {
+                name: "java.lang.Class".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![class_t],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
 
         store.well_known = Some(WellKnownTypes {
             object,

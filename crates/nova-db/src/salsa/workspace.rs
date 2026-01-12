@@ -10,6 +10,7 @@ use nova_project::{
     JavaConfig, JavaLanguageLevel, JpmsModuleRoot, Module, ProjectConfig, SourceRoot,
     WorkspaceModuleConfig, WorkspaceProjectModel,
 };
+use nova_types::MINIMAL_JDK_BINARY_NAMES;
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -374,34 +375,6 @@ impl WorkspaceLoader {
         // We intentionally avoid enumerating all JDK classes here: real JDKs can contain tens of
         // thousands of types, and the host-managed registry is monotonic across the process
         // lifetime.
-        const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
-            // java.lang
-            "java.lang.Object",
-            "java.lang.String",
-            "java.lang.Integer",
-            "java.lang.Number",
-            "java.lang.Boolean",
-            "java.lang.Byte",
-            "java.lang.Short",
-            "java.lang.Character",
-            "java.lang.Long",
-            "java.lang.Float",
-            "java.lang.Double",
-            "java.lang.Cloneable",
-            "java.lang.Iterable",
-            "java.lang.Class",
-            // java.io
-            "java.io.Serializable",
-            // java.util
-            "java.util.List",
-            "java.util.ArrayList",
-            "java.util.Collections",
-            "java.util.Map",
-            "java.util.Map$Entry",
-            // java.util.function
-            "java.util.function.Function",
-        ];
-
         for name in source_names
             .into_iter()
             .chain(classpath_names)
