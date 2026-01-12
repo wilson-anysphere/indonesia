@@ -717,6 +717,7 @@ impl<'a> Lexer<'a> {
                             return SyntaxKind::Error;
                         }
                         Some(next) => {
+                            let mut inc = 1usize;
                             match next {
                                 // Single-character escapes.
                                 'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' => {
@@ -745,9 +746,10 @@ impl<'a> Lexer<'a> {
                                         start,
                                         self.pos,
                                     );
+                                    inc = next.len_utf16();
                                 }
                             }
-                            value_count += 1;
+                            value_count += inc;
                         }
                     }
                 }
@@ -756,8 +758,12 @@ impl<'a> Lexer<'a> {
                     return SyntaxKind::Error;
                 }
                 _ => {
-                    self.bump_char();
-                    value_count += 1;
+                    let ch = self
+                        .bump_char()
+                        .expect("peek_char returned Some for character literal");
+                    // Java `char` literals are a single UTF-16 code unit, so a non-BMP scalar
+                    // counts as two characters (surrogate pair) and must be rejected.
+                    value_count += ch.len_utf16();
                 }
             }
         }

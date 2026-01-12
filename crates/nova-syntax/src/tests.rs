@@ -623,7 +623,7 @@ fn lexer_char_literals_validate_length_and_octal_escapes() {
 
 #[test]
 fn lexer_rejects_invalid_char_literals() {
-    let input = "'' 'ab'";
+    let input = r"'' 'ab' '\uD83D\uDE00'";
     let (tokens, errors) = lex_with_errors(input);
 
     let non_trivia: Vec<_> = tokens
@@ -637,6 +637,7 @@ fn lexer_rejects_invalid_char_literals() {
         vec![
             (SyntaxKind::Error, "''".into()),
             (SyntaxKind::Error, "'ab'".into()),
+            (SyntaxKind::Error, "'\\uD83D\\uDE00'".into()),
             (SyntaxKind::Eof, "".into()),
         ]
     );

@@ -939,11 +939,15 @@ pub fn unescape_char_literal(text: &str) -> Result<char, LiteralError> {
 
     let mut out = String::new();
     unescape_java_string_like(text, 1, text.len() - 1, false, &mut out)?;
-    let mut chars = out.chars();
-    let ch = chars
+    let mut utf16 = out.encode_utf16();
+    let ch = out
+        .chars()
         .next()
         .ok_or_else(|| err("Empty char literal", 0..text.len()))?;
-    if chars.next().is_some() {
+    let Some(_) = utf16.next() else {
+        return Err(err("Empty char literal", 0..text.len()));
+    };
+    if utf16.next().is_some() {
         return Err(err(
             "Char literal must contain exactly one character",
             0..text.len(),
