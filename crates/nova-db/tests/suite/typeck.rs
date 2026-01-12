@@ -386,9 +386,36 @@ class C {
 }
 
 #[test]
+fn conditional_with_null_infers_reference_type() {
+    let src = r#"
+class C {
+    void m(boolean cond) {
+        var s = cond ? "a" : null;
+        s.substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "unresolved-method" || !d.message.contains("substring")
+        }),
+        "expected substring call to resolve, got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn method_reference_is_typed_from_target() {
     let src = r#"
-import java.util.function.Function;
+ import java.util.function.Function;
 class C {
     void m() {
         Function<String,Integer> f = String::length;

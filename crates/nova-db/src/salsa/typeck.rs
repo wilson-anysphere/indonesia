@@ -2078,9 +2078,32 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let ty = if then_ty == else_ty {
                     then_ty
                 } else if then_ty.is_errorish() {
+                    // Preserve existing "errorish short-circuit": prefer the non-errorish branch
+                    // when one side is unknown/error.
                     else_ty
                 } else if else_ty.is_errorish() {
                     then_ty
+                } else if matches!(then_ty, Type::Null) && else_ty.is_reference() {
+                    // `cond ? ref : null` => ref
+                    else_ty
+                } else if matches!(else_ty, Type::Null) && then_ty.is_reference() {
+                    // `cond ? null : ref` => ref
+                    then_ty
+                } else if let (Type::Primitive(a), Type::Primitive(b)) = (&then_ty, &else_ty) {
+                    // Numeric conditional result uses binary numeric promotion (best-effort).
+                    if a.is_numeric() && b.is_numeric() {
+                        binary_numeric_promotion(*a, *b)
+                            .map(Type::Primitive)
+                            .unwrap_or(Type::Unknown)
+                    } else {
+                        Type::Unknown
+                    }
+                } else if then_ty.is_reference() && else_ty.is_reference() {
+                    // Reference conditional result uses least-upper-bound of the two branches.
+                    self.ensure_type_loaded(loader, &then_ty);
+                    self.ensure_type_loaded(loader, &else_ty);
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    nova_types::lub(env_ro, &then_ty, &else_ty)
                 } else {
                     Type::Unknown
                 };
