@@ -355,6 +355,12 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
             });
         }
 
+        const resolvedProjectRoot =
+          typeof model.projectRoot === 'string' && model.projectRoot.trim().length > 0
+            ? resolvePossiblyRelativePath(workspace.uri.fsPath, model.projectRoot)
+            : '';
+        const projectRoot = resolvedProjectRoot || workspace.uri.fsPath;
+
         const buildSystem = summarizeBuildSystemLabel(model.units);
         const javaLanguageLevel = summarizeJavaLanguageLevelLabel(model.units);
 
@@ -396,17 +402,13 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
             description: javaLanguageLevel,
           });
         }
-        const resolvedProjectRoot =
-          typeof model.projectRoot === 'string' && model.projectRoot.trim().length > 0
-            ? resolvePossiblyRelativePath(workspace.uri.fsPath, model.projectRoot)
-            : '';
-        if (resolvedProjectRoot && path.normalize(resolvedProjectRoot) !== path.normalize(workspace.uri.fsPath)) {
-          const uri = vscode.Uri.file(resolvedProjectRoot);
+        if (projectRoot && path.normalize(projectRoot) !== path.normalize(workspace.uri.fsPath)) {
+          const uri = vscode.Uri.file(projectRoot);
           infoNodes.push({
             type: 'path',
             id: `${element.id}:projectRoot`,
             label: 'Project Root',
-            description: resolvedProjectRoot,
+            description: projectRoot,
             uri,
             icon: vscode.ThemeIcon.Folder,
             command: {
@@ -421,7 +423,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           type: 'unit' as const,
           id: `${element.id}:unit:${idx}:${unitId(unit)}`,
           workspace,
-          projectRoot: model.projectRoot,
+          projectRoot,
           unit,
         }));
 
