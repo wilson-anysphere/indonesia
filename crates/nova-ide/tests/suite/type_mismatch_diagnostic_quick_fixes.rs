@@ -160,6 +160,53 @@ class A {
 }
 
 #[test]
+fn type_mismatch_diagnostic_quick_fixes_cast_does_not_wrap_long_literal() {
+    let source = r#"
+class A {
+  void m() {
+    int i = 1L;
+  }
+}
+"#;
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let needle = "int i = 1L;";
+    let stmt_start = source
+        .find(needle)
+        .expect("expected assignment with long literal in fixture");
+    let expr_start = stmt_start + "int i = ".len();
+    let expr_end = expr_start + "1L".len();
+
+    let range = Range::new(
+        offset_to_position(source, expr_start),
+        offset_to_position(source, expr_end),
+    );
+
+    let selection = range.clone();
+    let diagnostic = Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("type-mismatch".to_string())),
+        message: "type mismatch: expected int, found long".to_string(),
+        ..Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), selection, &[diagnostic]);
+
+    let cast = actions
+        .iter()
+        .find(|action| action.title == "Cast to int")
+        .expect("expected Cast to int quickfix");
+    assert_eq!(cast.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edit = cast.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes");
+    let edits = changes.get(&uri).expect("expected edits for uri");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "(int) 1L");
+}
+
+#[test]
 fn type_mismatch_diagnostic_quick_fixes_cast_wraps_conditional_expression_in_parentheses() {
     let source = r#"
 class A {

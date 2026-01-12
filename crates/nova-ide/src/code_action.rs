@@ -1101,9 +1101,31 @@ fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
 pub(crate) fn is_simple_cast_expr(expr: &str) -> bool {
     static IDENT_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^[A-Za-z_$][A-Za-z0-9_$]*$").expect("valid regex"));
-    // Minimal MVP numeric literal support: decimal integers/floats (with optional underscores).
-    static NUMBER_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^[0-9][0-9_]*(?:\.[0-9][0-9_]*)?$").expect("valid regex"));
+    // Best-effort Java numeric literal support (common int/float/hex/binary forms). This is used
+    // only to decide whether the quick fix should emit extra parentheses.
+    static NUMBER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?x)
+            ^
+            (?:
+                0[xX][0-9A-Fa-f][0-9A-Fa-f_]*[lL]?              # hex int
+              | 0[bB][01][01_]*[lL]?                             # binary int
+              | [0-9][0-9_]*[lL]?                                # decimal int (optional long suffix)
+              | (?:                                              # decimal float with dot
+                    [0-9][0-9_]*\.[0-9][0-9_]*
+                  | [0-9][0-9_]*\.
+                  | \.[0-9][0-9_]*
+                )
+                (?:[eE][+-]?[0-9][0-9_]*)?                       # optional exponent
+                [fFdD]?                                          # optional float/double suffix
+              | [0-9][0-9_]*[eE][+-]?[0-9][0-9_]*[fFdD]?         # decimal float with exponent
+              | [0-9][0-9_]*[fFdD]                               # decimal float with suffix
+            )
+            $
+            ",
+        )
+        .expect("valid regex")
+    });
     // Minimal Java-like string literal: double-quoted, allowing escaped chars.
     static STRING_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r#"^"(?:\\.|[^"\\])*"$"#).expect("valid regex"));
