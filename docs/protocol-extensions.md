@@ -34,8 +34,15 @@ may not include newly-added methods). Use one or more of:
 3. **Schema gating**: for endpoints that return `schemaVersion`, clients must validate it and
    reject unknown major versions.
 
-The VS Code extension uses (1) for `nova/completion/more` (see
-`editors/vscode/src/aiCompletionMore.ts`).
+The VS Code extension uses (1) broadly for `nova/*` requests:
+
+- Feature-level gating using `initializeResult.capabilities.experimental.nova` (see
+  `editors/vscode/src/novaCapabilities.ts`)
+- Optimistic call + graceful method-not-found handling in `sendNovaRequest` (see
+  `editors/vscode/src/extension.ts`)
+
+AI multi-token completions (`nova/completion/more`) also uses an optimistic call + graceful fallback
+loop in `editors/vscode/src/aiCompletionMore.ts`.
 
 ## Common error behavior (timeouts, safe-mode, cancellation)
 
