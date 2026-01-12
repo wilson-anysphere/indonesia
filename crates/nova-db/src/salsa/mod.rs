@@ -306,7 +306,9 @@ struct SalsaMemoFootprintInner {
 #[derive(Debug, Default)]
 struct SalsaInputFootprintInner {
     file_content_by_file: HashMap<FileId, u64>,
+    file_rel_path_by_file: HashMap<FileId, u64>,
     project_config_by_project: HashMap<ProjectId, u64>,
+    project_files_by_project: HashMap<ProjectId, u64>,
     project_class_ids_by_project: HashMap<ProjectId, u64>,
     total_bytes: u64,
 }
@@ -446,10 +448,29 @@ impl SalsaInputFootprint {
         self.refresh_tracker();
     }
 
+    fn record_file_rel_path_len(&self, file: FileId, len: u64) {
+        let mut inner = self.lock_inner();
+        let prev = inner.file_rel_path_by_file.insert(file, len).unwrap_or(0);
+        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(len);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
     fn record_project_config_bytes(&self, project: ProjectId, bytes: u64) {
         let mut inner = self.lock_inner();
         let prev = inner
             .project_config_by_project
+            .insert(project, bytes)
+            .unwrap_or(0);
+        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(bytes);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record_project_files_bytes(&self, project: ProjectId, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let prev = inner
+            .project_files_by_project
             .insert(project, bytes)
             .unwrap_or(0);
         inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(bytes);
@@ -2049,6 +2070,16 @@ impl Database {
                 init_dirty,
             )
         };
+
+        // Keep Salsa input memory tracking in sync for implicit defaults.
+        self.input_footprint
+            .record_file_rel_path_len(file, rel_path.len() as u64);
+        if let Some((project, files)) = project_files_update.as_ref() {
+            let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
+            self.input_footprint
+                .record_project_files_bytes(*project, bytes);
+        }
+
         let mut db = self.inner.lock();
         if init_dirty {
             db.set_file_is_dirty(file, false);
@@ -2074,7 +2105,7 @@ impl Database {
         db.set_file_last_edit(file, None);
         drop(db);
 
-        // Keep memory tracking in sync for implicit defaults.
+        // Keep index tracking in sync for implicit defaults.
         if set_default_classpath_index {
             self.classpath_index_tracker
                 .set_project_ptr(project, None, 0);
@@ -2199,6 +2230,11 @@ impl Database {
 
         self.input_footprint
             .record_file_content_len(file, new_text_len);
+        if let Some((project, files)) = project_files_update.as_ref() {
+            let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
+            self.input_footprint
+                .record_project_files_bytes(*project, bytes);
+        }
 
         let mut db = self.inner.lock();
         db.set_file_is_dirty(file, true);
@@ -2224,6 +2260,10 @@ impl Database {
     pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
         use std::collections::hash_map::Entry;
 
+        let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
+        self.input_footprint
+            .record_project_files_bytes(project, bytes);
+
         let mut init_dirty_files = Vec::new();
         {
             let mut inputs = self.inputs.lock();
@@ -2245,6 +2285,9 @@ impl Database {
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
         use std::collections::hash_map::Entry;
+
+        self.input_footprint
+            .record_file_rel_path_len(file, rel_path.len() as u64);
 
         let init_dirty = {
             let mut inputs = self.inputs.lock();
@@ -3696,8 +3739,11 @@ class Foo {
 
         // `set_file_text` also updates `file_content` and should be tracked.
         db.set_file_text(file2, "xyz");
-        assert_eq!(manager.report().usage.other, 1 + 3);
-        assert_eq!(db.salsa_input_bytes(), 1 + 3);
+        let rel_path_bytes = format!("file-{}.java", file2.to_raw()).len() as u64;
+        let project_files_bytes = std::mem::size_of::<FileId>() as u64;
+        let expected = 1 + 3 + rel_path_bytes + project_files_bytes;
+        assert_eq!(manager.report().usage.other, expected);
+        assert_eq!(db.salsa_input_bytes(), expected);
     }
 
     #[test]
@@ -3708,7 +3754,9 @@ class Foo {
 
         let file = FileId::from_raw(1);
         db.set_file_text(file, "abc");
-        assert_eq!(manager.report().usage.other, 3);
+        let rel_path_bytes = format!("file-{}.java", file.to_raw()).len() as u64;
+        let project_files_bytes = std::mem::size_of::<FileId>() as u64;
+        assert_eq!(manager.report().usage.other, 3 + rel_path_bytes + project_files_bytes);
 
         let edit = nova_core::TextEdit::new(
             nova_core::TextRange::new(nova_core::TextSize::from(1), nova_core::TextSize::from(2)),
@@ -3717,8 +3765,9 @@ class Foo {
         db.apply_file_text_edit(file, edit, Arc::new("axxxxc".to_string()));
 
         // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).
-        assert_eq!(manager.report().usage.other, 6);
-        assert_eq!(db.salsa_input_bytes(), 6);
+        let expected = 6 + rel_path_bytes + project_files_bytes;
+        assert_eq!(manager.report().usage.other, expected);
+        assert_eq!(db.salsa_input_bytes(), expected);
     }
 
     #[test]
@@ -3807,7 +3856,12 @@ class Foo {
 
         // The workspace wires memory through memo eviction registration.
         db.register_salsa_memo_evictor(&manager);
-        assert_eq!(manager.report().usage.other, 3);
+        let rel_path_bytes = format!("file-{}.java", file.to_raw()).len() as u64;
+        let project_files_bytes = std::mem::size_of::<FileId>() as u64;
+        assert_eq!(
+            manager.report().usage.other,
+            3 + rel_path_bytes + project_files_bytes
+        );
     }
 
     #[test]
