@@ -3574,14 +3574,24 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     })
                     .collect::<Vec<_>>();
 
-                let canonical_exists = constructors
-                    .iter()
-                    .any(|ctor| !ctor.is_varargs && ctor.params == canonical_params);
+                let used_ellipsis = record
+                    .components
+                    .last()
+                    .is_some_and(|component| component.ty.trim().contains("..."));
+                let last_is_array = canonical_params
+                    .last()
+                    .is_some_and(|t| matches!(t, Type::Array(_)));
+                let canonical_is_varargs = used_ellipsis && last_is_array;
+
+                let canonical_exists = constructors.iter().any(|ctor| {
+                    ctor.params == canonical_params && ctor.is_varargs == canonical_is_varargs
+                });
                 if !canonical_exists {
+                    let is_accessible = record.modifiers.raw & Modifiers::PRIVATE == 0;
                     constructors.push(ConstructorDef {
                         params: canonical_params,
-                        is_varargs: false,
-                        is_accessible: true,
+                        is_varargs: canonical_is_varargs,
+                        is_accessible,
                     });
                 }
             }
@@ -8099,61 +8109,28 @@ fn define_source_types<'idx>(
                     })
                     .collect::<Vec<_>>();
 
-                let canonical_exists = constructors
-                    .iter()
-                    .any(|ctor| !ctor.is_varargs && ctor.params == canonical_params);
-                if !canonical_exists {
-                    constructors.push(ConstructorDef {
-                        params: canonical_params,
-                        is_varargs: false,
-                        is_accessible: true,
-                    });
-                }
-            }
-            _ => {}
-        }
-
-        // Best-effort: Java canonical constructor for records that declare none.
-        if constructors.is_empty() {
-            if let nova_hir::ids::ItemId::Record(record_id) = item {
-                let record = tree.record(record_id);
-                let params = record
-                    .components
-                    .iter()
-                    .map(|component| {
-                        preload_type_names(
-                            resolver,
-                            &scopes.scopes,
-                            class_scope,
-                            loader,
-                            &component.ty,
-                        );
-                        nova_resolve::type_ref::resolve_type_ref_text(
-                            resolver,
-                            &scopes.scopes,
-                            class_scope,
-                            &*loader.store,
-                            &class_vars,
-                            &component.ty,
-                            Some(component.ty_range),
-                        )
-                        .ty
-                    })
-                    .collect::<Vec<_>>();
                 let used_ellipsis = record
                     .components
                     .last()
                     .is_some_and(|component| component.ty.trim().contains("..."));
-                let last_is_array = params.last().is_some_and(|t| matches!(t, Type::Array(_)));
-                let is_varargs = used_ellipsis && last_is_array;
-                let is_accessible = record.modifiers.raw & Modifiers::PRIVATE == 0;
+                let last_is_array = canonical_params
+                    .last()
+                    .is_some_and(|t| matches!(t, Type::Array(_)));
+                let canonical_is_varargs = used_ellipsis && last_is_array;
 
-                constructors.push(ConstructorDef {
-                    params,
-                    is_varargs,
-                    is_accessible,
+                let canonical_exists = constructors.iter().any(|ctor| {
+                    ctor.params == canonical_params && ctor.is_varargs == canonical_is_varargs
                 });
+                if !canonical_exists {
+                    let is_accessible = record.modifiers.raw & Modifiers::PRIVATE == 0;
+                    constructors.push(ConstructorDef {
+                        params: canonical_params,
+                        is_varargs: canonical_is_varargs,
+                        is_accessible,
+                    });
+                }
             }
+            _ => {}
         }
 
         loader.store.define_class(
