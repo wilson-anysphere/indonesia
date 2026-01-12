@@ -1109,6 +1109,13 @@ async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<W
 async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
     let indexes_snapshot = {
         let mut guard = state.shard_indexes.lock().await;
+        if let Some(current) = guard.get(&index.shard_id) {
+            let current_key = (current.revision, current.index_generation);
+            let incoming_key = (index.revision, index.index_generation);
+            if incoming_key < current_key {
+                return;
+            }
+        }
         guard.insert(index.shard_id, index);
         guard.clone()
     };
