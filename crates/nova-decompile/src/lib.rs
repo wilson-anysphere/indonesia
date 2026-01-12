@@ -10,6 +10,10 @@ use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod document_store;
+
+pub use document_store::DecompiledDocumentStore;
+
 /// URI scheme used by Nova for all virtual documents (ADR0006).
 ///
 /// Nova synthesizes some documents that do not exist on disk (e.g. decompiled
@@ -712,12 +716,23 @@ pub fn parse_decompiled_uri(uri: &str) -> Option<ParsedDecompiledUri> {
     }
 
     // Avoid parsing unrelated `nova:///decompiled/...` URIs.
-    if content_hash.len() != 64 || !content_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+    //
+    // Content hashes are produced by `nova_cache::Fingerprint` and are always
+    // lowercase hex.
+    if content_hash.len() != 64
+        || !content_hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    {
         return None;
     }
 
     let binary_name = filename.strip_suffix(".java")?;
-    if binary_name.is_empty() || binary_name.contains('/') {
+    if binary_name.is_empty()
+        || binary_name.contains('/')
+        || binary_name.contains('\\')
+        || matches!(binary_name, "." | "..")
+    {
         return None;
     }
 
