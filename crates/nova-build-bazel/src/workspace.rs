@@ -206,10 +206,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         run_target: Option<&str>,
     ) -> Result<Vec<String>> {
         let Some((file_label, package_rel)) = self.workspace_file_label_and_package(file)? else {
-            bail!(
-                "no Bazel package found for {} (no BUILD/BUILD.bazel between file and workspace root)",
-                file.display()
-            );
+            return Ok(Vec::new());
         };
 
         let cache_key = if let Some(run_target) = run_target {

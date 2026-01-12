@@ -247,19 +247,16 @@ fn path_to_label_returns_none_when_no_build_file_found() {
 }
 
 #[test]
-fn owning_targets_errors_when_no_build_file_found() {
+fn owning_targets_returns_empty_when_no_build_file_found() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
     create_file(&dir.path().join("java/Hello.java"));
 
     let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
-    let err = workspace
+    let owners = workspace
         .java_owning_targets_for_file(Path::new("java/Hello.java"))
-        .unwrap_err();
-    assert!(
-        err.to_string().contains("no Bazel package found"),
-        "unexpected error: {err}"
-    );
+        .unwrap();
+    assert!(owners.is_empty());
 }
 
 #[test]
