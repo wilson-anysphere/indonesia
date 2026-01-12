@@ -157,9 +157,16 @@ snapshot object and write a fresh file for the new fingerprint the next time it 
 
 ### Build fingerprint inputs (shared)
 
-`buildFingerprint` is computed by hashing the **relative path** and **file contents** of a set of
-Gradle build inputs (with `NUL` separators). The file set is discovered by walking the workspace
-and **skipping** these directories:
+`buildFingerprint` is computed by hashing a path key plus the **file contents** of a set of Gradle
+build inputs (with `NUL` separators).
+
+The path key is:
+
+- the file path **relative to the workspace root** when the file is under the workspace root, or
+- the file’s full path otherwise (for example build inputs from composite builds included via
+  `includeBuild(...)` that live outside the workspace root).
+
+The file set is discovered by walking the workspace and **skipping** these directories:
 
 - `.git/`
 - `.gradle/`
@@ -173,8 +180,9 @@ and **skipping** these directories:
 For **Gradle composite builds**, Nova also includes build inputs from any `includeBuild(...)` roots
 referenced in `settings.gradle(.kts)` (best-effort parse) **when the referenced directory exists and
 looks like a Gradle build** (i.e. it contains `settings.gradle(.kts)` and/or `build.gradle(.kts)`).
-This reduces false positives when a workspace has `includeBuild(...)` directives pointing at
-non-build directories. It also ensures changes in included builds can invalidate the snapshot.
+Each included build root is scanned with the same patterns as the workspace root (including wrapper
+files). This reduces false positives when a workspace has `includeBuild(...)` directives pointing
+at non-build directories and ensures changes in included builds can invalidate the snapshot.
 
 Included inputs (current implementation, shared via `nova-build-model`):
 
@@ -188,7 +196,8 @@ Included inputs (current implementation, shared via `nova-build-model`):
 - Gradle version catalogs:
   - `libs.versions.toml` (at any depth; commonly `gradle/libs.versions.toml`, but some builds reference a root-level catalog)
   - custom catalogs under `gradle/*.versions.toml` (e.g. `gradle/foo.versions.toml`)
-- `gradlew` / `gradlew.bat` (only when located at the workspace root)
+- `gradlew` / `gradlew.bat` (only when located at the root of a scanned build: the workspace root,
+  or an `includeBuild(...)` root)
 - `gradle/wrapper/gradle-wrapper.properties`
 - `gradle/wrapper/gradle-wrapper.jar`
 
