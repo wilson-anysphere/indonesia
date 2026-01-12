@@ -345,11 +345,10 @@ the language server.
 
 ### Build / Project
 
-- `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for project builds/reloads.
-  - When set to `prompt`, Nova asks you to choose which build tool to use each time you run **Nova: Build Project** or **Nova: Reload Project**.
-  - Auto-reload on build file changes treats `prompt` as `auto` (Nova won’t prompt in the background).
 - `nova.build.autoReloadOnBuildFileChange` (boolean): automatically reload Nova’s project model when build configuration files change (for example `pom.xml`, `build.gradle`, `WORKSPACE`). Set to `false` to disable.
-- `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for **Nova: Build Project** and **Nova: Reload Project**. Use `"prompt"` to choose each time.
+- `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for **Nova: Build Project** and **Nova: Reload Project**.
+  - When set to `prompt`, Nova asks you to choose which build tool to use each time you run those commands.
+  - Auto-reload on build file changes treats `prompt` as `auto` (Nova won’t prompt in the background).
 
 ## Packaging
 
