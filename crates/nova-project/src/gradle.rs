@@ -2012,10 +2012,32 @@ fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(S
     let mut depth = 0usize;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
 
     let mut i = open_brace_index;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_single {
             if b == b'\\' {
@@ -2038,6 +2060,19 @@ fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(S
                 in_double = false;
             }
             i += 1;
+            continue;
+        }
+
+        // Groovy/Kotlin triple-quoted strings. These can contain braces; avoid treating them as
+        // structural characters when extracting nested blocks.
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            i += 3;
+            continue;
+        }
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            i += 3;
             continue;
         }
 
@@ -2082,9 +2117,31 @@ fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<
     let mut i = 0usize;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
 
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_single {
             if b == b'\\' {
@@ -2107,6 +2164,18 @@ fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<
                 in_double = false;
             }
             i += 1;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            i += 3;
             continue;
         }
 
@@ -3803,10 +3872,11 @@ mod tests {
     use std::fs;
 
     use super::{
-        append_included_build_module_refs, parse_gradle_dependencies_from_text,
-        parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
-        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
-        sort_dedup_dependencies, strip_gradle_comments, GradleModuleRef, GradleProperties,
+        append_included_build_module_refs, extract_named_brace_blocks,
+        parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
+        parse_gradle_settings_included_builds, parse_gradle_settings_projects,
+        parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
+        GradleModuleRef, GradleProperties,
     };
     use tempfile::tempdir;
 
@@ -4430,6 +4500,34 @@ def other = '''http://example.com//also-not-a-comment'''
         assert!(stripped.contains("http://example.com//also-not-a-comment"));
         assert!(!stripped.contains("this is a comment"));
         assert!(!stripped.contains("block comment"));
+    }
+
+    #[test]
+    fn extract_named_brace_blocks_ignores_triple_quoted_strings() {
+        let script = r#"
+val ignored = """subprojects { dependencies { implementation("ignored:dep:1") } }"""
+
+subprojects {
+  // The brace in this triple-quoted string should not affect brace matching.
+  val braces = """{"""
+  dependencies {
+    implementation("real:dep:1")
+  }
+}
+"#;
+
+        let blocks = extract_named_brace_blocks(script, "subprojects");
+        assert_eq!(blocks.len(), 1, "blocks: {blocks:?}");
+        assert!(
+            blocks[0].contains("real:dep:1"),
+            "expected extracted block to contain real dep, got: {:?}",
+            blocks[0]
+        );
+        assert!(
+            !blocks[0].contains("ignored:dep:1"),
+            "expected triple-quoted string contents to be ignored, got: {:?}",
+            blocks[0]
+        );
     }
 
     #[test]
