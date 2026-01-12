@@ -78,7 +78,6 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             out.push(path);
             continue;
         }
-
         match name {
             "gradle.properties" => out.push(path),
             "gradlew" | "gradlew.bat" => {
@@ -108,6 +107,20 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
 
     std::fs::write(workspace_root.join("settings.gradle"), "include(':app')\n").unwrap();
     std::fs::write(workspace_root.join("build.gradle"), "").unwrap();
+
+    // Extra build files that `nova-build` includes in the Gradle build fingerprint. Prior to
+    // aligning `nova-project`'s fingerprinting logic, their presence would cause a fingerprint
+    // mismatch and the snapshot handoff would be ignored.
+    std::fs::write(workspace_root.join("deps.gradle"), "").unwrap();
+    let version_catalog = workspace_root.join("gradle").join("libs.versions.toml");
+    std::fs::create_dir_all(version_catalog.parent().unwrap()).unwrap();
+    std::fs::write(&version_catalog, "[versions]\nexample = \"1.0\"\n").unwrap();
+    let wrapper_jar = workspace_root
+        .join("gradle")
+        .join("wrapper")
+        .join("gradle-wrapper.jar");
+    std::fs::create_dir_all(wrapper_jar.parent().unwrap()).unwrap();
+    std::fs::write(&wrapper_jar, b"not a real jar").unwrap();
 
     let app_root = workspace_root.join("modules/app");
     std::fs::create_dir_all(&app_root).unwrap();

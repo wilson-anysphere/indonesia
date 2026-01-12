@@ -147,7 +147,6 @@ fn collect_gradle_build_files_rec(
             out.push(path);
             continue;
         }
-
         match name {
             "gradle.properties" => out.push(path),
             "gradlew" | "gradlew.bat" => {
