@@ -1557,7 +1557,7 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("AI: Generate method body")
+        Some("Generate method body with AI")
     );
 
     let edit = apply_edit
@@ -1758,7 +1758,7 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("AI: Generate tests")
+        Some("Generate tests with AI")
     );
     let edit = apply_edit
         .get("params")
@@ -2175,9 +2175,6 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
             format!("{}/complete", ai_server.base_url()),
         )
         .env("NOVA_AI_MODEL", "default")
-        // Force local-only mode so AI code-edit actions are offered; this test
-        // focuses on UTF-16 range extraction rather than cloud privacy policy.
-        .env("NOVA_AI_LOCAL_ONLY", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

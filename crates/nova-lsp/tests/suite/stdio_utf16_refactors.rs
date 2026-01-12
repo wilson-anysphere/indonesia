@@ -1,4 +1,6 @@
-use lsp_types::{Range, Uri, WorkspaceEdit};
+use lsp_types::{
+    DocumentChangeOperation, DocumentChanges, OneOf, Range, ResourceOp, Uri, WorkspaceEdit,
+};
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -40,6 +42,136 @@ fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String
         .collect();
 
     nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
+}
+
+#[test]
+fn stdio_server_rename_package_declaration_dispatches_to_move_package() {
+    let uri = Uri::from_str("file:///workspace/src/main/java/com/example/C.java").unwrap();
+    let source = "package com.example;\n\npublic class C {}\n";
+
+    let pkg_start = source.find("com.example").expect("package name");
+    let pkg_end = pkg_start + "com.example".len();
+    let pkg_pos = lsp_position_utf16(source, pkg_start + 1);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) open document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    // 3) prepareRename on package => full dotted range
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareRename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": pkg_pos,
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("prepareRename result");
+    let range: Range = serde_json::from_value(result).expect("decode prepareRename range");
+    assert_eq!(range, lsp_range_utf16(source, pkg_start, pkg_end));
+
+    // 4) rename package => move_package refactor (file rename + text updates)
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": pkg_pos,
+                "newName": "com.foo"
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 3);
+    let result = resp.get("result").cloned().expect("rename result");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+
+    let Some(document_changes) = edit.document_changes else {
+        panic!("expected documentChanges for package rename");
+    };
+    let DocumentChanges::Operations(ops) = document_changes else {
+        panic!("expected documentChanges as Operations");
+    };
+    assert!(ops
+        .iter()
+        .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Rename(_)))));
+
+    let new_uri = Uri::from_str("file:///workspace/src/main/java/com/foo/C.java").unwrap();
+    let mut saw_updated_package = false;
+    for op in ops {
+        let DocumentChangeOperation::Edit(edit) = op else {
+            continue;
+        };
+        if edit.text_document.uri != new_uri {
+            continue;
+        }
+        if edit.edits.iter().any(|e| match e {
+            OneOf::Left(edit) => edit.new_text.contains("package com.foo;"),
+            OneOf::Right(edit) => edit.text_edit.new_text.contains("package com.foo;"),
+        }) {
+            saw_updated_package = true;
+        }
+    }
+    assert!(saw_updated_package, "expected package declaration rewrite");
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
 }
 
 #[test]

@@ -139,6 +139,8 @@ excluded_paths = ["secret/**"]
         .and_then(|v| v.as_array())
         .expect("code actions array");
 
+    // Explain-error should remain available, but must not include any source snippet for excluded
+    // files.
     let explain = actions
         .iter()
         .find(|a| {

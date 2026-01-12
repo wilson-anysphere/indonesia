@@ -489,7 +489,6 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
 }
-
 /// Analyze a workspace directory (best-effort).
 ///
 /// `has_mapstruct_dependency` should be set based on build metadata (Maven/Gradle).
