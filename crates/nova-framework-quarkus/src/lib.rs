@@ -81,8 +81,14 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
     }
 
     fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
-        if !is_java_file(db, ctx.file) {
-            return Vec::new();
+        if let Some(path) = db.file_path(ctx.file) {
+            if !path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+            {
+                return Vec::new();
+            }
         }
 
         let Some(text) = db.file_text(ctx.file) else {
