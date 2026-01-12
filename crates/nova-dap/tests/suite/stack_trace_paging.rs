@@ -87,3 +87,78 @@ async fn dap_stack_trace_clamps_levels_to_available_frames() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn dap_stack_trace_paging_keeps_frame_ids_valid_across_pages() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let thread_id = client.first_thread_id().await;
+    client.step_in(thread_id).await;
+    let _ = client.wait_for_stopped_reason("step").await;
+
+    // Fetch the "bottom" frame via paging.
+    let page1 = client
+        .request(
+            "stackTrace",
+            json!({
+                "threadId": thread_id,
+                "startFrame": 1,
+                "levels": 1,
+            }),
+        )
+        .await;
+    assert_eq!(page1.get("success").and_then(|v| v.as_bool()), Some(true));
+    let page1_frame_id = page1
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| panic!("stackTrace response missing frame id: {page1}"));
+
+    // Frame id should be usable immediately.
+    let scopes = client
+        .request("scopes", json!({ "frameId": page1_frame_id }))
+        .await;
+    assert_eq!(scopes.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    // Fetch a different page; this should not invalidate the prior frame id.
+    let page0 = client
+        .request(
+            "stackTrace",
+            json!({
+                "threadId": thread_id,
+                "startFrame": 0,
+                "levels": 1,
+            }),
+        )
+        .await;
+    assert_eq!(page0.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    let scopes_after = client
+        .request("scopes", json!({ "frameId": page1_frame_id }))
+        .await;
+    assert_eq!(scopes_after.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    // Re-request the same page; the frame id should be stable.
+    let page1b = client
+        .request(
+            "stackTrace",
+            json!({
+                "threadId": thread_id,
+                "startFrame": 1,
+                "levels": 1,
+            }),
+        )
+        .await;
+    assert_eq!(page1b.get("success").and_then(|v| v.as_bool()), Some(true));
+    let page1b_frame_id = page1b
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| panic!("stackTrace response missing frame id: {page1b}"));
+    assert_eq!(page1_frame_id, page1b_frame_id);
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
