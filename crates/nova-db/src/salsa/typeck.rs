@@ -11230,13 +11230,7 @@ fn find_enclosing_target_typed_expr_in_expr(
             ..
         } => {
             for dim_expr in dim_exprs {
-                find_enclosing_target_typed_expr_in_expr(
-                    body,
-                    *dim_expr,
-                    target,
-                    target_range,
-                    best,
-                );
+                find_enclosing_target_typed_expr_in_expr(body, *dim_expr, target, target_range, best);
             }
             if let Some(init_expr) = initializer {
                 find_enclosing_target_typed_expr_in_expr(

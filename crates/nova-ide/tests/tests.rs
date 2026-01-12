@@ -31,7 +31,7 @@ fn tests_root_contains_only_tests_rs_harness() {
     assert_eq!(
         root_rs_files,
         vec!["tests.rs".to_string()],
-        "unexpected root integration test files in {tests_dir:?}; keep `tests.rs` as the single harness and put other tests under tests/suite/"
+        "unexpected root integration test files in {tests_dir:?}; keep `tests.rs` as the only harness and put tests under tests/suite/"
     );
 }
 
