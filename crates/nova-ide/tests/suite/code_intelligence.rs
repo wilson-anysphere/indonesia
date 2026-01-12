@@ -1497,6 +1497,124 @@ class Foo {
 }
 
 #[test]
+fn goto_definition_resolves_interface_method_through_extends() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let i_path = PathBuf::from("/workspace/src/main/java/I.java");
+    let j_path = PathBuf::from("/workspace/src/main/java/J.java");
+
+    let main_text = r#"
+class Main {
+  void m(J j) {
+    j.fo<|>o();
+  }
+}
+"#;
+    let i_text = r#"
+interface I {
+  void foo();
+}
+"#
+    .to_string();
+    let j_text = r#"
+interface J extends I {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(
+        main_path,
+        main_text,
+        vec![(i_path, i_text), (j_path, j_text)],
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("I.java"),
+        "expected goto-definition to resolve to I.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_default_method_inherited_from_interface() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let i_path = PathBuf::from("/workspace/src/main/java/I.java");
+    let a_path = PathBuf::from("/workspace/src/main/java/A.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    A a = new A();
+    a.fo<|>o();
+  }
+}
+"#;
+    let i_text = r#"
+interface I {
+  default void foo() {}
+}
+"#
+    .to_string();
+    let a_text = r#"
+class A implements I {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(
+        main_path,
+        main_text,
+        vec![(i_path, i_text), (a_path, a_text)],
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("I.java"),
+        "expected goto-definition to resolve to I.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_interface_constant_inherited_by_class() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let i_path = PathBuf::from("/workspace/src/main/java/I.java");
+    let a_path = PathBuf::from("/workspace/src/main/java/A.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    int y = A.<|>X;
+  }
+}
+"#;
+    let i_text = r#"
+interface I {
+  int X = 1;
+}
+"#
+    .to_string();
+    let a_text = r#"
+class A implements I {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(
+        main_path,
+        main_text,
+        vec![(i_path, i_text), (a_path, a_text)],
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("I.java"),
+        "expected goto-definition to resolve to I.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
 fn goto_definition_resolves_member_call_with_generic_typed_local() {
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
     let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
