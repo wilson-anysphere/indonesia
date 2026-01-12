@@ -6749,7 +6749,6 @@ fn handle_workspace_symbol(
             deprecated: None,
             location,
             container_name,
-            container_name,
         });
     }
 
