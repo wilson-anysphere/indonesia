@@ -4034,6 +4034,33 @@ class Foo {}
 }
 
 #[test]
+fn goto_definition_resolves_constructor_call_type_with_block_comment_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    new /*comment*/ Fo<|>o();
+  }
+}
+"#;
+    let foo_text = r#"
+class Foo {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+}
+
+#[test]
 fn goto_definition_resolves_qualified_constructor_call_type_across_files() {
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
     let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
@@ -4042,6 +4069,30 @@ fn goto_definition_resolves_qualified_constructor_call_type_across_files() {
 class Main {
   void m() {
     new p.Fo<|>o();
+  }
+}
+"#;
+    let foo_text = "package p; class Foo {}".to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+}
+
+#[test]
+fn goto_definition_resolves_qualified_constructor_call_type_with_block_comment_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    new p/*comment*/.Fo<|>o();
   }
 }
 "#;

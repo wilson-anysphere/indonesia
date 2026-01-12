@@ -988,31 +988,81 @@ fn looks_like_type_usage(text: &str, ident_span: Span) -> bool {
 /// This is a textual heuristic used by core navigation to avoid misclassifying constructor
 /// calls as receiverless/member method calls.
 fn is_constructor_type_context(text: &str, ident_span: Span) -> bool {
+    fn skip_ws_and_comments_left(text: &str, mut i: usize) -> usize {
+        let bytes = text.as_bytes();
+        loop {
+            let prev = i;
+
+            // Whitespace.
+            while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+                i -= 1;
+            }
+
+            // Block comment (`/* ... */`) ending at `i` (i.e. we are positioned just after `*/`).
+            if i >= 2 && bytes[i - 2] == b'*' && bytes[i - 1] == b'/' {
+                // Walk backwards to find the matching `/*`. Java block comments don't nest, so the
+                // first match is sufficient.
+                let mut k = i - 2;
+                while k >= 1 {
+                    if bytes[k - 1] == b'/' && bytes[k] == b'*' {
+                        i = k - 1;
+                        break;
+                    }
+                    k -= 1;
+                }
+                if k == 0 {
+                    // Unterminated block comment; treat as beginning-of-file.
+                    return 0;
+                }
+                continue;
+            }
+
+            // Line comment (`// ...`) that reaches `i` on the current line. If we find a `//`
+            // after the previous newline, treat everything until `i` as comment and skip it.
+            let mut line_start = i;
+            while line_start > 0 && bytes[line_start - 1] != b'\n' {
+                line_start -= 1;
+            }
+            let mut j = line_start;
+            let mut found = None;
+            while j + 1 < i {
+                if bytes[j] == b'/' && bytes[j + 1] == b'/' {
+                    found = Some(j);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(start) = found {
+                i = start;
+                continue;
+            }
+
+            if i == prev {
+                break;
+            }
+        }
+        i
+    }
+
     let bytes = text.as_bytes();
     let mut i = ident_span.start.min(bytes.len());
 
-    // Scan left over whitespace.
-    while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
-        i -= 1;
-    }
+    // Scan left over whitespace/comments.
+    i = skip_ws_and_comments_left(text, i);
 
     // Scan left over a dotted identifier chain (qualified name), allowing whitespace around '.'.
     loop {
-        // Allow whitespace between '.' and the identifier.
-        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
-            i -= 1;
-        }
+        // Allow whitespace/comments between '.' and the identifier.
+        i = skip_ws_and_comments_left(text, i);
 
         // Look for `.` before the current segment.
         if i == 0 || bytes[i - 1] != b'.' {
             break;
         }
 
-        // Skip `.` and any whitespace before it.
+        // Skip `.` and any whitespace/comments before it.
         i -= 1;
-        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
-            i -= 1;
-        }
+        i = skip_ws_and_comments_left(text, i);
 
         // Consume the previous identifier segment.
         let seg_end = i;
@@ -1026,10 +1076,8 @@ fn is_constructor_type_context(text: &str, ident_span: Span) -> bool {
         }
     }
 
-    // After the chain, scan left over whitespace and check for `new`.
-    while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
-        i -= 1;
-    }
+    // After the chain, scan left over whitespace/comments and check for `new`.
+    i = skip_ws_and_comments_left(text, i);
 
     if i < 3 || &bytes[i - 3..i] != b"new" {
         return false;
