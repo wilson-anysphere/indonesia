@@ -24,6 +24,7 @@ This workstream owns build system integration - understanding Maven, Gradle, and
 
 **Required reading:**
 - [03 - Architecture Overview](../docs/03-architecture-overview.md) - Project model section
+- [Gradle build integration](../docs/gradle-build-integration.md) - `nova-build` ↔ `nova-project` snapshot handoff (`.nova/queries/gradle.json`)
 
 ---
 
@@ -143,9 +144,11 @@ sourceSets {
 ```
 
 **Dependency resolution:**
-- Parse build scripts (Groovy or Kotlin DSL)
-- Use Gradle tooling API or parse cache
-- Handle custom source sets
+- **Heuristic mode (`nova-project`)**: parse build scripts (Groovy/Kotlin DSL) and do best-effort jar
+  lookup in the local Gradle cache (no transitive resolution, variant selection, etc).
+- **Build-tool mode (`nova-build`)**: execute Gradle and extract resolved compilation inputs
+  (classpath/source roots/output dirs/language level); results are persisted to
+  `.nova/queries/gradle.json` and then reused by `nova-project`.
 
 ### Bazel
 

@@ -178,7 +178,10 @@ java {
 }
 ```
 
-For correctness at scale, Nova should prefer the Gradle Tooling API (or an extracted model) over regex parsing, but *start* with heuristics and replace them as the build integration matures.
+For correctness at scale, Nova should prefer a real extracted model over regex parsing. Today Nova
+starts with heuristics in `nova-project`, and can optionally refine language level/classpath data by
+executing Gradle via `nova-build` and consuming the workspace-local snapshot
+`.nova/queries/gradle.json` (see [`gradle-build-integration.md`](gradle-build-integration.md)).
 
 ### Bazel
 
