@@ -27,6 +27,7 @@ pinned_harnesses=(
   "nova-syntax:harness"
   "nova-types:javac_differential"
   "nova-refactor:javac_refactors"
+  "nova-project:harness"
 )
 
 for entry in "${pinned_harnesses[@]}"; do
