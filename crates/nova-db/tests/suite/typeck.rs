@@ -3363,6 +3363,21 @@ class D { void m(){ new C(1); } }
 }
 
 #[test]
+fn constructor_call_resolves_for_generic_class_type_param() {
+    let src = r#"
+class C<T> { C(T x) {} }
+class D { void m(){ new C<String>("x"); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected generic constructor call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn class_ids_are_stable_across_files_for_jdk_nested_types() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

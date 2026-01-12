@@ -6028,7 +6028,8 @@ fn define_source_types<'idx>(
                         .get(cid)
                         .copied()
                         .unwrap_or(class_scope);
-                    let vars: HashMap<String, TypeVarId> = HashMap::new();
+                    // Constructors can refer to the enclosing class type parameters.
+                    let vars = class_vars.clone();
 
                     let params = ctor
                         .params
