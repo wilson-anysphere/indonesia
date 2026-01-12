@@ -12,6 +12,13 @@ import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { toDidRenameFilesParams } from './fileOperations';
+import {
+  formatUnsupportedNovaMethodMessage,
+  isNovaMethodNotFoundError,
+  isNovaRequestSupported,
+  resetNovaExperimentalCapabilities,
+  setNovaExperimentalCapabilities,
+} from './novaCapabilities';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
@@ -598,6 +605,7 @@ export async function activate(context: vscode.ExtensionContext) {
       client = undefined;
       clientStart = undefined;
       currentServerCommand = undefined;
+      resetNovaExperimentalCapabilities();
       detachObservability();
       aiRefreshInProgress = false;
       clearAiCompletionCache();
@@ -607,16 +615,27 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function startLanguageClient(serverCommand: string): Promise<void> {
     currentServerCommand = serverCommand;
+    resetNovaExperimentalCapabilities();
     const launchConfig = readLspLaunchConfig();
     const serverOptions: ServerOptions = {
       command: serverCommand,
       args: launchConfig.args,
       options: { env: launchConfig.env },
     };
-    client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
+    const languageClient = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
+    client = languageClient;
     // vscode-languageclient v9+ starts asynchronously.
-    clientStart = client.start();
-    attachObservability(client, clientStart);
+    const started = languageClient.start();
+    clientStart = started.then(() => {
+      // If the client restarted while we were awaiting initialization, don't overwrite the
+      // active client's capabilities.
+      if (client !== languageClient) {
+        return;
+      }
+      setNovaExperimentalCapabilities(languageClient.initializeResult);
+    });
+
+    attachObservability(languageClient, clientStart);
     frameworksView.refresh();
     clientStart.catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -1804,7 +1823,7 @@ export async function activate(context: vscode.ExtensionContext) {
             updateSafeModeStatus(enabled);
           }
         } catch (err) {
-          if (isMethodNotFoundError(err)) {
+          if (isNovaMethodNotFoundError(err)) {
             // Best-effort: safe mode endpoints might not exist yet.
           } else if (isSafeModeError(err)) {
             updateSafeModeStatus(true);
@@ -1902,6 +1921,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
       try {
         const discovered = await discoverTestsForWorkspaces(workspaces);
+        if (!discovered) {
+          return;
+        }
         await refreshTests(discovered);
 
         for (const entry of discovered) {
@@ -1952,9 +1974,12 @@ export async function activate(context: vscode.ExtensionContext) {
       channel.show(true);
 
       try {
-        const discover = await sendNovaRequest<DiscoverResponse>('nova/test/discover', {
+        const discover = await sendNovaRequest<DiscoverResponse | undefined>('nova/test/discover', {
           projectRoot: workspace.uri.fsPath,
         });
+        if (!discover) {
+          return;
+        }
 
         const candidates = flattenTests(discover.tests).filter((t) => t.kind === 'test');
         if (candidates.length === 0) {
@@ -1970,11 +1995,14 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
+        const resp = await sendNovaRequest<RunResponse | undefined>('nova/test/run', {
           projectRoot: workspace.uri.fsPath,
           buildTool: await getTestBuildTool(workspace),
           tests: [picked.testId],
         });
+        if (!resp) {
+          return;
+        }
 
         channel.appendLine(`\n=== Run ${picked.testId} (${resp.tool}) ===`);
         channel.appendLine(
@@ -2115,6 +2143,13 @@ async function requireClient(): Promise<LanguageClient> {
 
 async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> {
   const c = await requireClient();
+  if (method.startsWith('nova/')) {
+    const supported = isNovaRequestSupported(method);
+    if (supported === false) {
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+      return undefined as unknown as R;
+    }
+  }
   try {
     const result =
       typeof params === 'undefined' ? await c.sendRequest<R>(method) : await c.sendRequest<R>(method, params);
@@ -2123,6 +2158,10 @@ async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> 
     }
     return result;
   } catch (err) {
+    if (method.startsWith('nova/') && isNovaMethodNotFoundError(err)) {
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+      return undefined as unknown as R;
+    }
     if (isSafeModeError(err)) {
       setSafeModeEnabled?.(true);
     }
@@ -2134,12 +2173,15 @@ type DiscoveredWorkspaceTests = { workspaceFolder: vscode.WorkspaceFolder; respo
 
 async function discoverTestsForWorkspaces(
   workspaces: readonly vscode.WorkspaceFolder[],
-): Promise<DiscoveredWorkspaceTests[]> {
+): Promise<DiscoveredWorkspaceTests[] | undefined> {
   const discovered: DiscoveredWorkspaceTests[] = [];
   for (const workspace of workspaces) {
-    const response = await sendNovaRequest<DiscoverResponse>('nova/test/discover', {
+    const response = await sendNovaRequest<DiscoverResponse | undefined>('nova/test/discover', {
       projectRoot: workspace.uri.fsPath,
     });
+    if (!response) {
+      return undefined;
+    }
     discovered.push({ workspaceFolder: workspace, response });
   }
   return discovered;
@@ -2155,17 +2197,24 @@ async function refreshTests(discovered?: DiscoverResponse | DiscoveredWorkspaceT
     return;
   }
 
-  let discoveredWorkspaces: DiscoveredWorkspaceTests[];
+  let discoveredWorkspaces: DiscoveredWorkspaceTests[] | undefined;
   if (Array.isArray(discovered)) {
     discoveredWorkspaces = discovered;
   } else if (discovered) {
     discoveredWorkspaces = [{ workspaceFolder: workspaces[0], response: discovered }];
     if (workspaces.length > 1) {
       const remaining = await discoverTestsForWorkspaces(workspaces.slice(1));
+      if (!remaining) {
+        return;
+      }
       discoveredWorkspaces = [...discoveredWorkspaces, ...remaining];
     }
   } else {
     discoveredWorkspaces = await discoverTestsForWorkspaces(workspaces);
+  }
+
+  if (!discoveredWorkspaces) {
+    return;
   }
 
   const multiRoot = discoveredWorkspaces.length > 1;
@@ -2299,11 +2348,14 @@ async function runTestsFromTestExplorer(
         break;
       }
 
-      const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
+      const resp = await sendNovaRequest<RunResponse | undefined>('nova/test/run', {
         projectRoot: entry.projectRoot,
         buildTool: await getTestBuildTool(entry.workspaceFolder),
         tests: entry.lspIds,
       });
+      if (!resp) {
+        return;
+      }
 
       if (runPlanByWorkspace.size > 1) {
         run.appendOutput(`\n=== Workspace: ${entry.workspaceFolder.name} (${resp.tool}) ===\n`);
@@ -2690,29 +2742,6 @@ function formatError(err: unknown): string {
   } catch {
     return String(err);
   }
-}
-
-function isMethodNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') {
-    return false;
-  }
-
-  const code = (err as { code?: unknown }).code;
-  if (code === -32601) {
-    return true;
-  }
-
-  const message = (err as { message?: unknown }).message;
-  // `nova-lsp` currently reports unknown `nova/*` custom methods as `-32602` with an
-  // "unknown (stateless) method" message (because everything is routed through a single dispatcher).
-  if (
-    code === -32602 &&
-    typeof message === 'string' &&
-    message.toLowerCase().includes('unknown (stateless) method')
-  ) {
-    return true;
-  }
-  return typeof message === 'string' && message.toLowerCase().includes('method not found');
 }
 
 function isSafeModeError(err: unknown): boolean {

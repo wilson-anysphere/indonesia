@@ -116,7 +116,10 @@ async function addDebugConfigurationsFromLsp(request: NovaRequest): Promise<void
 
   const configs = (await request('nova/debug/configurations', {
     projectRoot: folder.uri.fsPath,
-  })) as NovaLspDebugConfiguration[];
+  })) as NovaLspDebugConfiguration[] | undefined;
+  if (!configs) {
+    return;
+  }
 
   if (!Array.isArray(configs) || configs.length === 0) {
     void vscode.window.showInformationMessage('Nova: No debug configurations discovered for this workspace.');

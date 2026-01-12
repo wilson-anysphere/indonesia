@@ -168,7 +168,13 @@ async function debugTestsFromTestExplorer(
       projectRoot: target.projectRoot,
       buildTool,
       test: testId,
-    })) as TestDebugResponse;
+    })) as TestDebugResponse | undefined;
+    if (!resp) {
+      if (item) {
+        run.skipped(item);
+      }
+      return;
+    }
 
     const defaults = getDebugDefaults();
     const desiredHost = defaults.host;

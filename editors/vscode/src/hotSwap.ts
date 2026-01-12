@@ -88,7 +88,10 @@ export function registerNovaHotSwap(
           changedFiles,
           host,
           port,
-        })) as HotSwapResult;
+        })) as HotSwapResult | undefined;
+        if (!result) {
+          return;
+        }
 
         summarizeHotSwapResult(output, result);
         changedFilesByWorkspace.set(key, new Set());
