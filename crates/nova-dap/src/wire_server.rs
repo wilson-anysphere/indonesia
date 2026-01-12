@@ -2481,6 +2481,34 @@ async fn handle_request_inner(
                     return;
                 };
 
+                // `StreamSource::ExistingStream` can be either:
+                // - an already-instantiated stream value (unsafe to sample: iterating consumes it)
+                // - a stream-producing expression (usually safe to re-evaluate, e.g. Arrays.stream(arr))
+                //
+                // Heuristic: if the source expression contains no call syntax, treat it as a value
+                // and refuse by default.
+                if let nova_stream_debug::StreamSource::ExistingStream { stream_expr } =
+                    &analysis.source
+                {
+                    let stream_expr = stream_expr.trim();
+                    let looks_like_value = !stream_expr.contains('(');
+                    if looks_like_value {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!(
+                                "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
+Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
+Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
+                            )),
+                        );
+                        return;
+                    }
+                }
+
                 (dbg.jdwp_client(), thread_id, jdwp_frame_id)
             };
 

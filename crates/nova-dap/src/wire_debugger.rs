@@ -2454,20 +2454,70 @@ impl Debugger {
 
         let started = Instant::now();
 
-        // Resolve the source sample by inspecting the underlying collection object.
+        fn unsafe_existing_stream_message(stream_expr: &str) -> String {
+            // This mirrors `nova-stream-debug`'s safety guard message. Sampling a stream requires
+            // iterating it, which consumes already-instantiated Stream values.
+            format!(
+                "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
+Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
+Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
+            )
+        }
+
+        fn is_pure_access_expr(expr: &str) -> bool {
+            // Heuristic: if the expression contains no calls, it's likely a Stream value (e.g. `s`,
+            // `this.s`, `foo.bar`) rather than something safe to re-evaluate (e.g. `getStream()`).
+            !expr.contains('(')
+        }
+
+        // Resolve the source sample by inspecting the underlying collection/array object.
         let (source_elements, source_truncated, source_collection_type) = {
-            let nova_stream_debug::StreamSource::Collection { collection_expr, .. } = &analysis.source
-            else {
-                return Err(DebuggerError::InvalidRequest(
-                    "unsupported stream source (only collection.stream() is supported)"
-                        .to_string(),
-                ));
+            let (name, kind) = match &analysis.source {
+                nova_stream_debug::StreamSource::Collection { collection_expr, .. } => {
+                    (collection_expr.trim().to_string(), "collection")
+                }
+                nova_stream_debug::StreamSource::ExistingStream { stream_expr } => {
+                    let stream_expr = stream_expr.trim();
+                    if is_pure_access_expr(stream_expr) {
+                        return Err(DebuggerError::InvalidRequest(
+                            unsafe_existing_stream_message(stream_expr),
+                        ));
+                    }
+
+                    // Best-effort support: allow `java.util.Arrays.stream(arr)` by inspecting the
+                    // underlying array `arr` rather than consuming the stream value itself.
+                    let arrays_stream_arg = (|| {
+                        let idx = stream_expr.rfind("Arrays.stream")?;
+                        let after = stream_expr[(idx + "Arrays.stream".len())..].trim_start();
+                        if !after.starts_with('(') {
+                            return None;
+                        }
+                        let arg = extract_single_arg(&stream_expr[idx..])?;
+                        let arg = arg.trim();
+                        if arg.is_empty() || arg.contains(',') {
+                            return None;
+                        }
+                        Some(arg.to_string())
+                    })();
+
+                    let Some(array_expr) = arrays_stream_arg else {
+                        return Err(DebuggerError::InvalidRequest(
+                            "unsupported stream source (only collection.stream() and java.util.Arrays.stream(array) are supported)".to_string(),
+                        ));
+                    };
+                    (array_expr, "array")
+                }
+                _ => {
+                    return Err(DebuggerError::InvalidRequest(
+                        "unsupported stream source (only collection.stream() and java.util.Arrays.stream(array) are supported)".to_string(),
+                    ));
+                }
             };
 
-            let name = collection_expr.trim();
+            let name = name.trim();
             if name.is_empty() {
                 return Err(DebuggerError::InvalidRequest(
-                    "stream source collection expression is empty".to_string(),
+                    format!("stream source {kind} expression is empty"),
                 ));
             }
 
@@ -2508,7 +2558,7 @@ impl Debugger {
 
             let Some(value) = value else {
                 return Err(DebuggerError::InvalidRequest(format!(
-                    "stream source collection `{name}` not found in scope"
+                    "stream source {kind} `{name}` not found in scope"
                 )));
             };
 
