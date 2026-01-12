@@ -11,3 +11,6 @@ tokio-util = "0.7"
 [features]
 # Exposes the wire-protocol mock JDWP server for downstream integration tests.
 wire-test-support = []
+
+# Public helpers used by `cargo-fuzz` targets.
+fuzzing = []

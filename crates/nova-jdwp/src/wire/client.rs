@@ -1784,7 +1784,7 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         }
 
         let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        if length < HEADER_LEN {
+        if crate::validate_jdwp_packet_length(length).is_err() {
             terminated_with_error = true;
             break;
         }

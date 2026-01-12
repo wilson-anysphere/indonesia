@@ -19,6 +19,27 @@ use thiserror::Error;
 pub use mock::{MockJdwpClient, MockObject};
 pub use tcp::TcpJdwpClient;
 
+pub(crate) const JDWP_HEADER_LEN: usize = 11;
+
+/// Maximum JDWP packet size we will accept from a peer.
+///
+/// The JDWP length prefix is untrusted and historically our packet readers would
+/// allocate based solely on it. A corrupted or malicious debuggee could send an
+/// arbitrarily large length value and trigger an OOM before the read fails.
+pub(crate) const MAX_JDWP_PACKET_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) fn validate_jdwp_packet_length(length: usize) -> std::result::Result<(), String> {
+    if length > MAX_JDWP_PACKET_BYTES {
+        return Err(format!(
+            "packet too large ({length} bytes, max {MAX_JDWP_PACKET_BYTES})"
+        ));
+    }
+    if length < JDWP_HEADER_LEN {
+        return Err(format!("invalid packet length {length}"));
+    }
+    Ok(())
+}
+
 pub type ThreadId = u64;
 pub type FrameId = u64;
 pub type ObjectId = u64;
@@ -262,3 +283,43 @@ pub trait JdwpClient: Send {
 /// This is intentionally namespaced to avoid breaking the existing `nova-jdwp`
 /// mock interfaces used by debugger UX tests.
 pub mod wire;
+
+/// Decode a single JDWP packet frame from an in-memory buffer.
+///
+/// This helper exists primarily for fuzzing the JDWP framing logic (length
+/// prefix checks) without needing to spin up a TCP peer.
+#[cfg(feature = "fuzzing")]
+pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
+    let Some((len_bytes, _rest)) = bytes.split_first_chunk::<4>() else {
+        return Err(JdwpError::Protocol("missing JDWP length prefix".to_string()));
+    };
+
+    let length = u32::from_be_bytes(*len_bytes) as usize;
+    validate_jdwp_packet_length(length).map_err(JdwpError::Protocol)?;
+
+    // Emulate the real network readers: allocate based on the length prefix and
+    // only then attempt to read/copy the remaining bytes.
+    let rest_len = length - 4;
+    let mut rest = Vec::with_capacity(rest_len);
+
+    if bytes.len() < length {
+        // `read_exact` would fail here, but only after we've already allocated
+        // `rest_len` bytes.
+        return Err(JdwpError::Protocol("unexpected end of packet".to_string()));
+    }
+    rest.extend_from_slice(&bytes[4..length]);
+
+    let _id = u32::from_be_bytes(rest[0..4].try_into().expect("4 byte slice"));
+    let flags = rest[4];
+    if (flags & 0x80) != 0 {
+        let _error_code =
+            u16::from_be_bytes(rest[5..7].try_into().expect("2 byte slice"));
+        let _payload = rest[7..].to_vec();
+    } else {
+        let _command_set = rest[5];
+        let _command = rest[6];
+        let _payload = rest[7..].to_vec();
+    }
+
+    Ok(())
+}

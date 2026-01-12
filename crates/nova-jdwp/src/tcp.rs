@@ -1516,11 +1516,7 @@ fn read_packet(reader: &mut impl Read) -> Result<Packet, JdwpError> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
     let length = u32::from_be_bytes(len_buf) as usize;
-    if length < 11 {
-        return Err(JdwpError::Protocol(format!(
-            "invalid packet length {length}"
-        )));
-    }
+    crate::validate_jdwp_packet_length(length).map_err(JdwpError::Protocol)?;
 
     let mut rest = vec![0u8; length - 4];
     reader.read_exact(&mut rest)?;

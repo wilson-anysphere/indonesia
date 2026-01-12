@@ -3,7 +3,7 @@ use super::types::{
 };
 
 pub const HANDSHAKE: &[u8] = b"JDWP-Handshake";
-pub const HEADER_LEN: usize = 11;
+pub const HEADER_LEN: usize = crate::JDWP_HEADER_LEN;
 pub const FLAG_REPLY: u8 = 0x80;
 
 pub fn signature_to_tag(signature: &str) -> u8 {
