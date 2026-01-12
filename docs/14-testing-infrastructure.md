@@ -28,10 +28,14 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 
 # Test job (CI runs this on ubuntu/macos/windows)
-cargo test
+# Install nextest first if needed: cargo install cargo-nextest --locked
+cargo nextest run --workspace --profile ci
+
+# Doctest job (CI runs this on ubuntu)
+cargo test --workspace --doc
 ```
 
-This matches `.github/workflows/ci.yml` (lint + test jobs).
+This matches `.github/workflows/ci.yml` (lint + test + doctest jobs).
 
 `ci.yml` also runs:
 
@@ -60,7 +64,9 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 ./scripts/check-repo-invariants.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+# Install nextest first if needed: cargo install cargo-nextest --locked
+cargo nextest run --workspace --profile ci
+cargo test --workspace --doc
 
 # ci.yml (workflows)
 actionlint
@@ -101,8 +107,10 @@ cargo bench -p nova-classpath --bench index
 **Run locally:**
 
 ```bash
-# everything (same as CI)
-cargo test
+# everything (CI uses nextest; `cargo test` is still fine locally)
+cargo nextest run --workspace --profile ci
+# or:
+# cargo test
 
 # one crate
 cargo test -p nova-syntax
@@ -606,7 +614,7 @@ In practice, Nova’s CI splits into:
 
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
-| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo test` (linux/macos/windows), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
+| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo nextest run --workspace --profile ci` (linux/macos/windows), `cargo test --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths`, `cargo bench -p nova-syntax --bench parse_java`, `cargo bench -p nova-format --bench format`, `cargo bench -p nova-refactor --bench refactor`, `cargo bench -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |

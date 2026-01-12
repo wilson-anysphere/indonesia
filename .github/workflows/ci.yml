@@ -17,6 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Needed for scripts/check-test-binary-drift.sh, which inspects the PR base commit.
+          fetch-depth: 0
+      - name: test binary drift guard
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/check-test-binary-drift.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
@@ -32,6 +40,9 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: 1
     strategy:
       fail-fast: false
       matrix:
@@ -41,9 +52,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
-      - name: test
-        run: cargo test
+      - name: test (nextest)
+        run: cargo nextest run --workspace --profile ci
+      - name: Upload nextest JUnit report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: target/nextest/ci/junit.xml
+
+  doctest:
+    name: doctest (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - name: doctest
+        run: cargo test --workspace --doc
 
   wasm:
     name: wasm example (ubuntu)
