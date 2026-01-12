@@ -731,6 +731,32 @@ test('noManualFileOperationsForwarding scan flags workspace/didRenameFiles sendN
   assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
 });
 
+test('noManualFileOperationsForwarding scan flags workspace/didCreateFiles sendNotification (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification('workspace/didCreateFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didCreateFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags workspace/didDeleteFiles sendNotification (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification('workspace/didDeleteFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didDeleteFiles')));
+});
+
 test('noManualFileOperationsForwarding scan does not flag unrelated notifications (fixtures)', () => {
   const srcRoot = '/';
   const filePath = '/fixture.ts';
@@ -756,6 +782,20 @@ test('noManualFileOperationsForwarding scan flags file operation NotificationTyp
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
   const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
   assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags NotificationType constant method strings (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    import { DidDeleteFilesNotification } from 'vscode-languageserver-protocol';
+    client.sendNotification(DidDeleteFilesNotification.method, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didDeleteFiles')));
 });
 
 test('noManualFileOperationsForwarding scan flags sendNotification prebind helpers (fixtures)', () => {
