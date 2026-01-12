@@ -49,6 +49,45 @@ class C {
 }
 
 #[test]
+fn reports_type_mismatch_for_bad_assignment() {
+    let src = r#"
+class C {
+    void m() {
+        int x = 0;
+        x = "no";
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected type-mismatch diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn reports_condition_not_boolean_for_if() {
+    let src = r#"
+class C {
+    void m() {
+        if (1) {}
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "condition-not-boolean"),
+        "expected condition-not-boolean diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
 fn type_at_offset_shows_string_for_substring_call() {
     let src = r#"
 class C {

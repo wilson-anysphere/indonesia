@@ -416,7 +416,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 else_branch,
                 ..
             } => {
-                let _ = self.infer_expr(loader, *condition);
+                let condition_ty = self.infer_expr(loader, *condition).ty;
+                if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "condition-not-boolean",
+                        "condition must be boolean",
+                        Some(self.body.exprs[*condition].range()),
+                    ));
+                }
                 self.check_stmt(loader, *then_branch);
                 if let Some(else_branch) = else_branch {
                     self.check_stmt(loader, *else_branch);
@@ -425,7 +432,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::While {
                 condition, body, ..
             } => {
-                let _ = self.infer_expr(loader, *condition);
+                let condition_ty = self.infer_expr(loader, *condition).ty;
+                if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "condition-not-boolean",
+                        "condition must be boolean",
+                        Some(self.body.exprs[*condition].range()),
+                    ));
+                }
                 self.check_stmt(loader, *body);
             }
             HirStmt::For {
@@ -439,7 +453,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.check_stmt(loader, *stmt);
                 }
                 if let Some(condition) = condition {
-                    let _ = self.infer_expr(loader, *condition);
+                    let condition_ty = self.infer_expr(loader, *condition).ty;
+                    if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                        self.diagnostics.push(Diagnostic::error(
+                            "condition-not-boolean",
+                            "condition must be boolean",
+                            Some(self.body.exprs[*condition].range()),
+                        ));
+                    }
                 }
                 for expr in update {
                     let _ = self.infer_expr(loader, *expr);
@@ -595,7 +616,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Unary { op, expr, .. } => {
                 let inner = self.infer_expr(loader, *expr).ty;
                 let ty = match op {
-                    UnaryOp::Not => Type::Primitive(PrimitiveType::Boolean),
+                    UnaryOp::Not => {
+                        if !inner.is_errorish() && !inner.is_primitive_boolean() {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-unary",
+                                "operator ! requires boolean",
+                                Some(self.body.exprs[*expr].range()),
+                            ));
+                        }
+                        Type::Primitive(PrimitiveType::Boolean)
+                    }
                     UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => match inner {
                         Type::Primitive(primitive) if primitive.is_numeric() => {
                             // Unary numeric promotion.
@@ -621,14 +651,71 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
                 let rhs_info = self.infer_expr(loader, *rhs);
+                let lhs_ty = lhs_info.ty.clone();
+                let rhs_ty = rhs_info.ty.clone();
+
+                match *op {
+                    AssignOp::Assign => {
+                        if !lhs_ty.is_errorish() && !rhs_ty.is_errorish() {
+                            let env_ro: &dyn TypeEnv = &*loader.store;
+                            if assignment_conversion(env_ro, &rhs_ty, &lhs_ty).is_none() {
+                                let expected = format_type(env_ro, &lhs_ty);
+                                let found = format_type(env_ro, &rhs_ty);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "type-mismatch",
+                                    format!("type mismatch: expected {expected}, found {found}"),
+                                    Some(self.body.exprs[*rhs].range()),
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        // Best-effort support for compound assignments (JLS 15.26.2):
+                        // accept primitive numeric cases where binary numeric promotion applies.
+                        if !lhs_ty.is_errorish() && !rhs_ty.is_errorish() {
+                            let string_ty =
+                                Type::class(loader.store.well_known().string, vec![]);
+                            let ok = if *op == AssignOp::AddAssign && lhs_ty == string_ty {
+                                true
+                            } else {
+                                match (&lhs_ty, &rhs_ty) {
+                                    (Type::Primitive(a), Type::Primitive(b)) => {
+                                        (matches!(
+                                            op,
+                                            AssignOp::AndAssign
+                                                | AssignOp::OrAssign
+                                                | AssignOp::XorAssign
+                                        ) && *a == PrimitiveType::Boolean
+                                            && *b == PrimitiveType::Boolean)
+                                            || binary_numeric_promotion(*a, *b).is_some()
+                                    }
+                                    _ => false,
+                                }
+                            };
+
+                            if !ok {
+                                let env_ro: &dyn TypeEnv = &*loader.store;
+                                let lhs_render = format_type(env_ro, &lhs_ty);
+                                let rhs_render = format_type(env_ro, &rhs_ty);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "type-mismatch",
+                                    format!(
+                                        "type mismatch: cannot apply `{op:?}` to {lhs_render} and {rhs_render}"
+                                    ),
+                                    Some(self.body.exprs[expr].range()),
+                                ));
+                            }
+                        }
+                    }
+                }
 
                 // Best-effort: assignment expression type is the LHS type.
                 // For compound assignments, Java applies numeric promotion and an implicit cast.
                 let ty = match op {
-                    AssignOp::Assign => lhs_info.ty.clone(),
+                    AssignOp::Assign => lhs_ty,
                     _ => {
                         if lhs_info.ty.is_errorish() {
-                            rhs_info.ty
+                            rhs_ty
                         } else {
                             lhs_info.ty.clone()
                         }
