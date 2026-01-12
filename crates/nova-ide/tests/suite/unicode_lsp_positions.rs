@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use lsp_types::{HoverContents, Position};
+use lsp_types::{HoverContents, Position, Range};
 use nova_db::InMemoryFileStore;
 use nova_ide::{completions, find_references, hover};
 
@@ -88,20 +88,58 @@ class A {
 
 #[test]
 fn find_references_uses_utf16_positions_after_non_bmp_chars() {
-    let (db, file, pos) = fixture_utf16(
-        r#"
+    let fixture = r#"
 class A {
   void m() {
     String s = "🙂🙂"; int <|>x = 1; x = x + 1;
   }
 }
-"#,
+"#;
+    let (db, file, pos) = fixture_utf16(fixture);
+
+    let text = fixture.replace("<|>", "");
+    let x_offsets: Vec<usize> = text.match_indices('x').map(|(idx, _)| idx).collect();
+    assert_eq!(
+        x_offsets.len(),
+        3,
+        "expected fixture to contain 3 `x` occurrences; got {x_offsets:?}"
     );
 
+    let expected_ranges: Vec<Range> = x_offsets
+        .iter()
+        .map(|offset| Range {
+            start: offset_to_position_utf16(&text, *offset),
+            end: offset_to_position_utf16(&text, *offset + 1),
+        })
+        .collect();
+
+    // `include_declaration=false` should return uses only.
+    let refs = find_references(&db, file, pos, false);
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected to find references excluding declaration; got {refs:?}"
+    );
+
+    let mut actual_ranges: Vec<Range> = refs.into_iter().map(|loc| loc.range).collect();
+    actual_ranges.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+
+    let mut expected_uses = expected_ranges[1..].to_vec();
+    expected_uses.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+    assert_eq!(actual_ranges, expected_uses);
+
+    // `include_declaration=true` should include the declaration exactly once.
     let refs = find_references(&db, file, pos, true);
     assert_eq!(
         refs.len(),
         3,
-        "expected to find all references (decl + uses); got {refs:?}"
+        "expected to find references including declaration; got {refs:?}"
     );
+
+    let mut actual_ranges: Vec<Range> = refs.into_iter().map(|loc| loc.range).collect();
+    actual_ranges.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+
+    let mut expected = expected_ranges;
+    expected.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
+    assert_eq!(actual_ranges, expected);
 }
