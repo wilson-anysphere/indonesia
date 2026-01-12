@@ -582,7 +582,7 @@ impl CtSymReleaseIndex {
     /// Approximate heap memory usage of this index in bytes.
     ///
     /// This is intended for best-effort integration with `nova-memory`.
-    pub(crate) fn estimated_bytes(&self) -> u64 {
+    pub(crate) fn estimated_bytes_legacy(&self) -> u64 {
         use std::mem::size_of;
 
         fn add_string(bytes: &mut u64, s: &String) {
