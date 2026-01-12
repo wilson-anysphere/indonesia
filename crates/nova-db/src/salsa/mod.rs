@@ -751,9 +751,9 @@ struct InputIndexTracker {
 #[derive(Debug, Default)]
 struct InputIndexTrackerInner {
     /// Project -> tracked value pointer.
-    by_project: HashMap<ProjectId, usize>,
+    by_project: HashMap<ProjectId, *const ()>,
     /// Pointer -> (estimated bytes, number of projects referencing it).
-    by_ptr: HashMap<usize, TrackedPtrEntry>,
+    by_ptr: HashMap<*const (), TrackedPtrEntry>,
     total_bytes: u64,
 }
 
@@ -799,7 +799,7 @@ impl InputIndexTracker {
         tracker.set_bytes(bytes);
     }
 
-    fn set_project_ptr(&self, project: ProjectId, ptr: Option<usize>, bytes: u64) {
+    fn set_project_ptr(&self, project: ProjectId, ptr: Option<*const ()>, bytes: u64) {
         let mut inner = self.lock_inner();
 
         let prev_ptr = inner.by_project.get(&project).copied();
@@ -2234,7 +2234,7 @@ impl Database {
 
     pub fn set_jdk_index(&self, project: ProjectId, index: Arc<nova_jdk::JdkIndex>) {
         let bytes = index.estimated_bytes();
-        let ptr = Arc::as_ptr(&index) as usize;
+        let ptr = Arc::as_ptr(&index) as *const ();
         let index = ArcEq::new(index);
         self.inputs.lock().jdk_index.insert(project, index.clone());
         self.inner.lock().set_jdk_index(project, index);
@@ -2248,7 +2248,7 @@ impl Database {
         index: Option<Arc<nova_classpath::ClasspathIndex>>,
     ) {
         let (ptr, bytes) = match &index {
-            Some(index) => (Some(Arc::as_ptr(index) as usize), index.estimated_bytes()),
+            Some(index) => (Some(Arc::as_ptr(index) as *const ()), index.estimated_bytes()),
             None => (None, 0),
         };
         let index = index.map(ArcEq::new);
