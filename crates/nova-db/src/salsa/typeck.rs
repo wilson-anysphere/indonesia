@@ -447,6 +447,10 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
 }
 
 fn type_of_expr(db: &dyn NovaTypeck, file: FileId, expr: FileExprId) -> Type {
+    // Avoid mismatched keys (shouldn't happen, but this query is used by IDE features).
+    if def_file(expr.owner) != file {
+        return Type::Unknown;
+    }
     // Demand-driven: avoid forcing `typeck_body(owner)` for IDE queries.
     db.type_of_expr_demand(file, expr)
 }
