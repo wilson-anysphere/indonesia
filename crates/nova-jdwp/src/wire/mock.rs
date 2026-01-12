@@ -2505,9 +2505,10 @@ async fn handle_packet(
                 match array_id {
                     ARRAY_OBJECT_ID => {
                         w.write_u8(b'I'); // element tag
-                        w.write_u32(length.max(0) as u32);
-                        for idx in 0..length.max(0) {
-                            w.write_i32(first_index + idx);
+                        let count = (length.max(0) as usize).min(MAX_MOCK_ARRAY_ELEMENTS);
+                        w.write_u32(count as u32);
+                        for idx in 0..count {
+                            w.write_i32(first_index.wrapping_add(idx as i32));
                         }
                     }
                     SAMPLE_INT_ARRAY_OBJECT_ID => {
