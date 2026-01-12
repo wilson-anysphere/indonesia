@@ -2158,10 +2158,11 @@ dependencies {
 "#;
 
         let deps = parse_gradle_dependencies_from_text(build_script, None);
-        let got: BTreeSet<_> = deps
+        let tuples: Vec<(String, String, Option<String>)> = deps
             .into_iter()
             .map(|d| (d.group_id, d.artifact_id, d.version))
             .collect();
+        let got: BTreeSet<_> = tuples.iter().cloned().collect();
 
         let expected: BTreeSet<(String, String, Option<String>)> = [
             ("g1", "a1", "1"),
@@ -2183,6 +2184,11 @@ dependencies {
         .map(|(g, a, v)| (g.to_string(), a.to_string(), Some(v.to_string())))
         .collect();
 
+        assert_eq!(
+            tuples.len(),
+            got.len(),
+            "expected dependency extraction to not emit duplicates"
+        );
         assert_eq!(got, expected);
     }
 }

@@ -1079,7 +1079,7 @@ fn record_body_references(
                 let Some(def) = workspace_def_map.type_def(item) else {
                     return;
                 };
-                let Some(field) = def.fields.get(&Name::from(name.as_str())).copied() else {
+                let Some(field) = def.fields.get(&Name::from(name.as_str())).map(|f| f.id) else {
                     return;
                 };
 
@@ -1145,7 +1145,7 @@ fn record_body_references(
                     let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                         return;
                     };
-                    let Some(&method) = methods.first() else {
+                    let Some(method) = methods.first().map(|m| m.id) else {
                         return;
                     };
                     let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
@@ -1177,7 +1177,7 @@ fn record_body_references(
                 let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                     return;
                 };
-                let Some(&method) = methods.first() else {
+                let Some(method) = methods.first().map(|m| m.id) else {
                     return;
                 };
                 let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {
