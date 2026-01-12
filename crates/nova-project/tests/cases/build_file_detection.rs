@@ -32,6 +32,7 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradle/foo.versions.toml",
         "gradle/conventions.gradle",
         "gradle/conventions.gradle.kts",
+        ".nova/queries/gradle.json",
     ];
     for rel in positives {
         let path = join(root, rel);

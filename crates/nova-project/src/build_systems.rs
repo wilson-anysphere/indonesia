@@ -97,6 +97,9 @@ impl BuildSystemBackend for GradleBuildSystem {
             PathPattern::ExactFileName("gradlew.bat"),
             PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.properties"),
             PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar"),
+            // `nova-build` emits a file-based Gradle snapshot handoff here; treat it like a build
+            // file so editors can trigger a reload when it changes.
+            PathPattern::Glob("**/.nova/queries/gradle.json"),
         ]
     }
 }

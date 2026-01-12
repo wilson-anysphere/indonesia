@@ -68,6 +68,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
+    assert!(gradle
+        .watch_files()
+        .contains(&PathPattern::Glob("**/.nova/queries/gradle.json")));
 
     let bazel = BazelBuildSystem::new(LoadOptions::default());
     assert!(bazel
@@ -118,4 +121,3 @@ fn parse_project_returns_non_empty_models_for_fixtures() {
         "expected Simple project to return at least one module"
     );
 }
-
