@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { combineBuildStatuses, groupByFilePath, isBazelTargetRequiredMessage, type NovaBuildStatus } from './buildIntegrationUtils';
 import { resolvePossiblyRelativePath } from './pathUtils';
+import { formatUnsupportedNovaMethodMessage } from './novaCapabilities';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -369,9 +370,7 @@ export function registerNovaBuildIntegration(
       return response;
     } catch (err) {
       if (isMethodNotFoundError(err)) {
-        void vscode.window.showInformationMessage(
-          'Nova: build diagnostics are not supported by this nova-lsp version. Update nova-lsp to enable Problems integration.',
-        );
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/build/diagnostics'));
         return undefined;
       }
 
@@ -648,9 +647,7 @@ export function registerNovaBuildIntegration(
               }
             } catch (err) {
               if (isMethodNotFoundError(err)) {
-                void vscode.window.showInformationMessage(
-                  'Nova: build integration is not supported by this nova-lsp version. Update nova-lsp to enable project builds.',
-                );
+                void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/buildProject'));
                 return;
               }
 
@@ -735,9 +732,7 @@ export function registerNovaBuildIntegration(
         }
       } catch (err) {
         if (isMethodNotFoundError(err)) {
-          void vscode.window.showInformationMessage(
-            'Nova: project reload is not supported by this nova-lsp version. Update nova-lsp to enable project reloading.',
-          );
+          void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/reloadProject'));
           return;
         }
 
