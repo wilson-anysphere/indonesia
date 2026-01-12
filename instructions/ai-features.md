@@ -304,8 +304,9 @@ bash scripts/cargo_agent.sh test -p nova-ai --test tests suite::ai_eval
 # Code generation tests
 bash scripts/cargo_agent.sh test -p nova-ai-codegen --lib
 
-# LSP unit tests for AI code actions / patch pipeline (privacy gating + excluded paths)
-bash scripts/cargo_agent.sh test -p nova-lsp --lib code_action::tests::excluded_paths_are_enforced
+# LSP unit tests for AI code actions / patch pipeline (privacy gating, excluded paths, patch safety)
+# (filtered to just the AI code-action suite)
+bash scripts/cargo_agent.sh test -p nova-lsp --lib code_action::tests::
 ```
 
 ### Mock Models

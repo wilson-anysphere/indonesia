@@ -1450,6 +1450,45 @@ server is in safe-mode.
 
 ## Experimental / client-specific methods
 
+### `nova/semanticSearch/indexStatus`
+
+This is a lightweight “poll for background workspace indexing progress” endpoint for Nova’s
+semantic-search subsystem (used to supply related-code context for AI prompts).
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+#### Request params
+
+Currently unused; clients should send an empty object:
+
+```json
+{}
+```
+
+#### Response
+
+```json
+{
+  "currentRunId": 1,
+  "completedRunId": 1,
+  "done": true,
+  "indexedFiles": 42,
+  "indexedBytes": 12345
+}
+```
+
+Notes:
+
+- Indexing only runs when semantic search is enabled (`ai.enabled=true` and
+  `ai.features.semantic_search=true`) and the server has a workspace root (`initialize.rootUri`).
+- `done=true` means the most recent indexing run has completed.
+- `currentRunId=0` means workspace indexing has not started (for example: semantic search disabled,
+  missing workspace root, AI runtime not available, or the server is in safe-mode).
+
+---
+
 ### `nova/completion/more`
 
 This is the “poll for async AI completions” endpoint used by the VS Code extension.
