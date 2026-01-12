@@ -107,7 +107,15 @@ Notable “delta” areas to be aware of:
     - `crates/nova-lsp/src/refactor_workspace.rs` requires `file://` URIs for project-root discovery.
     - JDK go-to-definition emits canonical ADR0006 `nova:///decompiled/...` URIs (see `goto_definition_jdk` in `crates/nova-lsp/src/main.rs`). Decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store (not injected into the open-document overlay), but legacy `nova-decompile:` handling still exists for compatibility (`crates/nova-lsp/src/decompile.rs` and `crates/nova-vfs/src/path.rs`).
 - **Distributed mode (docs/16-distributed-mode.md):**
-  - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.
+  - The router/worker stack (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) is now integrated into the shipped `nova-lsp` stdio server behind CLI flags:
+    - `--distributed` enables local multi-process indexing/search.
+    - `--distributed-worker-command <path>` overrides the `nova-worker` binary (see `parse_distributed_cli` in `crates/nova-lsp/src/main.rs`).
+      - Default resolution prefers a sibling `nova-worker` next to the `nova-lsp` executable, otherwise falls back to `nova-worker` on `PATH` (`default_distributed_worker_command` in `crates/nova-lsp/src/main.rs`).
+  - When enabled, `nova-lsp` starts a local IPC router after the `initialize` handshake (`ServerState::start_distributed_after_initialize` in `crates/nova-lsp/src/main.rs`), and the router spawns local `nova-worker` processes (one per shard/source-root).
+  - Current scope is intentionally narrow/experimental:
+    - `workspace/symbol` is served via the distributed router (`handle_workspace_symbol` in `crates/nova-lsp/src/main.rs`).
+    - The frontend forwards best-effort file text updates to the router from `textDocument/didOpen`, `textDocument/didChange`, and `workspace/didChangeWatchedFiles` notifications (`handle_notification` in `crates/nova-lsp/src/main.rs`).
+    - Most other LSP features still run in-process (the router/worker layer is not yet a general “semantic query RPC”).
 - **Protocol extensions:**
   - Custom `nova/*` methods exist (implemented across `crates/nova-lsp/src/extensions/`, `crates/nova-lsp/src/hardening.rs`, and the `nova-lsp` binary) and are advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (see `initialize_result_json()` in `crates/nova-lsp/src/main.rs`).
   - Clients should still be defensive for older servers (or non-Nova servers) that don’t advertise these capabilities: use “optimistic call + method-not-found fallback” gating (see [`protocol-extensions.md`](protocol-extensions.md)).

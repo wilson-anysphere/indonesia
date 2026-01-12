@@ -19,6 +19,7 @@ mod dap_launch;
 mod dap_launch_detach;
 mod dap_restart;
 mod dap_session;
+mod process_event;
 mod output_truncation;
 mod process_event;
 mod debugger_ux;

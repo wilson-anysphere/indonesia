@@ -1,3 +1,4 @@
+// Part of the consolidated `nova-dap` integration test harness (`tests/tests.rs`).
 use std::{path::Path, time::Duration};
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
@@ -268,4 +269,3 @@ async fn dap_attach_emits_process_event() {
 
     server_task.await.unwrap().unwrap();
 }
-
