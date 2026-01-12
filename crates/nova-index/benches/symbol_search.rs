@@ -3,7 +3,7 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use nova_index::{
-    CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex,
+    CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolSearchIndex,
 };
 
 const SYMBOL_COUNT: usize = 100_000;
@@ -70,9 +70,9 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             name,
             qualified_name,
             kind: IndexSymbolKind::Class,
-            container_name: None,
-            location: SymbolLocation::default(),
-            ast_id: 0,
+            container_name: Default::default(),
+            location: Default::default(),
+            ast_id: Default::default(),
         });
     }
 
@@ -103,9 +103,9 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             name,
             qualified_name,
             kind: IndexSymbolKind::Class,
-            container_name: None,
-            location: SymbolLocation::default(),
-            ast_id: 0,
+            container_name: Default::default(),
+            location: Default::default(),
+            ast_id: Default::default(),
         });
     }
 
