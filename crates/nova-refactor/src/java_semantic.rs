@@ -5922,6 +5922,8 @@ fn collect_switch_contexts(
                 range,
                 ..
             } => {
+                // Walk the selector expression too so we can collect contexts for any nested switch
+                // expressions inside it (e.g. `switch (switch (...) { ... }) { ... }`).
                 walk_expr(
                     body,
                     *selector,
@@ -6153,6 +6155,36 @@ fn collect_switch_contexts(
                     walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
                 }
             },
+            hir::Expr::Switch {
+                selector,
+                body: inner,
+                range,
+                ..
+            } => {
+                // Walk nested selectors first so we can record their contexts too.
+                walk_expr(body, *selector, owner, scope_result, resolver, item_trees, out);
+
+                let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
+                    walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+                    return;
+                };
+
+                let selector_enum = infer_switch_selector_enum_type(
+                    body,
+                    selector,
+                    scope,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                );
+
+                out.entry(range.start).or_insert(SwitchContext {
+                    scope,
+                    selector_enum,
+                });
+
+                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+            }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, owner, scope_result, resolver, item_trees, out);
