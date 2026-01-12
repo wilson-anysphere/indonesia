@@ -374,9 +374,15 @@ export function registerNovaServerCommands(
 
     let configs: NovaLspDebugConfiguration[] | undefined;
     try {
-      configs = (await opts.novaRequest('nova/debug/configurations', {
+      const raw = await opts.novaRequest('nova/debug/configurations', {
         projectRoot: workspaceFolder.uri.fsPath,
-      })) as NovaLspDebugConfiguration[];
+      });
+      if (typeof raw === 'undefined') {
+        // Request was gated (unsupported method) and the shared request helper already displayed
+        // a user-facing message.
+        return;
+      }
+      configs = raw as NovaLspDebugConfiguration[];
     } catch (err) {
       const message = formatError(err);
       void vscode.window.showErrorMessage(`Nova: failed to resolve debug configurations: ${message}`);
