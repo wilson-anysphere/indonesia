@@ -58,6 +58,42 @@ fn find_method_in_item(
     None
 }
 
+fn constructor_id(tree: &ItemTree) -> nova_hir::ids::ConstructorId {
+    for &item in &tree.items {
+        if let Some(id) = find_constructor_in_item(tree, item) {
+            return id;
+        }
+    }
+    panic!("constructor not found");
+}
+
+fn find_constructor_in_item(
+    tree: &ItemTree,
+    item: Item,
+) -> Option<nova_hir::ids::ConstructorId> {
+    let members = match item {
+        Item::Class(id) => &tree.class(id).members,
+        Item::Interface(id) => &tree.interface(id).members,
+        Item::Enum(id) => &tree.enum_(id).members,
+        Item::Record(id) => &tree.record(id).members,
+        Item::Annotation(id) => &tree.annotation(id).members,
+    };
+
+    for member in members {
+        match *member {
+            Member::Constructor(id) => return Some(id),
+            Member::Type(nested) => {
+                if let Some(found) = find_constructor_in_item(tree, nested) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 #[derive(Default)]
 struct TestIndex {
     types: HashMap<String, TypeName>,
@@ -370,4 +406,68 @@ record Point(int x, int y) {
 
     assert!(matches!(x, Some(Resolution::Parameter(_))));
     assert!(matches!(y, Some(Resolution::Parameter(_))));
+}
+
+#[test]
+fn resolves_class_type_param_in_constructor_scope() {
+    let source = r#"
+class C<T> {
+    C() {}
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = nova_core::FileId::from_raw(0);
+    let tree = item_tree(&db, file);
+
+    let jdk = JdkIndex::new();
+    let scopes = build_scopes_for_item_tree(file, &tree);
+    let ctor_id = constructor_id(&tree);
+    let ctor_scope = *scopes
+        .constructor_scopes
+        .get(&ctor_id)
+        .expect("constructor scope");
+
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, ctor_scope, &Name::from("T"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "T"
+        ))))
+    );
+}
+
+#[test]
+fn resolves_constructor_type_param_in_constructor_scope() {
+    let source = r#"
+class C {
+    <U> C(U u) {}
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = nova_core::FileId::from_raw(0);
+    let tree = item_tree(&db, file);
+
+    let jdk = JdkIndex::new();
+    let scopes = build_scopes_for_item_tree(file, &tree);
+    let ctor_id = constructor_id(&tree);
+    let ctor_scope = *scopes
+        .constructor_scopes
+        .get(&ctor_id)
+        .expect("constructor scope");
+
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, ctor_scope, &Name::from("U"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "U"
+        ))))
+    );
 }
