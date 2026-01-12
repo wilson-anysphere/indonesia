@@ -1539,6 +1539,9 @@ fn reload_project_and_sync(
     if !had_classpath_fingerprint || config_changed {
         query_db.set_project_config(project, Arc::clone(&config));
     }
+    let requested_release = Some(config.java.target.0)
+        .filter(|release| *release >= 1)
+        .or_else(|| Some(config.java.source.0).filter(|release| *release >= 1));
 
     // Best-effort JDK index discovery.
     //
@@ -1549,11 +1552,10 @@ fn reload_project_and_sync(
         nova_config::load_for_workspace(workspace_root).unwrap_or_else(|_| {
             // If config loading fails, fall back to defaults; the workspace should still open.
             (nova_config::NovaConfig::default(), None)
-        });
+    });
     let jdk_config = workspace_config.jdk_config();
 
-    let jdk_index = nova_jdk::JdkIndex::discover(Some(&jdk_config))
-        .or_else(|_| nova_jdk::JdkIndex::discover(None))
+    let jdk_index = nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release)
         .unwrap_or_else(|_| nova_jdk::JdkIndex::new());
     query_db.set_jdk_index(project, Arc::new(jdk_index));
 
@@ -1691,35 +1693,11 @@ mod tests {
     use nova_memory::{MemoryBudget, MemoryCategory};
     use nova_project::BuildSystem;
     use std::fs;
-    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
     use tokio::time::timeout;
+    use std::path::PathBuf;
 
     use super::*;
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    struct EnvVarGuard {
-        key: &'static str,
-        prev: Option<std::ffi::OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<std::path::Path>) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::set_var(key, value.as_ref());
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
 
     async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
         let mut saw_started = false;
@@ -2458,32 +2436,38 @@ mod tests {
     }
 
     #[test]
-    fn project_reload_discovers_jdk_index_from_workspace_config_and_environment() {
-        let _lock = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned");
-
-        let fake_jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../nova-jdk/testdata/fake-jdk");
-        let fake_jdk = fake_jdk.canonicalize().unwrap_or(fake_jdk);
-        let _java_home = EnvVarGuard::set("JAVA_HOME", &fake_jdk);
-
+    fn project_reload_discovers_jdk_index_from_nova_config() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
+
+        // Ensure at least one file is indexed so project reload runs end-to-end.
         fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let fake_jdk_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-jdk/testdata/fake-jdk")
+            .canonicalize()
+            .unwrap();
+        let fake_jdk_root = fake_jdk_root.to_string_lossy().replace('\\', "\\\\");
+        fs::write(
+            root.join("nova.toml"),
+            format!("[jdk]\nhome = \"{fake_jdk_root}\"\n"),
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
         let project = ProjectId::from_raw(0);
 
         engine.query_db.with_snapshot(|snap| {
-            let stub = snap
-                .jdk_index(project)
-                .lookup_type("String")
-                .expect("jdk lookup should not error");
-            assert!(stub.is_some(), "expected String to be indexed from fake JDK");
+            let index = snap.jdk_index(project);
+            assert_eq!(index.info().backing, nova_jdk::JdkIndexBacking::Jmods);
+            assert!(index
+                .lookup_type("java.lang.String")
+                .ok()
+                .flatten()
+                .is_some());
         });
     }
 
