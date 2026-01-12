@@ -162,6 +162,100 @@ impl WorkspaceDefMap {
             self.packages.insert(current.clone());
         }
     }
+
+    /// Best-effort estimate of heap memory usage of this workspace definition map in bytes.
+    ///
+    /// This is intended for cheap, deterministic memory accounting (e.g. Nova's
+    /// `nova-memory` budgets). The heuristic is not exact; it intentionally
+    /// prioritizes stability over precision.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn name_bytes(name: &Name) -> u64 {
+            name.as_str().len() as u64
+        }
+
+        fn package_bytes(pkg: &PackageName) -> u64 {
+            let mut bytes = size_of::<PackageName>() as u64;
+            bytes = bytes.saturating_add((pkg.segments().len() as u64).saturating_mul(size_of::<Name>() as u64));
+            for seg in pkg.segments() {
+                bytes = bytes.saturating_add(name_bytes(seg));
+            }
+            bytes
+        }
+
+        let mut bytes = size_of::<WorkspaceDefMap>() as u64;
+
+        // items_by_type_name: HashMap<TypeName, ItemId>
+        bytes = bytes.saturating_add(
+            (self.items_by_type_name.capacity() as u64)
+                .saturating_mul(size_of::<(TypeName, ItemId)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.items_by_type_name.capacity() as u64);
+        for (name, _) in &self.items_by_type_name {
+            bytes = bytes.saturating_add(name.as_str().len() as u64);
+        }
+
+        // type_names: HashMap<ItemId, TypeName>
+        bytes = bytes.saturating_add(
+            (self.type_names.capacity() as u64).saturating_mul(size_of::<(ItemId, TypeName)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.type_names.capacity() as u64);
+        for (_, name) in &self.type_names {
+            bytes = bytes.saturating_add(name.as_str().len() as u64);
+        }
+
+        // types: HashMap<ItemId, TypeDef>
+        bytes = bytes.saturating_add(
+            (self.types.capacity() as u64).saturating_mul(size_of::<(ItemId, TypeDef)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.types.capacity() as u64);
+        for (_, def) in &self.types {
+            bytes = bytes.saturating_add(def.estimated_bytes());
+        }
+
+        // top_level_by_package: HashMap<PackageName, HashMap<Name, Vec<ItemId>>>
+        bytes = bytes.saturating_add(
+            (self.top_level_by_package.capacity() as u64)
+                .saturating_mul(size_of::<(PackageName, HashMap<Name, Vec<ItemId>>)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.top_level_by_package.capacity() as u64);
+        for (pkg, entries) in &self.top_level_by_package {
+            bytes = bytes.saturating_add(package_bytes(pkg));
+            bytes = bytes.saturating_add(
+                (entries.capacity() as u64).saturating_mul(size_of::<(Name, Vec<ItemId>)>() as u64),
+            );
+            bytes = bytes.saturating_add(entries.capacity() as u64);
+            for (name, items) in entries {
+                bytes = bytes.saturating_add(name_bytes(name));
+                bytes = bytes.saturating_add(
+                    (items.capacity() as u64).saturating_mul(size_of::<ItemId>() as u64),
+                );
+            }
+        }
+
+        // packages: HashSet<PackageName>
+        bytes = bytes.saturating_add(
+            (self.packages.capacity() as u64).saturating_mul(size_of::<PackageName>() as u64),
+        );
+        bytes = bytes.saturating_add(self.packages.capacity() as u64);
+        for pkg in &self.packages {
+            bytes = bytes.saturating_add(package_bytes(pkg));
+        }
+
+        // file_modules: HashMap<FileId, ModuleName>
+        bytes = bytes.saturating_add(
+            (self.file_modules.capacity() as u64)
+                .saturating_mul(size_of::<(FileId, ModuleName)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.file_modules.capacity() as u64);
+        for (_, module) in &self.file_modules {
+            bytes = bytes.saturating_add(module.as_str().len() as u64);
+        }
+
+        bytes
+    }
 }
 
 impl TypeIndex for WorkspaceDefMap {

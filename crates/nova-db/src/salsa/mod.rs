@@ -285,6 +285,8 @@ pub enum TrackedSalsaProjectMemo {
     ProjectIndexShards,
     /// Merged project indexes produced by [`NovaIndexing::project_indexes`].
     ProjectIndexes,
+    /// Workspace-wide type namespace for a project produced by [`NovaResolve::workspace_def_map`].
+    WorkspaceDefMap,
 }
 
 /// Database functionality needed by query implementations to record memo sizes.
@@ -382,11 +384,12 @@ struct FileMemoBytes {
 struct ProjectMemoBytes {
     project_index_shards: u64,
     project_indexes: u64,
+    workspace_def_map: u64,
 }
 
 impl ProjectMemoBytes {
     fn total(self) -> u64 {
-        self.project_index_shards + self.project_indexes
+        self.project_index_shards + self.project_indexes + self.workspace_def_map
     }
 }
 
@@ -470,6 +473,7 @@ impl SalsaMemoFootprint {
         match memo {
             TrackedSalsaProjectMemo::ProjectIndexShards => entry.project_index_shards = bytes,
             TrackedSalsaProjectMemo::ProjectIndexes => entry.project_indexes = bytes,
+            TrackedSalsaProjectMemo::WorkspaceDefMap => entry.workspace_def_map = bytes,
         }
 
         let next_total = entry.total();
@@ -4886,9 +4890,20 @@ class Foo {
             "expected project_indexes memos to increase tracked bytes"
         );
 
+        // New tracking: workspace definition map.
+        db.with_snapshot(|snap| {
+            let _ = snap.workspace_def_map(project);
+        });
+
+        let after_workspace_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_workspace_bytes > after_project_bytes,
+            "expected workspace_def_map memos to increase tracked bytes"
+        );
+
         assert_eq!(
             manager.report().usage.query_cache,
-            after_project_bytes,
+            after_workspace_bytes,
             "memory manager should see tracked salsa memo usage (including HIR + indexing)"
         );
 
@@ -4897,6 +4912,7 @@ class Foo {
         let delta_exec_before = executions(&db.inner.lock(), "file_index_delta");
         let shard_exec_before = executions(&db.inner.lock(), "project_index_shards");
         let project_exec_before = executions(&db.inner.lock(), "project_indexes");
+        let workspace_exec_before = executions(&db.inner.lock(), "workspace_def_map");
 
         // Validate memoization before eviction.
         db.with_snapshot(|snap| {
@@ -4906,6 +4922,7 @@ class Foo {
                 let _ = snap.file_index_delta(*file);
             }
             let _ = snap.project_indexes(project);
+            let _ = snap.workspace_def_map(project);
         });
         assert_eq!(
             executions(&db.inner.lock(), "hir_item_tree"),
@@ -4932,6 +4949,11 @@ class Foo {
             project_exec_before,
             "expected cached project_indexes results prior to eviction"
         );
+        assert_eq!(
+            executions(&db.inner.lock(), "workspace_def_map"),
+            workspace_exec_before,
+            "expected cached workspace_def_map results prior to eviction"
+        );
 
         manager.enforce();
 
@@ -4947,11 +4969,13 @@ class Foo {
         let delta_exec_after_evict = executions(&db.inner.lock(), "file_index_delta");
         let shard_exec_after_evict = executions(&db.inner.lock(), "project_index_shards");
         let project_exec_after_evict = executions(&db.inner.lock(), "project_indexes");
+        let workspace_exec_after_evict = executions(&db.inner.lock(), "workspace_def_map");
         db.with_snapshot(|snap| {
             let _ = snap.hir_item_tree(files[0]);
             let _ = snap.scope_graph(files[0]);
             let _ = snap.file_index_delta(files[0]);
             let _ = snap.project_indexes(project);
+            let _ = snap.workspace_def_map(project);
         });
         assert!(
             executions(&db.inner.lock(), "hir_item_tree") > hir_exec_after_evict,
@@ -4972,6 +4996,10 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "project_indexes") > project_exec_after_evict,
             "expected project_indexes to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "workspace_def_map") > workspace_exec_after_evict,
+            "expected workspace_def_map to re-execute after memo eviction"
         );
     }
 

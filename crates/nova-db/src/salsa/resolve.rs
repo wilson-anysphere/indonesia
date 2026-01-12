@@ -13,7 +13,10 @@ use crate::{FileId, ProjectId};
 use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
-use super::{ArcEq, InternedClassKey, InternedClassKeyId, NovaInternedClassKeys, TrackedSalsaMemo};
+use super::{
+    ArcEq, InternedClassKey, InternedClassKeyId, NovaInternedClassKeys, TrackedSalsaMemo,
+    TrackedSalsaProjectMemo,
+};
 use ra_salsa::InternKey;
 
 #[ra_salsa::query_group(NovaResolveStorage)]
@@ -222,6 +225,11 @@ fn workspace_def_map(
     }
 
     let result = Arc::new(out);
+    db.record_salsa_project_memo_bytes(
+        project,
+        TrackedSalsaProjectMemo::WorkspaceDefMap,
+        result.estimated_bytes(),
+    );
     db.record_query_stat("workspace_def_map", start.elapsed());
     result
 }
