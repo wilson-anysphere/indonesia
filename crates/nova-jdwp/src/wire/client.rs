@@ -1487,11 +1487,12 @@ impl JdwpClient {
 
 fn is_unsupported_command_error(err: &JdwpError) -> bool {
     const ERROR_NOT_FOUND: u16 = 41;
+    const ERROR_UNSUPPORTED_VERSION: u16 = 68;
     const ERROR_NOT_IMPLEMENTED: u16 = 99;
 
     matches!(
         err,
-        JdwpError::VmError(ERROR_NOT_FOUND | ERROR_NOT_IMPLEMENTED)
+        JdwpError::VmError(ERROR_NOT_FOUND | ERROR_UNSUPPORTED_VERSION | ERROR_NOT_IMPLEMENTED)
     )
 }
 
@@ -2018,10 +2019,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_falls_back_to_legacy_capabilities_when_capabilities_new_is_unsupported_version() {
+        let mut capabilities = vec![false; 32];
+        capabilities[1] = true; // canWatchFieldAccess
+        capabilities[5] = true; // canGetCurrentContendedMonitor
+
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities,
+            capabilities_new_error_code: Some(68), // UNSUPPORTED_VERSION
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let caps = client.capabilities().await;
+
+        let mut expected = JdwpCapabilitiesNew::default();
+        expected.can_watch_field_access = true;
+        expected.can_get_current_contended_monitor = true;
+
+        assert_eq!(caps, expected);
+    }
+
+    #[tokio::test]
     async fn connect_succeeds_when_both_capability_commands_are_unsupported() {
         let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
             capabilities_new_not_implemented: true,
             capabilities_legacy_not_implemented: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        assert_eq!(client.capabilities().await, JdwpCapabilitiesNew::default());
+    }
+
+    #[tokio::test]
+    async fn connect_succeeds_when_both_capability_commands_report_unsupported_version() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities_new_error_code: Some(68),    // UNSUPPORTED_VERSION
+            capabilities_legacy_error_code: Some(68), // UNSUPPORTED_VERSION
             ..Default::default()
         })
         .await

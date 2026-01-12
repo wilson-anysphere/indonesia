@@ -53,9 +53,16 @@ pub struct MockJdwpServerConfig {
     /// If set, the mock VM replies to `VirtualMachine.CapabilitiesNew (1/17)` with
     /// `NOT_IMPLEMENTED` (JDWP error 99).
     pub capabilities_new_not_implemented: bool,
+    /// Overrides the error code returned by `VirtualMachine.CapabilitiesNew (1/17)`.
+    ///
+    /// This can be useful to emulate targets that reject the command with errors other
+    /// than `NOT_IMPLEMENTED` (e.g. `UNSUPPORTED_VERSION`).
+    pub capabilities_new_error_code: Option<u16>,
     /// If set, the mock VM replies to `VirtualMachine.Capabilities (1/12)` with
     /// `NOT_IMPLEMENTED` (JDWP error 99).
     pub capabilities_legacy_not_implemented: bool,
+    /// Overrides the error code returned by `VirtualMachine.Capabilities (1/12)`.
+    pub capabilities_legacy_error_code: Option<u16>,
     /// JDWP identifier sizes returned by `VirtualMachine.IDSizes`.
     ///
     /// Most modern JVMs use 8-byte ids; keeping this configurable lets tests
@@ -105,7 +112,9 @@ impl Default for MockJdwpServerConfig {
             delayed_replies: Vec::new(),
             capabilities: vec![false; 32],
             capabilities_new_not_implemented: false,
+            capabilities_new_error_code: None,
             capabilities_legacy_not_implemented: false,
+            capabilities_legacy_error_code: None,
             id_sizes: JdwpIdSizes::default(),
             class_signature: "LMain;".to_string(),
             source_file: "Main.java".to_string(),
@@ -835,7 +844,9 @@ async fn handle_packet(
         }
         // VirtualMachine.Capabilities (legacy)
         (1, 12) => {
-            if state.config.capabilities_legacy_not_implemented {
+            if let Some(code) = state.config.capabilities_legacy_error_code {
+                (code, Vec::new())
+            } else if state.config.capabilities_legacy_not_implemented {
                 (ERROR_NOT_IMPLEMENTED, Vec::new())
             } else {
                 let mut w = JdwpWriter::new();
@@ -848,7 +859,9 @@ async fn handle_packet(
         }
         // VirtualMachine.CapabilitiesNew
         (1, 17) => {
-            if state.config.capabilities_new_not_implemented {
+            if let Some(code) = state.config.capabilities_new_error_code {
+                (code, Vec::new())
+            } else if state.config.capabilities_new_not_implemented {
                 (ERROR_NOT_IMPLEMENTED, Vec::new())
             } else {
                 let mut w = JdwpWriter::new();
