@@ -3,9 +3,11 @@ import test from 'node:test';
 
 import {
   SAFE_MODE_EXEMPT_REQUESTS,
+  formatSafeModeReason,
   isMethodNotFoundError,
   isSafeModeError,
   parseSafeModeEnabled,
+  parseSafeModeReason,
 } from '../safeMode';
 
 test('isMethodNotFoundError detects JSON-RPC -32601', () => {
@@ -28,6 +30,18 @@ test('parseSafeModeEnabled handles object + nested payload variants', () => {
   assert.equal(parseSafeModeEnabled({ status: { active: false } }), false);
   assert.equal(parseSafeModeEnabled({ status: { safeMode: true } }), true);
   assert.equal(parseSafeModeEnabled({}), undefined);
+});
+
+test('parseSafeModeReason reads reason from top-level and nested payloads', () => {
+  assert.equal(parseSafeModeReason({ enabled: true, reason: 'panic' }), 'panic');
+  assert.equal(parseSafeModeReason({ status: { enabled: true, reason: 'watchdog_timeout' } }), 'watchdog_timeout');
+  assert.equal(parseSafeModeReason(true), undefined);
+});
+
+test('formatSafeModeReason normalizes underscores/dashes and title-cases', () => {
+  assert.equal(formatSafeModeReason('watchdog_timeout'), 'Watchdog timeout');
+  assert.equal(formatSafeModeReason('panic'), 'Panic');
+  assert.equal(formatSafeModeReason('  '), '');
 });
 
 test('isSafeModeError matches canonical safe-mode guard messages', () => {
@@ -53,4 +67,3 @@ test('isSafeModeError matches canonical safe-mode guard messages', () => {
 test('SAFE_MODE_EXEMPT_REQUESTS includes nova/java/organizeImports', () => {
   assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/java/organizeImports'), true);
 });
-
