@@ -6,14 +6,10 @@ use crate::{
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
 };
 use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
+use std::fs::File;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-#[cfg(test)]
-use std::fs::File;
-#[cfg(test)]
-use std::io::{Read, Seek};
-#[cfg(test)]
 use zip::ZipArchive;
 
 const MAVEN_JPMS_FLAG_NEEDLES: [&str; 9] = [
@@ -806,7 +802,6 @@ fn absolutize_path(base_dir: &Path, path: PathBuf) -> PathBuf {
     }
 }
 
-#[cfg(test)]
 fn infer_module_path_for_compile_config(
     resolved_compile_classpath: &[PathBuf],
     main_source_roots: &[PathBuf],
@@ -838,7 +833,6 @@ fn infer_module_path_for_compile_config(
     module_path
 }
 
-#[cfg(test)]
 fn stable_module_path_entry(path: &Path) -> bool {
     if path.is_dir() {
         return directory_contains_module_info(path) || directory_has_automatic_module_name(path);
@@ -850,7 +844,6 @@ fn stable_module_path_entry(path: &Path) -> bool {
     archive_is_stable_module(path)
 }
 
-#[cfg(test)]
 fn directory_contains_module_info(dir: &Path) -> bool {
     dir.join("module-info.class").is_file()
         || dir.join("META-INF/versions/9/module-info.class").is_file()
@@ -860,7 +853,6 @@ fn directory_contains_module_info(dir: &Path) -> bool {
             .is_file()
 }
 
-#[cfg(test)]
 fn directory_has_automatic_module_name(dir: &Path) -> bool {
     for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
         let manifest_path = dir.join(manifest_path);
@@ -878,7 +870,6 @@ fn directory_has_automatic_module_name(dir: &Path) -> bool {
     false
 }
 
-#[cfg(test)]
 fn archive_is_stable_module(path: &Path) -> bool {
     let Ok(file) = File::open(path) else {
         return false;
@@ -902,7 +893,6 @@ fn archive_is_stable_module(path: &Path) -> bool {
         .is_some_and(|name| !name.is_empty())
 }
 
-#[cfg(test)]
 fn zip_manifest_main_attribute<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     key: &str,
@@ -927,7 +917,6 @@ fn zip_manifest_main_attribute<R: Read + Seek>(
     None
 }
 
-#[cfg(test)]
 fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
     let mut current_key: Option<&str> = None;
     let mut current_value = String::new();

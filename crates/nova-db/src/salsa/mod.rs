@@ -36,6 +36,7 @@ mod flow;
 mod hir;
 mod ide;
 mod indexing;
+mod interned_class_key;
 mod item_tree_store;
 mod inputs;
 mod resolve;
@@ -49,6 +50,7 @@ pub use flow::NovaFlow;
 pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use indexing::NovaIndexing;
+pub use interned_class_key::{InternedClassKey, InternedClassKeyId, NovaInternedClassKeys};
 pub use item_tree_store::ItemTreeStore;
 pub use inputs::NovaInputs;
 pub use diagnostics::NovaDiagnostics;
@@ -627,7 +629,8 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     typeck::NovaTypeckStorage,
     diagnostics::NovaDiagnosticsStorage,
     ide::NovaIdeStorage,
-    indexing::NovaIndexingStorage
+    indexing::NovaIndexingStorage,
+    interned_class_key::NovaInternedClassKeysStorage
 )]
 pub struct RootDatabase {
     storage: ra_salsa::Storage<RootDatabase>,

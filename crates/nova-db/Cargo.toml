@@ -11,6 +11,7 @@ tracing = []
 nova-cache = { path = "../nova-cache" }
 nova-classpath = { path = "../nova-classpath" }
 nova-core = { path = "../nova-core" }
+nova-ids = { path = "../nova-ids" }
 nova-hir = { path = "../nova-hir" }
 nova-flow = { path = "../nova-flow" }
 nova-index = { path = "../nova-index" }

@@ -3596,6 +3596,7 @@ dependencies = [
  "nova-core",
  "nova-flow",
  "nova-hir",
+ "nova-ids",
  "nova-index",
  "nova-jdk",
  "nova-memory",
