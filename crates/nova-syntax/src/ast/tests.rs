@@ -1593,7 +1593,7 @@ fn string_template_expression_accessors_basic() {
         .syntax()
         .last_token()
         .expect("expected interpolation to end with a token");
-    assert_eq!(closing_brace.kind(), SyntaxKind::RBrace);
+    assert_eq!(closing_brace.kind(), SyntaxKind::StringTemplateExprEnd);
     assert_eq!(closing_brace.text(), "}");
 
     let interpolation_expr = interpolations[0]
@@ -1681,7 +1681,7 @@ Hello \{name}!
         .syntax()
         .last_token()
         .expect("expected interpolation to end with a token");
-    assert_eq!(closing_brace.kind(), SyntaxKind::RBrace);
+    assert_eq!(closing_brace.kind(), SyntaxKind::StringTemplateExprEnd);
     assert_eq!(closing_brace.text(), "}");
 
     let interpolation_expr = interpolations[0]
@@ -1691,4 +1691,75 @@ Hello \{name}!
         Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "name"),
         other => panic!("expected interpolation NameExpression, got {other:?}"),
     }
+}
+
+#[test]
+fn string_template_expression_accessors_multiple_interpolations() {
+    let src = r#"
+        class Foo {
+          void m(String a, String b) {
+            String s = STR."A\{a}B\{b}C";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    match processor {
+        Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
+        other => panic!("expected processor NameExpression, got {other:?}"),
+    }
+
+    let template = template_expr.template().expect("expected string template");
+    assert_eq!(template.start_token().unwrap().text(), "\"");
+    assert_eq!(template.end_token().unwrap().text(), "\"");
+
+    let template_children: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .map(|el| el.kind())
+        .collect();
+    assert_eq!(
+        template_children,
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateEnd,
+        ]
+    );
+
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["A", "B", "C"]);
+
+    let interpolation_exprs: Vec<_> = template
+        .parts()
+        .map(|interp| interp.expression().expect("expected interpolation expression"))
+        .collect();
+    assert_eq!(interpolation_exprs.len(), 2);
+
+    let names: Vec<_> = interpolation_exprs
+        .into_iter()
+        .map(|expr| match expr {
+            Expression::NameExpression(name) => name.syntax().text().to_string(),
+            other => panic!("expected interpolation NameExpression, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, vec!["a", "b"]);
 }
