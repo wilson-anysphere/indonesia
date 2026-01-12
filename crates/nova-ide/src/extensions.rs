@@ -1178,7 +1178,6 @@ where
             actions.extend(type_mismatch_quick_fixes_from_context(
                 &cancel,
                 source,
-                &cancel,
                 &uri,
                 span,
                 context_diagnostics,
