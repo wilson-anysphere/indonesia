@@ -269,7 +269,9 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaDebugConfigurations(context, sendNovaRequest);
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
-  const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest);
+  const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest, {
+    isServerRunning: () => Boolean(client),
+  });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
     isServerRunning: () => Boolean(client),
   });

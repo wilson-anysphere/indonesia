@@ -106,8 +106,12 @@ export type NovaFrameworksViewController = {
   refresh(): void;
 };
 
-export function registerNovaFrameworksView(context: vscode.ExtensionContext, request: NovaRequest): NovaFrameworksViewController {
-  const provider = new NovaFrameworksTreeDataProvider(request);
+export function registerNovaFrameworksView(
+  context: vscode.ExtensionContext,
+  request: NovaRequest,
+  opts?: { isServerRunning?: () => boolean },
+): NovaFrameworksViewController {
+  const provider = new NovaFrameworksTreeDataProvider(request, opts);
   const view = vscode.window.createTreeView('novaFrameworks', {
     treeDataProvider: provider,
     showCollapseAll: false,
@@ -132,7 +136,14 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   private readonly categoryCache = new Map<string, FrameworkNode[]>();
   private readonly categoryInFlight = new Map<string, Promise<FrameworkNode[]>>();
 
-  constructor(private readonly sendRequest: NovaRequest) {}
+  private readonly isServerRunning: () => boolean;
+
+  constructor(
+    private readonly sendRequest: NovaRequest,
+    opts?: { isServerRunning?: () => boolean },
+  ) {
+    this.isServerRunning = opts?.isServerRunning ?? (() => true);
+  }
 
   attachTreeView(view: vscode.TreeView<FrameworkNode>): void {
     this.treeView = view;
@@ -249,6 +260,12 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     if (!element) {
       if (workspaces.length === 0) {
         // `viewsWelcome` handles the no-workspace state.
+        return [];
+      }
+
+      // When the language server is not running, keep the view empty so `contributes.viewsWelcome`
+      // can show contextual guidance rather than surfacing errors on expansion.
+      if (!this.isServerRunning()) {
         return [];
       }
 

@@ -469,6 +469,7 @@ function utf8SpanToRange(document: vscode.TextDocument, span: { start: number; e
 export function registerNovaFrameworkDashboard(
   context: vscode.ExtensionContext,
   request: NovaRequest,
+  opts?: { isServerRunning?: () => boolean },
 ): NovaFrameworksViewController {
   registerFrameworkDashboardCommands(context);
 
@@ -479,7 +480,7 @@ export function registerNovaFrameworkDashboard(
 
   registerNovaFrameworkSearch(context, (method: string, params?: unknown) => request(method, params, { allowMethodFallback: true }));
 
-  const controller: NovaFrameworksViewController = registerNovaFrameworksView(context, request);
+  const controller: NovaFrameworksViewController = registerNovaFrameworksView(context, request, opts);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.frameworks.refresh', () => {
