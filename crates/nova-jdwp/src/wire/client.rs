@@ -383,6 +383,16 @@ impl JdwpClient {
 
     /// VirtualMachine.CreateString (1, 11)
     pub async fn virtual_machine_create_string(&self, value: &str) -> Result<ObjectId> {
+        let length = HEADER_LEN
+            .checked_add(4usize.saturating_add(value.len()))
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_string(value);
@@ -393,6 +403,16 @@ impl JdwpClient {
 
     /// VirtualMachine.SetDefaultStratum (1, 19)
     pub async fn virtual_machine_set_default_stratum(&self, stratum: &str) -> Result<()> {
+        let length = HEADER_LEN
+            .checked_add(4usize.saturating_add(stratum.len()))
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
         let mut w = JdwpWriter::new();
         w.write_string(stratum);
         let _ = self.send_command_raw(1, 19, w.into_vec()).await?;
@@ -655,6 +675,25 @@ impl JdwpClient {
     /// - repeated `referenceTypeId`, `u32 bytecodeLen`, `byte[bytecodeLen]`
     pub async fn redefine_classes(&self, classes: &[(ReferenceTypeId, Vec<u8>)]) -> Result<()> {
         let sizes = self.id_sizes().await;
+
+        let mut payload_len = 4usize; // classCount
+        for (_type_id, bytecode) in classes {
+            payload_len = payload_len
+                .checked_add(sizes.reference_type_id)
+                .and_then(|v| v.checked_add(4)) // bytecodeLen
+                .and_then(|v| v.checked_add(bytecode.len()))
+                .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        }
+        let length = HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
         let mut w = JdwpWriter::new();
         w.write_u32(classes.len() as u32);
         for (type_id, bytecode) in classes {
@@ -989,6 +1028,23 @@ impl JdwpClient {
         bytecode: &[u8],
     ) -> Result<ReferenceTypeId> {
         let sizes = self.id_sizes().await;
+
+        let payload_len = sizes
+            .object_id
+            .checked_add(4usize.saturating_add(name.len()))
+            .and_then(|v| v.checked_add(4)) // bytecodeLen
+            .and_then(|v| v.checked_add(bytecode.len()))
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        let length = HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
         let mut w = JdwpWriter::new();
         w.write_object_id(loader, &sizes);
         w.write_string(name);

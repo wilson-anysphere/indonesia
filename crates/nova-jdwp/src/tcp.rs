@@ -205,6 +205,21 @@ impl TcpJdwpClient {
             )));
         };
 
+        let body_len = 4usize // classCount
+            .checked_add(self.id_sizes.reference_type_id)
+            .and_then(|v| v.checked_add(4)) // bytecodeLen
+            .and_then(|v| v.checked_add(bytecode.len()))
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        let length = crate::JDWP_HEADER_LEN
+            .checked_add(body_len)
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
         let mut body = Vec::new();
         body.extend_from_slice(&(1u32).to_be_bytes()); // classCount
         write_id(
