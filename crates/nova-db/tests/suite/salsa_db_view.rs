@@ -1,4 +1,10 @@
-use nova_db::{Database as LegacyDatabase, FileId, SalsaDatabase, SalsaDbView, SourceDatabase};
+use std::sync::Arc;
+
+use nova_db::{
+    Database as LegacyDatabase, FileId, NovaResolve, ProjectId, SalsaDatabase, SalsaDbView,
+    SourceDatabase,
+};
+use nova_jdk::JdkIndex;
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -117,4 +123,22 @@ fn salsa_all_file_ids_only_includes_files_with_content_set() {
     // The legacy view can still be built and read safely.
     let view = SalsaDbView::new(snap);
     assert_eq!(LegacyDatabase::file_content(&view, file), "class A {}");
+}
+
+#[test]
+fn set_file_text_defaults_support_import_diagnostics() {
+    let db = SalsaDatabase::new();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, Arc::new(JdkIndex::new()));
+
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class A {}".to_string());
+
+    db.with_snapshot(|snap| {
+        let diags = snap.import_diagnostics(file);
+        assert!(
+            diags.is_empty(),
+            "expected no import diagnostics for a file without imports, got {diags:?}"
+        );
+    });
 }

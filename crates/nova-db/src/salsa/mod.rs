@@ -1191,7 +1191,17 @@ impl Database {
             .record_file_content_len(file, text.len() as u64);
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
-        let (set_default_project, set_default_root, init_dirty) = {
+        let (
+            set_default_project,
+            set_default_root,
+            set_default_rel_path,
+            rel_path,
+            set_project_files,
+            project_files,
+            set_default_classpath_index,
+            project,
+            init_dirty,
+        ) = {
             let mut inputs = self.inputs.lock();
             inputs.file_exists.insert(file, true);
             inputs.file_content.insert(file, text.clone());
@@ -1209,6 +1219,47 @@ impl Database {
                 inputs.source_root.insert(file, default_root);
             }
 
+            let (set_default_rel_path, rel_path) = if let Some(path) = inputs.file_rel_path.get(&file)
+            {
+                (false, path.clone())
+            } else {
+                let path = Arc::new(format!("file-{}.java", file.to_raw()));
+                inputs.file_rel_path.insert(file, path.clone());
+                (true, path)
+            };
+
+            let (set_project_files, project_files) = if set_default_project
+                && !inputs.project_files.contains_key(&default_project)
+            {
+                // Provide a minimal `project_files` input so workspace-wide queries
+                // (e.g. import diagnostics) can run without requiring the host to
+                // manually populate project metadata for single-file use-cases.
+                //
+                // Keep deterministic ordering by sorting by `file_rel_path`.
+                let mut files = vec![file];
+                files.sort_by_key(|file| {
+                    inputs
+                        .file_rel_path
+                        .get(file)
+                        .map(|p| p.as_ref().clone())
+                        .unwrap_or_else(|| format!("file-{}.java", file.to_raw()))
+                });
+                let files = Arc::new(files);
+                inputs.project_files.insert(default_project, files.clone());
+                (true, Some(files))
+            } else {
+                (false, None)
+            };
+
+            let project = *inputs.file_project.get(&file).unwrap_or(&default_project);
+            let set_default_classpath_index = !inputs.classpath_index.contains_key(&project);
+            if set_default_classpath_index {
+                // Optional input used by name resolution; default to `None` so
+                // resolve/import queries can be used without requiring explicit
+                // classpath setup.
+                inputs.classpath_index.insert(project, None);
+            }
+
             let init_dirty = match inputs.file_is_dirty.entry(file) {
                 Entry::Vacant(entry) => {
                     entry.insert(false);
@@ -1217,7 +1268,17 @@ impl Database {
                 Entry::Occupied(_) => false,
             };
 
-            (set_default_project, set_default_root, init_dirty)
+            (
+                set_default_project,
+                set_default_root,
+                set_default_rel_path,
+                rel_path,
+                set_project_files,
+                project_files,
+                set_default_classpath_index,
+                project,
+                init_dirty,
+            )
         };
         let mut db = self.inner.lock();
         if init_dirty {
@@ -1230,7 +1291,24 @@ impl Database {
         if set_default_root {
             db.set_source_root(file, default_root);
         }
+        if set_default_rel_path {
+            db.set_file_rel_path(file, rel_path);
+        }
+        if set_project_files {
+            if let Some(files) = project_files {
+                db.set_project_files(default_project, files);
+            }
+        }
+        if set_default_classpath_index {
+            db.set_classpath_index(project, None);
+        }
         db.set_file_content(file, text);
+        drop(db);
+
+        // Keep memory tracking in sync for implicit defaults.
+        if set_default_classpath_index {
+            self.classpath_index_tracker.set_project_ptr(project, None, 0);
+        }
     }
 
     pub fn set_file_is_dirty(&self, file: FileId, dirty: bool) {
