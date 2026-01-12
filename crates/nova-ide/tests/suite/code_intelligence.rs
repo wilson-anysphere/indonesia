@@ -993,6 +993,30 @@ class A {
 }
 
 #[test]
+fn completion_includes_interface_members() {
+    let (db, file, pos) = fixture(
+        r#"
+interface I { void i(); }
+class A implements I {
+  void a(){}
+  void m(){ new A().<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"i"),
+        "expected completion list to contain interface method `i`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"a"),
+        "expected completion list to contain method `a`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_string_member_detail_with_return_type() {
     let (db, file, pos) = fixture(
         r#"
