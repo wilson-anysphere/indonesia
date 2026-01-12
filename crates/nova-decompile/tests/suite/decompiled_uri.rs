@@ -5,7 +5,7 @@ use nova_decompile::{
     NOVA_VIRTUAL_URI_SCHEME,
 };
 
-const FOO_CLASS: &[u8] = include_bytes!("fixtures/com/example/Foo.class");
+const FOO_CLASS: &[u8] = include_bytes!("../fixtures/com/example/Foo.class");
 const FOO_INTERNAL_NAME: &str = "com/example/Foo";
 
 fn content_hash_for(schema_version: u32) -> Fingerprint {

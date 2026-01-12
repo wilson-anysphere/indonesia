@@ -4,6 +4,8 @@ use nova_deps_cache::{
 };
 use tempfile::TempDir;
 
+mod suite;
+
 fn make_bundle(jar_sha256: String, method_name: &str) -> DependencyIndexBundle {
     let class = DepsClassStub {
         binary_name: "com.example.Dupe".to_string(),

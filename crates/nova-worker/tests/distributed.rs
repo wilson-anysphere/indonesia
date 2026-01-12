@@ -13,6 +13,8 @@ use nova_remote_rpc::{RouterConfig, RpcConnection};
 use tempfile::TempDir;
 use tokio::sync::{watch, Mutex};
 
+mod suite;
+
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 #[cfg(unix)]

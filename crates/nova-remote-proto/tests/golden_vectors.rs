@@ -1,6 +1,8 @@
 use nova_remote_proto::transport;
 use nova_remote_proto::{RpcMessage, PROTOCOL_VERSION};
 
+mod suite;
+
 #[test]
 fn rpc_v2_worker_hello_golden_vector() {
     assert_eq!(
