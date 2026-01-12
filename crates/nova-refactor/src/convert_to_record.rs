@@ -1,8 +1,8 @@
 use nova_index::TextRange;
 use thiserror::Error;
 
+use crate::edit::{FileId, TextEdit, WorkspaceEdit};
 use crate::java::{is_boundary, is_ident_char_byte, scan_modes, ScanMode, TextSlice};
-use crate::safe_delete::TextEdit;
 
 #[derive(Debug, Clone)]
 pub struct ConvertToRecordOptions {
@@ -111,16 +111,16 @@ pub fn convert_to_record(
     source: &str,
     cursor_offset: usize,
     options: ConvertToRecordOptions,
-) -> Result<TextEdit, ConvertToRecordError> {
+) -> Result<WorkspaceEdit, ConvertToRecordError> {
     let class = parse_enclosing_class(source, cursor_offset)
         .ok_or(ConvertToRecordError::NoClassAtPosition)?;
     let analysis = analyze_class(&class, &options)?;
     let replacement = maybe_nova_format(&generate_record(&analysis));
-    Ok(TextEdit {
-        file: file.to_string(),
-        range: analysis.range,
+    Ok(WorkspaceEdit::new(vec![TextEdit::replace(
+        FileId::new(file.to_string()),
+        analysis.range,
         replacement,
-    })
+    )]))
 }
 
 fn maybe_nova_format(text: &str) -> String {
@@ -1311,11 +1311,18 @@ fn extract_body(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
-    fn apply_edit(source: &str, edit: &TextEdit) -> String {
-        let mut text = source.to_string();
-        text.replace_range(edit.range.start..edit.range.end, &edit.replacement);
-        text
+    fn apply_edit(source: &str, file: &str, edit: &WorkspaceEdit) -> String {
+        let file_id = FileId::new(file.to_string());
+        let mut files = BTreeMap::new();
+        files.insert(file_id.clone(), source.to_string());
+
+        let updated = crate::edit::apply_workspace_edit(&files, edit).expect("apply workspace edit");
+        updated
+            .get(&file_id)
+            .cloned()
+            .unwrap_or_else(|| "".to_string())
     }
 
     #[test]
@@ -1339,7 +1346,7 @@ public final class Point {
         let cursor = source.find("class Point").unwrap();
         let edit =
             convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
-        let result = apply_edit(source, &edit);
+        let result = apply_edit(source, file, &edit);
         assert!(result.contains("public record Point"));
         assert!(result.contains("int x"));
         assert!(result.contains("int y"));
@@ -1388,7 +1395,7 @@ public final class User {
         let cursor = source.find("class User").unwrap();
         let edit =
             convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
-        let result = apply_edit(source, &edit);
+        let result = apply_edit(source, file, &edit);
         assert!(result.contains("record User"));
         assert!(result.contains("String name"));
         assert!(result.contains("public String greeting()"));

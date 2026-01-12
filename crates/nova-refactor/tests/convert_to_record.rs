@@ -1,10 +1,14 @@
-use nova_refactor::{convert_to_record, ConvertToRecordOptions, TextEdit};
+use std::collections::BTreeMap;
+
+use nova_refactor::{apply_workspace_edit, convert_to_record, ConvertToRecordOptions, FileId};
 use pretty_assertions::assert_eq;
 
-fn apply_edit(source: &str, edit: &TextEdit) -> String {
-    let mut text = source.to_string();
-    text.replace_range(edit.range.start..edit.range.end, &edit.replacement);
-    text
+fn apply_edit(source: &str, file: &str, edit: &nova_refactor::WorkspaceEdit) -> String {
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new(file.to_string());
+    files.insert(file_id.clone(), source.to_string());
+    let updated = apply_workspace_edit(&files, edit).expect("apply workspace edit");
+    updated.get(&file_id).cloned().unwrap_or_default()
 }
 
 #[test]
@@ -25,7 +29,7 @@ fn converts_minimal_class_and_formats_empty_record_body() {
     let cursor = source.find("class Point").unwrap();
     let edit = convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
 
-    let result = apply_edit(source, &edit);
+    let result = apply_edit(source, file, &edit);
     assert_eq!(result, "public record Point(int x, int y) {\n}\n");
 }
 
@@ -44,7 +48,7 @@ fn converts_messy_class_and_formats_record_members() {
     let cursor = source.find("class Point").unwrap();
     let edit = convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
 
-    let result = apply_edit(source, &edit);
+    let result = apply_edit(source, file, &edit);
     assert_eq!(
         result,
         concat!(

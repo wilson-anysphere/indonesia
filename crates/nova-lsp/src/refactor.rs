@@ -9,9 +9,8 @@ use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, extract_variable,
     inline_variable, safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError,
     ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
-    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
-    SemanticRefactorError, TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit,
-    WorkspaceTextRange,
+    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError,
+    TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -416,11 +415,8 @@ pub fn convert_to_record_code_action(
     let file = uri.to_string();
     match convert_to_record(&file, source, offset, ConvertToRecordOptions::default()) {
         Ok(edit) => {
-            // Convert legacy (safe-delete style) `TextEdit` into Nova's canonical `WorkspaceEdit`
-            // and then reuse the shared LSP conversion helper for UTF-16 correctness.
             let file_id = FileId::new(file.clone());
             let db = TextDatabase::new([(file_id, source.to_string())]);
-            let edit = RefactorWorkspaceEdit::new(vec![edit.into()]);
             let lsp_edit = workspace_edit_to_lsp(&db, &edit).ok()?;
 
             Some(CodeActionOrCommand::CodeAction(CodeAction {
