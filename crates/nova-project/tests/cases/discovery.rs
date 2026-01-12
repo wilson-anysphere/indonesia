@@ -590,8 +590,7 @@ fn loads_gradle_workspace_java_config_max_across_modules() {
     assert_eq!(config.java.source, JavaVersion(17));
     assert_eq!(config.java.target, JavaVersion(17));
 
-    let config2 =
-        load_project_with_options(&root, &options).expect("load gradle project again");
+    let config2 = load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 

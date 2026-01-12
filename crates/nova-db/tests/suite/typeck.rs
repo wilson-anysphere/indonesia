@@ -3118,8 +3118,10 @@ class C { double m(){ return E; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
-            && d.code.as_ref() != "unresolved-field"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-static-member"
+                && d.code.as_ref() != "unresolved-field"),
         "expected static-imported Math.E to resolve; got {diags:?}"
     );
 

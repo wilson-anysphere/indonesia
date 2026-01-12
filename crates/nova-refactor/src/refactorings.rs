@@ -173,9 +173,7 @@ fn annotation_value_shorthand_updates(
         else {
             return Vec::new();
         };
-        annotation_name = annotation_ty
-            .name_token()
-            .map(|tok| tok.text().to_string());
+        annotation_name = annotation_ty.name_token().map(|tok| tok.text().to_string());
         break;
     }
 
@@ -917,7 +915,14 @@ pub fn inline_variable(
 
     let mut remove_decl = params.inline_all || all_refs.len() == 1;
     if remove_decl
-        && contains_unknown_name_expression(db, &def.file, text, &def.name, params.symbol, &all_refs)
+        && contains_unknown_name_expression(
+            db,
+            &def.file,
+            text,
+            &def.name,
+            params.symbol,
+            &all_refs,
+        )
     {
         // If we cannot prove that our semantic reference index covers every textual occurrence of
         // the variable name, deleting the declaration can produce uncompilable code.

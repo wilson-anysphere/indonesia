@@ -3,9 +3,10 @@ use std::path::PathBuf;
 
 use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
 use nova_refactor::{
-    apply_workspace_edit, extract_constant, extract_variable, inline_variable, move_class_workspace_edit,
-    organize_imports, rename, ExtractOptions, ExtractVariableParams, FileId, InlineVariableParams,
-    MoveClassParams, OrganizeImportsParams, RefactorJavaDatabase, RenameParams, TextRange,
+    apply_workspace_edit, extract_constant, extract_variable, inline_variable,
+    move_class_workspace_edit, organize_imports, rename, ExtractOptions, ExtractVariableParams,
+    FileId, InlineVariableParams, MoveClassParams, OrganizeImportsParams, RefactorJavaDatabase,
+    RenameParams, TextRange,
 };
 use nova_test_utils::javac::{javac_available, run_javac_files};
 

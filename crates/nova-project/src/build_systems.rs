@@ -119,13 +119,13 @@ impl BuildSystemBackend for GradleBuildSystem {
                 // Gradle script plugins can influence the build and classpath.
                 PathPattern::Glob("**/*.gradle"),
                 PathPattern::Glob("**/*.gradle.kts"),
-            // Version catalogs can influence dependency versions.
-            PathPattern::ExactFileName("libs.versions.toml"),
-            // Version catalogs can also be custom-named (e.g. `foo.versions.toml`).
-            PathPattern::Glob("**/*.versions.toml"),
-            // Additional version catalogs can be custom-named but must be direct children of a
-            // `gradle/` directory (e.g. `gradle/deps.versions.toml`).
-            PathPattern::Glob("**/gradle/*.versions.toml"),
+                // Version catalogs can influence dependency versions.
+                PathPattern::ExactFileName("libs.versions.toml"),
+                // Version catalogs can also be custom-named (e.g. `foo.versions.toml`).
+                PathPattern::Glob("**/*.versions.toml"),
+                // Additional version catalogs can be custom-named but must be direct children of a
+                // `gradle/` directory (e.g. `gradle/deps.versions.toml`).
+                PathPattern::Glob("**/gradle/*.versions.toml"),
                 PathPattern::ExactFileName("gradle.properties"),
                 PathPattern::ExactFileName("gradlew"),
                 PathPattern::ExactFileName("gradlew.bat"),

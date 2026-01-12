@@ -111,7 +111,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(simple
         .watch_files()
         .contains(&PathPattern::ExactFileName("build.gradle")));
-    assert!(simple.watch_files().contains(&PathPattern::Glob("**/*.bzl")));
+    assert!(simple
+        .watch_files()
+        .contains(&PathPattern::Glob("**/*.bzl")));
 }
 
 #[test]

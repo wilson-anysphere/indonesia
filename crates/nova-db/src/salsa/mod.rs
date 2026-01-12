@@ -1892,14 +1892,15 @@ impl Database {
                 None
             } else {
                 inputs.file_ids_dirty = false;
-                Some(Arc::new(inputs.file_ids.iter().copied().collect::<Vec<_>>()))
+                Some(Arc::new(
+                    inputs.file_ids.iter().copied().collect::<Vec<_>>(),
+                ))
             }
         };
 
         let mut db = self.inner.lock();
         if let Some(all_file_ids) = all_file_ids {
-            let bytes =
-                (all_file_ids.len() as u64) * (std::mem::size_of::<FileId>() as u64);
+            let bytes = (all_file_ids.len() as u64) * (std::mem::size_of::<FileId>() as u64);
             self.input_footprint.record_all_file_ids_bytes(bytes);
             db.set_all_file_ids(all_file_ids);
         }

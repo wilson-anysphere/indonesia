@@ -354,7 +354,9 @@ impl MavenBuild {
                 let enable_preview = args
                     .iter()
                     .any(|arg| maven_compiler_arg_contains_enable_preview(arg));
-                let looks_like_jpms = args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                let looks_like_jpms = args
+                    .iter()
+                    .any(|arg| maven_compiler_arg_looks_like_jpms(arg));
                 (enable_preview, looks_like_jpms)
             })
             .unwrap_or((false, false));
@@ -370,8 +372,9 @@ impl MavenBuild {
                 enable_preview |= args
                     .iter()
                     .any(|arg| maven_compiler_arg_contains_enable_preview(arg));
-                compiler_args_looks_like_jpms |=
-                    args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                compiler_args_looks_like_jpms |= args
+                    .iter()
+                    .any(|arg| maven_compiler_arg_looks_like_jpms(arg));
             }
         }
 
@@ -2210,9 +2213,15 @@ mod tests {
                 dep.display()
             ),
         );
-        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
-        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
 
         // JPMS signal via a single string containing multiple args separated by whitespace.

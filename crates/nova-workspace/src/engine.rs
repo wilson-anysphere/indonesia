@@ -30,8 +30,8 @@ use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
-    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher, LocalFs,
-    NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
+    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
+    LocalFs, NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 use walkdir::WalkDir;
 
@@ -5950,10 +5950,14 @@ enabled = false
                         snap.file_exists(file_id)
                             && snap.file_content(file_id).as_str() == text
                             && snap.file_rel_path(file_id).as_str() == "src2/Main.java"
-                            && snap.project_files(ProjectId::from_raw(0)).contains(&file_id)
+                            && snap
+                                .project_files(ProjectId::from_raw(0))
+                                .contains(&file_id)
                             && (file_id == old_id
                                 || (!snap.file_exists(old_id)
-                                    && !snap.project_files(ProjectId::from_raw(0)).contains(&old_id)))
+                                    && !snap
+                                        .project_files(ProjectId::from_raw(0))
+                                        .contains(&old_id)))
                     })
                 }))
                 .unwrap_or(false);
