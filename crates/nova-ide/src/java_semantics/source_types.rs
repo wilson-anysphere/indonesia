@@ -771,8 +771,13 @@ impl ResolveCtx {
             }
 
             // Fall back to resolving the first segment in-scope, then treat the rest as nested.
+            //
+            // Be careful: for unknown qualified names we don't want to interpret the first segment
+            // as a type unless we have some evidence it is a type. Otherwise we can incorrectly
+            // rewrite a fully-qualified package name like `z.I` into a nested binary name like
+            // `current.z$I`.
             let (first, rest) = segments.split_first().unwrap();
-            if let Some(owner) = self.simple_type_binary_name(store, first) {
+            if let Some(owner) = self.outer_type_binary_name(store, first) {
                 let mut candidate = owner;
                 for seg in rest {
                     candidate.push('$');
@@ -785,6 +790,13 @@ impl ResolveCtx {
 
                 return Type::Named(candidate);
             }
+        }
+
+        // If the type isn't known yet, attempt to canonicalize the name into a best-effort binary
+        // name by splitting the package prefix from the type suffix based on Java naming
+        // conventions (package segments tend to be lowercase, type segments tend to be uppercase).
+        if let Some(candidate) = guess_qualified_binary_name(name) {
+            return Type::Named(candidate);
         }
 
         Type::Named(name.to_string())
@@ -824,16 +836,70 @@ impl ResolveCtx {
             }
         }
 
+        if let Some(candidate) = guess_qualified_binary_name(name) {
+            return Type::Named(candidate);
+        }
+
         Type::Named(name.to_string())
     }
 
-    fn simple_type_binary_name(&self, store: &TypeStore, name: &str) -> Option<String> {
+    fn outer_type_binary_name(&self, store: &TypeStore, name: &str) -> Option<String> {
+        // If `name` is imported as a single type, we can treat it as a type name even if the class
+        // isn't in the store yet.
+        if let Some(path) = self.single_type_imports.get(name) {
+            return guess_qualified_binary_name(path).or_else(|| Some(path.clone()));
+        }
+
         match self.resolve_simple_name(store, name) {
             Type::Class(ty) => store.class(ty.def).map(|c| c.name.clone()),
-            Type::Named(name) => Some(name),
+            Type::Named(binary) if looks_like_type_segment(name) => Some(binary),
             _ => None,
         }
     }
+}
+
+fn looks_like_type_segment(segment: &str) -> bool {
+    match segment.as_bytes().first().copied() {
+        Some(b'A'..=b'Z') | Some(b'_') | Some(b'$') => true,
+        _ => false,
+    }
+}
+
+fn guess_qualified_binary_name(name: &str) -> Option<String> {
+    let segments: Vec<&str> = name.split('.').collect();
+    if segments.len() < 2 {
+        return None;
+    }
+
+    // Heuristic: treat the *suffix* of "type-looking" segments as the type portion of the name,
+    // and the prefix as the package portion. This handles common cases like:
+    // - `z.I` -> `z.I`
+    // - `java.util.Map.Entry` -> `java.util.Map$Entry`
+    // - `com.example.Outer.Inner` -> `com.example.Outer$Inner`
+    let mut start = segments.len();
+    while start > 0 && looks_like_type_segment(segments[start - 1]) {
+        start -= 1;
+    }
+    if start == segments.len() {
+        return None;
+    }
+
+    let (pkg, ty_segments) = segments.split_at(start);
+    let Some((outer, nested)) = ty_segments.split_first() else {
+        return None;
+    };
+
+    let mut candidate = String::new();
+    if !pkg.is_empty() {
+        candidate.push_str(&pkg.join("."));
+        candidate.push('.');
+    }
+    candidate.push_str(outer);
+    for seg in nested {
+        candidate.push('$');
+        candidate.push_str(seg);
+    }
+    Some(candidate)
 }
 
 fn parse_type_ref(ctx: &ResolveCtx, store: &TypeStore, text: &str) -> Type {

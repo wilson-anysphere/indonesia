@@ -300,3 +300,34 @@ public interface I {}
         &Type::Named("z.I".to_string())
     ));
 }
+
+#[test]
+fn source_types_resolve_fully_qualified_interfaces_even_when_defined_in_later_files() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    // `implements z.I` should be treated as a fully-qualified package/type name rather than
+    // rewriting `z` into an in-scope type like `a.z$I` when `z.I` hasn't been loaded yet.
+    source.update_file(
+        &mut store,
+        PathBuf::from("/a/Impl.java"),
+        r#"
+package a;
+class Impl implements z.I {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/z/I.java"),
+        r#"
+package z;
+public interface I {}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("a.Impl".to_string()),
+        &Type::Named("z.I".to_string())
+    ));
+}
