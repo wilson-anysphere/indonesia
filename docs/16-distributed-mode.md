@@ -99,7 +99,10 @@ Distributed mode uses the cache directory as a **best-effort warm start** mechan
   `shard_<id>.bin` under `--cache-dir`.
 - **Not persisted:** the shard’s full file contents / in-memory `path -> text` map.
 - Cache entries are versioned and are ignored if the shard cache *format version* or the
-  router↔worker *protocol version* changes (workers will cold-start and rebuild the index).
+  cache’s `protocol_version` field (currently `nova_remote_proto::PROTOCOL_VERSION`) changes.
+  - Note: `nova_remote_proto::PROTOCOL_VERSION` is a coarse cache invalidation knob for the shard
+    index cache format (and is currently the legacy lockstep protocol version). It is independent of
+    the negotiated v3 `{major, minor}` wire version.
   - Note: legacy cache blobs from older Nova versions may additionally be gated on `NOVA_VERSION`
     during migration.
 
