@@ -1,6 +1,6 @@
 use nova_build::{
-    collect_gradle_build_files, BuildCache, BuildFileFingerprint, CommandOutput, CommandRunner,
-    GradleBuild, GradleConfig,
+    collect_gradle_build_files, BuildCache, BuildFileFingerprint, BuildSystemKind, CommandOutput,
+    CommandRunner, GradleBuild, GradleConfig,
 };
 use nova_build_model::{GRADLE_SNAPSHOT_REL_PATH, GRADLE_SNAPSHOT_SCHEMA_VERSION};
 use serde::Deserialize;
@@ -456,6 +456,79 @@ NOVA_JSON_END
         .get(":")
         .expect("config for root project");
     assert_eq!(cfg.project_dir, project_root);
+}
+
+#[test]
+fn writes_gradle_snapshot_from_cached_root_classpath_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(
+        project_root.join("settings.gradle"),
+        "rootProject.name = 'demo'\n",
+    )
+    .unwrap();
+    std::fs::write(project_root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    let dep_jar = project_root.join("deps/dep.jar");
+    std::fs::create_dir_all(dep_jar.parent().unwrap()).unwrap();
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    let build_files = collect_gradle_build_files(&project_root).expect("collect build files");
+    let fingerprint =
+        BuildFileFingerprint::from_files(&project_root, build_files).expect("fingerprint");
+
+    let cache = BuildCache::new(tmp.path().join("cache"));
+    cache
+        .update_module(
+            &project_root,
+            BuildSystemKind::Gradle,
+            &fingerprint,
+            "<root>",
+            |m| {
+                m.classpath = Some(vec![dep_jar.clone()]);
+            },
+        )
+        .expect("seed cache");
+
+    let runner = Arc::new(CountingRunner::new(CommandOutput {
+        status: exit_status(0),
+        stdout: String::new(),
+        stderr: String::new(),
+        truncated: false,
+    }));
+    let gradle_runner: Arc<dyn CommandRunner> = runner.clone();
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), gradle_runner);
+
+    assert!(
+        !project_root.join(GRADLE_SNAPSHOT_REL_PATH).exists(),
+        "snapshot should not exist before calling java_compile_config"
+    );
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, None, &cache)
+        .expect("java compile config");
+    assert_eq!(
+        runner.invocations(),
+        0,
+        "expected cached java_compile_config call to avoid invoking Gradle"
+    );
+
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    let bytes = std::fs::read(&snapshot_path).unwrap();
+    let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
+
+    let cfg = snapshot
+        .java_compile_configs
+        .get(":")
+        .expect("config for root project");
+    assert_eq!(cfg.project_dir, project_root);
+    assert!(
+        cfg.compile_classpath.contains(&dep_jar),
+        "expected cached classpath jar to be recorded in snapshot"
+    );
 }
 
 #[test]

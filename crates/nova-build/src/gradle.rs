@@ -559,10 +559,45 @@ impl GradleBuild {
             }
             // Backwards-compat: older cache entries may contain only classpath.
             if let Some(entries) = cached.classpath {
-                return Ok(JavaCompileConfig {
+                let cfg = JavaCompileConfig {
                     compile_classpath: entries,
                     ..JavaCompileConfig::default()
-                });
+                };
+
+                // Best-effort: older cache entries might not include a full `JavaCompileConfig`,
+                // but still contain a useful classpath. Populate the Gradle snapshot so
+                // `nova-project` can consume it even without invoking Gradle.
+                let project_path_for_snapshot = project_path.unwrap_or(":");
+                let should_update_snapshot =
+                    match read_gradle_snapshot_file(&gradle_snapshot_path(project_root)) {
+                        Some(snapshot)
+                            if snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                                && snapshot.build_fingerprint == fingerprint.digest =>
+                        {
+                            !snapshot
+                                .java_compile_configs
+                                .contains_key(project_path_for_snapshot)
+                        }
+                        _ => true,
+                    };
+                if should_update_snapshot {
+                    if let Ok(project_dir) = gradle_project_dir_cached(
+                        project_root,
+                        Some(project_path_for_snapshot),
+                        cache,
+                        &fingerprint,
+                    ) {
+                        let _ = update_gradle_snapshot_java_compile_config(
+                            project_root,
+                            &fingerprint,
+                            project_path_for_snapshot,
+                            &project_dir,
+                            &cfg,
+                        );
+                    }
+                }
+
+                return Ok(cfg);
             }
         }
 
@@ -613,10 +648,43 @@ impl GradleBuild {
                     return Ok(cfg);
                 }
                 if let Some(entries) = cached.classpath {
-                    return Ok(JavaCompileConfig {
+                    let cfg = JavaCompileConfig {
                         compile_classpath: entries,
                         ..JavaCompileConfig::default()
-                    });
+                    };
+
+                    // Best-effort: persist a snapshot for legacy classpath-only cache entries.
+                    let project_path_for_snapshot = project_path.unwrap_or(":");
+                    let should_update_snapshot =
+                        match read_gradle_snapshot_file(&gradle_snapshot_path(project_root)) {
+                            Some(snapshot)
+                                if snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                                    && snapshot.build_fingerprint == fingerprint.digest =>
+                            {
+                                !snapshot
+                                    .java_compile_configs
+                                    .contains_key(project_path_for_snapshot)
+                            }
+                            _ => true,
+                        };
+                    if should_update_snapshot {
+                        if let Ok(project_dir) = gradle_project_dir_cached(
+                            project_root,
+                            Some(project_path_for_snapshot),
+                            cache,
+                            &fingerprint,
+                        ) {
+                            let _ = update_gradle_snapshot_java_compile_config(
+                                project_root,
+                                &fingerprint,
+                                project_path_for_snapshot,
+                                &project_dir,
+                                &cfg,
+                            );
+                        }
+                    }
+
+                    return Ok(cfg);
                 }
             }
         }
