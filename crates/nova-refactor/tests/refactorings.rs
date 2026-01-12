@@ -881,6 +881,84 @@ fn inline_variable_single_usage_replaces_only_selected_use() {
 }
 
 #[test]
+fn inline_variable_inline_one_single_use_side_effectful_initializer_deletes_decl() {
+    // Policy: allow inline-one when the declaration can be removed after inlining (single usage),
+    // even if the initializer has side effects. This preserves "evaluate exactly once" semantics.
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int compute() { return 1; }
+  void m() {
+    int x = compute();
+    System.out.println(x);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 1, "expected one reference");
+    let usage = refs[0].range;
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int compute() { return 1; }
+  void m() {
+    System.out.println(compute());
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_inline_one_multi_use_side_effectful_initializer_is_rejected() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int compute() { return 1; }
+  void m() {
+    int x = compute();
+    System.out.println(x);
+    System.out.println(x);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 2, "expected two references");
+    let first_usage = refs[0].range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(first_usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
+
+#[test]
 fn inline_variable_side_effectful_initializer_is_rejected() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
