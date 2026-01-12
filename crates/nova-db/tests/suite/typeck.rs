@@ -3,9 +3,6 @@ use std::sync::Arc;
 use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase};
 use nova_jdk::JdkIndex;
 
-#[path = "typeck/diagnostics.rs"]
-mod diagnostics;
-
 fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

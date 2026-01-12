@@ -203,6 +203,10 @@ impl JdkSymbolIndex {
     pub(crate) fn estimated_bytes(&self) -> u64 {
         match self {
             Self::Jmods(index) => index.estimated_bytes(),
+            // `ct.sym` support is backed by a ZIP archive and a handful of caches.
+            // We currently don't track its heap usage in a granular way, so report
+            // zero to keep the API total-cost estimation best-effort.
+            Self::CtSym(_) => 0,
         }
     }
 }
