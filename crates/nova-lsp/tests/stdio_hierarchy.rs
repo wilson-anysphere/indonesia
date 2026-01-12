@@ -1,75 +1,45 @@
-use lsp_types::{
-    CallHierarchyItem, CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams,
-    CallHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
-    TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySupertypesParams,
-};
-use pretty_assertions::assert_eq;
+use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
 use serde_json::json;
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
+mod support;
+use support::{read_response_with_id, write_jsonrpc_message};
+
+fn uri_for_path(path: &Path) -> String {
+    let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
+    path_to_file_uri(&abs).expect("file uri")
 }
 
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
-            return msg;
-        }
-    }
+fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
+    let index = LineIndex::new(text);
+    let offset = TextSize::from(u32::try_from(offset).expect("offset fits in u32"));
+    index.position(text, offset)
 }
 
 #[test]
-fn stdio_call_hierarchy_outgoing_calls_includes_called_method() {
+fn stdio_server_handles_call_and_type_hierarchy_requests() {
+    let _lock = support::stdio_server_lock();
+
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
-    let file_path = root.join("Foo.java");
+    let file_path = root.join("Hierarchy.java");
+    let uri = uri_for_path(&file_path);
 
-    let source = r#"public class Foo {
-    void a() {
-        b();
-    }
-
-    void b() {}
-}
-"#;
-    fs::write(&file_path, source).expect("write Foo.java");
-
-    let uri = format!("file://{}", file_path.to_string_lossy());
-    let root_uri = format!("file://{}", root.to_string_lossy());
+    let text = concat!(
+        "class A {\n",
+        "}\n",
+        "\n",
+        "class B extends A {\n",
+        "    void foo() {\n",
+        "        bar();\n",
+        "    }\n",
+        "\n",
+        "    void bar() {}\n",
+        "}\n",
+    );
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -82,24 +52,23 @@ fn stdio_call_hierarchy_outgoing_calls_includes_called_method() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
+    // initialize
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {
-                "rootUri": root_uri,
-                "capabilities": {}
-            }
+            "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
+    // didOpen
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -107,214 +76,125 @@ fn stdio_call_hierarchy_outgoing_calls_includes_called_method() {
             "method": "textDocument/didOpen",
             "params": {
                 "textDocument": {
-                    "uri": uri,
+                    "uri": uri.as_str(),
                     "languageId": "java",
                     "version": 1,
-                    "text": source
+                    "text": text,
                 }
             }
         }),
     );
 
-    let a_offset = source.find("void a").expect("contains void a") + "void ".len();
-    let index = nova_core::LineIndex::new(source);
-    let a_pos = index.position(source, nova_core::TextSize::from(a_offset as u32));
-    let a_pos = Position::new(a_pos.line, a_pos.character);
-
-    let prepare_params = CallHierarchyPrepareParams {
-        text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.parse().expect("uri"),
-            },
-            position: a_pos,
-        },
-        work_done_progress_params: Default::default(),
-    };
+    // 1) prepareCallHierarchy at `foo`.
+    let foo_offset = text.find("foo").expect("foo method");
+    let foo_pos = utf16_position(text, foo_offset);
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "textDocument/prepareCallHierarchy",
-            "params": serde_json::to_value(prepare_params).expect("serialize params")
+            "params": {
+                "textDocument": { "uri": uri.as_str() },
+                "position": { "line": foo_pos.line, "character": foo_pos.character },
+            }
         }),
     );
-
-    let prepare_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
-    let items = prepare_resp
+    let resp = read_response_with_id(&mut stdout, 2);
+    let items = resp
         .get("result")
         .and_then(|v| v.as_array())
         .expect("prepareCallHierarchy result array");
-    assert_eq!(items.len(), 1);
-    let item: CallHierarchyItem = serde_json::from_value(items[0].clone()).expect("item");
+    assert!(
+        !items.is_empty(),
+        "expected prepareCallHierarchy to return at least one item: {resp:#}"
+    );
+    assert_eq!(
+        items[0].get("name").and_then(|v| v.as_str()),
+        Some("foo")
+    );
+    let foo_item = items[0].clone();
 
-    let outgoing_params = CallHierarchyOutgoingCallsParams {
-        item,
-        work_done_progress_params: Default::default(),
-        partial_result_params: Default::default(),
-    };
+    // 2) outgoingCalls for `foo` should include `bar`.
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 3,
             "method": "callHierarchy/outgoingCalls",
-            "params": serde_json::to_value(outgoing_params).expect("serialize params")
+            "params": { "item": foo_item }
         }),
     );
-
-    let outgoing_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
-    let calls = outgoing_resp
+    let resp = read_response_with_id(&mut stdout, 3);
+    let outgoing = resp
         .get("result")
-        .cloned()
-        .expect("outgoingCalls result");
-    let calls: Vec<CallHierarchyOutgoingCall> =
-        serde_json::from_value(calls).expect("outgoingCalls array");
+        .and_then(|v| v.as_array())
+        .expect("outgoingCalls result array");
     assert!(
-        calls.iter().any(|call| call.to.name == "b"),
-        "expected outgoing calls to include b(), got: {calls:?}"
+        outgoing.iter().any(|call| call.pointer("/to/name").and_then(|v| v.as_str()) == Some("bar")),
+        "expected outgoing calls to include `bar`, got: {resp:#}"
     );
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
-    );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
-    drop(stdin);
-
-    let status = child.wait().expect("wait");
-    assert!(status.success());
-}
-
-#[test]
-fn stdio_type_hierarchy_supertypes_includes_base_class() {
-    let temp = TempDir::new().expect("tempdir");
-    let root = temp.path();
-    let file_path = root.join("Types.java");
-
-    let source = r#"class Base {}
-class Child extends Base {}
-"#;
-    fs::write(&file_path, source).expect("write Types.java");
-
-    let uri = format!("file://{}", file_path.to_string_lossy());
-    let root_uri = format!("file://{}", root.to_string_lossy());
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
-        .arg("--stdio")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn nova-lsp");
-
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
-    let mut stdout = BufReader::new(stdout);
-
+    // 3) prepareTypeHierarchy at `B`.
+    let b_offset = text.find("B extends").expect("class B");
+    let b_pos = utf16_position(text, b_offset);
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "rootUri": root_uri,
-                "capabilities": {}
-            }
-        }),
-    );
-    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": source
-                }
-            }
-        }),
-    );
-
-    let child_offset = source
-        .find("class Child")
-        .expect("contains class Child")
-        + "class ".len();
-    let index = nova_core::LineIndex::new(source);
-    let child_pos = index.position(source, nova_core::TextSize::from(child_offset as u32));
-    let child_pos = Position::new(child_pos.line, child_pos.character);
-
-    let prepare_params = TypeHierarchyPrepareParams {
-        text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.parse().expect("uri"),
-            },
-            position: child_pos,
-        },
-        work_done_progress_params: Default::default(),
-    };
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
+            "id": 4,
             "method": "textDocument/prepareTypeHierarchy",
-            "params": serde_json::to_value(prepare_params).expect("serialize params")
+            "params": {
+                "textDocument": { "uri": uri.as_str() },
+                "position": { "line": b_pos.line, "character": b_pos.character },
+            }
         }),
     );
-
-    let prepare_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
-    let items = prepare_resp
+    let resp = read_response_with_id(&mut stdout, 4);
+    let items = resp
         .get("result")
         .and_then(|v| v.as_array())
         .expect("prepareTypeHierarchy result array");
-    assert_eq!(items.len(), 1);
-    let item: TypeHierarchyItem = serde_json::from_value(items[0].clone()).expect("item");
+    assert!(
+        !items.is_empty(),
+        "expected prepareTypeHierarchy to return at least one item: {resp:#}"
+    );
+    assert_eq!(
+        items[0].get("name").and_then(|v| v.as_str()),
+        Some("B")
+    );
+    let b_item = items[0].clone();
 
-    let supertypes_params = TypeHierarchySupertypesParams {
-        item,
-        work_done_progress_params: Default::default(),
-        partial_result_params: Default::default(),
-    };
+    // 4) supertypes for `B` should include `A`.
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
-            "id": 3,
+            "id": 5,
             "method": "typeHierarchy/supertypes",
-            "params": serde_json::to_value(supertypes_params).expect("serialize params")
+            "params": { "item": b_item }
         }),
     );
-
-    let supertypes_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
-    let types = supertypes_resp
+    let resp = read_response_with_id(&mut stdout, 5);
+    let supertypes = resp
         .get("result")
-        .cloned()
-        .expect("supertypes result");
-    let types: Vec<TypeHierarchyItem> = serde_json::from_value(types).expect("supertypes array");
+        .and_then(|v| v.as_array())
+        .expect("supertypes result array");
     assert!(
-        types.iter().any(|ty| ty.name == "Base"),
-        "expected supertypes to include Base, got: {types:?}"
+        supertypes.iter().any(|item| item.get("name").and_then(|v| v.as_str()) == Some("A")),
+        "expected supertypes to include `A`, got: {resp:#}"
     );
 
+    // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
