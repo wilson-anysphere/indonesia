@@ -1,6 +1,4 @@
-mod harness;
-
-use harness::{spawn_wire_server, transcript as tr};
+use crate::harness::{spawn_wire_server, transcript as tr};
 use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
 use serde_json::json;
 

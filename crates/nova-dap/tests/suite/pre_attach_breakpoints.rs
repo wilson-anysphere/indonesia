@@ -1,6 +1,4 @@
-mod harness;
-
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 
 #[tokio::test]

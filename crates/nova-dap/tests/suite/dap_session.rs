@@ -1,5 +1,3 @@
-mod harness;
-
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
@@ -7,7 +5,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use nova_dap::object_registry::{OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;

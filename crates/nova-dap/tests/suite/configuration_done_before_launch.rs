@@ -1,8 +1,6 @@
-mod harness;
-
 use std::time::Duration;
 
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;
 

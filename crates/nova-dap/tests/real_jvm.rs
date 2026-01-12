@@ -1,3 +1,6 @@
+mod harness;
+mod suite;
+
 use std::{
     collections::VecDeque,
     net::TcpListener,
