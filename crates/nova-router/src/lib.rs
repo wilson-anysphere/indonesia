@@ -310,6 +310,34 @@ impl WorkerIdentity {
 }
 
 impl DistributedRouterConfig {
+    /// Build a `DistributedRouterConfig` suitable for local IPC with locally spawned workers.
+    ///
+    /// This helper keeps `nova-lsp` and other frontends from needing to know about optional TLS
+    /// fields on the config struct (which vary behind `nova-router`'s `tls` feature). It also
+    /// centralizes the conservative defaults used by Nova:
+    ///
+    /// - `spawn_workers = true`
+    /// - `auth_token = None`
+    /// - `allow_insecure_tcp = false`
+    /// - `max_rpc_bytes = DEFAULT_MAX_RPC_BYTES`
+    /// - `max_inflight_handshakes = DEFAULT_MAX_INFLIGHT_HANDSHAKES`
+    /// - `max_worker_connections = DEFAULT_MAX_WORKER_CONNECTIONS`
+    pub fn local_ipc(listen_addr: ListenAddr, worker_command: PathBuf, cache_dir: PathBuf) -> Self {
+        Self {
+            listen_addr,
+            worker_command,
+            cache_dir,
+            auth_token: None,
+            allow_insecure_tcp: false,
+            max_rpc_bytes: DEFAULT_MAX_RPC_BYTES,
+            max_inflight_handshakes: DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+            max_worker_connections: DEFAULT_MAX_WORKER_CONNECTIONS,
+            #[cfg(feature = "tls")]
+            tls_client_cert_fingerprint_allowlist: Default::default(),
+            spawn_workers: true,
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         #[cfg(feature = "tls")]
         if self.spawn_workers

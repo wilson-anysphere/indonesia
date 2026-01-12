@@ -59,7 +59,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -209,7 +209,7 @@ fn main() -> std::io::Result<()> {
     }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         eprintln!(
-            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio] [--config <path>]\n",
+            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio] [--config <path>] [--distributed] [--distributed-worker-command <path>]\n\nFlags:\n  --distributed\n      Enable local distributed indexing/search via nova-router + nova-worker.\n\n  --distributed-worker-command <path>\n      Path to the nova-worker binary.\n      Defaults to a sibling nova-worker next to nova-lsp if present; otherwise falls back to nova-worker on PATH.\n",
             version = env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -281,12 +281,15 @@ fn main() -> std::io::Result<()> {
 
     let (connection, io_threads) = Connection::stdio();
 
+    let distributed_cli = parse_distributed_cli(&args);
+
     let config_memory_overrides = config.memory_budget_overrides();
     let mut state = ServerState::new(
         config,
         ai_env.as_ref().map(|(_, privacy)| privacy.clone()),
         config_memory_overrides,
     );
+    state.distributed_cli = distributed_cli;
 
     let request_cancellation =
         nova_lsp::RequestCancellation::new(nova_scheduler::Scheduler::new({
@@ -320,6 +323,9 @@ fn main() -> std::io::Result<()> {
         .initialize_finish(init_id, init_result)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
     metrics.record_request("initialize", init_start.elapsed());
+
+    // Start distributed router/indexing (if enabled) after the initialize handshake completes.
+    state.start_distributed_after_initialize();
 
     // ---------------------------------------------------------------------
     // Main message loop (with cancellation router)
@@ -394,6 +400,9 @@ fn main() -> std::io::Result<()> {
                 let method = notification.method.clone();
                 let start = Instant::now();
                 if method == "exit" {
+                    // Best-effort: shut down the distributed router before exiting so any
+                    // spawned workers terminate and any IPC sockets are cleaned up.
+                    state.shutdown_distributed_router(Duration::from_secs(2));
                     metrics.record_request(&method, start.elapsed());
                     exit_code = Some(if state.shutdown_requested { 0 } else { 1 });
                     break;
@@ -857,6 +866,82 @@ fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+#[derive(Debug, Clone)]
+struct DistributedCliConfig {
+    worker_command: PathBuf,
+}
+
+fn parse_distributed_cli(args: &[String]) -> Option<DistributedCliConfig> {
+    if !args.iter().any(|arg| arg == "--distributed") {
+        return None;
+    }
+    let worker_command = parse_path_arg(args, "--distributed-worker-command")
+        .unwrap_or_else(default_distributed_worker_command);
+    Some(DistributedCliConfig { worker_command })
+}
+
+fn parse_path_arg(args: &[String], flag: &str) -> Option<PathBuf> {
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == flag {
+            let next = args.get(i + 1)?;
+            return Some(PathBuf::from(next));
+        }
+        if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn default_distributed_worker_command() -> PathBuf {
+    let exe_name = if cfg!(windows) {
+        "nova-worker.exe"
+    } else {
+        "nova-worker"
+    };
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(exe_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(exe_name)
+}
+
+fn distributed_run_dir() -> PathBuf {
+    let base = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base.join(format!("nova-lsp-distributed-{}-{ts}", std::process::id()))
+}
+
+#[cfg(unix)]
+fn distributed_listen_addr(run_dir: &Path) -> nova_router::ListenAddr {
+    nova_router::ListenAddr::Unix(run_dir.join("router.sock"))
+}
+
+#[cfg(windows)]
+fn distributed_listen_addr(_run_dir: &Path) -> nova_router::ListenAddr {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    nova_router::ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
+}
+
 #[derive(Debug)]
 struct AnalysisState {
     vfs: Vfs<LocalFs>,
@@ -1104,6 +1189,23 @@ struct ServerState {
     next_outgoing_request_id: u64,
     last_safe_mode_enabled: bool,
     last_safe_mode_reason: Option<&'static str>,
+    distributed_cli: Option<DistributedCliConfig>,
+    distributed: Option<DistributedServerState>,
+}
+
+struct DistributedServerState {
+    workspace_root: PathBuf,
+    source_roots: Vec<PathBuf>,
+    run_dir: PathBuf,
+    runtime: tokio::runtime::Runtime,
+    frontend: Arc<nova_lsp::NovaLspFrontend>,
+    initial_index: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
+}
+
+impl DistributedServerState {
+    fn contains_path(&self, path: &Path) -> bool {
+        self.source_roots.iter().any(|root| path.starts_with(root))
+    }
 }
 
 struct CachedRefactorWorkspaceSnapshot {
@@ -1245,7 +1347,202 @@ impl ServerState {
             next_outgoing_request_id: 1,
             last_safe_mode_enabled: false,
             last_safe_mode_reason: None,
+            distributed_cli: None,
+            distributed: None,
         }
+    }
+
+    fn start_distributed_after_initialize(&mut self) {
+        let Some(cli) = self.distributed_cli.clone() else {
+            return;
+        };
+        if self.distributed.is_some() {
+            return;
+        }
+
+        let Some(project_root) = self.project_root.clone() else {
+            tracing::warn!(
+                target = "nova.lsp",
+                "distributed mode enabled but initialize.rootUri is missing; falling back to in-process workspace indexing"
+            );
+            return;
+        };
+
+        let (workspace_root, source_roots) = match nova_project::load_project_with_workspace_config(
+            &project_root,
+        ) {
+            Ok(cfg) => {
+                let roots = cfg
+                    .source_roots
+                    .into_iter()
+                    .map(|r| r.path)
+                    .collect::<Vec<_>>();
+                (cfg.workspace_root, roots)
+            }
+            Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
+                (project_root.clone(), vec![project_root.clone()])
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    "failed to load project configuration for distributed mode; falling back to indexing workspace root"
+                );
+                (project_root.clone(), vec![project_root.clone()])
+            }
+        };
+
+        let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+        let source_roots = source_roots
+            .into_iter()
+            .map(|root| root.canonicalize().unwrap_or(root))
+            .collect::<Vec<_>>();
+
+        let cache_dir = match nova_cache::CacheDir::new(
+            &workspace_root,
+            nova_cache::CacheConfig::from_env(),
+        ) {
+            Ok(dir) => dir.indexes_dir(),
+            Err(err) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    "failed to open cache dir for distributed mode; disabling distributed router"
+                );
+                return;
+            }
+        };
+
+        let run_dir = distributed_run_dir();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            builder.mode(0o700);
+            if let Err(err) = builder.create(&run_dir) {
+                if err.kind() != std::io::ErrorKind::AlreadyExists {
+                    tracing::warn!(
+                        target = "nova.lsp",
+                        run_dir = %run_dir.display(),
+                        error = ?err,
+                        "failed to create distributed run dir; disabling distributed router"
+                    );
+                    return;
+                }
+            }
+            if let Err(err) =
+                std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    run_dir = %run_dir.display(),
+                    error = ?err,
+                    "failed to set distributed run dir permissions; disabling distributed router"
+                );
+                return;
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            if let Err(err) = std::fs::create_dir_all(&run_dir) {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    run_dir = %run_dir.display(),
+                    error = ?err,
+                    "failed to create distributed run dir; disabling distributed router"
+                );
+                return;
+            }
+        }
+
+        let listen_addr = distributed_listen_addr(&run_dir);
+
+        // Keep thread counts bounded: distributed mode is mostly I/O + process supervision.
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(2)
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(err) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    "failed to create tokio runtime for distributed router; disabling distributed mode"
+                );
+                return;
+            }
+        };
+
+        let router_config = nova_router::DistributedRouterConfig::local_ipc(
+            listen_addr,
+            cli.worker_command.clone(),
+            cache_dir,
+        );
+
+        let frontend = match runtime.block_on(nova_lsp::NovaLspFrontend::new_distributed(
+            router_config,
+            source_roots.clone(),
+        )) {
+            Ok(frontend) => Arc::new(frontend),
+            Err(err) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    "failed to start distributed router; falling back to in-process workspace indexing"
+                );
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return;
+            }
+        };
+
+        let index_frontend = Arc::clone(&frontend);
+        let initial_index =
+            Some(runtime.spawn(async move { index_frontend.index_workspace().await }));
+
+        self.distributed = Some(DistributedServerState {
+            workspace_root,
+            source_roots,
+            run_dir,
+            runtime,
+            frontend,
+            initial_index,
+        });
+    }
+
+    fn shutdown_distributed_router(&mut self, timeout: Duration) {
+        let Some(dist) = self.distributed.take() else {
+            return;
+        };
+
+        let frontend = Arc::clone(&dist.frontend);
+        let shutdown = dist
+            .runtime
+            .block_on(async move { tokio::time::timeout(timeout, frontend.shutdown()).await });
+        match shutdown {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    error = ?err,
+                    "failed to shut down distributed router"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    timeout = ?timeout,
+                    "timed out shutting down distributed router"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dist.run_dir);
+        drop(dist);
     }
 
     fn load_extensions(&mut self) {
@@ -1848,6 +2145,7 @@ fn handle_request_json(
         "shutdown" => {
             state.shutdown_requested = true;
             state.cancel_semantic_search_workspace_indexing();
+            state.shutdown_distributed_router(Duration::from_secs(2));
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
         }
         nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD => Ok(json!({
@@ -2898,10 +3196,25 @@ fn handle_notification(
             let uri = params.text_document.uri;
             let uri_string = uri.to_string();
             let version = params.text_document.version.unwrap_or(0);
-            let file_id =
-                state
-                    .analysis
-                    .open_document(uri.clone(), params.text_document.text, version);
+            let text = params.text_document.text;
+            if let (Some(dist), Some(path)) =
+                (state.distributed.as_ref(), path_from_uri(uri.as_str()))
+            {
+                if dist.contains_path(&path) {
+                    let frontend = Arc::clone(&dist.frontend);
+                    let text_for_router = text.clone();
+                    let _ = dist.runtime.spawn(async move {
+                        if let Err(err) = frontend.did_change_file(path, text_for_router).await {
+                            tracing::warn!(
+                                target = "nova.lsp",
+                                error = ?err,
+                                "distributed router update failed for didOpen"
+                            );
+                        }
+                    });
+                }
+            }
+            let file_id = state.analysis.open_document(uri.clone(), text, version);
             state.semantic_search_mark_file_open(file_id);
             state.semantic_search_index_open_document(file_id);
             let canonical_uri = state
@@ -2935,6 +3248,25 @@ fn handle_notification(
             }
             if let Ok(ChangeEvent::DocumentChanged { file_id, .. }) = &evt {
                 state.semantic_search_index_open_document(*file_id);
+                if let (Some(dist), Some(path)) = (
+                    state.distributed.as_ref(),
+                    path_from_uri(params.text_document.uri.as_str()),
+                ) {
+                    if dist.contains_path(&path) {
+                        if let Some(text) = state.analysis.file_contents.get(file_id).cloned() {
+                            let frontend = Arc::clone(&dist.frontend);
+                            let _ = dist.runtime.spawn(async move {
+                                if let Err(err) = frontend.did_change_file(path, text).await {
+                                    tracing::warn!(
+                                        target = "nova.lsp",
+                                        error = ?err,
+                                        "distributed router update failed for didChange"
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
             }
             let canonical_uri = VfsPath::from(&params.text_document.uri)
                 .to_uri()
@@ -5327,6 +5659,84 @@ fn handle_workspace_symbol(
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
 
     let query = params.query.trim();
+
+    if let Some(dist) = state.distributed.as_mut() {
+        if dist.initial_index.is_some() {
+            let cancel = cancel.clone();
+            let join_result = {
+                let handle = dist
+                    .initial_index
+                    .as_mut()
+                    .expect("checked initial_index.is_some");
+                dist.runtime.block_on(async {
+                    tokio::select! {
+                        _ = cancel.cancelled() => None,
+                        res = handle => Some(res),
+                    }
+                })
+            };
+
+            let join_result = match join_result {
+                Some(value) => value,
+                None => return Err((-32800, "Request cancelled".to_string())),
+            };
+
+            dist.initial_index = None;
+
+            match join_result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => return Err((-32603, err.to_string())),
+                Err(err) => return Err((-32603, err.to_string())),
+            }
+        }
+
+        let frontend = Arc::clone(&dist.frontend);
+        let cancel = cancel.clone();
+        let symbols = dist.runtime.block_on(async {
+            tokio::select! {
+                _ = cancel.cancelled() => None,
+                syms = frontend.workspace_symbols(query) => Some(syms),
+            }
+        });
+        let symbols = match symbols {
+            Some(symbols) => symbols,
+            None => return Err((-32800, "Request cancelled".to_string())),
+        };
+
+        let mut out = Vec::new();
+        for symbol in symbols {
+            let mut path = PathBuf::from(&symbol.path);
+            if !path.is_absolute() {
+                path = dist.workspace_root.join(path);
+            }
+            let abs = nova_core::AbsPathBuf::try_from(path).map_err(|e| (-32603, e.to_string()))?;
+            let uri = nova_core::path_to_file_uri(&abs)
+                .map_err(|e| (-32603, e.to_string()))?
+                .parse::<LspUri>()
+                .map_err(|e| (-32603, format!("invalid uri: {e}")))?;
+
+            let position = LspTypesPosition {
+                line: 0,
+                character: 0,
+            };
+            let location = LspLocation {
+                uri,
+                range: LspTypesRange::new(position, position),
+            };
+
+            out.push(SymbolInformation {
+                name: symbol.name,
+                kind: LspSymbolKind::OBJECT,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                location,
+                container_name: Some(symbol.path),
+            });
+        }
+
+        return serde_json::to_value(out).map_err(|e| (-32603, e.to_string()));
+    }
 
     if state.workspace.is_none() {
         let project_root = state.project_root.clone().ok_or_else(|| {
