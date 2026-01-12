@@ -224,4 +224,32 @@ wasm_paths = ["extensions"]
                 "failed to parse extension manifest",
             ));
     }
+
+    #[test]
+    fn validate_ignores_extensions_denied_by_config() {
+        let temp = TempDir::new().unwrap();
+        temp.child("nova.toml")
+            .write_str(
+                r#"
+[extensions]
+wasm_paths = ["extensions"]
+deny = ["example.denied"]
+"#,
+            )
+            .unwrap();
+        write_extension_bundle(&temp, "example.denied", 1);
+
+        nova()
+            .arg("extensions")
+            .arg("validate")
+            .arg("--root")
+            .arg(temp.path())
+            .assert()
+            .success()
+            .stderr(
+                predicate::str::contains("skipped:")
+                    .and(predicate::str::contains("example.denied"))
+                    .and(predicate::str::contains("denied by configuration")),
+            );
+    }
 }
