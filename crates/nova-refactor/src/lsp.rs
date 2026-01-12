@@ -35,6 +35,10 @@ impl RefactorDatabase for TextDatabase {
         self.files.get(file).map(String::as_str)
     }
 
+    fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
+        None
+    }
+
     fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {
         None
     }
@@ -63,6 +67,10 @@ impl RefactorDatabase for TextDatabase {
 impl RefactorDatabase for Index {
     fn file_text(&self, file: &FileId) -> Option<&str> {
         Index::file_text(self, &file.0)
+    }
+
+    fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
+        None
     }
 
     fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {

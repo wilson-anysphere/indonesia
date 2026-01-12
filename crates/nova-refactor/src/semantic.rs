@@ -99,6 +99,10 @@ pub struct Reference {
 pub trait RefactorDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str>;
 
+    fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
+        None
+    }
+
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition>;
     fn symbol_scope(&self, symbol: SymbolId) -> Option<u32>;
     fn symbol_kind(&self, _symbol: SymbolId) -> Option<JavaSymbolKind> {

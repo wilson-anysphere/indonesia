@@ -738,6 +738,10 @@ impl RefactorDatabase for RefactorJavaDatabase {
         self.files.get(file).map(|text| text.as_ref())
     }
 
+    fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
+        RefactorJavaDatabase::symbol_at(self, file, offset)
+    }
+
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition> {
         self.symbols.get(symbol.as_usize()).map(|s| s.def.clone())
     }
