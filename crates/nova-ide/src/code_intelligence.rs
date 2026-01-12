@@ -4245,6 +4245,16 @@ fn postfix_completions(
 
     let is_boolean = receiver_ty.is_primitive_boolean();
     let is_reference = is_referenceish_type(&receiver_ty);
+    let is_array = matches!(receiver_ty, Type::Array(_));
+
+    // Some postfix templates depend on broader type relationships (e.g. `List` implements
+    // `Iterable`). We keep this best-effort by using the minimal JDK model + `is_subtype`.
+    let iterable_ty = parse_source_type(&mut types, "java.lang.Iterable");
+    let list_ty = parse_source_type(&mut types, "java.util.List");
+    let is_iterable =
+        !receiver_ty.is_errorish() && nova_types::is_subtype(&types, &receiver_ty, &iterable_ty);
+    let is_list =
+        !receiver_ty.is_errorish() && nova_types::is_subtype(&types, &receiver_ty, &list_ty);
 
     let replace_range = Range::new(
         text_index.offset_to_position(receiver.span_to_dot.start),
@@ -4285,6 +4295,24 @@ fn postfix_completions(
             replace_range,
             "nn",
             format!("if ({} != null) {{\n    $0\n}}", receiver.expr),
+        ));
+    }
+
+    // `for` loop (arrays or `Iterable`).
+    if is_array || is_iterable {
+        items.push(postfix_completion_item(
+            replace_range,
+            "for",
+            format!("for (var ${{1:item}} : {}) {{\n    $0\n}}", receiver.expr),
+        ));
+    }
+
+    // Collection-y templates.
+    if is_list {
+        items.push(postfix_completion_item(
+            replace_range,
+            "stream",
+            format!("{}.stream()$0", receiver.expr),
         ));
     }
 
@@ -10406,30 +10434,102 @@ fn analyze(text: &str) -> Analysis {
             .collect();
 
         // Vars: (<ty>|var) <name> ('=' | ';')
-        for win in body_tokens.windows(3) {
-            let [ty_tok, name_tok, next] = win else {
-                continue;
-            };
-            if ty_tok.kind != TokenKind::Ident || name_tok.kind != TokenKind::Ident {
-                continue;
-            }
-            if next.kind != TokenKind::Symbol('=') && next.kind != TokenKind::Symbol(';') {
+        //
+        // Best-effort support:
+        // - Qualified type names: `java.util.List xs = ...`
+        // - Generic types: `List<String> xs = ...` (we ignore the type arguments here)
+        // - Array suffix on the type: `String[] xs = ...`
+        //
+        // This powers completions like `xs.if` / `xs.nn` / postfix templates without requiring
+        // full Java parsing or name resolution.
+        let mut idx = 0usize;
+        while idx + 2 < body_tokens.len() {
+            let ty_tok = body_tokens[idx];
+            if ty_tok.kind != TokenKind::Ident {
+                idx += 1;
                 continue;
             }
 
-            let is_var = ty_tok.text == "var";
-            let ty = if is_var {
-                infer_var_type(&body_tokens, name_tok.span.end).unwrap_or_else(|| "Object".into())
-            } else {
-                ty_tok.text.clone()
-            };
+            // Handle `var name = ...`.
+            if ty_tok.text == "var" {
+                let name_tok = body_tokens[idx + 1];
+                let next = body_tokens[idx + 2];
+                if name_tok.kind == TokenKind::Ident
+                    && matches!(next.kind, TokenKind::Symbol('=') | TokenKind::Symbol(';'))
+                {
+                    let ty = infer_var_type(&body_tokens, name_tok.span.end)
+                        .unwrap_or_else(|| "Object".into());
+                    analysis.vars.push(VarDecl {
+                        name: name_tok.text.clone(),
+                        name_span: name_tok.span,
+                        ty,
+                        is_var: true,
+                    });
+                    idx += 3;
+                    continue;
+                }
+            }
 
-            analysis.vars.push(VarDecl {
-                name: name_tok.text.clone(),
-                name_span: name_tok.span,
-                ty,
-                is_var,
-            });
+            // Parse a qualified type like `java.util.List` starting at `idx`.
+            let mut ty = ty_tok.text.clone();
+            let mut j = idx + 1;
+            while j + 1 < body_tokens.len()
+                && body_tokens[j].kind == TokenKind::Symbol('.')
+                && body_tokens[j + 1].kind == TokenKind::Ident
+            {
+                ty.push('.');
+                ty.push_str(&body_tokens[j + 1].text);
+                j += 2;
+            }
+
+            // Skip generics `<...>` to find the variable name token.
+            if body_tokens
+                .get(j)
+                .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+            {
+                let mut depth = 0i32;
+                while j < body_tokens.len() {
+                    match body_tokens[j].kind {
+                        TokenKind::Symbol('<') => depth += 1,
+                        TokenKind::Symbol('>') => {
+                            depth -= 1;
+                            if depth == 0 {
+                                j += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+            }
+
+            // Array suffix: `Type[] name`
+            while j + 1 < body_tokens.len()
+                && body_tokens[j].kind == TokenKind::Symbol('[')
+                && body_tokens[j + 1].kind == TokenKind::Symbol(']')
+            {
+                ty.push_str("[]");
+                j += 2;
+            }
+
+            let (Some(name_tok), Some(next)) = (body_tokens.get(j), body_tokens.get(j + 1)) else {
+                break;
+            };
+            if name_tok.kind == TokenKind::Ident
+                && matches!(next.kind, TokenKind::Symbol('=') | TokenKind::Symbol(';'))
+            {
+                analysis.vars.push(VarDecl {
+                    name: name_tok.text.clone(),
+                    name_span: name_tok.span,
+                    ty,
+                    is_var: false,
+                });
+                idx = j + 2;
+                continue;
+            }
+
+            idx += 1;
         }
 
         // Calls: [receiver '.'] <name> '(' ... ')'

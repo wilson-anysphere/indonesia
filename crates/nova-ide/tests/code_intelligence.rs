@@ -118,6 +118,83 @@ class A {
 }
 
 #[test]
+fn completion_includes_postfix_for_for_array_and_replaces_full_expr() {
+    let (db, file, pos, text) = fixture(
+        r#"
+class A {
+  void m() {
+    String[] xs = new String[0];
+    xs.for<|>
+  }
+}
+"#,
+    );
+
+    let expr_start = text.find("xs.for").expect("expected xs.for in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "for" && i.kind == Some(CompletionItemKind::SNIPPET))
+        .expect("expected postfix `for` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, expr_start));
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("for (var"),
+        "expected snippet to contain `for (var`; got {:?}",
+        edit.new_text
+    );
+    assert!(
+        edit.new_text.contains(": xs"),
+        "expected snippet to reference receiver `xs`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
+fn completion_includes_postfix_stream_for_list_and_replaces_full_expr() {
+    let (db, file, pos, text) = fixture(
+        r#"
+class A {
+  void m() {
+    java.util.List xs = null;
+    xs.stream<|>
+  }
+}
+"#,
+    );
+
+    let expr_start = text
+        .find("xs.stream")
+        .expect("expected xs.stream in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "stream" && i.kind == Some(CompletionItemKind::SNIPPET))
+        .expect("expected postfix `stream` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, expr_start));
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("xs.stream()"),
+        "expected snippet to contain `xs.stream()`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn completion_method_reference_type_receiver_includes_static_method() {
     let (db, file, pos, _text) = fixture(
         r#"
