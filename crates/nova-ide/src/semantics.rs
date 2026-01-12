@@ -100,6 +100,17 @@ fn collect_in_type(
                     );
                 }
             }
+            SyntaxKind::CompactConstructorDeclaration => {
+                if let Some(block) = member.children().find(|n| n.kind() == SyntaxKind::Block) {
+                    scan_executable_region(
+                        &block,
+                        line_index,
+                        enclosing_class.as_deref(),
+                        Some("<init>"),
+                        sites,
+                    );
+                }
+            }
             SyntaxKind::InitializerBlock => {
                 let method = if has_static_modifier(&member) {
                     "<clinit>"
@@ -196,7 +207,8 @@ fn extract_type_name(type_decl: &SyntaxNode) -> Option<String> {
     type_decl
         .children_with_tokens()
         .filter_map(|e| e.into_token())
-        .find(|t| t.kind().is_identifier_like())
+        .filter(|t| t.kind().is_identifier_like())
+        .last()
         .map(|t| t.text().to_string())
 }
 
@@ -481,6 +493,25 @@ class Outer {
                     && site.enclosing_method.as_deref() == Some("<init>")
             }),
             "expected <init> breakpoint site: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn compact_constructor_uses_init_name() {
+        let java = r#"record Point(int x, int y) {
+  Point {
+    int z=0;
+  }
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 3
+                    && site.enclosing_class.as_deref() == Some("Point")
+                    && site.enclosing_method.as_deref() == Some("<init>")
+            }),
+            "expected <init> breakpoint site in compact constructor: {sites:?}"
         );
     }
 

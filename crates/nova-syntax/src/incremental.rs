@@ -429,6 +429,7 @@ fn is_class_member_kind(kind: SyntaxKind) -> bool {
         SyntaxKind::FieldDeclaration
             | SyntaxKind::MethodDeclaration
             | SyntaxKind::ConstructorDeclaration
+            | SyntaxKind::CompactConstructorDeclaration
             | SyntaxKind::InitializerBlock
             | SyntaxKind::EmptyDeclaration
             | SyntaxKind::ClassDeclaration
