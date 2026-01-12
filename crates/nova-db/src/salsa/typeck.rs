@@ -5987,38 +5987,48 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             BinaryOp::EqEq | BinaryOp::NotEq => {
                 if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
                     Type::boolean()
-                } else if lhs_prim.is_some() || rhs_prim.is_some() {
-                    match (lhs_prim, rhs_prim) {
-                        (Some(a), Some(b)) => {
-                            let ok = (a.is_numeric() && b.is_numeric())
-                                || (a == PrimitiveType::Boolean && b == PrimitiveType::Boolean);
-                            if ok {
-                                Type::boolean()
-                            } else {
-                                type_mismatch(self);
-                                Type::Error
-                            }
-                        }
-                        // One side is a primitive/boxed-primitive and the other isn't. For `null`
-                        // and other reference types, Java uses reference equality instead of
-                        // unboxing/numeric comparison, so treat this as a boolean-typed expression
-                        // (JLS 15.21).
-                        _ => {
-                            let lhs_ref = lhs_ty.is_reference() || matches!(lhs_ty, Type::Null);
-                            let rhs_ref = rhs_ty.is_reference() || matches!(rhs_ty, Type::Null);
-                            if lhs_ref && rhs_ref {
-                                Type::boolean()
-                            } else {
-                                type_mismatch(self);
-                                Type::Error
-                            }
-                        }
-                    }
                 } else {
-                    // Best-effort: avoid strict reference-type castability checks in the type
-                    // checker. If neither side is a primitive/boxed primitive, assume it is a
-                    // reference comparison.
-                    Type::boolean()
+                    let lhs_is_primitive = matches!(lhs_ty, Type::Primitive(_));
+                    let rhs_is_primitive = matches!(rhs_ty, Type::Primitive(_));
+
+                    // If either operand is a primitive, Java uses primitive equality rules
+                    // (possibly with unboxing of the other operand).
+                    if lhs_is_primitive || rhs_is_primitive {
+                        match (lhs_prim, rhs_prim) {
+                            (Some(a), Some(b)) => {
+                                let ok = (a.is_numeric() && b.is_numeric())
+                                    || (a == PrimitiveType::Boolean
+                                        && b == PrimitiveType::Boolean);
+                                if ok {
+                                    Type::boolean()
+                                } else {
+                                    type_mismatch(self);
+                                    Type::Error
+                                }
+                            }
+                            _ => {
+                                type_mismatch(self);
+                                Type::Error
+                            }
+                        }
+                    } else if matches!((&lhs_ty, &rhs_ty), (Type::Null, _) | (_, Type::Null)) {
+                        Type::boolean()
+                    } else if lhs_ty.is_reference() && rhs_ty.is_reference() {
+                        // Reference equality (JLS 15.21.3): requires that a cast conversion exists
+                        // between the operand types (or they are identical).
+                        if lhs_ty == rhs_ty
+                            || cast_conversion(env_ro, &lhs_ty, &rhs_ty).is_some()
+                            || cast_conversion(env_ro, &rhs_ty, &lhs_ty).is_some()
+                        {
+                            Type::boolean()
+                        } else {
+                            type_mismatch(self);
+                            Type::Error
+                        }
+                    } else {
+                        type_mismatch(self);
+                        Type::Error
+                    }
                 }
             }
 

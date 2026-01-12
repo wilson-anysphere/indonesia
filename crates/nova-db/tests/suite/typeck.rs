@@ -1160,6 +1160,24 @@ class C {
 }
 
 #[test]
+fn boxed_primitive_equality_between_incomparable_wrappers_is_error() {
+    let src = r#"
+class C {
+    boolean m(Integer a, Long b) {
+        return a == b;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn type_at_offset_shows_boolean_for_logical_and() {
     let src = r#"
 class C {
