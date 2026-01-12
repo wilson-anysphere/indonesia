@@ -98,13 +98,26 @@ static BUILTIN_COLLECTIONS_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
                 access_flags: ACC_PUBLIC | ACC_STATIC,
                 name: "emptyList".to_string(),
                 descriptor: "()Ljava/util/List;".to_string(),
-                signature: None,
+                // <T>()Ljava/util/List<TT;>;
+                //
+                // Include a generic signature so Nova's built-in, dependency-free JDK index still
+                // supports target typing / generic method inference tests like:
+                //
+                //   List<String> xs = Collections.emptyList();
+                //
+                // Without this, `ExternalTypeLoader` refreshes `java.util.Collections` from the
+                // built-in JDK provider, clobbering `TypeStore::with_minimal_jdk`'s generic method
+                // model and causing `emptyList()` to resolve to raw `List`.
+                signature: Some("<T:Ljava/lang/Object;>()Ljava/util/List<TT;>;".to_string()),
             },
             JdkMethodStub {
                 access_flags: ACC_PUBLIC | ACC_STATIC,
                 name: "singletonList".to_string(),
                 descriptor: "(Ljava/lang/Object;)Ljava/util/List;".to_string(),
-                signature: None,
+                // <T>(TT;)Ljava/util/List<TT;>;
+                signature: Some(
+                    "<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;".to_string(),
+                ),
             },
         ],
     })
