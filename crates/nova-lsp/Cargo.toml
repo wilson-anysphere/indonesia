@@ -76,3 +76,11 @@ pretty_assertions = "1.4"
 tempfile = "3.10.1"
 nova-test-utils = { path = "../nova-test-utils" }
 nova-types = { path = "../nova-types" }
+
+[[bin]]
+name = "nova-lsp"
+path = "src/main.rs"
+# `nova-lsp` is exercised via integration tests spawning the built binary.
+# Disabling the per-bin test harness keeps link-time memory usage under the
+# default `scripts/cargo_agent.sh` RLIMIT_AS budget.
+test = false
