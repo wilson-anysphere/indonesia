@@ -966,11 +966,23 @@ impl DistributedRouter {
 
                     // Apply the shard index immediately, but defer rebuilding the global symbol
                     // index until the end to avoid quadratic rebuild work.
-                    {
+                    let applied = {
+                        let incoming_key = (index.revision, index.index_generation);
                         let mut guard = self.state.shard_indexes.lock().await;
-                        guard.insert(index.shard_id, index);
-                    }
-                    updated_any = true;
+                        if let Some(current) = guard.get(&shard_id) {
+                            let current_key = (current.revision, current.index_generation);
+                            if incoming_key < current_key {
+                                false
+                            } else {
+                                guard.insert(shard_id, index);
+                                true
+                            }
+                        } else {
+                            guard.insert(shard_id, index);
+                            true
+                        }
+                    };
+                    updated_any |= applied;
                 }
                 other => {
                     error = Some(anyhow!("unexpected worker response: {other:?}"));
