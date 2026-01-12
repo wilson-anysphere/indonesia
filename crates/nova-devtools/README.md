@@ -61,6 +61,19 @@ This enforces that the protocol extension spec stays in sync with both server + 
 cargo run -p nova-devtools -- check-protocol-extensions
 ```
 
+### `check-repo-invariants`
+
+Runs the full CI-equivalent invariant suite in one command:
+
+- `check-deps`
+- `check-layers`
+- `check-architecture-map --strict`
+- `check-protocol-extensions`
+
+```
+cargo run -p nova-devtools -- check-repo-invariants
+```
+
 ### `graph-deps`
 
 Emits a DOT/GraphViz dependency graph annotated by layer.
@@ -114,3 +127,6 @@ For convenience, you can also run:
 ```bash
 ./scripts/check-repo-invariants.sh
 ```
+
+That script generates `cargo metadata` once and passes it to `nova-devtools check-repo-invariants`
+for speed.

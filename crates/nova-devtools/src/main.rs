@@ -147,6 +147,78 @@ fn run() -> anyhow::Result<ExitCode> {
                 ExitCode::from(1)
             })
         }
+        "check-repo-invariants" => {
+            let opts = parse_check_repo_invariants_args(args)?;
+
+            let mut overall_ok = true;
+            let mut diagnostics = Vec::new();
+
+            let deps = nova_devtools::check_deps::check(
+                &opts.config,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+            )
+            .with_context(|| format!("check-deps failed using config {}", opts.config.display()))?;
+            overall_ok &= deps.ok;
+            diagnostics.extend(deps.diagnostics.clone());
+
+            let layers = nova_devtools::check_layers::check(
+                &opts.config,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+            )
+            .with_context(|| {
+                format!("check-layers failed using config {}", opts.config.display())
+            })?;
+            overall_ok &= layers.ok;
+            diagnostics.extend(layers.diagnostics.clone());
+
+            let arch = nova_devtools::check_arch_map::check(
+                &opts.architecture_map,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+                true,
+            )
+            .with_context(|| {
+                format!(
+                    "check-architecture-map failed using {}",
+                    opts.architecture_map.display()
+                )
+            })?;
+            overall_ok &= arch.ok;
+            diagnostics.extend(arch.diagnostics.clone());
+
+            let proto = nova_devtools::check_protocol_extensions::check(&opts.protocol_extensions)
+                .with_context(|| {
+                    format!(
+                        "check-protocol-extensions failed using {}",
+                        opts.protocol_extensions.display()
+                    )
+                })?;
+            overall_ok &= proto.ok;
+            diagnostics.extend(proto.diagnostics.clone());
+
+            if opts.json {
+                emit_report("check-repo-invariants", true, overall_ok, diagnostics)?;
+            } else {
+                print_human("check-deps", deps.ok, &deps.diagnostics);
+                print_human("check-layers", layers.ok, &layers.diagnostics);
+                print_human("check-architecture-map", arch.ok, &arch.diagnostics);
+                print_human("check-protocol-extensions", proto.ok, &proto.diagnostics);
+
+                if overall_ok {
+                    println!("check-repo-invariants: ok");
+                } else {
+                    eprintln!("check-repo-invariants: failed");
+                }
+            }
+
+            Ok(if overall_ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
         "-h" | "--help" => {
             print_help();
             Ok(ExitCode::SUCCESS)
@@ -395,6 +467,82 @@ where
     Ok(ProtocolExtensionsArgs { doc, json })
 }
 
+#[derive(Debug)]
+struct RepoInvariantsArgs {
+    config: PathBuf,
+    manifest_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    architecture_map: PathBuf,
+    protocol_extensions: PathBuf,
+    json: bool,
+}
+
+fn parse_check_repo_invariants_args<I>(mut args: I) -> anyhow::Result<RepoInvariantsArgs>
+where
+    I: Iterator<Item = String>,
+{
+    let mut config = PathBuf::from("crate-layers.toml");
+    let mut manifest_path = None;
+    let mut metadata_path = None;
+    let mut architecture_map = PathBuf::from("docs/architecture-map.md");
+    let mut protocol_extensions = PathBuf::from("docs/protocol-extensions.md");
+    let mut json = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--config requires a value"))?;
+                config = PathBuf::from(value);
+            }
+            "--manifest-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
+                manifest_path = Some(PathBuf::from(value));
+            }
+            "--metadata-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
+                metadata_path = Some(PathBuf::from(value));
+            }
+            "--architecture-map" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--architecture-map requires a value"))?;
+                architecture_map = PathBuf::from(value);
+            }
+            "--protocol-extensions" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--protocol-extensions requires a value"))?;
+                protocol_extensions = PathBuf::from(value);
+            }
+            "--json" => json = true,
+            "-h" | "--help" => {
+                print_command_help("check-repo-invariants");
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown argument {other:?}\n\nRun `nova-devtools check-repo-invariants --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(RepoInvariantsArgs {
+        config,
+        manifest_path,
+        metadata_path,
+        architecture_map,
+        protocol_extensions,
+        json,
+    })
+}
+
 fn print_help() {
     println!(
         "\
@@ -408,6 +556,7 @@ COMMANDS:
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
   check-architecture-map Validate docs/architecture-map.md coverage for workspace crates
   check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
+  check-repo-invariants  Run all nova-devtools repo invariants (deps, layers, architecture-map --strict, protocol-extensions)
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
 OPTIONS:
@@ -479,6 +628,29 @@ OPTIONS:
   --doc <path>   Path to docs/protocol-extensions.md (default: docs/protocol-extensions.md)
   --json         Emit machine-readable JSON output
   -h, --help     Print help
+"
+            );
+        }
+        "check-repo-invariants" => {
+            println!(
+                "\
+USAGE:
+  nova-devtools check-repo-invariants [options]
+
+This runs:
+  - check-deps
+  - check-layers
+  - check-architecture-map --strict
+  - check-protocol-extensions
+
+OPTIONS:
+  --config <path>               Path to crate-layers.toml (default: crate-layers.toml)
+  --manifest-path <path>        Optional workspace Cargo.toml to run `cargo metadata` against
+  --metadata-path <path>        Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --architecture-map <path>     Path to docs/architecture-map.md (default: docs/architecture-map.md)
+  --protocol-extensions <path>  Path to docs/protocol-extensions.md (default: docs/protocol-extensions.md)
+  --json                        Emit machine-readable JSON output
+  -h, --help                    Print help
 "
             );
         }

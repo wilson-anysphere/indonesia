@@ -33,7 +33,4 @@ if [[ "${OS:-}" == "Windows_NT" ]]; then
   bin="${bin}.exe"
 fi
 
-"${bin}" check-deps --metadata-path "$tmp"
-"${bin}" check-layers --metadata-path "$tmp"
-"${bin}" check-architecture-map --metadata-path "$tmp" --strict
-"${bin}" check-protocol-extensions
+"${bin}" check-repo-invariants --metadata-path "$tmp"
