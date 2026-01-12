@@ -52,7 +52,7 @@ describe('Frameworks dashboard UX', () => {
 
     // Ensure the Frameworks view uses the shared constant rather than duplicating the string literal.
     expect(contents).not.toContain('const NOT_SUPPORTED_MESSAGE');
-    expect(contents).not.toContain("'Not supported by this server'");
+    expect(contents).not.toContain('Not supported by this server');
 
     expect(contents).toContain('NOVA_NOT_SUPPORTED_MESSAGE');
     expect(contents).toMatch(/return\s+messageNode\(NOVA_NOT_SUPPORTED_MESSAGE,\s*method,\s*new\s+vscode\.ThemeIcon\('warning'\)\);/);
