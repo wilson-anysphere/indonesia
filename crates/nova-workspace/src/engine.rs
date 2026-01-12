@@ -776,30 +776,28 @@ impl WorkspaceEngine {
         let Some(local) = path.as_local_path() else {
             return;
         };
-        if local.extension().and_then(|ext| ext.to_str()) != Some("java") {
-            return;
-        }
+        let is_java = local.extension().and_then(|ext| ext.to_str()) == Some("java");
 
-        let workspace_root = {
+        let should_track = {
             let state = self
                 .project_state
                 .lock()
                 .expect("workspace project state mutex poisoned");
-            state.workspace_root.clone()
+            let Some(workspace_root) = state.workspace_root.as_ref() else {
+                return;
+            };
+            let in_workspace = local.starts_with(workspace_root);
+            let in_source_root = state.source_roots.is_empty()
+                || source_root_for_path(&state.source_roots, local).is_some();
+            is_java && in_workspace && in_source_root
         };
-        let Some(workspace_root) = workspace_root else {
-            return;
-        };
-        if !local.starts_with(&workspace_root) {
-            return;
-        }
 
         let project = ProjectId::from_raw(0);
         let current: Vec<FileId> = self
             .query_db
             .with_snapshot(|snap| snap.project_files(project).as_ref().clone());
         let mut ids: HashSet<FileId> = current.into_iter().collect();
-        if exists {
+        if exists && should_track {
             ids.insert(file_id);
         } else {
             ids.remove(&file_id);
