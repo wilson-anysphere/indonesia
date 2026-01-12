@@ -777,6 +777,7 @@ pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
     "java.lang.Object",
     "java.lang.Throwable",
     "java.lang.Exception",
+    "java.lang.RuntimeException",
     "java.lang.String",
     "java.lang.Integer",
     "java.lang.Number",
@@ -876,6 +877,9 @@ impl TypeStore {
         let exception = store
             .lookup_class("java.lang.Exception")
             .expect("minimal JDK must contain java.lang.Exception");
+        let runtime_exception = store
+            .lookup_class("java.lang.RuntimeException")
+            .expect("minimal JDK must contain java.lang.RuntimeException");
         let string = store
             .lookup_class("java.lang.String")
             .expect("minimal JDK must contain java.lang.String");
@@ -1014,6 +1018,23 @@ impl TypeStore {
                 kind: ClassKind::Class,
                 type_params: vec![],
                 super_class: Some(Type::class(throwable, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![ConstructorDef {
+                    params: vec![],
+                    is_varargs: false,
+                    is_accessible: true,
+                }],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            runtime_exception,
+            ClassDef {
+                name: "java.lang.RuntimeException".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(exception, vec![])),
                 interfaces: vec![],
                 fields: vec![],
                 constructors: vec![ConstructorDef {

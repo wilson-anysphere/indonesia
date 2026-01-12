@@ -315,6 +315,60 @@ class C {
 }
 
 #[test]
+fn throw_new_runtime_exception_is_allowed() {
+    let src = r#"
+class C {
+    void m() {
+        throw new RuntimeException();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-throw"),
+        "expected no invalid-throw diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| {
+            !(d.code.as_ref() == "unresolved-type" && d.message.contains("RuntimeException"))
+        }),
+        "expected RuntimeException to resolve from built-in JDK index; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected no unresolved-constructor diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn catch_runtime_exception_is_allowed() {
+    let src = r#"
+class C {
+    void m() {
+        try { } catch (RuntimeException e) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-catch-type"),
+        "expected no invalid-catch-type diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| {
+            !(d.code.as_ref() == "unresolved-type" && d.message.contains("RuntimeException"))
+        }),
+        "expected RuntimeException to resolve from built-in JDK index; got {diags:?}"
+    );
+}
+
+#[test]
 fn varargs_method_call_resolves() {
     let src = r#"
 class C {

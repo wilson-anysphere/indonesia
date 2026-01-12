@@ -27,6 +27,7 @@ pub const BUILTIN_JDK_BINARY_NAMES: &[&str] = &[
     "java.lang.Object",
     "java.lang.Record",
     "java.lang.Runnable",
+    "java.lang.RuntimeException",
     "java.lang.Short",
     "java.lang.String",
     "java.lang.System",
