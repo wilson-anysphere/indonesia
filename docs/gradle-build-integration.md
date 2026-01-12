@@ -90,6 +90,9 @@ Schema definition (shared by writer + reader): `crates/nova-build-model/src/grad
 The snapshot is written **atomically** (write to a unique temp file in the same directory, then
 rename over the destination) to avoid leaving partially-written JSON on disk.
 
+Note: `nova-build` also caches many Gradle query results in its own build cache directory. When a
+query is served purely from cache (no Gradle process spawned), the snapshot may not be updated.
+
 ### Reader
 
 `nova-project` attempts to load the snapshot during Gradle project discovery. If it can’t load or
@@ -371,6 +374,8 @@ If the file is missing after running Gradle integration:
 - ensure the workspace is writable (Nova needs to create `.nova/queries/`),
 - ensure you invoked a query that writes the snapshot (`GradleBuild::projects`, per-project
   `java_compile_config(..., project_path=Some(":app"))`, or the batch `java_compile_configs_all`).
+  Note: some queries can be served from `nova-build`’s cache and may not spawn Gradle; snapshot
+  updates are tied to executing Gradle.
 
 ### Snapshot seems “stale” even though build files didn’t change
 
