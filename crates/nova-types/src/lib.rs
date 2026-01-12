@@ -4892,38 +4892,9 @@ pub struct LambdaSamSignature {
 }
 
 pub fn infer_lambda_sam_signature(env: &dyn TypeEnv, target: &Type) -> Option<LambdaSamSignature> {
-    let target = canonicalize_named(env, target);
-    let Type::Class(ClassType { def, args }) = target else {
-        return None;
-    };
-
-    let class_def = env.class(def)?;
-
-    // Build substitution for the interface type parameters.
-    let subst = class_def
-        .type_params
-        .iter()
-        .copied()
-        .zip(args.iter().cloned())
-        .collect::<HashMap<_, _>>();
-
-    // Find a single abstract method.
-    let abstract_methods: Vec<&MethodDef> = class_def
-        .methods
-        .iter()
-        .filter(|m| !m.is_static && m.is_abstract)
-        .collect();
-
-    if abstract_methods.len() != 1 {
-        return None;
-    }
-
-    let sam = abstract_methods[0];
-    let params = sam.params.iter().map(|t| substitute(t, &subst)).collect();
-    let return_type = substitute(&sam.return_type, &subst);
-    Some(LambdaSamSignature {
-        params,
-        return_type,
+    sam_signature(env, target).map(|sig| LambdaSamSignature {
+        params: sig.params,
+        return_type: sig.return_type,
     })
 }
 
@@ -4976,19 +4947,9 @@ pub fn instantiate_supertype(
     ty: &Type,
     target_def: ClassId,
 ) -> Option<Vec<Type>> {
+    let ty = instantiate_as_supertype(env, ty, target_def)?;
     match ty {
-        Type::Class(ClassType { def, args }) => instantiate_as(env, *def, args.clone(), target_def),
-        Type::Named(name) => {
-            let def = env.lookup_class(name)?;
-            instantiate_as(env, def, vec![], target_def)
-        }
-        Type::TypeVar(id) => env
-            .type_param(*id)
-            .and_then(|tp| tp.upper_bounds.first())
-            .and_then(|b| instantiate_supertype(env, b, target_def)),
-        Type::Intersection(parts) => parts
-            .iter()
-            .find_map(|p| instantiate_supertype(env, p, target_def)),
+        Type::Class(ClassType { args, .. }) => Some(args),
         _ => None,
     }
 }
