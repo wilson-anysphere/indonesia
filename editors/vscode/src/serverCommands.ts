@@ -23,6 +23,19 @@ export type NovaServerCommandHandlers = {
 
 type TestKind = 'class' | 'test';
 
+function registerCommandSafe(
+  context: vscode.ExtensionContext,
+  id: string,
+  handler: (...args: any[]) => any,
+): void {
+  try {
+    context.subscriptions.push(vscode.commands.registerCommand(id, handler));
+  } catch {
+    // Defensive: if another extension (or vscode-languageclient) already registered this command,
+    // we still handle it via `LanguageClientOptions.middleware.executeCommand`.
+  }
+}
+
 interface LspPosition {
   line: number;
   character: number;
@@ -494,11 +507,11 @@ export function registerNovaServerCommands(
     },
   };
 
-  context.subscriptions.push(vscode.commands.registerCommand('nova.runTest', runTest));
-  context.subscriptions.push(vscode.commands.registerCommand('nova.debugTest', debugTest));
-  context.subscriptions.push(vscode.commands.registerCommand('nova.runMain', runMain));
-  context.subscriptions.push(vscode.commands.registerCommand('nova.debugMain', debugMain));
-  context.subscriptions.push(vscode.commands.registerCommand('nova.extractMethod', extractMethod));
+  registerCommandSafe(context, 'nova.runTest', runTest);
+  registerCommandSafe(context, 'nova.debugTest', debugTest);
+  registerCommandSafe(context, 'nova.runMain', runMain);
+  registerCommandSafe(context, 'nova.debugMain', debugMain);
+  registerCommandSafe(context, 'nova.extractMethod', extractMethod);
 
   return handlers;
 }
