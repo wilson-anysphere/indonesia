@@ -986,6 +986,35 @@ class C {
 }
 
 #[test]
+fn extract_method_rejects_local_type_declaration() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/class Local { }/*end*/
+        Local x = new Local();
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "bad".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection containing a local type declaration");
+    assert!(
+        err.contains("UnsupportedLocalTypeDeclaration"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn extract_method_rejects_nested_return() {
     let fixture = r#"
 class C {

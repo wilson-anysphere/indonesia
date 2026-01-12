@@ -162,6 +162,10 @@ pub enum ExtractMethodIssue {
     ReferencesLocalType {
         name: String,
     },
+    /// The selection includes a local type declaration statement (`class`/`interface`/`enum`/`record`
+    /// declared inside a method). Extracting this into a type-level method would change scoping and
+    /// can break compilation.
+    UnsupportedLocalTypeDeclaration,
     UnknownType {
         name: String,
     },
@@ -287,6 +291,19 @@ impl ExtractMethod {
             });
             if selection_inside_lambda {
                 issues.push(ExtractMethodIssue::InvalidSelection);
+                return Ok(ExtractMethodAnalysis {
+                    region: ExtractRegionKind::Statements,
+                    parameters: Vec::new(),
+                    return_value: None,
+                    return_ty: "void".to_string(),
+                    thrown_exceptions: Vec::new(),
+                    hazards: Vec::new(),
+                    issues,
+                });
+            }
+
+            if selection_contains_local_type_declaration(&selection_info.statements) {
+                issues.push(ExtractMethodIssue::UnsupportedLocalTypeDeclaration);
                 return Ok(ExtractMethodAnalysis {
                     region: ExtractRegionKind::Statements,
                     parameters: Vec::new(),
@@ -2748,6 +2765,19 @@ fn transfer_stmt_definite_assignment(body: &Body, stmt: StmtId, state: &mut [boo
         }
         _ => {}
     }
+}
+
+fn selection_contains_local_type_declaration(selection_statements: &[ast::Statement]) -> bool {
+    for stmt in selection_statements {
+        let stmts = std::iter::once(stmt.clone())
+            .chain(stmt.syntax().descendants().filter_map(ast::Statement::cast));
+        for nested in stmts {
+            if matches!(nested, ast::Statement::LocalTypeDeclarationStatement(_)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn insertion_offset_end_of_type_body(
