@@ -54,6 +54,15 @@ fn snapshot_generics() {
 }
 
 #[test]
+fn snapshot_string_templates() {
+    let input = include_str!("fixtures/string_templates.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("string_templates", formatted);
+    assert_idempotent("string_templates", input, &config);
+}
+
+#[test]
 fn snapshot_annotations() {
     let input = include_str!("fixtures/annotations.java");
     let config = FormatConfig {

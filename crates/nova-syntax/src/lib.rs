@@ -551,24 +551,10 @@ pub fn parse(text: &str) -> ParseResult {
     }
 
     fn template_boundary(kind: SyntaxKind) -> Option<TemplateBoundary> {
-        // Most lexer tokens are defined before `Eof`. If string templates introduce additional
-        // token kinds (likely appended at the end of `SyntaxKind`), avoid formatting the kind name
-        // for common tokens.
-        if (kind as u16) <= (SyntaxKind::Eof as u16) {
-            return None;
-        }
-
-        // We can't directly match on the template token kinds here because they're introduced by
-        // the lexer and may change over time. Instead, key off the debug name to keep `parse`
-        // compatible across lexer revisions while ensuring string templates remain opaque to the
-        // legacy formatter (`nova-format::format_java`).
-        let name = format!("{kind:?}");
-        if name.ends_with("TemplateStart") {
-            Some(TemplateBoundary::Start)
-        } else if name.ends_with("TemplateEnd") {
-            Some(TemplateBoundary::End)
-        } else {
-            None
+        match kind {
+            SyntaxKind::StringTemplateStart => Some(TemplateBoundary::Start),
+            SyntaxKind::StringTemplateEnd => Some(TemplateBoundary::End),
+            _ => None,
         }
     }
 
