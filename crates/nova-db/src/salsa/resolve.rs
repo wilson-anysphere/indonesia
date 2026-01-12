@@ -129,11 +129,16 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTree
     let built = nova_resolve::build_scopes_for_item_tree(file, &tree);
 
     let result = Arc::new(built);
-    // NOTE: This is a best-effort estimate used for memory pressure heuristics.
+    // Touch the file text so edits invalidate `scope_graph` and force a re-run.
     //
-    // Avoid depending on `file_content` here: scope graphs are derived from the
-    // file's structural HIR (`hir_item_tree`), and we want Salsa to early-cutoff
-    // and reuse `scope_graph` when only method bodies change.
+    // Even though the scope graph is derived from structural HIR (`hir_item_tree`) and often
+    // remains *equal* across body-only edits, we still want Salsa to re-execute the query so
+    // early-cutoff can keep downstream queries (like `resolve_name`) memoized while observing
+    // that an edit occurred.
+    if db.file_exists(file) {
+        let _ = db.file_content(file);
+    }
+    // NOTE: This is a best-effort estimate used for memory pressure heuristics.
     let declared_items = (tree.items.len()
         + tree.imports.len()
         + tree.classes.len()

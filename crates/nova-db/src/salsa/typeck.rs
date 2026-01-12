@@ -6651,15 +6651,19 @@ fn resolve_type_ref_text<'idx>(
     text: &str,
     base_span: Option<Span>,
 ) -> nova_resolve::type_ref::ResolvedType {
-    let masked = mask_type_use_annotations(text);
-    preload_type_names(resolver, scopes, scope_id, loader, masked.as_ref());
+    // Preload the *referenced* types (excluding type-use annotations) so that the type-ref resolver
+    // can map them into `Type::Class` where possible.
+    //
+    // We still pass the original text into `resolve_type_ref_text` so unresolved type-use
+    // annotation names (e.g. `List<@Missing String>`) can be diagnosed when anchored.
+    preload_type_names(resolver, scopes, scope_id, loader, text);
     nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
         scopes,
         scope_id,
         &*loader.store,
         type_vars,
-        masked.as_ref(),
+        text,
         base_span,
     )
 }

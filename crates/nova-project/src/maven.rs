@@ -2003,6 +2003,12 @@ fn exists_as_jar(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    // Maven dependency resolution frequently probes for jar files derived from POM coordinates.
+    // Use `is_file` (not `exists`) so we don't treat directories as valid artifacts.
+    path.is_file()
+}
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,

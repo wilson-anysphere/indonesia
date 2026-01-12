@@ -860,13 +860,31 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     }
 
     fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
-        // Type-use annotations (e.g. `List<@A String>`) are currently treated as pure syntax:
-        // they are skipped so type parsing/resolution can proceed, but their annotation names are
-        // **not** resolved and do not produce diagnostics.
-        //
-        // This matches Nova's current type system model (which does not represent type-use
-        // annotations) and keeps `type_diagnostics` focused on unresolved *types*, not annotations.
-        let _ = name_range;
+        // Only produce diagnostics for annotation types when we have a base span to anchor them.
+        // Many callers (and tests) use `base_span = None` when parsing detached `TypeRef.text`
+        // strings, and expect type-use annotations to be ignored entirely in that mode.
+        if self.base_span.is_none() {
+            return;
+        }
+        if name_range.is_empty() {
+            return;
+        }
+        let text = self.text.get(name_range.clone()).unwrap_or("");
+        if text.is_empty() {
+            return;
+        }
+
+        let segments: Vec<String> = text
+            .split('.')
+            .filter(|seg| !seg.is_empty())
+            .map(|seg| seg.to_string())
+            .collect();
+        if segments.is_empty() {
+            return;
+        }
+
+        let per_segment_args = vec![Vec::new(); segments.len()];
+        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(
