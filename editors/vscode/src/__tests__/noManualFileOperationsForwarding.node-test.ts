@@ -349,6 +349,21 @@ function getSendNotificationMethodArg(
     }
   }
 
+  // `Reflect.apply` forwarding: `Reflect.apply(client.sendNotification, client, [method, ...])`
+  if (getCalledMethodName(callee, env) === 'apply' && (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))) {
+    if (ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect') {
+      const fnArg = node.arguments[0];
+      const argsArg = node.arguments[2];
+      if (fnArg && isSendNotificationReference(fnArg, env, aliases) && argsArg) {
+        const unwrappedArgs = unwrapExpression(argsArg);
+        if (ts.isArrayLiteralExpression(unwrappedArgs)) {
+          const first = unwrappedArgs.elements[0];
+          return first && ts.isExpression(first) ? first : undefined;
+        }
+      }
+    }
+  }
+
   // Inline bind + immediate call: `client.sendNotification.bind(client)(method, ...)`
   // or `sendNotification.bind(client)(method, ...)`
   if (ts.isCallExpression(callee) && isSendNotificationReference(callee, env, aliases)) {
