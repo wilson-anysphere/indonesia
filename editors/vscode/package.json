@@ -27,9 +27,11 @@
     "onCommand:nova.showDebugAdapterVersion",
     "onCommand:nova.organizeImports",
     "onCommand:nova.bugReport",
+    "onCommand:nova.buildProject",
     "onCommand:nova.showRequestMetrics",
     "onCommand:nova.resetRequestMetrics",
     "onCommand:nova.discoverTests",
+    "onCommand:nova.reloadProject",
     "onCommand:nova.runTest",
     "onCommand:nova.addDebugConfiguration",
     "onCommand:nova.frameworks.search",
@@ -82,6 +84,10 @@
         "title": "Nova: Generate Bug Report"
       },
       {
+        "command": "nova.buildProject",
+        "title": "Nova: Build Project"
+      },
+      {
         "command": "nova.showRequestMetrics",
         "title": "Nova: Show Request Metrics"
       },
@@ -92,6 +98,10 @@
       {
         "command": "nova.discoverTests",
         "title": "Nova: Discover Tests"
+      },
+      {
+        "command": "nova.reloadProject",
+        "title": "Nova: Reload Project"
       },
       {
         "command": "nova.runTest",

@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { registerNovaBuildFileWatchers } from './buildFileWatch';
+import { registerNovaBuildIntegration } from './buildIntegration';
 import { registerNovaDebugAdapter } from './debugAdapter';
 import { registerNovaDebugConfigurations } from './debugConfigurations';
 import { registerFrameworkDashboardCommands } from './frameworkDashboard';
@@ -1812,6 +1813,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   registerNovaBuildFileWatchers(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }), {
     output: serverOutput,
+    formatError,
+    isMethodNotFoundError: isNovaMethodNotFoundError,
+  });
+  registerNovaBuildIntegration(context, {
+    request: (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }),
     formatError,
     isMethodNotFoundError: isNovaMethodNotFoundError,
   });
