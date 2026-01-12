@@ -626,6 +626,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_paths_normalize_redundant_separators() {
+        #[cfg(not(windows))]
+        {
+            let local = VfsPath::local("/a//b///../c.java");
+            let uri = VfsPath::uri("file:///a/c.java");
+            assert_eq!(local, uri);
+        }
+
+        #[cfg(windows)]
+        {
+            let local = VfsPath::local(r"C:\a\\b\..\c.java");
+            let uri = VfsPath::uri("file:///C:/a/c.java");
+            assert_eq!(local, uri);
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn file_uri_unc_paths_are_logically_normalized() {
@@ -716,6 +733,26 @@ mod tests {
 
         assert_eq!(
             VfsPath::jar(with_dotdot, "a/b/../c.class"),
+            VfsPath::Uri(expected)
+        );
+    }
+
+    #[test]
+    fn jmod_constructor_fallback_uri_normalizes_archive_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("java.base.jmod");
+        let with_dotdot = dir
+            .path()
+            .join("x")
+            .join("..")
+            .join("java.base.jmod");
+
+        let abs = AbsPathBuf::new(normalized).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+        let expected = format!("jmod:{archive_uri}!/a/b/../c.class");
+
+        assert_eq!(
+            VfsPath::jmod(with_dotdot, "a/b/../c.class"),
             VfsPath::Uri(expected)
         );
     }
