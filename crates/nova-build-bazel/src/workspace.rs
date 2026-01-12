@@ -1907,4 +1907,22 @@ mod bazelrc_import_tests {
         let resolved = resolve_bazelrc_import_path(root, abs_str).unwrap();
         assert_eq!(resolved, abs);
     }
+
+    #[test]
+    fn looks_like_windows_absolute_path_detects_drive_and_unc_paths() {
+        assert!(looks_like_windows_absolute_path(r"C:\foo\bar"));
+        assert!(looks_like_windows_absolute_path(r"C:/foo/bar"));
+        assert!(looks_like_windows_absolute_path(r"\\server\share\file"));
+        assert!(!looks_like_windows_absolute_path(r"C:foo\bar"));
+    }
+
+    #[test]
+    fn resolve_bazelrc_import_path_does_not_prefix_windows_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let raw = r"C:\foo\bar";
+        let resolved = resolve_bazelrc_import_path(root, raw).unwrap();
+        assert_eq!(resolved, PathBuf::from(raw));
+    }
 }
