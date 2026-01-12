@@ -474,7 +474,7 @@ fn receiver_head_name(receiver: &ast::Expression) -> Option<String> {
     }
 }
 
-fn infer_expr_type(source: &str, expr: &ast::Expression) -> Option<String> {
+fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
     match expr {
         ast::Expression::LiteralExpression(lit) => {
             let tok = lit
@@ -482,22 +482,77 @@ fn infer_expr_type(source: &str, expr: &ast::Expression) -> Option<String> {
                 .descendants_with_tokens()
                 .filter_map(|el| el.into_token())
                 .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
-            match tok.kind() {
-                SyntaxKind::IntLiteral => Some("int".to_string()),
-                SyntaxKind::StringLiteral => Some("String".to_string()),
-                SyntaxKind::CharLiteral => Some("char".to_string()),
-                _ => Some("Object".to_string()),
-            }
+            Some(
+                match tok.kind() {
+                    SyntaxKind::IntLiteral => "int",
+                    SyntaxKind::LongLiteral => "long",
+                    SyntaxKind::FloatLiteral => "float",
+                    SyntaxKind::DoubleLiteral => "double",
+                    SyntaxKind::StringLiteral | SyntaxKind::TextBlock => "String",
+                    SyntaxKind::CharLiteral => "char",
+                    SyntaxKind::TrueKw | SyntaxKind::FalseKw => "boolean",
+                    _ => "Object",
+                }
+                .to_string(),
+            )
         }
         ast::Expression::BinaryExpression(_)
         | ast::Expression::UnaryExpression(_)
         | ast::Expression::ParenthesizedExpression(_) => {
-            // Best-effort: if the expression contains string literals, treat it as `String`,
-            // otherwise assume it's numeric (`int`).
-            let text =
-                source[syntax_range(expr.syntax()).start..syntax_range(expr.syntax()).end].trim();
-            if text.contains('"') {
+            // Best-effort: scan descendant tokens and infer a conservative type based on
+            // common literal/operator cues.
+            //
+            // Precedence:
+            // - If any String literal/text block appears => String
+            // - Else if any boolean literal/operator appears => boolean
+            // - Else numeric:
+            //   - If any double literal appears => double
+            //   - Else if any float literal appears => float
+            //   - Else if any long literal appears => long
+            //   - Else => int
+            let mut saw_string = false;
+            let mut saw_boolean = false;
+            let mut saw_double = false;
+            let mut saw_float = false;
+            let mut saw_long = false;
+
+            for tok in expr
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
+            {
+                match tok.kind() {
+                    SyntaxKind::StringLiteral | SyntaxKind::TextBlock => saw_string = true,
+                    SyntaxKind::TrueKw
+                    | SyntaxKind::FalseKw
+                    | SyntaxKind::AmpAmp
+                    | SyntaxKind::PipePipe
+                    | SyntaxKind::Bang
+                    | SyntaxKind::EqEq
+                    | SyntaxKind::BangEq
+                    | SyntaxKind::Less
+                    | SyntaxKind::LessEq
+                    | SyntaxKind::Greater
+                    | SyntaxKind::GreaterEq
+                    | SyntaxKind::InstanceofKw => saw_boolean = true,
+                    SyntaxKind::DoubleLiteral => saw_double = true,
+                    SyntaxKind::FloatLiteral => saw_float = true,
+                    SyntaxKind::LongLiteral => saw_long = true,
+                    _ => {}
+                }
+            }
+
+            if saw_string {
                 Some("String".to_string())
+            } else if saw_boolean {
+                Some("boolean".to_string())
+            } else if saw_double {
+                Some("double".to_string())
+            } else if saw_float {
+                Some("float".to_string())
+            } else if saw_long {
+                Some("long".to_string())
             } else {
                 Some("int".to_string())
             }
