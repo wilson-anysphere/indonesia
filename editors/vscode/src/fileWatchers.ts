@@ -44,6 +44,8 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/.bazelversion',
   '**/bazelisk.rc',
   '**/.bazelignore',
+  // Bazel BSP server discovery uses `.bsp/*.json` connection files (optional).
+  '**/.bsp/*.json',
 
   // JPMS. `module-info.java` affects module-graph classification (classpath vs module-path).
   '**/module-info.java',
