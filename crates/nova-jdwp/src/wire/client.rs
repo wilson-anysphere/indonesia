@@ -770,10 +770,50 @@ impl JdwpClient {
             )));
         }
 
-        let classes: Vec<(ReferenceTypeId, Vec<u8>)> = infos
-            .into_iter()
-            .map(|info| (info.type_id, bytecode.to_vec()))
-            .collect();
+        // Avoid infallible allocations for attacker-controlled bytecode blobs (and avoid copying
+        // the bytecode at all when the resulting packet would be rejected as oversized).
+        let sizes = self.id_sizes().await;
+        let per_class_len = sizes
+            .reference_type_id
+            .checked_add(4) // bytecodeLen
+            .and_then(|v| v.checked_add(bytecode.len()))
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        let payload_len = 4usize
+            .checked_add(
+                infos
+                    .len()
+                    .checked_mul(per_class_len)
+                    .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?,
+            )
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        let length = HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
+        let mut classes = Vec::new();
+        classes.try_reserve_exact(infos.len()).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate redefine class list ({} entries)",
+                infos.len()
+            ))
+        })?;
+        for info in infos {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(bytecode.len()).map_err(|_| {
+                JdwpError::Protocol(format!(
+                    "unable to allocate redefine class bytecode buffer ({} bytes)",
+                    bytecode.len()
+                ))
+            })?;
+            bytes.extend_from_slice(bytecode);
+            classes.push((info.type_id, bytes));
+        }
         self.redefine_classes(&classes).await
     }
 
