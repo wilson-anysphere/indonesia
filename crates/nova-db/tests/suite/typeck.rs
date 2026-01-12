@@ -2133,6 +2133,29 @@ class C {
 }
 
 #[test]
+fn method_reference_mismatch_reports_method_ref_diag() {
+    let src = r#"
+ import java.util.function.Function;
+class C {
+    void m() {
+        Function<String,Integer> f = String::isEmpty;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "method-ref-mismatch"),
+        "expected method-ref-mismatch diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn method_reference_is_typed_from_call_argument_target() {
     let src = r#"
  import java.util.function.Function;
@@ -2175,6 +2198,29 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "Maker");
+}
+
+#[test]
+fn constructor_reference_mismatch_reports_method_ref_diag() {
+    let src = r#"
+ import java.util.function.Supplier;
+class C {
+    void m() {
+        Supplier<Integer> s = String::new;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "method-ref-mismatch"),
+        "expected method-ref-mismatch diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
 }
 
 #[test]

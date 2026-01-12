@@ -695,7 +695,19 @@ impl Default for TypeStore {
                 super_class: Some(object_ty.clone()),
                 interfaces: vec![],
                 fields: vec![],
-                constructors: vec![],
+                // Minimal constructor surface for IDE type-checking / constructor-reference tests.
+                constructors: vec![
+                    ConstructorDef {
+                        params: vec![],
+                        is_varargs: false,
+                        is_accessible: true,
+                    },
+                    ConstructorDef {
+                        params: vec![string_ty.clone()],
+                        is_varargs: false,
+                        is_accessible: true,
+                    },
+                ],
                 methods: vec![],
             },
         );
@@ -961,7 +973,19 @@ impl TypeStore {
                 super_class: Some(object_ty.clone()),
                 interfaces: vec![],
                 fields: vec![],
-                constructors: vec![],
+                // Minimal constructor surface for IDE type-checking / constructor-reference tests.
+                constructors: vec![
+                    ConstructorDef {
+                        params: vec![],
+                        is_varargs: false,
+                        is_accessible: true,
+                    },
+                    ConstructorDef {
+                        params: vec![string_ty.clone()],
+                        is_varargs: false,
+                        is_accessible: true,
+                    },
+                ],
                 methods: vec![],
             },
         );

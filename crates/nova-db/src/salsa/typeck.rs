@@ -5323,72 +5323,249 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                 }
             }
-            HirExpr::MethodReference { receiver, .. } => {
+            HirExpr::MethodReference { receiver, name, .. } => {
                 // Always infer the receiver so IDE hover works.
-                let _ = self.infer_expr(loader, *receiver);
+                let recv_info = self.infer_expr(loader, *receiver);
 
-                if let Some(expected) = expected {
-                    self.ensure_type_loaded(loader, expected);
-                    let env_ro: &dyn TypeEnv = &*loader.store;
-                    if nova_types::infer_lambda_sam_signature(env_ro, expected).is_some() {
-                        ExprInfo {
-                            ty: expected.clone(),
-                            is_type_ref: false,
-                        }
-                    } else {
-                        self.diagnostics.push(Diagnostic::error(
-                            "method-ref-without-target",
-                            "cannot infer method reference type without a target functional interface",
-                            Some(self.body.exprs[expr].range()),
-                        ));
-                        ExprInfo {
-                            ty: Type::Unknown,
-                            is_type_ref: false,
-                        }
-                    }
-                } else {
+                let Some(expected) = expected else {
                     self.diagnostics.push(Diagnostic::error(
                         "method-ref-without-target",
                         "cannot infer method reference type without a target functional interface",
                         Some(self.body.exprs[expr].range()),
                     ));
-                    ExprInfo {
+                    return ExprInfo {
                         ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+
+                self.ensure_type_loaded(loader, expected);
+                let Some(sig) = ({
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    nova_types::infer_lambda_sam_signature(env_ro, expected)
+                }) else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "method-ref-without-target",
+                        "cannot infer method reference type without a target functional interface",
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+
+                // If the receiver is unknown/error, we can't validate the method reference. Fall
+                // back to target typing without additional diagnostics.
+                if recv_info.ty.is_errorish() {
+                    return ExprInfo {
+                        ty: expected.clone(),
+                        is_type_ref: false,
+                    };
+                }
+
+                self.ensure_type_loaded(loader, &recv_info.ty);
+                for param in &sig.params {
+                    self.ensure_type_loaded(loader, param);
+                }
+                self.ensure_type_loaded(loader, &sig.return_type);
+
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let matches_resolution = |resolution: &MethodResolution, require_instance: bool| {
+                    let return_ok = |method: &ResolvedMethod| {
+                        if require_instance && method.is_static {
+                            return false;
+                        }
+
+                        if sig.return_type == Type::Void {
+                            return true;
+                        }
+                        assignment_conversion(env_ro, &method.return_type, &sig.return_type).is_some()
+                    };
+
+                    match resolution {
+                        MethodResolution::Found(method) => return_ok(method),
+                        MethodResolution::Ambiguous(amb) => {
+                            amb.candidates.iter().any(|cand| return_ok(cand))
+                        }
+                        MethodResolution::NotFound(_) => false,
+                    }
+                };
+
+                let ok = if recv_info.is_type_ref {
+                    // `TypeName::method` can refer to either a static method on `TypeName`, or an
+                    // "unbound" instance method where the first SAM parameter becomes the receiver.
+                    let static_call = MethodCall {
+                        receiver: recv_info.ty.clone(),
+                        call_kind: CallKind::Static,
+                        name: name.as_str(),
+                        args: sig.params.clone(),
+                        expected_return: Some(sig.return_type.clone()),
+                        explicit_type_args: vec![],
+                    };
+                    let mut ctx = TyContext::new(env_ro);
+                    let static_res = nova_types::resolve_method_call(&mut ctx, &static_call);
+                    let static_ok = matches_resolution(&static_res, false);
+
+                    if static_ok {
+                        true
+                    } else if let Some((recv_param, rest)) = sig.params.split_first() {
+                        if assignment_conversion(env_ro, recv_param, &recv_info.ty).is_none() {
+                            false
+                        } else {
+                            let instance_call = MethodCall {
+                                receiver: recv_info.ty.clone(),
+                                call_kind: CallKind::Instance,
+                                name: name.as_str(),
+                                args: rest.to_vec(),
+                                expected_return: Some(sig.return_type.clone()),
+                                explicit_type_args: vec![],
+                            };
+                            let mut ctx = TyContext::new(env_ro);
+                            let instance_res =
+                                nova_types::resolve_method_call(&mut ctx, &instance_call);
+                            matches_resolution(&instance_res, true)
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    let call = MethodCall {
+                        receiver: recv_info.ty.clone(),
+                        call_kind: CallKind::Instance,
+                        name: name.as_str(),
+                        args: sig.params.clone(),
+                        expected_return: Some(sig.return_type.clone()),
+                        explicit_type_args: vec![],
+                    };
+                    let mut ctx = TyContext::new(env_ro);
+                    let res = nova_types::resolve_method_call(&mut ctx, &call);
+                    matches_resolution(&res, false)
+                };
+
+                if ok {
+                    ExprInfo {
+                        ty: expected.clone(),
+                        is_type_ref: false,
+                    }
+                } else {
+                    let expected_display = format_type(env_ro, expected);
+                    self.diagnostics.push(Diagnostic::error(
+                        "method-ref-mismatch",
+                        format!(
+                            "method reference is not compatible with target type {expected_display}"
+                        ),
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    ExprInfo {
+                        ty: Type::Error,
                         is_type_ref: false,
                     }
                 }
             }
             HirExpr::ConstructorReference { receiver, .. } => {
                 // Always infer the receiver so IDE hover works.
-                let _ = self.infer_expr(loader, *receiver);
+                let recv_info = self.infer_expr(loader, *receiver);
 
-                if let Some(expected) = expected {
-                    self.ensure_type_loaded(loader, expected);
-                    let env_ro: &dyn TypeEnv = &*loader.store;
-                    if nova_types::infer_lambda_sam_signature(env_ro, expected).is_some() {
-                        ExprInfo {
-                            ty: expected.clone(),
-                            is_type_ref: false,
-                        }
-                    } else {
-                        self.diagnostics.push(Diagnostic::error(
-                            "method-ref-without-target",
-                            "cannot infer constructor reference type without a target functional interface",
-                            Some(self.body.exprs[expr].range()),
-                        ));
-                        ExprInfo {
-                            ty: Type::Unknown,
-                            is_type_ref: false,
-                        }
-                    }
-                } else {
+                let Some(expected) = expected else {
                     self.diagnostics.push(Diagnostic::error(
                         "method-ref-without-target",
                         "cannot infer constructor reference type without a target functional interface",
                         Some(self.body.exprs[expr].range()),
                     ));
-                    ExprInfo {
+                    return ExprInfo {
                         ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+
+                self.ensure_type_loaded(loader, expected);
+                let Some(sig) = ({
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    nova_types::infer_lambda_sam_signature(env_ro, expected)
+                }) else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "method-ref-without-target",
+                        "cannot infer constructor reference type without a target functional interface",
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+
+                // If the receiver is unknown/error, we can't validate the constructor reference.
+                // Fall back to target typing without additional diagnostics.
+                if recv_info.ty.is_errorish() {
+                    return ExprInfo {
+                        ty: expected.clone(),
+                        is_type_ref: false,
+                    };
+                }
+
+                self.ensure_type_loaded(loader, &recv_info.ty);
+                for param in &sig.params {
+                    self.ensure_type_loaded(loader, param);
+                }
+                self.ensure_type_loaded(loader, &sig.return_type);
+
+                // Constructor references are only valid for type receivers. If we don't have a type
+                // receiver (e.g. due to broken lowering), bail out without extra diagnostics.
+                if !recv_info.is_type_ref {
+                    return ExprInfo {
+                        ty: expected.clone(),
+                        is_type_ref: false,
+                    };
+                }
+
+                let class_id = match &recv_info.ty {
+                    Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+                    Type::Named(name) => self
+                        .ensure_workspace_class(loader, name)
+                        .or_else(|| loader.ensure_class(name)),
+                    _ => None,
+                };
+                let Some(class_id) = class_id else {
+                    return ExprInfo {
+                        ty: expected.clone(),
+                        is_type_ref: false,
+                    };
+                };
+
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let res =
+                    nova_types::resolve_constructor_call(env_ro, class_id, &sig.params, Some(&recv_info.ty));
+
+                let return_ok = |method: &ResolvedMethod| {
+                    if sig.return_type == Type::Void {
+                        return true;
+                    }
+                    assignment_conversion(env_ro, &method.return_type, &sig.return_type).is_some()
+                };
+
+                let ok = match &res {
+                    MethodResolution::Found(method) => return_ok(method),
+                    MethodResolution::Ambiguous(amb) => amb.candidates.iter().any(|m| return_ok(m)),
+                    MethodResolution::NotFound(_) => false,
+                };
+
+                if ok {
+                    ExprInfo {
+                        ty: expected.clone(),
+                        is_type_ref: false,
+                    }
+                } else {
+                    let expected_display = format_type(env_ro, expected);
+                    self.diagnostics.push(Diagnostic::error(
+                        "method-ref-mismatch",
+                        format!(
+                            "constructor reference is not compatible with target type {expected_display}"
+                        ),
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    ExprInfo {
+                        ty: Type::Error,
                         is_type_ref: false,
                     }
                 }
