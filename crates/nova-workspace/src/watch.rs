@@ -500,6 +500,13 @@ mod tests {
         assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
+    #[test]
+    fn workspace_root_with_dotdot_segments_matches_event_path_when_no_configured_roots() {
+        let config = WatchConfig::new(PathBuf::from("/tmp/ws/module/.."));
+        let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/A.java"));
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+    }
+
     #[cfg(windows)]
     #[test]
     fn configured_root_drive_letter_case_does_not_affect_matching() {
