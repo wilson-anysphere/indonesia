@@ -410,7 +410,6 @@ fn type_of_expr_demand_result(
     );
     let SourceTypes {
         field_types,
-        method_types,
         field_owners,
         method_owners,
         ..
@@ -448,7 +447,6 @@ fn type_of_expr_demand_result(
         expected_return,
         param_types,
         field_types,
-        method_types,
         field_owners,
         method_owners,
         java_level,
@@ -860,7 +858,6 @@ fn resolve_method_call_demand(
     // this query and static imports can be resolved across files.
     let SourceTypes {
         field_types,
-        method_types,
         field_owners,
         method_owners,
         source_type_vars,
@@ -908,7 +905,6 @@ fn resolve_method_call_demand(
         expected_return,
         param_types,
         field_types,
-        method_types,
         field_owners,
         method_owners,
         java_level,
@@ -2044,7 +2040,6 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     );
     let SourceTypes {
         field_types,
-        method_types,
         field_owners,
         method_owners,
         ..
@@ -2100,7 +2095,6 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         expected_return.clone(),
         param_types,
         field_types,
-        method_types,
         field_owners,
         method_owners,
         java_level,
@@ -2330,7 +2324,6 @@ struct BodyChecker<'a, 'idx> {
     lazy_locals: bool,
     param_types: Vec<Type>,
     field_types: HashMap<FieldId, Type>,
-    method_types: HashMap<MethodId, (Vec<Type>, Type)>,
     field_owners: HashMap<FieldId, String>,
     method_owners: HashMap<MethodId, String>,
     expr_info: Vec<Option<ExprInfo>>,
@@ -2357,7 +2350,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         expected_return: Type,
         param_types: Vec<Type>,
         field_types: HashMap<FieldId, Type>,
-        method_types: HashMap<MethodId, (Vec<Type>, Type)>,
         field_owners: HashMap<FieldId, String>,
         method_owners: HashMap<MethodId, String>,
         java_level: JavaLanguageLevel,
@@ -2404,7 +2396,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             lazy_locals,
             param_types,
             field_types,
-            method_types,
             field_owners,
             method_owners,
             expr_info,
@@ -5634,7 +5625,6 @@ fn resolve_type_ref_text<'idx>(
 #[derive(Default)]
 struct SourceTypes {
     field_types: HashMap<FieldId, Type>,
-    method_types: HashMap<MethodId, (Vec<Type>, Type)>,
     field_owners: HashMap<FieldId, String>,
     method_owners: HashMap<MethodId, String>,
     source_type_vars: SourceTypeVars,
@@ -5643,7 +5633,6 @@ struct SourceTypes {
 impl SourceTypes {
     fn extend(&mut self, other: SourceTypes) {
         self.field_types.extend(other.field_types);
-        self.method_types.extend(other.method_types);
         self.field_owners.extend(other.field_owners);
         self.method_owners.extend(other.method_owners);
         self.source_type_vars
@@ -5871,7 +5860,6 @@ fn define_source_types<'idx>(
     }
 
     let mut field_types = HashMap::new();
-    let mut method_types = HashMap::new();
     let mut field_owners = HashMap::new();
     let mut method_owners = HashMap::new();
     let mut source_type_vars = SourceTypeVars::default();
@@ -6008,7 +5996,6 @@ fn define_source_types<'idx>(
                         Some(method.return_ty_range),
                     )
                     .ty;
-                    method_types.insert(*mid, (params.clone(), return_type.clone()));
                     method_owners.insert(*mid, name.clone());
                     let is_static =
                         method.modifiers.raw & nova_hir::item_tree::Modifiers::STATIC != 0;
@@ -6031,11 +6018,6 @@ fn define_source_types<'idx>(
                         .copied()
                         .unwrap_or(class_scope);
                     let vars: HashMap<String, TypeVarId> = HashMap::new();
-
-                    let is_varargs = ctor
-                        .params
-                        .last()
-                        .is_some_and(|param| param.ty.trim().contains("..."));
 
                     let params = ctor
                         .params
@@ -6099,7 +6081,6 @@ fn define_source_types<'idx>(
 
     SourceTypes {
         field_types,
-        method_types,
         field_owners,
         method_owners,
         source_type_vars,
