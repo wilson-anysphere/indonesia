@@ -1095,7 +1095,11 @@ fn record_body_references(
                 let Some(def) = workspace_def_map.type_def(item) else {
                     return;
                 };
-                let Some(field) = def.fields.get(&Name::from(name.as_str())).map(|f| f.id) else {
+                let Some(field) = def
+                    .fields
+                    .get(&Name::from(name.as_str()))
+                    .map(|f| f.id)
+                else {
                     return;
                 };
                 let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {

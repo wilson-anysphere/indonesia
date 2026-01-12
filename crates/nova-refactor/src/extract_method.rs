@@ -174,8 +174,43 @@ impl ExtractMethod {
             });
         };
 
+        // Until lambdas are modeled in flow IR, selections inside lambda bodies are invalid.
+        //
+        // `nova_hir::body_lowering` intentionally skips lowering lambda bodies (they're lazily
+        // executed). If we allowed extraction from within a lambda body, we could end up analyzing
+        // the enclosing method while ignoring the selected code.
+        let body_range = syntax_range(method_body.syntax());
+        let selection_inside_lambda = selection_info.statements.iter().any(|stmt| {
+            let Some(lambda) = stmt
+                .syntax()
+                .ancestors()
+                .find_map(ast::LambdaExpression::cast)
+            else {
+                return false;
+            };
+
+            let lambda_range = syntax_range(lambda.syntax());
+            body_range.start <= lambda_range.start && lambda_range.end <= body_range.end
+        });
+        if selection_inside_lambda {
+            issues.push(ExtractMethodIssue::InvalidSelection);
+            return Ok(ExtractMethodAnalysis {
+                region: ExtractRegionKind::Statements,
+                parameters: Vec::new(),
+                return_value: None,
+                thrown_exceptions: Vec::new(),
+                hazards: Vec::new(),
+                issues,
+            });
+        }
+
         let mut hazards = Vec::new();
-        collect_control_flow_hazards(&selection_info.statements, selection, &mut hazards, &mut issues);
+        collect_control_flow_hazards(
+            &selection_info.statements,
+            selection,
+            &mut hazards,
+            &mut issues,
+        );
 
         let type_map = collect_declared_types(source, &method, &method_body);
 
