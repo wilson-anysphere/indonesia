@@ -1,3 +1,18 @@
+//! Canonical edit model used by Nova refactorings.
+//!
+//! The key type in this module is [`WorkspaceEdit`], which represents a deterministic, composable
+//! set of file operations (rename/create/delete) plus byte-range text edits.
+//!
+//! ## Why a custom edit model?
+//!
+//! - Refactorings frequently need to rename/move files *and* update their contents.
+//! - LSP's edit model has multiple encodings (`changes` vs `documentChanges`) and uses UTF-16
+//!   positions, while refactorings naturally operate in byte offsets.
+//! - Many refactorings are easier to compose and preview if we converge on a single canonical
+//!   representation with well-defined invariants.
+//!
+//! The invariants and normalization logic are documented on [`WorkspaceEdit`].
+
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use nova_index::TextRange;
@@ -5,7 +20,10 @@ use thiserror::Error;
 
 /// Identifier for a workspace file.
 ///
-/// In a real Nova implementation this would likely be an interned ID or a URI.
+/// This is the key used by [`WorkspaceEdit`] to refer to files.
+///
+/// In a real Nova implementation this would likely be an interned ID or a URI. In this refactoring
+/// crate it is a plain string to keep tests lightweight.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileId(pub String);
 
@@ -21,7 +39,18 @@ impl FileId {
     }
 }
 
-/// A single file edit.
+/// A byte-range edit within a single file.
+///
+/// This is the canonical text edit used by [`WorkspaceEdit`]. At the crate root it is re-exported
+/// as [`crate::WorkspaceTextEdit`] (to avoid colliding with the legacy
+/// `safe_delete::TextEdit` type).
+///
+/// ## Offsets and ranges
+///
+/// - `range` uses **byte offsets** into the file's UTF-8 text.
+/// - The range is half-open: `[start, end)`.
+/// - An insert is represented by a zero-length range (`start == end`).
+/// - A delete is represented by an empty replacement string (`replacement.is_empty()`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextEdit {
     pub file: FileId,
@@ -56,6 +85,8 @@ impl TextEdit {
 }
 
 /// File-level operations supported by Nova refactorings.
+///
+/// [`WorkspaceEdit`] applies file operations **before** applying any [`TextEdit`]s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileOp {
     /// Rename/move a workspace file.
@@ -66,10 +97,123 @@ pub enum FileOp {
     Delete { file: FileId },
 }
 
-/// A set of edits across potentially multiple files.
+/// A deterministic set of changes across potentially multiple files.
 ///
-/// The edits are expected to be normalized (sorted, deduplicated, non-overlapping)
-/// before being applied or converted to LSP.
+/// A [`WorkspaceEdit`] is Nova's canonical refactoring output. It is intentionally more constrained
+/// than LSP's edit model so that refactorings can be composed, previewed, and converted to LSP
+/// predictably.
+///
+/// ## Semantics
+///
+/// Applying a workspace edit happens in two phases:
+///
+/// 1. Apply [`FileOp`]s in order (rename/create/delete).
+/// 2. Apply [`TextEdit`]s grouped by file.
+///
+/// This means that the `file` field of each [`TextEdit`] is interpreted in the *post-file-op*
+/// workspace.
+///
+/// ## Normalization and invariants
+///
+/// Many consumers (preview generation, LSP conversion, in-memory application) require a normalized
+/// edit. [`WorkspaceEdit::normalize`] enforces the following invariants:
+///
+/// ### Text edit invariants
+///
+/// - **Deterministic ordering:** `text_edits` are sorted by `(file, range.start, range.end,
+///   replacement)`.
+/// - **Deduplication:** exact duplicates are removed.
+/// - **Non-overlap:** within each file, ranges must not overlap (`next.start < prev.end` is an
+///   error). Touching ranges (`next.start == prev.end`) are allowed.
+/// - **Insert merging:** multiple inserts at the same position are merged into a single insert by
+///   concatenating their `replacement` strings in sorted order. This avoids ambiguous "which insert
+///   comes first?" behavior.
+/// - **Valid ranges:** `range.start <= range.end`.
+///
+/// ### File op invariants and ordering
+///
+/// - Duplicate file ops are deduplicated where safe (e.g. repeated deletes).
+/// - Conflicting ops (create+delete, rename collisions, etc.) are rejected.
+/// - File operations are ordered deterministically:
+///   1. **Renames** first, in a topological order that is safe to apply sequentially.
+///      For example, a chain `A -> B, B -> C` is ordered as `B -> C` then `A -> B`.
+///   2. **Creates** next, sorted by file id.
+///   3. **Deletes** last, sorted by file id.
+///
+/// Deleting last is a conservative choice: if a later create/rename fails in the client, we avoid
+/// having already removed the original file.
+///
+/// ### Post-rename file ids
+///
+/// Because file operations are applied before text edits, text edits must target the **post-rename
+/// file ids**.
+///
+/// Concretely, if a refactoring renames `old.java` to `new.java`, then any content edits for that
+/// file must use `file = new.java`. If an edit incorrectly targets `old.java`,
+/// [`WorkspaceEdit::normalize`] returns [`EditError::TextEditTargetsRenamedFile`].
+///
+/// A rename chain is not transitive in terms of "where does the original file end up?". For
+/// example, `A -> B` and `B -> C` results in `A` ending up at `B` and `B` ending up at `C`. This is
+/// why Nova treats each rename as moving the *current* contents of `from` to `to` and why
+/// [`WorkspaceEdit::remap_text_edits_across_renames`] performs a **direct** (non-transitive) remap.
+///
+/// ## Producing edits: emitting vs. remapping
+///
+/// There are two correct ways to produce a workspace edit involving renames:
+///
+/// 1. **Preferred:** emit text edits directly against the post-rename ids.
+/// 2. If you naturally produce edits against pre-rename ids, add the [`FileOp::Rename`] operations
+///    and then call [`WorkspaceEdit::remap_text_edits_across_renames`] **before**
+///    [`WorkspaceEdit::normalize`].
+///
+/// If you call `normalize()` first while still targeting pre-rename ids, it will fail.
+///
+/// ## Relationship to LSP conversion
+///
+/// This crate provides two conversions:
+///
+/// - [`crate::workspace_edit_to_lsp`] uses the LSP `changes` map. It **cannot** represent file
+///   operations and returns an error if `file_ops` is non-empty.
+/// - [`crate::workspace_edit_to_lsp_document_changes`] uses LSP `documentChanges` and can represent
+///   renames/creates/deletes.
+///
+/// Both conversions clone and normalize the edit internally, so they rely on the invariants above
+/// (especially "text edits target post-rename ids").
+///
+/// ## Example: rename a file and edit its contents
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// use nova_refactor::{
+///     apply_workspace_edit, FileId, FileOp, WorkspaceEdit, WorkspaceTextEdit, WorkspaceTextRange,
+/// };
+///
+/// // Start with a single file.
+/// let old = FileId::new("file:///A.java");
+/// let new = FileId::new("file:///B.java");
+/// let mut files = BTreeMap::new();
+/// files.insert(old.clone(), "class A {}".to_string());
+///
+/// // Rename the file and update its contents.
+/// let mut edit = WorkspaceEdit {
+///     file_ops: vec![FileOp::Rename {
+///         from: old.clone(),
+///         to: new.clone(),
+///     }],
+///     // Note: the text edit targets the *post-rename* file id (`new`), not `old`.
+///     text_edits: vec![WorkspaceTextEdit::replace(
+///         new.clone(),
+///         WorkspaceTextRange::new(6, 7),
+///         "B",
+///     )],
+/// };
+/// edit.normalize().unwrap();
+///
+/// let out = apply_workspace_edit(&files, &edit).unwrap();
+/// assert_eq!(out.get(&new).unwrap(), "class B {}");
+/// assert!(!out.contains_key(&old));
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceEdit {
     pub file_ops: Vec<FileOp>,
@@ -107,6 +251,14 @@ impl WorkspaceEdit {
     }
 
     /// Normalize edits (sort, deduplicate, and validate non-overlap).
+    ///
+    /// Most consumers call `normalize()` internally (e.g. preview generation and LSP conversion),
+    /// but producers may also call it to:
+    ///
+    /// - validate invariants early and return a structured [`EditError`]
+    /// - ensure deterministic ordering for snapshot tests / stable output
+    ///
+    /// See [`WorkspaceEdit`] for the full list of invariants.
     pub fn normalize(&mut self) -> Result<(), EditError> {
         self.normalize_file_ops()?;
         self.normalize_text_edits()?;
@@ -118,6 +270,20 @@ impl WorkspaceEdit {
     ///
     /// This is a convenience for producers that generated edits against the pre-rename file ids.
     /// Callers that already emit edits against post-rename file ids should *not* call this.
+    ///
+    /// ### When to use this
+    ///
+    /// If you have a [`WorkspaceEdit`] that contains [`FileOp::Rename`] operations *and* you
+    /// generated `text_edits` targeting the old ids, call this method **before**
+    /// [`WorkspaceEdit::normalize`]. Normalization will otherwise return
+    /// [`EditError::TextEditTargetsRenamedFile`].
+    ///
+    /// ### Direct (non-transitive) mapping
+    ///
+    /// This method applies only the direct `from -> to` mapping from each rename operation; it does
+    /// not transitively follow rename chains. This matches the semantics of applying renames
+    /// sequentially (topologically ordered) and is important for chains like `A -> B, B -> C`, where
+    /// the original `A` ends up at `B`, not `C`.
     pub fn remap_text_edits_across_renames(&mut self) -> Result<(), EditError> {
         let mapping = self.rename_mapping()?;
         for edit in &mut self.text_edits {
@@ -633,7 +799,7 @@ mod tests {
     #[test]
     fn apply_creates_files_before_applying_text_edits() {
         let created = FileId::new("file:///created");
-        let mut files = BTreeMap::new();
+        let files = BTreeMap::new();
 
         let edit = WorkspaceEdit {
             file_ops: vec![FileOp::Create {

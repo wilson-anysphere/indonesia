@@ -16,6 +16,18 @@
 //! - optional file operations (rename/create/delete)
 //! - byte-offset text edits (replace/insert/delete) across one or more files
 //!
+//! The canonical text edit type is re-exported as [`WorkspaceTextEdit`]. (The shorter name
+//! `TextEdit` is still used by legacy safe-delete APIs.)
+//!
+//! [`WorkspaceEdit`] has a few important invariants (non-overlapping edits, deterministic ordering,
+//! and "text edits target post-rename file ids"). See [`WorkspaceEdit::normalize`] and the
+//! [`WorkspaceEdit`] docs for details.
+//!
+//! When converting to LSP:
+//! - Use [`workspace_edit_to_lsp`] for text edits only (no file operations).
+//! - Use [`workspace_edit_to_lsp_document_changes`] when you need to represent renames/creates/
+//!   deletes.
+//!
 //! Some refactorings in this crate still return legacy edit types (for example
 //! `safe_delete::TextEdit`). Those APIs are kept temporarily to allow incremental
 //! migration, but conversion helpers exist so all refactorings can ultimately be
