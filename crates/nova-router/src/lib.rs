@@ -8,7 +8,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
-use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
+use nova_fuzzy::{
+    FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder,
+};
 use nova_remote_proto::v3::{
     HandshakeReject, Notification, RejectCode, RemoteDiagnostic, Request, Response,
 };
@@ -480,7 +482,8 @@ impl QueryRouter {
     }
 
     pub async fn index_workspace(&self) -> Result<()> {
-        self.index_workspace_cancelable(CancellationToken::new()).await
+        self.index_workspace_cancelable(CancellationToken::new())
+            .await
     }
 
     pub async fn update_file_cancelable(
@@ -490,8 +493,12 @@ impl QueryRouter {
         text: String,
     ) -> Result<()> {
         match &self.inner {
-            RouterMode::InProcess(router) => router.update_file_cancelable(cancel, path, text).await,
-            RouterMode::Distributed(router) => router.update_file_cancelable(cancel, path, text).await,
+            RouterMode::InProcess(router) => {
+                router.update_file_cancelable(cancel, path, text).await
+            }
+            RouterMode::Distributed(router) => {
+                router.update_file_cancelable(cancel, path, text).await
+            }
         }
     }
 
@@ -575,7 +582,8 @@ impl InProcessRouter {
     }
 
     async fn index_workspace(&self) -> Result<()> {
-        self.index_workspace_cancelable(CancellationToken::new()).await
+        self.index_workspace_cancelable(CancellationToken::new())
+            .await
     }
 
     async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
@@ -913,7 +921,8 @@ impl DistributedRouter {
     }
 
     async fn index_workspace(&self) -> Result<()> {
-        self.index_workspace_cancelable(CancellationToken::new()).await
+        self.index_workspace_cancelable(CancellationToken::new())
+            .await
     }
 
     async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
@@ -925,7 +934,9 @@ impl DistributedRouter {
         let mut join_set = JoinSet::new();
         for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
             let state = self.state.clone();
-            let root = self.state.layout.source_roots[shard_id as usize].path.clone();
+            let root = self.state.layout.source_roots[shard_id as usize]
+                .path
+                .clone();
             let cancel = cancel.clone();
 
             join_set.spawn(async move {
@@ -933,9 +944,9 @@ impl DistributedRouter {
                     return Err(rpc_cancelled_error());
                 }
 
-                let files = collect_java_files(&root)
-                    .await
-                    .with_context(|| format!("collect files for shard {shard_id} ({})", root.display()))?;
+                let files = collect_java_files(&root).await.with_context(|| {
+                    format!("collect files for shard {shard_id} ({})", root.display())
+                })?;
 
                 if cancel.is_cancelled() {
                     return Err(rpc_cancelled_error());
@@ -945,9 +956,13 @@ impl DistributedRouter {
                     .await
                     .with_context(|| format!("wait for worker for shard {shard_id}"))?;
 
-                let resp = worker_call_cancelable(&worker, &cancel, Request::IndexShard { revision, files })
-                    .await
-                    .with_context(|| format!("index shard {shard_id}"))?;
+                let resp = worker_call_cancelable(
+                    &worker,
+                    &cancel,
+                    Request::IndexShard { revision, files },
+                )
+                .await
+                .with_context(|| format!("index shard {shard_id}"))?;
 
                 Ok::<_, anyhow::Error>((shard_id, worker, resp))
             });
@@ -1030,9 +1045,7 @@ impl DistributedRouter {
         if cancelled {
             // Detach the in-flight tasks so they can observe the cancellation token and (if a
             // request was already started) best-effort send v3 Cancel packets to workers.
-            tokio::spawn(async move {
-                while join_set.join_next().await.is_some() {}
-            });
+            tokio::spawn(async move { while join_set.join_next().await.is_some() {} });
             return Err(rpc_cancelled_error());
         }
 
@@ -1184,7 +1197,8 @@ impl DistributedRouter {
 
         let worker_id = worker.worker_id;
         let path_str = path.to_string_lossy().to_string();
-        match worker_call_cancelable(&worker, &cancel, Request::Diagnostics { path: path_str }).await
+        match worker_call_cancelable(&worker, &cancel, Request::Diagnostics { path: path_str })
+            .await
         {
             Ok(Response::Diagnostics { diagnostics }) => diagnostics,
             Ok(other) => {
