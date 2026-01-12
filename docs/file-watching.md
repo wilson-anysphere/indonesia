@@ -148,8 +148,11 @@ use std::time::Duration;
 
 // ManualFileWatcher implements FileWatcher and exposes a way to inject events.
 let watcher = ManualFileWatcher::default();
+// If you move `watcher` into another thread/component under test, keep this handle around to inject
+// events from the test thread.
+let handle = watcher.handle();
 
-watcher
+handle
     .push(WatchEvent::Changes {
         changes: vec![FileChange::Created {
             path: VfsPath::local(PathBuf::from("/tmp/Main.java")),
