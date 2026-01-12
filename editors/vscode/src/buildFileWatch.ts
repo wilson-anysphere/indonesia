@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getNovaBuildFileGlobPatterns } from './fileWatchers';
 
 export type NovaRequestOptions = {
   allowMethodFallback?: boolean;
@@ -10,46 +11,6 @@ type FormatError = (err: unknown) => string;
 type IsMethodNotFoundError = (err: unknown) => boolean;
 
 type BuildTool = 'auto' | 'maven' | 'gradle';
-
-const BUILD_FILE_GLOBS: readonly string[] = [
-  // Maven
-  '**/pom.xml',
-  '**/mvnw',
-  '**/mvnw.cmd',
-  '**/.mvn/wrapper/maven-wrapper.properties',
-  '**/.mvn/extensions.xml',
-  '**/.mvn/maven.config',
-  '**/.mvn/jvm.config',
-  // Gradle
-  '**/*.gradle',
-  '**/*.gradle.kts',
-  '**/gradle.properties',
-  '**/gradlew',
-  '**/gradlew.bat',
-  '**/gradle/wrapper/gradle-wrapper.properties',
-  '**/libs.versions.toml',
-  // Bazel
-  '**/WORKSPACE',
-  '**/WORKSPACE.bazel',
-  '**/MODULE.bazel',
-  '**/MODULE.bazel.lock',
-  '**/BUILD',
-  '**/BUILD.bazel',
-  '**/*.bzl',
-  '**/.bazelrc',
-  '**/.bazelrc.*',
-  '**/.bazelversion',
-  '**/bazelisk.rc',
-  '**/.bazelignore',
-  // JPMS
-  '**/module-info.java',
-  // Nova workspace config (optional)
-  '**/nova.toml',
-  '**/.nova.toml',
-  '**/nova.config.toml',
-  '**/.nova/apt-cache/generated-roots.json',
-  '**/.nova/**/*.toml',
-];
 
 export function registerNovaBuildFileWatchers(
   context: vscode.ExtensionContext,
@@ -171,7 +132,7 @@ export function registerNovaBuildFileWatchers(
     scheduleReload(folder);
   };
 
-  for (const glob of BUILD_FILE_GLOBS) {
+  for (const glob of getNovaBuildFileGlobPatterns()) {
     const watcher = vscode.workspace.createFileSystemWatcher(glob);
     context.subscriptions.push(watcher);
     watcher.onDidCreate(handleUri, undefined, context.subscriptions);
