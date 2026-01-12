@@ -4,6 +4,7 @@ use nova_types::{
     resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub,
     Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
 };
+use nova_types_bridge::ExternalTypeLoader;
 
 #[derive(Default)]
 struct StubProvider {
@@ -76,9 +77,12 @@ fn resolves_field_from_loaded_stub_class() {
     });
 
     let mut env = TypeStore::with_minimal_jdk();
-    let foo = env
-        .load_from_provider(&provider, "com.example.Foo")
-        .expect("Foo stub should load");
+    let foo = {
+        let mut loader = ExternalTypeLoader::new(&mut env, &provider);
+        loader
+            .ensure_class("com.example.Foo")
+            .expect("Foo stub should load")
+    };
 
     let receiver = Type::class(foo, vec![]);
 
@@ -138,9 +142,12 @@ fn resolves_constructor_overloads_from_loaded_stub_class() {
     });
 
     let mut env = TypeStore::with_minimal_jdk();
-    let class = env
-        .load_from_provider(&provider, "com.example.Ctors")
-        .expect("Ctors stub should load");
+    let class = {
+        let mut loader = ExternalTypeLoader::new(&mut env, &provider);
+        loader
+            .ensure_class("com.example.Ctors")
+            .expect("Ctors stub should load")
+    };
 
     let MethodResolution::Found(res) = resolve_constructor_call(&env, class, &[], None) else {
         panic!("expected constructor resolution");
