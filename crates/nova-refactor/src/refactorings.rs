@@ -385,25 +385,44 @@ pub fn extract_variable(
         "var".to_string()
     } else {
         let parser_ty = infer_expr_type(&expr);
-        if let Some(typeck_ty) = best_type_at_range_display(db, &params.file, text, expr_range) {
-            // `Object` is our parser-only fallback for unknown expressions. Only let typeck
-            // override a non-`Object` parser inference when it found something more specific.
-            //
-            // When the parser already inferred a concrete type (for example from a `new Foo()`
-            // expression), prefer it over typeck display strings that only add a qualifier
-            // (`Foo` vs `pkg.Foo` / `Outer.Foo`).
-            if parser_ty != "Object"
-                && typeck_ty != "Object"
-                && typeck_ty_is_qualified_version_of(&parser_ty, &typeck_ty)
-            {
-                parser_ty
-            } else if typeck_ty != "Object" || parser_ty == "Object" {
-                typeck_ty
-            } else {
-                parser_ty
+        let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_range);
+
+        // When emitting an explicit type (instead of `var`), prefer parser-inferred names when
+        // they are already meaningful and local (`Foo` instead of `Test.Foo`). Only fall back to
+        // typeck when it provides genuinely richer information (e.g. inferred generics) or when
+        // the parser couldn't infer anything useful (`Object`).
+        match typeck_ty {
+            Some(typeck_ty) if typeck_ty != "null" => {
+                if parser_ty == "Object" {
+                    if typeck_ty != "Object" {
+                        typeck_ty
+                    } else {
+                        parser_ty
+                    }
+                } else if typeck_ty == "Object" {
+                    parser_ty
+                } else {
+                    let typeck_has_type_args = typeck_ty.contains('<');
+                    let parser_has_type_args = parser_ty.contains('<');
+                    let typeck_has_arrays = typeck_ty.contains("[]");
+                    let parser_has_arrays = parser_ty.contains("[]");
+
+                    // Prefer typeck when it adds generics or array dimensions that parser didn't
+                    // capture (e.g. diamond inference).
+                    if (typeck_has_type_args && !parser_has_type_args)
+                        || (typeck_has_arrays && !parser_has_arrays)
+                    {
+                        typeck_ty
+                    } else if strip_leading_qualifiers(&typeck_ty) == parser_ty {
+                        // Avoid over-qualification like `Test.Foo` when `Foo` is already valid in
+                        // this scope.
+                        parser_ty
+                    } else {
+                        typeck_ty
+                    }
+                }
             }
-        } else {
-            parser_ty
+            _ => parser_ty,
         }
     };
 
@@ -1901,23 +1920,6 @@ fn current_indent(text: &str, line_start: usize) -> String {
     indent
 }
 
-fn typeck_ty_is_qualified_version_of(parser_ty: &str, typeck_ty: &str) -> bool {
-    if typeck_ty == parser_ty {
-        return true;
-    }
-
-    if typeck_ty.len() <= parser_ty.len() {
-        return false;
-    }
-    if !typeck_ty.ends_with(parser_ty) {
-        return false;
-    }
-
-    // Only treat as a "qualified version" when the match is on a segment boundary.
-    let boundary = typeck_ty.len() - parser_ty.len() - 1;
-    typeck_ty.as_bytes().get(boundary) == Some(&b'.')
-}
-
 fn best_type_at_range_display(
     db: &dyn RefactorDatabase,
     file: &FileId,
@@ -1937,6 +1939,21 @@ fn best_type_at_range_display(
         return Some(ty.to_string());
     }
     None
+}
+
+fn strip_leading_qualifiers(ty: &str) -> String {
+    // Our typeck display strings drop package names for readability, but they may still include
+    // qualification via enclosing types (e.g. `Test.Foo`). For explicit local variable types we
+    // prefer minimally qualified names when possible, so provide a cheap "strip outer qualifiers"
+    // helper for comparison purposes.
+    //
+    // Examples:
+    // - `Test.Foo` -> `Foo`
+    // - `java.util.List<String>` -> `List<String>` (keep generics; drop package/outer prefixes)
+    let cut = ty.find(|c| c == '<' || c == '[').unwrap_or(ty.len());
+    let (head, tail) = ty.split_at(cut);
+    let stripped = head.rsplit_once('.').map(|(_, tail)| tail).unwrap_or(head);
+    format!("{stripped}{tail}")
 }
 
 fn type_at_range_offset_candidates(text: &str, range: TextRange) -> Vec<usize> {

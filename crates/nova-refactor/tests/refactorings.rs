@@ -478,6 +478,47 @@ fn extract_variable_prefers_typeck_type_when_use_var_false() {
 }
 
 #[test]
+fn extract_variable_prefers_typeck_when_it_adds_generics() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"import java.util.ArrayList;
+import java.util.List;
+
+class Test {
+  void m() {
+    List<String> xs = /*select*/new ArrayList<>()/*end*/;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"import java.util.ArrayList;
+import java.util.List;
+
+class Test {
+  void m() {
+    ArrayList<String> tmp = new ArrayList<>();
+    List<String> xs = tmp;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_explicit_types_are_inferred_for_common_expressions() {
     let file = FileId::new("Test.java");
 
