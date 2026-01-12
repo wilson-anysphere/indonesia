@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -246,11 +246,11 @@ impl Debugger {
                     }
 
                     // Ensure a clean output directory so we don't accidentally load stale classes.
-                    let _ = std::fs::remove_dir_all(&output_dir);
-                    std::fs::create_dir_all(&output_dir).map_err(|err| {
+                    let _ = std::fs::remove_dir_all(temp_dir.path());
+                    std::fs::create_dir_all(temp_dir.path()).map_err(|err| {
                         DebuggerError::InvalidRequest(format!(
                             "failed to recreate javac output dir {}: {err}",
-                            output_dir.display()
+                            temp_dir.path().display()
                         ))
                     })?;
                     std::fs::write(&source_path, &source).map_err(|err| {
@@ -260,7 +260,7 @@ impl Debugger {
                         ))
                     })?;
 
-                    match compile_java_to_dir(cancel, &fallback, &source_path, &output_dir).await {
+                    match compile_java_to_dir(cancel, &fallback, &source_path, temp_dir.path()).await {
                         Ok(classes) => classes,
                         Err(err2) => {
                             let original = format_stream_eval_compile_failure(
