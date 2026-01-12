@@ -1179,6 +1179,7 @@ where
                 &cancel,
                 source,
                 &uri,
+                &cancel,
                 span,
                 context_diagnostics,
             ));
@@ -1270,7 +1271,6 @@ where
 fn type_mismatch_quick_fixes(
     source: &str,
     uri: &lsp_types::Uri,
-    cancel: &CancellationToken,
     selection: Span,
     diagnostics: &[nova_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
