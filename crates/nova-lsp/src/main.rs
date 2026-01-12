@@ -1537,7 +1537,7 @@ impl ServerState {
             Arc::new(SemanticSearchWorkspaceIndexStatus::default());
         let semantic_search_workspace_index_cancel = CancellationToken::new();
 
-        Self {
+        let state = Self {
             shutdown_requested: false,
             project_root: None,
             config,
@@ -1570,7 +1570,14 @@ impl ServerState {
             last_safe_mode_reason: None,
             distributed_cli: None,
             distributed: None,
-        }
+        };
+        // Register Salsa memo eviction with the server's memory manager so memoized query results
+        // cannot grow unbounded in long-lived databases.
+        state
+            .analysis
+            .salsa
+            .register_salsa_memo_evictor(&state.memory);
+        state
     }
 
     fn start_distributed_after_initialize(&mut self) {
