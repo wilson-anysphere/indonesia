@@ -329,6 +329,23 @@ pub fn extract_variable(
             reason: "cannot extract when the enclosing statement starts mid-line",
         });
     }
+
+    // Extract Variable inserts a *new statement* (a local declaration). If the selected expression
+    // is inside a statement that is not directly in a `{ ... }` block statement list (for example
+    // the body of `if/while/for/do` without braces), inserting a declaration would either be
+    // syntactically invalid or change control flow. Be conservative until block-wrapping is
+    // implemented.
+    let Some(parent) = stmt.syntax().parent() else {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract when the enclosing statement has no parent",
+        });
+    };
+    if ast::Block::cast(parent).is_none() {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract when the enclosing statement is not directly inside a block",
+        });
+    }
+
     let indent = current_indent(text, insert_pos);
 
     check_extract_variable_name_conflicts(&stmt, insert_pos, &name)?;
