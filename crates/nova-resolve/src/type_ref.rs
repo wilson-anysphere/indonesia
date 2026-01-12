@@ -869,81 +869,13 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
     fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
         // Type-use annotation names can appear anywhere inside a type reference (`@A String`,
-        // `Outer.@A Inner`, `String @A []`, ...). Nova does not currently model these in
-        // `nova_types::Type`, so type refs should parse/resolve as if the annotation were absent.
-        //
-        // We *do* emit best-effort diagnostics for the annotation's *type name* when parsing an
-        // anchored source range (e.g. via `nova_db` / IDE diagnostics), because the annotation type
-        // being missing from the classpath is still actionable for users.
-        //
-        // However, callers frequently parse detached `TypeRef.text` snippets with
-        // `base_span = None`, and `TypeRef.text` may be whitespace-stripped. If we can't reliably
-        // map offsets back into the original source text, suppress these diagnostics to avoid
-        // mis-anchored spans and noisy errors.
-        let Some(base_span) = self.base_span else {
-            return;
-        };
-        if base_span.len() != self.text.len() {
-            return;
-        }
-        if name_range.is_empty() {
-            return;
-        }
-        let text = self.text.get(name_range.clone()).unwrap_or("");
-        if text.is_empty() {
-            return;
-        }
-
-        let segments: Vec<String> = text
-            .split('.')
-            .filter(|seg| !seg.is_empty())
-            .map(|seg| seg.to_string())
-            .collect();
-        if segments.is_empty() {
-            return;
-        }
-
-        // If the annotation name is qualified (e.g. `@String.Inner`) and the first segment is
-        // ambiguous in the current scope, prefer surfacing that ambiguity over reporting the full
-        // qualified name as unresolved.
-        if segments.len() > 1 {
-            let first_end = text.find('.').unwrap_or(text.len());
-            if first_end > 0 {
-                let first_seg = Name::from(segments[0].as_str());
-                if let TypeNameResolution::Ambiguous(candidates) = self
-                    .resolver
-                    .resolve_type_name_detailed(self.scopes, self.scope, &first_seg)
-                {
-                    let mut candidate_names: Vec<String> = candidates
-                        .iter()
-                        .filter_map(|c| {
-                            self.resolver
-                                .type_name_for_resolution(self.scopes, c)
-                                .map(|n| n.as_str().to_string())
-                        })
-                        .collect();
-                    candidate_names.sort();
-                    candidate_names.dedup();
-
-                    let mut msg = format!("ambiguous type `{}`", segments[0]);
-                    if !candidate_names.is_empty() {
-                        msg.push_str(": ");
-                        msg.push_str(&candidate_names.join(", "));
-                    }
-
-                    let first_seg_range = name_range.start..(name_range.start + first_end);
-                    self.diagnostics.push(Diagnostic::error(
-                        "ambiguous-type",
-                        msg,
-                        self.anchor_span(first_seg_range),
-                    ));
-                    return;
-                }
-            }
-        }
-
-        let per_segment_args = vec![Vec::new(); segments.len()];
-        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
+        // `Outer.@A Inner`, `String @A []`, ...). Nova does not model these in `nova_types::Type`,
+        // so type refs should parse/resolve as if the annotation were absent.
+        // Type-use annotations are ignored by Nova's current type model and should not introduce
+        // `unresolved-type` diagnostics (they are frequently incomplete while editing and would be
+        // noisy). This matches the rest of the type ref parser, which is designed to be resilient
+        // in the presence of arbitrary annotation syntax.
+        let _ = name_range;
     }
 
     fn find_best_annotation_name_end(

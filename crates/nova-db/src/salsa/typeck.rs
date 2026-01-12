@@ -3983,6 +3983,7 @@ struct BodyChecker<'a, 'idx> {
     workspace_loaded: HashSet<String>,
     java_level: JavaLanguageLevel,
     steps: u32,
+    lambda_depth: usize,
 }
 
 struct RestoreTypeOnDrop {
@@ -4120,6 +4121,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             workspace_in_progress: HashSet::new(),
             workspace_loaded: HashSet::new(),
             steps: 0,
+            lambda_depth: 0,
         }
     }
 
@@ -5267,7 +5269,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 yields.push(ty);
             }
             HirStmt::Return { expr, range } => {
-                if matches!(self.owner, DefWithBodyId::Initializer(_)) {
+                if matches!(self.owner, DefWithBodyId::Initializer(_)) && self.lambda_depth == 0 {
                     self.diagnostics.push(Diagnostic::error(
                         "return-in-initializer",
                         "`return` is not allowed in initializer blocks",
@@ -7182,7 +7184,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                     LambdaBody::Block(stmt) => {
                         let expected_return = sam_return.clone();
+                        self.lambda_depth = self.lambda_depth.saturating_add(1);
                         self.check_stmt(loader, *stmt, &expected_return);
+                        self.lambda_depth = self.lambda_depth.saturating_sub(1);
                     }
                 }
                 self.current_expected_return = prev_expected_return;

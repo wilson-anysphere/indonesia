@@ -1308,6 +1308,24 @@ class C {
 }
 
 #[test]
+fn return_in_initializer_inside_lambda_is_allowed() {
+    let src = r#"
+class C {
+  { Runnable r = () -> { return; }; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "return-in-initializer"),
+        "expected return statements inside lambda bodies in initializers to be allowed; got {diags:?}"
+    );
+}
+
+#[test]
 fn this_in_static_initializer_is_error() {
     let src = r#"
 class C {
