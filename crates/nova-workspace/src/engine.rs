@@ -16,7 +16,7 @@ use nova_db::persistence::PersistenceConfig;
 use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId};
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
-use nova_memory::MemoryManager;
+use nova_memory::{BackgroundIndexingMode, MemoryManager, MemoryPressure};
 use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
@@ -42,6 +42,7 @@ pub struct IndexProgress {
 pub enum WorkspaceStatus {
     IndexingStarted,
     IndexingReady,
+    IndexingPaused(String),
     IndexingError(String),
 }
 
@@ -99,6 +100,7 @@ pub(crate) struct WorkspaceEngine {
 
     config: RwLock<EffectiveConfig>,
     scheduler: Scheduler,
+    memory: MemoryManager,
     index_debouncer: KeyedDebouncer<&'static str>,
     project_reload_debouncer: KeyedDebouncer<&'static str>,
     subscribers: Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
@@ -198,6 +200,7 @@ impl WorkspaceEngine {
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),
             scheduler,
+            memory,
             index_debouncer,
             project_reload_debouncer,
             subscribers: Arc::new(Mutex::new(Vec::new())),
@@ -706,6 +709,29 @@ impl WorkspaceEngine {
             .collect()
     }
 
+    fn background_indexing_plan(
+        degraded: BackgroundIndexingMode,
+        all_files: Vec<FileId>,
+        open_files: &HashSet<FileId>,
+    ) -> Option<Vec<FileId>> {
+        const MAX_REDUCED_FILES: usize = 128;
+
+        match degraded {
+            BackgroundIndexingMode::Paused => None,
+            BackgroundIndexingMode::Full => Some(all_files),
+            BackgroundIndexingMode::Reduced => {
+                let mut files: Vec<FileId> = if open_files.is_empty() {
+                    all_files.into_iter().take(MAX_REDUCED_FILES).collect()
+                } else {
+                    open_files.iter().copied().collect()
+                };
+                files.sort();
+                files.dedup();
+                Some(files)
+            }
+        }
+    }
+
     pub fn trigger_indexing(&self) {
         let enable = self
             .config
@@ -715,6 +741,14 @@ impl WorkspaceEngine {
         if !enable {
             return;
         }
+        // Gate background indexing based on the latest memory state.
+        let report = self.memory.enforce();
+        if report.degraded.background_indexing == BackgroundIndexingMode::Paused {
+            self.publish(WorkspaceEvent::Status(WorkspaceStatus::IndexingPaused(
+                "Indexing paused due to memory pressure".to_string(),
+            )));
+            return;
+        }
 
         // Coalesce rapid edit bursts (e.g. didChange storms) and cancel in-flight indexing when
         // superseded by a newer request.
@@ -722,11 +756,29 @@ impl WorkspaceEngine {
         let indexes_arc = Arc::clone(&self.indexes);
         let subscribers = Arc::clone(&self.subscribers);
         let scheduler = self.scheduler.clone();
+        let memory = self.memory.clone();
+        let open_docs = self.vfs.open_documents();
 
         self.index_debouncer
             .debounce("workspace-index", move |token| {
+                const ENFORCE_INTERVAL: Duration = Duration::from_millis(250);
+
                 let token_for_cancel = token.clone();
                 let ctx = scheduler.request_context_with_token("workspace/indexing", token);
+                Cancelled::check(ctx.token())?;
+
+                let report = memory.enforce();
+                let degraded = report.degraded.background_indexing;
+                if degraded == BackgroundIndexingMode::Paused {
+                    publish_to_subscribers(
+                        &subscribers,
+                        WorkspaceEvent::Status(WorkspaceStatus::IndexingPaused(
+                            "Indexing paused due to memory pressure".to_string(),
+                        )),
+                    );
+                    return Ok(());
+                }
+
                 let progress = ctx.progress().start("Indexing workspace");
 
                 publish_to_subscribers(
@@ -735,11 +787,27 @@ impl WorkspaceEngine {
                 );
 
                 let project = ProjectId::from_raw(0);
-                let total = query_db.with_snapshot(|snap| snap.project_files(project).len());
+                let project_files: Vec<FileId> = query_db
+                    .with_snapshot(|snap| snap.project_files(project).as_ref().clone());
+                let open_files = open_docs.snapshot();
+
+                let files = match degraded {
+                    BackgroundIndexingMode::Full => project_files.clone(),
+                    BackgroundIndexingMode::Reduced => {
+                        Self::background_indexing_plan(degraded, project_files.clone(), &open_files)
+                            .unwrap_or_default()
+                    }
+                    BackgroundIndexingMode::Paused => Vec::new(),
+                };
+
+                let total = files.len();
 
                 // Ensure consumers always see at least one progress update, even if the project is
                 // empty or progress is coarse-grained.
-                progress.report(Some(format!("0/{}", total)), if total == 0 { None } else { Some(0) });
+                progress.report(
+                    Some(format!("0/{}", total)),
+                    if total == 0 { None } else { Some(0) },
+                );
                 publish_to_subscribers(
                     &subscribers,
                     WorkspaceEvent::IndexProgress(IndexProgress { current: 0, total }),
@@ -753,21 +821,109 @@ impl WorkspaceEngine {
                     query_db_for_cancel.request_cancellation();
                 });
 
-                Cancelled::check(ctx.token())?;
-
-                let new_indexes = query_db.with_snapshot_catch_cancelled(|snap| {
-                    // Project-level Salsa query that warm-starts from disk and only reindexes
-                    // invalidated files.
-                    snap.project_indexes(project)
+                // Periodically enforce memory budgets while indexing runs. If we hit critical
+                // pressure, request Salsa cancellation and mark the run as aborted.
+                let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let aborted_due_to_memory = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let stop_for_thread = Arc::clone(&stop_flag);
+                let aborted_for_thread = Arc::clone(&aborted_due_to_memory);
+                let memory_for_thread = memory.clone();
+                let query_db_for_thread = query_db.clone();
+                let enforcer = thread::spawn(move || {
+                    while !stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                        thread::sleep(ENFORCE_INTERVAL);
+                        if stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        let report = memory_for_thread.enforce();
+                        if report.pressure == MemoryPressure::Critical
+                            || report.degraded.background_indexing == BackgroundIndexingMode::Paused
+                        {
+                            aborted_for_thread.store(true, std::sync::atomic::Ordering::Relaxed);
+                            query_db_for_thread.request_cancellation();
+                            break;
+                        }
+                    }
                 });
+
+                let indexing_result: std::result::Result<ProjectIndexes, Cancelled> = match degraded
+                {
+                    BackgroundIndexingMode::Full => query_db
+                        .with_snapshot_catch_cancelled(|snap| snap.project_indexes(project))
+                        .map(|indexes| (*indexes).clone())
+                        .map_err(|_cancelled| Cancelled),
+                    BackgroundIndexingMode::Reduced => {
+                        let mut indexes = ProjectIndexes::default();
+                        let mut cancelled = false;
+
+                        for (idx, file_id) in files.iter().enumerate() {
+                            if ctx.token().is_cancelled()
+                                || aborted_due_to_memory.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                cancelled = true;
+                                break;
+                            }
+
+                            let delta = match query_db
+                                .with_snapshot_catch_cancelled(|snap| snap.file_index_delta(*file_id))
+                            {
+                                Ok(delta) => delta,
+                                Err(_) => {
+                                    cancelled = true;
+                                    break;
+                                }
+                            };
+
+                            indexes.merge_from((*delta).clone());
+
+                            let percentage = if total == 0 {
+                                None
+                            } else {
+                                Some(((idx + 1) * 100 / total).min(100) as u32)
+                            };
+                            progress.report(Some(format!("{}/{}", idx + 1, total)), percentage);
+                            publish_to_subscribers(
+                                &subscribers,
+                                WorkspaceEvent::IndexProgress(IndexProgress {
+                                    current: idx + 1,
+                                    total,
+                                }),
+                            );
+                        }
+
+                        if cancelled {
+                            Err(Cancelled)
+                        } else {
+                            Ok(indexes)
+                        }
+                    }
+                    BackgroundIndexingMode::Paused => Err(Cancelled),
+                };
+
+                stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = enforcer.join();
                 // Always abort the cancellation watcher (even when Salsa cancels).
                 cancel_handle.abort();
 
-                let new_indexes = new_indexes.map_err(|_cancelled| Cancelled)?;
+                let indexes = match indexing_result {
+                    Ok(indexes) => indexes,
+                    Err(Cancelled) => {
+                        if aborted_due_to_memory.load(std::sync::atomic::Ordering::Relaxed) {
+                            progress.finish(Some("Paused due to memory pressure".to_string()));
+                            publish_to_subscribers(
+                                &subscribers,
+                                WorkspaceEvent::Status(WorkspaceStatus::IndexingPaused(
+                                    "Indexing paused due to memory pressure".to_string(),
+                                )),
+                            );
+                        }
+                        return Err(Cancelled);
+                    }
+                };
 
                 Cancelled::check(ctx.token())?;
 
-                *indexes_arc.lock().expect("workspace indexes lock poisoned") = (*new_indexes).clone();
+                *indexes_arc.lock().expect("workspace indexes lock poisoned") = indexes;
 
                 progress.report(
                     Some(format!("{}/{}", total, total)),
@@ -778,11 +934,13 @@ impl WorkspaceEngine {
                     WorkspaceEvent::IndexProgress(IndexProgress { current: total, total }),
                 );
 
-                // Best-effort persistence: indexing results are still valid even if we fail to
-                // write them to disk.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _ = query_db.persist_project_indexes(project);
-                }));
+                if degraded == BackgroundIndexingMode::Full {
+                    // Best-effort persistence: indexing results are still valid even if we fail to
+                    // write them to disk.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = query_db.persist_project_indexes(project);
+                    }));
+                }
 
                 progress.finish(Some("Done".to_string()));
                 publish_to_subscribers(
@@ -1485,7 +1643,7 @@ mod tests {
     use nova_cache::{CacheConfig, CacheDir};
     use nova_db::persistence::{PersistenceConfig, PersistenceMode};
     use nova_db::NovaInputs;
-    use nova_memory::MemoryBudget;
+    use nova_memory::{MemoryBudget, MemoryCategory};
     use nova_project::BuildSystem;
     use std::fs;
     use std::sync::{Mutex, OnceLock};
@@ -1536,6 +1694,9 @@ mod tests {
                 }
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingReady) => {
                     break;
+                }
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingPaused(reason)) => {
+                    panic!("indexing paused unexpectedly: {reason}");
                 }
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) => {
                     panic!("indexing failed unexpectedly: {err}");
@@ -1656,6 +1817,82 @@ mod tests {
             "expected at least one persisted shard index file (missing {})",
             shard0_symbols.display()
         );
+    }
+
+    fn current_rss_bytes() -> Option<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            for line in status.lines() {
+                let line = line.trim_start();
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                    return Some(kb.saturating_mul(1024));
+                }
+            }
+            None
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    fn test_memory_budget_total() -> u64 {
+        // `MemoryManager` considers process RSS as an upper bound over the tracked totals. Ensure
+        // our synthetic tracker can dominate RSS by giving the budget ample headroom.
+        let rss = current_rss_bytes().unwrap_or(0);
+        (rss.saturating_mul(2)).max(512 * nova_memory::MB)
+    }
+
+    #[test]
+    fn background_indexing_plan_is_paused_under_critical_pressure() {
+        let budget_total = test_memory_budget_total();
+        let memory = MemoryManager::new(MemoryBudget::from_total(budget_total));
+        let registration = memory.register_tracker("pressure", MemoryCategory::Other);
+        registration
+            .tracker()
+            .set_bytes(((budget_total as f64) * 0.99) as u64);
+        let report = memory.enforce();
+        assert_eq!(
+            report.degraded.background_indexing,
+            BackgroundIndexingMode::Paused
+        );
+
+        let all_files = vec![FileId::from_raw(1), FileId::from_raw(2)];
+        let open_files: HashSet<FileId> = HashSet::from([FileId::from_raw(1)]);
+        let plan = WorkspaceEngine::background_indexing_plan(
+            report.degraded.background_indexing,
+            all_files,
+            &open_files,
+        );
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn background_indexing_plan_is_reduced_to_open_documents_under_high_pressure() {
+        let budget_total = test_memory_budget_total();
+        let memory = MemoryManager::new(MemoryBudget::from_total(budget_total));
+        let registration = memory.register_tracker("pressure", MemoryCategory::Other);
+        registration
+            .tracker()
+            .set_bytes(((budget_total as f64) * 0.90) as u64);
+        let report = memory.enforce();
+        assert_eq!(
+            report.degraded.background_indexing,
+            BackgroundIndexingMode::Reduced
+        );
+
+        let all_files = vec![FileId::from_raw(1), FileId::from_raw(2), FileId::from_raw(3)];
+        let open_files: HashSet<FileId> = HashSet::from([FileId::from_raw(2)]);
+        let files = WorkspaceEngine::background_indexing_plan(
+            report.degraded.background_indexing,
+            all_files,
+            &open_files,
+        )
+        .expect("plan should be present in Reduced mode");
+        assert_eq!(files, vec![FileId::from_raw(2)]);
     }
 
     #[test]
