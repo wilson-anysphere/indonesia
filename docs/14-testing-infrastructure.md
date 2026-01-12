@@ -35,14 +35,14 @@ Examples (CI command → agent-safe local equivalent):
 
 ```bash
 # CI:
-cargo test -p nova-syntax --test javac_corpus
+cargo test --locked -p nova-syntax --test javac_corpus
 # agent/multi-runner:
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test javac_corpus
 
 # CI:
-cargo bench -p nova-core --bench critical_paths
+cargo bench --locked -p nova-core --bench critical_paths
 # agent/multi-runner:
-bash scripts/cargo_agent.sh bench -p nova-core --bench critical_paths
+bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
 ```
 
 Environment variables still apply; just prefix the wrapper instead of `cargo`:
@@ -57,14 +57,14 @@ From the repo root (these are the exact commands CI runs; on shared agent hosts 
 # Lint job (repo invariants + clippy)
 ./scripts/check-repo-invariants.sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 
 # Test job (CI runs this on ubuntu/macos/windows; workstation-only — do not run on shared agent hosts)
 # Install nextest first if needed: cargo install cargo-nextest --locked
-cargo nextest run --workspace --profile ci
+cargo nextest run --locked --workspace --profile ci
 
 # Doctest job (CI runs this on ubuntu; workstation-only — do not run on shared agent hosts)
-cargo test --workspace --doc
+cargo test --locked --workspace --doc
 ```
 
 This matches `.github/workflows/ci.yml` (lint + test + doctest jobs).
@@ -95,11 +95,11 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 # ci.yml (rust)
 ./scripts/check-repo-invariants.sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 # Install nextest first if needed: cargo install cargo-nextest --locked
 # CI-equivalent workspace run (workstation-only — do not run on shared agent hosts)
-cargo nextest run --workspace --profile ci
-cargo test --workspace --doc
+cargo nextest run --locked --workspace --profile ci
+cargo test --locked --workspace --doc
 
 # ci.yml (workflows)
 actionlint
@@ -110,20 +110,20 @@ actionlint
 git diff --exit-code
 (cd editors/vscode && npm ci && npm test && npm run package)
 
- # javac.yml (requires `javac` on PATH; JDK 17+ recommended)
- cargo test -p nova-syntax --test javac_corpus
- cargo test -p nova-types --test javac_differential -- --ignored
+# javac.yml (requires `javac` on PATH; JDK 17+ recommended)
+cargo test --locked -p nova-syntax --test javac_corpus
+cargo test --locked -p nova-types --test javac_differential -- --ignored
 
 # Note: the differential harness runs `javac` with `-XDrawDiagnostics` so tests can
 # assert stable diagnostic *keys* instead of brittle human-readable strings.
 
 # perf.yml (criterion benchmarks; see below for capture/compare)
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
-cargo bench -p nova-core --bench critical_paths
-cargo bench -p nova-syntax --bench parse_java
-cargo bench -p nova-format --bench format
-cargo bench -p nova-refactor --bench refactor
-cargo bench -p nova-classpath --bench index
+cargo bench --locked -p nova-core --bench critical_paths
+cargo bench --locked -p nova-syntax --bench parse_java
+cargo bench --locked -p nova-format --bench format
+cargo bench --locked -p nova-refactor --bench refactor
+cargo bench --locked -p nova-classpath --bench index
 ```
 
 ---
@@ -141,9 +141,9 @@ cargo bench -p nova-classpath --bench index
 
 ```bash
 # everything (CI uses nextest; workstation-only — do not run on shared agent hosts)
-cargo nextest run --workspace --profile ci
+cargo nextest run --locked --workspace --profile ci
 # or (workstation-only):
-# cargo test --workspace
+# cargo test --locked --workspace
 
 # one crate
 cargo test -p nova-syntax
@@ -369,7 +369,7 @@ If `java`/`javac` are missing, the test prints a message and returns early.
 **What:** Tests that exercise a “compile with `javac`” harness to validate our own diagnostics/parsing logic
 against the reference compiler.
 
-These tests are `#[ignore]` by default so `ci.yml`’s default test suite (`cargo nextest run --workspace --profile ci`)
+These tests are `#[ignore]` by default so `ci.yml`’s default test suite (`cargo nextest run --locked --workspace --profile ci`)
 can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 
 **Where:**
@@ -562,11 +562,11 @@ from `main`, otherwise benching the base commit in a git worktree). For full ope
 
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
-cargo bench -p nova-core --bench critical_paths
-cargo bench -p nova-syntax --bench parse_java
-cargo bench -p nova-format --bench format
-cargo bench -p nova-refactor --bench refactor
-cargo bench -p nova-classpath --bench index
+cargo bench --locked -p nova-core --bench critical_paths
+cargo bench --locked -p nova-syntax --bench parse_java
+cargo bench --locked -p nova-format --bench format
+cargo bench --locked -p nova-refactor --bench refactor
+cargo bench --locked -p nova-classpath --bench index
 ```
 
 **Capture + compare locally (same tooling CI uses):**
@@ -576,12 +576,12 @@ cargo bench -p nova-classpath --bench index
 # `new/sample.json` files from removed benchmarks don't get picked up by `perf capture`.
 
 # capture criterion output
-cargo run -p nova-cli --release -- perf capture \
+cargo run --locked -p nova-cli --release -- perf capture \
   --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
   --out perf-current.json
 
 # compare two captured runs
-cargo run -p nova-cli --release -- perf compare \
+cargo run --locked -p nova-cli --release -- perf compare \
   --baseline perf-base.json \
   --current perf-current.json \
   --thresholds-config perf/thresholds.toml
@@ -605,7 +605,7 @@ The workflow also supports an optional, **warn-only** minimum line coverage thre
 cargo install cargo-llvm-cov --locked
 rustup component add llvm-tools-preview
 
-cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html
+cargo llvm-cov --locked -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html
 ```
 
 HTML is written under `target/llvm-cov/html/`.
@@ -659,13 +659,13 @@ In practice, Nova’s CI splits into:
 
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
-| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo nextest run --workspace --profile ci` (linux/macos/windows), `cargo test --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
-| `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths`, `cargo bench -p nova-syntax --bench parse_java`, `cargo bench -p nova-format --bench format`, `cargo bench -p nova-refactor --bench refactor`, `cargo bench -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
-| `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
+| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo nextest run --locked --workspace --profile ci` (linux/macos/windows), `cargo test --locked --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
+| `.github/workflows/perf.yml` | in repo | `cargo bench --locked -p nova-core --bench critical_paths`, `cargo bench --locked -p nova-syntax --bench parse_java`, `cargo bench --locked -p nova-format --bench format`, `cargo bench --locked -p nova-refactor --bench refactor`, `cargo bench --locked -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
+| `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test --locked -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144` |
-| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html` |
-| `.github/workflows/test-all-features.yml` | in repo | Workspace tests with `--all-features` (main + schedule + manual; not a PR gate) | `RUST_BACKTRACE=1 cargo nextest run --workspace --profile ci --all-features` (or `cargo test --workspace --all-features`) |
+| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov --locked -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html` |
+| `.github/workflows/test-all-features.yml` | in repo | Workspace tests with `--all-features` (main + schedule + manual; not a PR gate) | `RUST_BACKTRACE=1 cargo nextest run --locked --workspace --profile ci --all-features` (or `cargo test --locked --workspace --all-features`) |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.
 
@@ -679,7 +679,7 @@ locally” near the top of this document).
 
 - **Keep fixtures small.** Prefer a minimal reproducer over a full real project when possible.
 - **No network in non-ignored tests.** Unit/integration tests that run in `ci.yml`’s default suite
-  (`cargo nextest run --workspace --profile ci` + doctests)
+  (`cargo nextest run --locked --workspace --profile ci` + doctests)
   should not download dependencies, clone repositories, or call external services.
 - **Use `#[ignore]` only when unavoidable.** If a test is expensive, flaky on CI runners, or requires external
   toolchains (JDK, Maven), mark it ignored and provide a script/README for running it locally.

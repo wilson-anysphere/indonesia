@@ -39,7 +39,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run javac corpus tests
-        run: cargo test -p nova-syntax --test javac_corpus
+        run: cargo test --locked -p nova-syntax --test javac_corpus
 
       - name: Run javac smoke tests
-        run: cargo test -p nova-types --test javac_differential -- --ignored
+        run: cargo test --locked -p nova-types --test javac_differential -- --ignored
+
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi

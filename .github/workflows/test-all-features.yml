@@ -34,7 +34,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests (nextest, all features)
         if: steps.nextest.outcome == 'success'
-        run: cargo nextest run --workspace --profile ci --all-features
+        run: cargo nextest run --locked --workspace --profile ci --all-features
       - name: Run tests (cargo test fallback, all features)
         if: steps.nextest.outcome != 'success'
-        run: cargo test --workspace --all-features
+        run: cargo test --locked --workspace --all-features
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi

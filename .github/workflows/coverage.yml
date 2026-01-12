@@ -59,7 +59,7 @@ jobs:
           for crate in $COVERAGE_PACKAGES; do
             coverage_args+=("-p" "$crate")
           done
-          cargo llvm-cov "${coverage_args[@]}" --html
+          cargo llvm-cov --locked "${coverage_args[@]}" --html
 
       - name: Generate lcov.info
         run: |
@@ -68,7 +68,7 @@ jobs:
           for crate in $COVERAGE_PACKAGES; do
             coverage_args+=("-p" "$crate")
           done
-          cargo llvm-cov report "${coverage_args[@]}" \
+          cargo llvm-cov report --locked "${coverage_args[@]}" \
             --lcov --output-path lcov.info
 
       - name: Coverage summary
@@ -80,7 +80,7 @@ jobs:
           done
 
           overall_summary="$(
-            cargo llvm-cov report "${coverage_args[@]}" --color never | awk 'NR==1 || $1=="TOTAL"'
+            cargo llvm-cov report --locked "${coverage_args[@]}" --color never | awk 'NR==1 || $1=="TOTAL"'
           )"
 
           {
@@ -96,7 +96,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           for crate in $COVERAGE_PACKAGES; do
             crate_summary="$(
-              cargo llvm-cov report -p "${crate}" --color never | awk 'NR==1 || $1=="TOTAL"'
+              cargo llvm-cov report --locked -p "${crate}" --color never | awk 'NR==1 || $1=="TOTAL"'
             )"
             {
               echo
@@ -112,6 +112,15 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
       - name: Coverage gate (warn only)
         run: |

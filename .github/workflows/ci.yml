@@ -35,7 +35,15 @@ jobs:
       - name: repo invariants (nova-devtools)
         run: ./scripts/check-repo-invariants.sh
       - name: clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
   test:
     name: test (${{ matrix.os }})
@@ -56,7 +64,15 @@ jobs:
         uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
       - name: test (nextest)
-        run: cargo nextest run --workspace --profile ci
+        run: cargo nextest run --locked --workspace --profile ci
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
       - name: Upload nextest JUnit report
         if: failure()
         uses: actions/upload-artifact@v4
@@ -78,7 +94,15 @@ jobs:
           toolchain: 1.92.0
       - uses: Swatinem/rust-cache@v2
       - name: doctest
-        run: cargo test --workspace --doc
+        run: cargo test --locked --workspace --doc
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
   wasm:
     name: wasm example (ubuntu)
@@ -91,7 +115,15 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: check (wasm32-unknown-unknown)
-        run: cargo check -p nova-ext-wasm-example-todos --target wasm32-unknown-unknown
+        run: cargo check --locked -p nova-ext-wasm-example-todos --target wasm32-unknown-unknown
+      - name: Cargo.lock unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
   workflows:
     runs-on: ubuntu-latest

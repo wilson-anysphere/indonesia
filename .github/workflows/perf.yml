@@ -109,12 +109,12 @@ jobs:
           echo "BASELINE_SOURCE=benched base commit via git worktree" >> "${GITHUB_ENV}"
           git worktree add /tmp/nova-perf-base ${{ github.event.pull_request.base.sha }}
           pushd /tmp/nova-perf-base
-          cargo bench -p nova-core --bench critical_paths
-          cargo bench -p nova-syntax --bench parse_java
-          cargo bench -p nova-format --bench format
-          cargo bench -p nova-refactor --bench refactor
-          cargo bench -p nova-classpath --bench index
-          cargo run -p nova-cli --release -- perf capture \
+          cargo bench --locked -p nova-core --bench critical_paths
+          cargo bench --locked -p nova-syntax --bench parse_java
+          cargo bench --locked -p nova-format --bench format
+          cargo bench --locked -p nova-refactor --bench refactor
+          cargo bench --locked -p nova-classpath --bench index
+          cargo run --locked -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out "${GITHUB_WORKSPACE}/perf-base.json"
           popd
@@ -126,12 +126,12 @@ jobs:
           # on the current branch could leave stale `target/criterion/**/new/sample.json` files
           # from the baseline run, which would get incorrectly picked up by `perf capture`.
           rm -rf "${CARGO_TARGET_DIR}/criterion"
-          cargo bench -p nova-core --bench critical_paths
-          cargo bench -p nova-syntax --bench parse_java
-          cargo bench -p nova-format --bench format
-          cargo bench -p nova-refactor --bench refactor
-          cargo bench -p nova-classpath --bench index
-          cargo run -p nova-cli --release -- perf capture \
+          cargo bench --locked -p nova-core --bench critical_paths
+          cargo bench --locked -p nova-syntax --bench parse_java
+          cargo bench --locked -p nova-format --bench format
+          cargo bench --locked -p nova-refactor --bench refactor
+          cargo bench --locked -p nova-classpath --bench index
+          cargo run --locked -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out perf-current.json
 
@@ -160,7 +160,7 @@ jobs:
 
           # Determine which JSON output mode the CLI supports.
           help_file="$(mktemp)"
-          cargo run -p nova-cli --release -- perf compare --help >"${help_file}"
+          cargo run --locked -p nova-cli --release -- perf compare --help >"${help_file}"
           json_out_supported=0
           format_supported=0
           thresholds_args=()
@@ -179,7 +179,7 @@ jobs:
 
           if [ "${json_out_supported}" = "1" ]; then
             # Prefer a single invocation that emits both markdown + JSON.
-            cargo run -p nova-cli --release -- perf compare \
+            cargo run --locked -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
               "${thresholds_args[@]}" \
@@ -188,14 +188,14 @@ jobs:
             status=$?
           elif [ "${format_supported}" = "1" ]; then
             # Fallback for CLIs that only support structured output via `--format`.
-            cargo run -p nova-cli --release -- perf compare \
+            cargo run --locked -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
               "${thresholds_args[@]}" \
               --markdown-out perf-report.md
             status_md=$?
 
-            cargo run -p nova-cli --release -- perf compare \
+            cargo run --locked -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
               "${thresholds_args[@]}" \
@@ -208,7 +208,7 @@ jobs:
             fi
           else
             # Backwards-compat: write a placeholder JSON file when the CLI can't emit JSON yet.
-            cargo run -p nova-cli --release -- perf compare \
+            cargo run --locked -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
               "${thresholds_args[@]}" \
@@ -245,6 +245,16 @@ jobs:
           fi
 
           exit $status
+
+      - name: Cargo.lock unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
       - name: Upload baseline (main)
         if: github.event_name == 'push' && success()
