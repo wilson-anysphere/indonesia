@@ -94,6 +94,17 @@ pub fn is_build_file(path: &Path) -> bool {
         return false;
     };
 
+    // Mirror `nova-build` Gradle build-file fingerprinting exclusions to avoid
+    // treating build output / cache directories as project-changing inputs.
+    let in_ignored_dir = path.components().any(|c| {
+        c.as_os_str() == std::ffi::OsStr::new(".git")
+            || c.as_os_str() == std::ffi::OsStr::new(".gradle")
+            || c.as_os_str() == std::ffi::OsStr::new("build")
+            || c.as_os_str() == std::ffi::OsStr::new("target")
+            || c.as_os_str() == std::ffi::OsStr::new(".nova")
+            || c.as_os_str() == std::ffi::OsStr::new(".idea")
+    });
+
     // Nova's generated-source roots discovery reads a snapshot under
     // `.nova/apt-cache/generated-roots.json`. Updates to this file should
     // trigger a project reload so newly discovered generated roots are watched.
@@ -103,14 +114,13 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
-    // Gradle script plugins conventionally live directly under the `gradle/` directory.
-    if (name.ends_with(".gradle") || name.ends_with(".gradle.kts"))
-        && path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-            == Some("gradle")
-    {
+    // Gradle script plugins can influence dependencies and tasks.
+    if !in_ignored_dir && (name.ends_with(".gradle") || name.ends_with(".gradle.kts")) {
+        return true;
+    }
+
+    // Gradle version catalogs can define dependency versions.
+    if !in_ignored_dir && name == "libs.versions.toml" {
         return true;
     }
 
@@ -148,7 +158,6 @@ pub fn is_build_file(path: &Path) -> bool {
         "gradle-wrapper.properties" => {
             path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
         }
-        "libs.versions.toml" => path.ends_with(Path::new("gradle/libs.versions.toml")),
         "mvnw" | "mvnw.cmd" => true,
         "maven-wrapper.properties" => {
             path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
@@ -211,6 +220,9 @@ mod tests {
             root.join(".nova")
                 .join("apt-cache")
                 .join("generated-roots.json"),
+            root.join("libs.versions.toml"),
+            root.join("dependencies.gradle"),
+            root.join("dependencies.gradle.kts"),
             root.join("gradle").join("libs.versions.toml"),
             root.join("gradle").join("dependencies.gradle"),
             root.join("gradle").join("dependencies.gradle.kts"),
@@ -232,10 +244,10 @@ mod tests {
         }
 
         let non_build_files = [
-            root.join("libs.versions.toml"),
             root.join("jvm.config"),
-            root.join("dependencies.gradle"),
-            root.join("dependencies.gradle.kts"),
+            root.join(".gradle").join("dependencies.gradle"),
+            root.join("build").join("dependencies.gradle"),
+            root.join("target").join("dependencies.gradle"),
         ];
 
         for path in non_build_files {
