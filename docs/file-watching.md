@@ -49,9 +49,10 @@ In `nova-workspace`, the set of watch roots can change after a project reload. F
 - Maven/Gradle discovery may refine `source_roots`.
 - Generated source roots may appear/disappear depending on build configuration and APT output.
 
-To handle this, the workspace reconciles its desired roots against the active watcher and updates
-them dynamically. Roots that do not exist yet are retried later (instead of failing permanently),
-which keeps “generated sources not created yet” from breaking file watching.
+To handle this, the workspace reconciles its desired watch paths (directory roots + their
+`WatchMode`) against the active watcher and updates them dynamically. Paths that do not exist yet
+are retried later (instead of failing permanently), which keeps “generated sources not created yet”
+from breaking file watching.
 
 Implementation reference: `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`).
 
