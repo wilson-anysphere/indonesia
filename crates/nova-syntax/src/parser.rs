@@ -3037,11 +3037,27 @@ impl<'a> Parser<'a> {
                         self.builder.finish_node();
                         continue;
                     }
-                    if self.nth(1).is_some_and(|k| k.is_identifier_like()) {
+                    // Field access / method call receiver segment. Java also allows explicit type
+                    // arguments on method invocations: `expr.<T>method()`.
+                    let mut lookahead = skip_trivia(&self.tokens, 1);
+                    if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
+                        lookahead = skip_trivia(
+                            &self.tokens,
+                            skip_type_arguments(&self.tokens, lookahead),
+                        );
+                    }
+                    if self
+                        .tokens
+                        .get(lookahead)
+                        .is_some_and(|t| t.kind.is_identifier_like())
+                    {
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
                         self.bump(); // .
-                        self.bump(); // identifier
+                        if self.at(SyntaxKind::Less) {
+                            self.parse_type_arguments();
+                        }
+                        self.expect_ident_like("expected name after `.`");
                         self.builder.finish_node();
                         continue;
                     }

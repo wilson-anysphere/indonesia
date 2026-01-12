@@ -1,0 +1,112 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        TypeParameters
+          Less "<"
+          TypeParameter
+            Identifier "T"
+          Greater ">"
+        Whitespace " "
+        Type
+          NamedType
+            Identifier "T"
+            Whitespace " "
+        Identifier "id"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "T"
+                Whitespace " "
+            Identifier "t"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ReturnStatement
+            ReturnKw "return"
+            Whitespace " "
+            NameExpression
+              Identifier "t"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "String"
+                Whitespace " "
+            Identifier "s"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          ExpressionStatement
+            MethodCallExpression
+              FieldAccessExpression
+                ThisExpression
+                  ThisKw "this"
+                Dot "."
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+                Identifier "id"
+              ArgumentList
+                LParen "("
+                NameExpression
+                  Identifier "s"
+                RParen ")"
+            Semicolon ";"
+          Whitespace "\n    "
+          ExpressionStatement
+            MethodCallExpression
+              FieldAccessExpression
+                NameExpression
+                  Identifier "Foo"
+                Dot "."
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+                Identifier "id"
+              ArgumentList
+                LParen "("
+                NameExpression
+                  Identifier "s"
+                RParen ")"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

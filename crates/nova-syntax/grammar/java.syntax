@@ -494,6 +494,7 @@ MethodCallExpression {
 
 FieldAccessExpression {
   expression: Expression?
+  type_arguments: TypeArguments?
   name_token: Ident?
 }
 

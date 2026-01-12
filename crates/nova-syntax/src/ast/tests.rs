@@ -1,7 +1,8 @@
 use crate::ast::{
     AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
-    CompilationUnit, Expression, ExpressionFragment, FieldDeclaration, ModuleDirectiveKind,
-    NewExpression, Statement, StatementFragment, SwitchRuleBody, TypeDeclaration,
+    CompilationUnit, Expression, ExpressionFragment, FieldAccessExpression, FieldDeclaration,
+    ModuleDirectiveKind, NewExpression, Statement, StatementFragment, SwitchRuleBody,
+    TypeDeclaration,
 };
 use crate::SyntaxKind;
 use crate::{
@@ -1037,6 +1038,31 @@ fn new_expression_anonymous_class_body_is_accessible() {
             .any(|m| matches!(m, ClassMember::FieldDeclaration(_))),
         "expected a field declaration member in anonymous class"
     );
+}
+
+#[test]
+fn generic_method_invocation_type_arguments_are_on_field_access() {
+    let src = r#"
+        class Foo {
+          <T> T id(T t) { return t; }
+          void m(String s) { this.<String>id(s); }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let access = parse
+        .syntax()
+        .descendants()
+        .filter_map(FieldAccessExpression::cast)
+        .find(|it| it.type_arguments().is_some())
+        .expect("expected a generic field/method access");
+
+    let args = access.type_arguments().expect("type arguments");
+    assert_eq!(args.arguments().count(), 1);
+    let arg = args.arguments().next().unwrap().ty().unwrap();
+    assert_eq!(arg.syntax().text().to_string(), "String");
 }
 
 #[test]

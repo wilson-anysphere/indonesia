@@ -2431,6 +2431,10 @@ impl FieldAccessExpression {
         support::child::<Expression>(&self.syntax)
     }
 
+    pub fn type_arguments(&self) -> Option<TypeArguments> {
+        support::child::<TypeArguments>(&self.syntax)
+    }
+
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
