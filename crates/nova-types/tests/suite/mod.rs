@@ -1,4 +1,5 @@
 mod class_members;
+mod glb;
 mod java_format;
 mod jls_conversions;
 mod jls_generics;
@@ -7,4 +8,5 @@ mod lub;
 mod minimal_jdk_subtyping;
 mod overload_resolution;
 mod type_loader;
+mod type_loader_nested_class_generics;
 mod type_store_upsert;
