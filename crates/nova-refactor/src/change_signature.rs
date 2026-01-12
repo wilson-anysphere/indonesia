@@ -920,6 +920,9 @@ fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Opt
 
             break;
         }
+        while start > 0 && !prefix.is_char_boundary(start) {
+            start -= 1;
+        }
 
         let ty = prefix[start..].trim();
         if is_plausible_type_token(ty) {

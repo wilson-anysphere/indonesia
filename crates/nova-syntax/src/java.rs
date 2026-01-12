@@ -2088,10 +2088,19 @@ impl Lowerer {
             callee
         });
 
-        let mut callee = callee_node
-            .as_ref()
-            .map(|expr| self.lower_expr(expr))
-            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+        let mut callee = if let Some(expr) = callee_node.as_ref() {
+            self.lower_expr(expr)
+        } else if let Some(tok) = name_token.as_ref() {
+            // `MethodCallExpression` nodes don't always contain the callee as a child expression
+            // (e.g. `foo()`), only as a token. Recover an expression form so downstream lowering
+            // (HIR + name resolution) can still attach references to the method name.
+            ast::Expr::Name(ast::NameExpr {
+                name: tok.text().to_string(),
+                range: self.spans.map_token(tok),
+            })
+        } else {
+            ast::Expr::Missing(self.spans.map_node(node))
+        };
 
         if let Some(name_token) = name_token {
             let name_range = self.spans.map_token(&name_token);
