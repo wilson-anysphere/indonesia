@@ -10,11 +10,13 @@ use nova_db::{Database, FileId};
 use nova_framework_spring::SpringWorkspaceIndex;
 
 use crate::framework_cache;
+use crate::spring_di;
 
 const MAX_CACHED_ROOTS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedSpringWorkspaceIndex {
+    #[allow(dead_code)]
     pub(crate) root: PathBuf,
     pub(crate) fingerprint: u64,
     pub(crate) index: Arc<SpringWorkspaceIndex>,
@@ -77,7 +79,7 @@ pub(crate) fn workspace_index_for_file(db: &dyn Database, file: FileId) -> Arc<S
         return Arc::new(SpringWorkspaceIndex::new(Arc::new(MetadataIndex::new())));
     };
 
-    let root = discover_project_root(path);
+    let root = spring_di::discover_project_root(path);
     workspace_index_for_root(db, root)
 }
 
@@ -201,24 +203,3 @@ fn is_spring_yaml_file(path: &Path) -> bool {
     }
     matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
 }
-
-fn discover_project_root(path: &Path) -> PathBuf {
-    if path.exists() {
-        return framework_cache::project_root_for_path(path);
-    }
-
-    // Best-effort fallback for in-memory test fixtures: if the path has a `src/` segment,
-    // treat its parent as the project root.
-    if let Some(parent) = path.ancestors().find_map(|ancestor| {
-        if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
-            ancestor.parent().map(Path::to_path_buf)
-        } else {
-            None
-        }
-    }) {
-        return parent;
-    }
-
-    path.parent().unwrap_or(path).to_path_buf()
-}
-

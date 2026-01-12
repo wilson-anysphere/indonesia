@@ -88,7 +88,14 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
 
     let metadata_json = r#"{
   "properties": [
-    { "name": "server.port", "type": "java.lang.Integer" }
+    { "name": "server.port", "type": "java.lang.Integer" },
+    { "name": "spring.main.banner-mode", "type": "java.lang.String" }
+  ],
+  "hints": [
+    { "name": "spring.main.banner-mode", "values": [
+      { "value": "off" },
+      { "value": "console" }
+    ] }
   ]
 }"#;
 
@@ -154,6 +161,18 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
         "expected completion list to contain server.port; got {items:#?}"
     );
 
+    // Value completions in application.properties should use metadata hints.
+    let (db, config_file, pos) = fixture(
+        config_path.clone(),
+        "spring.main.banner-mode=c<|>",
+        vec![],
+    );
+    let items = completions(&db, config_file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "console"),
+        "expected value completion list to contain 'console'; got {items:#?}"
+    );
+
     // Completions inside `@Value("${...}")` should use metadata-backed keys.
     let java_text = r#"
 import org.springframework.beans.factory.annotation.Value;
@@ -170,4 +189,3 @@ class C {
         "expected @Value completion list to contain server.port; got {items:#?}"
     );
 }
-
