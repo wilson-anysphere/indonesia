@@ -6985,6 +6985,80 @@ fn inline_variable_increment_is_rejected() {
 }
 
 #[test]
+fn inline_variable_allows_inlining_array_index_on_assignment_lhs() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m(int[] arr) {
+    int idx = 0;
+    arr[idx] = 1;
+    System.out.println(idx);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int idx").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at idx");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(int[] arr) {
+    arr[0] = 1;
+    System.out.println(0);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_allows_inlining_array_index_in_increment_target() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m(int[] arr) {
+    int idx = 0;
+    arr[idx]++;
+    System.out.println(idx);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int idx").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at idx");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(int[] arr) {
+    arr[0]++;
+    System.out.println(0);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn rename_static_imported_field_updates_import_and_usage() {
     let a_file = FileId::new("A.java");
     let b_file = FileId::new("B.java");
@@ -7176,7 +7250,7 @@ class B {
 fn inline_variable_rejects_crossing_lambda_execution_context() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
-  void m() {
+      void m() {
     int x = 1;
     int a = x;
     Runnable r = () -> System.out.println(a);
@@ -8638,7 +8712,7 @@ fn inline_variable_rejects_shadowing_by_for_header_declaration() {
 }
 
 #[test]
-fn inline_variable_use_in_array_index_is_not_supported() {
+fn inline_variable_use_in_array_index_is_supported() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   void m() {
@@ -8654,7 +8728,7 @@ fn inline_variable_use_in_array_index_is_not_supported() {
     let offset = src.find("int a").unwrap() + "int ".len();
     let symbol = db.symbol_at(&file, offset).expect("symbol at a");
 
-    let err = inline_variable(
+    let edit = inline_variable(
         &db,
         InlineVariableParams {
             symbol,
@@ -8662,8 +8736,18 @@ fn inline_variable_use_in_array_index_is_not_supported() {
             usage_range: None,
         },
     )
-    .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int[] arr = new int[2];
+    arr[1] = 0;
+    System.out.println(1);
+  }
+}
+"#;
+    assert_eq!(after, expected);
 }
 
 #[test]

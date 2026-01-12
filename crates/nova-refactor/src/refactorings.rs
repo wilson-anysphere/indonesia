@@ -2804,19 +2804,42 @@ fn reference_is_write(
 
     for ancestor in node.ancestors() {
         if let Some(assign) = ast::AssignmentExpression::cast(ancestor.clone()) {
-            if let Some(lhs) = assign.lhs() {
-                let lhs_range = lhs.syntax().text_range();
-                let start = u32::from(lhs_range.start()) as usize;
-                let end = u32::from(lhs_range.end()) as usize;
-                if start <= range.start && range.end <= end {
-                    return Ok(true);
+            // Only treat this reference as a write if the assignment target is the variable
+            // itself (`a = 1`, `a += 1`), not when the reference appears somewhere inside a more
+            // complex lvalue (`arr[idx] = 1`, `obj.field = 1`).
+            if let Some(ast::Expression::NameExpression(name)) = assign.lhs() {
+                let name_tok = name
+                    .syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .filter(|tok| tok.kind().is_identifier_like())
+                    .last();
+                if let Some(tok) = name_tok {
+                    if syntax_token_range(&tok) == range {
+                        return Ok(true);
+                    }
                 }
             }
         }
 
         if let Some(unary) = ast::UnaryExpression::cast(ancestor) {
+            // Only treat this reference as a write if the inc/dec operand is the variable
+            // itself (`a++`, `++a`), not when the reference appears somewhere inside a more complex
+            // lvalue (`arr[idx]++`, `obj.field++`).
             if unary_is_inc_or_dec(&unary) {
-                return Ok(true);
+                if let Some(ast::Expression::NameExpression(name)) = unary.operand() {
+                    let name_tok = name
+                        .syntax()
+                        .descendants_with_tokens()
+                        .filter_map(|el| el.into_token())
+                        .filter(|tok| tok.kind().is_identifier_like())
+                        .last();
+                    if let Some(tok) = name_tok {
+                        if syntax_token_range(&tok) == range {
+                            return Ok(true);
+                        }
+                    }
+                }
             }
         }
     }
