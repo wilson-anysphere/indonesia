@@ -497,6 +497,8 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
         return false;
     };
 
+    const GRADLE_SNAPSHOT_PATH: &str = ".nova/queries/gradle.json";
+
     match build_system {
         BuildSystem::Maven => {
             if matches!(name, "pom.xml" | "mvnw" | "mvnw.cmd") {
@@ -515,6 +517,15 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             }
         }
         BuildSystem::Gradle => {
+            // `.nova/queries/gradle.json` is a file-based handoff from `nova-build` to
+            // `nova-project` that contains a Gradle snapshot (classpath, source roots, etc).
+            //
+            // Treat it as a build file so project reloads are triggered immediately when the
+            // snapshot is updated.
+            if path.ends_with(GRADLE_SNAPSHOT_PATH) {
+                return true;
+            }
+
             // Gradle project structure is extremely flexible:
             // - "script plugins" (`apply from: "deps.gradle"`) are often used to share config
             // - version catalogs (`libs.versions.toml`) can change dependency resolution + plugins

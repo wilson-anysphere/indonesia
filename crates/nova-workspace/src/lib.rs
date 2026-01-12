@@ -1069,9 +1069,9 @@ fn fuzzy_rank_workspace_symbols(
     let mut ranked = Vec::new();
     for res in results {
         let name = res.symbol.name;
-        if let Some(symbols) = symbols.symbols.get(name.as_str()) {
+        if let Some(syms) = symbols.symbols.get(name.as_str()) {
             let mut locations: Vec<SymbolLocation> =
-                symbols.iter().map(|sym| sym.location.clone()).collect();
+                syms.iter().map(|sym| sym.location.clone()).collect();
             locations.sort_by(|a, b| {
                 a.file
                     .cmp(&b.file)

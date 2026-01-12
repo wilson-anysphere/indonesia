@@ -188,6 +188,17 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
     );
     write_file(&repo_jar_path(&repo, "com.dep", "dep-b", "2.0.0"), "");
 
+    // Create placeholder jars so `nova-project` can include them on the classpath without
+    // requiring network access or invoking Maven.
+    for (group_id, artifact_id, version) in [
+        ("com.dep", "dep-a", "1.0.0"),
+        ("com.dep", "dep-b", "2.0.0"),
+    ] {
+        let jar = repo_jar_path(&repo, group_id, artifact_id, version);
+        fs::create_dir_all(jar.parent().expect("jar parent")).expect("create jar parent");
+        fs::write(&jar, b"not really a jar").expect("write fake jar");
+    }
+
     // Leaf dependencies.
     write_file(
         &repo_pom_path(&repo, "com.dep", "dep-parent", "9.9.9"),

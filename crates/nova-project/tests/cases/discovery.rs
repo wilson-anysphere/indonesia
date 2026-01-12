@@ -229,6 +229,7 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         maven_repo: Some(repo_dir.path().to_path_buf()),
         ..LoadOptions::default()
     };
+
     let config = load_project_with_options(&root, &options).expect("load maven project");
 
     let dep = config

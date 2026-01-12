@@ -1633,14 +1633,14 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
             resolve_snapshot_jar_file_name(&version_dir, &dep.artifact_id, classifier)
         {
             let resolved_path = version_dir.join(&resolved);
-            if resolved_path.is_file() {
+            if resolved_path.is_file() || resolved_path.is_dir() {
                 return Some(resolved_path);
             }
         }
     }
 
     let path = version_dir.join(default_file_name(version));
-    if path.is_file() {
+    if path.is_file() || path.is_dir() {
         Some(path)
     } else {
         None
