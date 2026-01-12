@@ -17,10 +17,12 @@ pub fn json_schema() -> RootSchema {
 pub(crate) fn url_schema(
     generator: &mut schemars::r#gen::SchemaGenerator,
 ) -> schemars::schema::Schema {
-    let mut schema: schemars::schema::SchemaObject =
-        <String as schemars::JsonSchema>::json_schema(generator).into();
-    schema.format = Some("uri".to_owned());
-    schema.into()
+    let _ = generator;
+    schema_from_json(json!({
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https?://"
+    }))
 }
 
 fn apply_semantic_constraints(schema: &mut RootSchema) {

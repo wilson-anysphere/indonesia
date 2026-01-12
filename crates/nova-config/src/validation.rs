@@ -36,7 +36,7 @@ impl NovaConfig {
     pub fn validate_with_context(&self, ctx: ConfigValidationContext<'_>) -> ValidationDiagnostics {
         let mut out = ValidationDiagnostics::default();
 
-        validate_ai(self, &mut out);
+        validate_ai(self, ctx, &mut out);
         validate_extensions(self, ctx, &mut out);
         validate_generated_sources(self, &mut out);
         validate_jdk(self, ctx, &mut out);
@@ -149,7 +149,7 @@ fn validate_extensions(
     }
 }
 
-fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+fn validate_ai(config: &NovaConfig, ctx: ConfigValidationContext<'_>, out: &mut ValidationDiagnostics) {
     if config.ai.audit_log.enabled && !config.ai.enabled {
         out.warnings.push(ConfigWarning::InvalidValue {
             toml_path: "ai.audit_log.enabled".to_string(),
@@ -159,6 +159,33 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
 
     if !config.ai.enabled {
         return;
+    }
+
+    let scheme = config.ai.provider.url.scheme();
+    if scheme != "http" && scheme != "https" {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.url".to_string(),
+            message: format!("unsupported URL scheme {scheme}; expected http or https"),
+        });
+    }
+
+    if config.ai.provider.model.trim().is_empty() {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.model".to_string(),
+            message: "must be non-empty".to_string(),
+        });
+    }
+
+    if matches!(config.ai.provider.kind, AiProviderKind::AzureOpenAi)
+        && matches!(
+            config.ai.provider.azure_api_version.as_deref(),
+            Some(value) if value.trim().is_empty()
+        )
+    {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.azure_api_version".to_string(),
+            message: "must be non-empty when set".to_string(),
+        });
     }
 
     validate_ai_code_edit_policy(config, out);
@@ -248,6 +275,31 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
     {
         out.errors
             .push(ConfigValidationError::AiMissingInProcessConfig);
+    }
+
+    if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama) {
+        if let Some(cfg) = config.ai.provider.in_process_llama.as_ref() {
+            let base_dir = ctx.base_dir();
+            let resolved = if cfg.model_path.is_absolute() {
+                Some(cfg.model_path.clone())
+            } else {
+                base_dir.map(|base| base.join(&cfg.model_path))
+            };
+
+            if let Some(resolved) = resolved {
+                if !resolved.exists() {
+                    out.errors.push(ConfigValidationError::InvalidValue {
+                        toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+                        message: format!("path does not exist: {}", resolved.display()),
+                    });
+                } else if !resolved.is_file() {
+                    out.errors.push(ConfigValidationError::InvalidValue {
+                        toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+                        message: format!("path is not a file: {}", resolved.display()),
+                    });
+                }
+            }
+        }
     }
 
     if config.ai.features.completion_ranking && config.ai.timeouts.completion_ranking_ms == 0 {

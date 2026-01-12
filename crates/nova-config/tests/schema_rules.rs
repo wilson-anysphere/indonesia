@@ -180,3 +180,17 @@ fn json_schema_marks_ai_api_key_as_write_only() {
         Some(true)
     );
 }
+
+#[test]
+fn json_schema_restricts_ai_provider_url_to_http_schemes() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let url_schema = value
+        .pointer("/definitions/AiProviderConfig/properties/url")
+        .expect("url schema property exists");
+    assert_eq!(
+        url_schema.get("pattern").and_then(|v| v.as_str()),
+        Some("^https?://")
+    );
+}

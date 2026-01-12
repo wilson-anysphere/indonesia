@@ -92,6 +92,114 @@ kind = "open_ai"
 }
 
 #[test]
+fn validates_ai_provider_url_scheme_is_http() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "ollama"
+url = "ftp://localhost:11434"
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.url".to_string(),
+            message: "unsupported URL scheme ftp; expected http or https".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_ai_provider_model_is_non_empty() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "ollama"
+model = ""
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.model".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_azure_api_version_is_non_empty() {
+    let text = r#"
+[ai]
+enabled = true
+api_key = "secret"
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "azure_open_ai"
+azure_deployment = "my-deployment"
+azure_api_version = ""
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.azure_api_version".to_string(),
+            message: "must be non-empty when set".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_in_process_llama_model_path_exists() {
+    let dir = tempdir().expect("tempdir");
+    let config_path = dir.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "in_process_llama"
+
+[ai.provider.in_process_llama]
+model_path = "missing.gguf"
+"#,
+    )
+    .expect("write config");
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_path_with_diagnostics(&config_path).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.in_process_llama.model_path".to_string(),
+            message: format!(
+                "path does not exist: {}",
+                dir.path().join("missing.gguf").display()
+            ),
+        }]
+    );
+}
+
+#[test]
 fn validates_extensions_wasm_paths_exist() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join("nova.toml");
