@@ -11,6 +11,19 @@ fn dep_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
 }
 
+fn set_file(
+    db: &mut SalsaRootDatabase,
+    project: ProjectId,
+    file: FileId,
+    rel_path: &str,
+    text: &str,
+) {
+    db.set_file_project(file, project);
+    db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
+    db.set_file_exists(file, true);
+    db.set_file_content(file, Arc::new(text.to_string()));
+}
+
 fn find_method_named(tree: &nova_hir::item_tree::ItemTree, name: &str) -> nova_hir::ids::MethodId {
     fn visit_item(
         tree: &nova_hir::item_tree::ItemTree,
@@ -182,10 +195,6 @@ fn workspace_class_ids_are_stable_across_bodies() {
 
     let file_a = FileId::from_raw(1);
     let file_b = FileId::from_raw(2);
-    db.set_file_project(file_a, project);
-    db.set_file_project(file_b, project);
-    db.set_file_rel_path(file_a, Arc::new("src/p/A.java".to_string()));
-    db.set_file_rel_path(file_b, Arc::new("src/p/B.java".to_string()));
     db.set_all_file_ids(Arc::new(vec![file_a, file_b]));
     db.set_project_files(project, Arc::new(vec![file_a, file_b]));
 
@@ -202,8 +211,8 @@ class B {
 }
 "#;
 
-    db.set_file_text(file_a, src_a);
-    db.set_file_text(file_b, src_b);
+    set_file(&mut db, project, file_a, "src/p/A.java", src_a);
+    set_file(&mut db, project, file_b, "src/p/B.java", src_b);
 
     let tree_a = db.hir_item_tree(file_a);
     let tree_b = db.hir_item_tree(file_b);
@@ -225,5 +234,127 @@ class B {
     assert_eq!(
         a_in_a, a_in_b,
         "expected workspace type to have stable ClassId across bodies"
+    );
+}
+
+#[test]
+fn workspace_class_ids_are_stable_across_bodies_in_same_file() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let types_file = FileId::from_raw(1);
+    let user_file = FileId::from_raw(2);
+    db.set_all_file_ids(Arc::new(vec![types_file, user_file]));
+    // Stable order by `file_rel_path`.
+    db.set_project_files(project, Arc::new(vec![user_file, types_file]));
+
+    set_file(
+        &mut db,
+        project,
+        types_file,
+        "src/Types.java",
+        r#"
+class A {}
+class B {}
+"#,
+    );
+
+    // Reference A/B in different orders across two bodies.
+    set_file(
+        &mut db,
+        project,
+        user_file,
+        "src/C.java",
+        r#"
+class C {
+    void m1() {
+        A a = new A();
+        B b = new B();
+    }
+
+    void m2() {
+        B b = new B();
+        A a = new A();
+    }
+}
+"#,
+    );
+
+    let tree = db.hir_item_tree(user_file);
+    let m1 = find_method_named(&tree, "m1");
+    let m2 = find_method_named(&tree, "m2");
+
+    let body1 = db.typeck_body(DefWithBodyId::Method(m1));
+    let body2 = db.typeck_body(DefWithBodyId::Method(m2));
+
+    let a1 = body1.env.lookup_class("A").expect("A should be interned");
+    let a2 = body2.env.lookup_class("A").expect("A should be interned");
+    assert_eq!(a1, a2, "expected A to have stable ClassId across bodies");
+
+    let b1 = body1.env.lookup_class("B").expect("B should be interned");
+    let b2 = body2.env.lookup_class("B").expect("B should be interned");
+    assert_eq!(b1, b2, "expected B to have stable ClassId across bodies");
+}
+
+#[test]
+fn workspace_class_ids_are_stable_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let foo_file = FileId::from_raw(1);
+    let bar_file = FileId::from_raw(2);
+    db.set_all_file_ids(Arc::new(vec![foo_file, bar_file]));
+    // Stable order by `file_rel_path`.
+    db.set_project_files(project, Arc::new(vec![bar_file, foo_file]));
+
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/Foo.java",
+        r#"
+class Foo {
+    static Foo make() {
+        return new Foo();
+    }
+}
+"#,
+    );
+
+    set_file(
+        &mut db,
+        project,
+        bar_file,
+        "src/Bar.java",
+        r#"
+class Bar {
+    Foo makeFoo() { return new Foo(); }
+}
+"#,
+    );
+
+    let foo_tree = db.hir_item_tree(foo_file);
+    let bar_tree = db.hir_item_tree(bar_file);
+    let foo_method = find_method_named(&foo_tree, "make");
+    let bar_method = find_method_named(&bar_tree, "makeFoo");
+
+    let foo_body = db.typeck_body(DefWithBodyId::Method(foo_method));
+    let bar_body = db.typeck_body(DefWithBodyId::Method(bar_method));
+
+    let foo_from_foo = foo_body
+        .env
+        .lookup_class("Foo")
+        .expect("Foo should be interned in Foo env");
+    let foo_from_bar = bar_body
+        .env
+        .lookup_class("Foo")
+        .expect("Foo should be interned in Bar env");
+    assert_eq!(
+        foo_from_foo, foo_from_bar,
+        "expected Foo to have stable ClassId across files"
     );
 }

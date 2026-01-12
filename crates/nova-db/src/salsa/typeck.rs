@@ -1523,7 +1523,6 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     // Start with the built-in minimal JDK so type-system algorithms have a stable core (`Object`,
     // `String`, boxing types, etc).
     let mut store = TypeStore::with_minimal_jdk();
-
     // 1) Pre-intern all workspace source types in a stable order so their `ClassId`s do not depend
     // on which body/file happens to be typechecked first.
     let mut source_type_names: Vec<String> = Vec::new();
