@@ -1,5 +1,7 @@
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -1694,6 +1696,104 @@ fn strip_gradle_comments(contents: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
 }
 
+fn gradle_string_literal_ranges(contents: &str) -> Vec<Range<usize>> {
+    // Best-effort string literal range extraction (for parsing Gradle scripts with regexes).
+    //
+    // Supports:
+    // - `'...'`
+    // - `"..."` (with backslash escapes)
+    // - `'''...'''` / `"""..."""` (Groovy / Kotlin raw strings)
+    //
+    // Ranges are half-open (`start..end`) and include the opening/closing quote delimiters.
+    let bytes = contents.as_bytes();
+    let mut out: Vec<Range<usize>> = Vec::new();
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"'''") {
+            let start = i;
+            i += 3;
+            while i < bytes.len() && !bytes[i..].starts_with(b"'''") {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 3;
+            }
+            out.push(start..i);
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            let start = i;
+            i += 3;
+            while i < bytes.len() && !bytes[i..].starts_with(b"\"\"\"") {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 3;
+            }
+            out.push(start..i);
+            continue;
+        }
+
+        if bytes[i] == b'\'' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if b == b'\'' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            out.push(start..i);
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if b == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            out.push(start..i);
+            continue;
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
+fn is_index_inside_string_ranges(idx: usize, ranges: &[Range<usize>]) -> bool {
+    ranges
+        .binary_search_by(|range| {
+            if idx < range.start {
+                Ordering::Greater
+            } else if idx >= range.end {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
 fn normalize_project_path(project_path: &str) -> String {
     let project_path = project_path.trim();
     if project_path.is_empty() || project_path == ":" {
@@ -2092,6 +2192,7 @@ fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(S
             i += 3;
             continue;
         }
+
         if bytes[i..].starts_with(b"\"\"\"") {
             in_triple_double = true;
             i += 3;
@@ -2934,6 +3035,7 @@ fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
 fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     static RE_PARENS: OnceLock<Regex> = OnceLock::new();
     static RE_NO_PARENS: OnceLock<Regex> = OnceLock::new();
+    let string_ranges = gradle_string_literal_ranges(contents);
 
     let re_parens = RE_PARENS.get_or_init(|| {
         // Keep this list conservative: only configurations that are commonly used for
@@ -2956,6 +3058,12 @@ fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
     let mut deps = Vec::new();
     for re in [re_parens, re_no_parens] {
         for caps in re.captures_iter(contents) {
+            let Some(m0) = caps.get(0) else {
+                continue;
+            };
+            if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+                continue;
+            }
             let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
                 continue;
             };
@@ -3216,9 +3324,19 @@ fn parse_gradle_local_classpath_entries_from_text(
         .expect("valid regex")
     });
 
+    let contents = strip_gradle_comments(contents);
+    let contents = contents.as_str();
+    let string_ranges = gradle_string_literal_ranges(contents);
+
     let mut out = Vec::new();
 
     for caps in files_re.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
         let Some(args) = caps.name("args").map(|m| m.as_str()) else {
             continue;
         };
@@ -3295,18 +3413,36 @@ fn parse_gradle_local_classpath_entries_from_text(
     };
 
     for caps in file_tree_dir_re.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
         if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
             add_file_tree_dir(dir);
         }
     }
 
     for caps in file_tree_positional_re.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
         if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
             add_file_tree_dir(dir);
         }
     }
 
     for caps in file_tree_map_re.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
         if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
             add_file_tree_dir(dir);
         }
@@ -3327,6 +3463,7 @@ fn parse_gradle_dependencies_from_text(
     // are unaffected.
     let contents = strip_gradle_comments(contents);
     let contents = contents.as_str();
+    let string_ranges = gradle_string_literal_ranges(contents);
 
     let mut deps = Vec::new();
 
@@ -3348,6 +3485,12 @@ fn parse_gradle_dependencies_from_text(
     });
 
     for caps in re_gav.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
         let Some(config) = caps.name("config").map(|m| m.as_str()) else {
             continue;
         };
@@ -3400,6 +3543,12 @@ fn parse_gradle_dependencies_from_text(
     });
 
     for caps in re_map.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), &string_ranges) {
+            continue;
+        }
         let Some(config) = caps.name("config").map(|m| m.as_str()) else {
             continue;
         };
@@ -3423,6 +3572,7 @@ fn parse_gradle_dependencies_from_text(
             contents,
             version_catalog,
             gradle_properties,
+            &string_ranges,
         ));
     }
     sort_dedup_dependencies(&mut deps);
@@ -3433,6 +3583,7 @@ fn resolve_version_catalog_dependencies(
     contents: &str,
     version_catalog: &GradleVersionCatalog,
     gradle_properties: &GradleProperties,
+    string_ranges: &[Range<usize>],
 ) -> Vec<Dependency> {
     static RE_DOT: OnceLock<Regex> = OnceLock::new();
     static RE_BRACKET: OnceLock<Regex> = OnceLock::new();
@@ -3462,6 +3613,12 @@ fn resolve_version_catalog_dependencies(
 
     let mut deps = Vec::new();
     for caps in re_dot.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), string_ranges) {
+            continue;
+        }
         let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
             continue;
         };
@@ -3480,6 +3637,12 @@ fn resolve_version_catalog_dependencies(
     }
 
     for caps in re_bracket.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), string_ranges) {
+            continue;
+        }
         let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
             continue;
         };
@@ -3502,6 +3665,12 @@ fn resolve_version_catalog_dependencies(
     }
 
     for caps in re_bundle_bracket.captures_iter(contents) {
+        let Some(m0) = caps.get(0) else {
+            continue;
+        };
+        if is_index_inside_string_ranges(m0.start(), string_ranges) {
+            continue;
+        }
         let Some(bundle) = caps.name("bundle").map(|m| m.as_str()) else {
             continue;
         };
@@ -4019,10 +4188,10 @@ mod tests {
     use super::{
         append_included_build_module_refs, default_gradle_user_home, extract_named_brace_blocks,
         gradle_dependency_jar_paths, parse_gradle_dependencies_from_text,
-        parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
-        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
-        sort_dedup_dependencies, strip_gradle_comments, Dependency, GradleModuleRef,
-        GradleProperties,
+        parse_gradle_local_classpath_entries_from_text, parse_gradle_project_dependencies_from_text,
+        parse_gradle_settings_included_builds, parse_gradle_settings_projects,
+        parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
+        ClasspathEntryKind, Dependency, GradleModuleRef, GradleProperties,
     };
     use crate::test_support::{env_lock, EnvVarGuard};
     use tempfile::tempdir;
@@ -4798,7 +4967,7 @@ dependencies {
   // implementation("commented:dep:1")
   /* runtimeOnly("commented:block:2") */
   implementation("real:dep:3")
-}
+ }
 "#;
 
         let gradle_properties = GradleProperties::new();
@@ -4876,4 +5045,115 @@ dependencies {
         let resolved = default_gradle_user_home().expect("gradle user home");
         assert_eq!(resolved, home.join(".gradle"));
     }
+
+    #[test]
+    fn parses_gradle_dependencies_ignores_dependency_like_text_inside_strings() {
+        let build_script = r#"
+val ignored = "implementation 'ignored:dep:1'"
+val ignored2 = '''implementation("ignored2:dep:2")'''
+val ignored3 = """implementation 'ignored3:dep:3'"""
+
+dependencies {
+  implementation("real:dep:4")
 }
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(build_script, None, &gradle_properties);
+        assert_eq!(deps.len(), 1, "deps: {deps:?}");
+        assert_eq!(deps[0].group_id, "real");
+        assert_eq!(deps[0].artifact_id, "dep");
+        assert_eq!(deps[0].version.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_ignores_version_catalog_refs_inside_strings() {
+        let gradle_properties = GradleProperties::new();
+
+        let catalog_toml = r#"
+[versions]
+foo = "1.0.0"
+guava = "32.0.0"
+
+[libraries]
+foo = { module = "com.example:foo", version = { ref = "foo" } }
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+"#;
+        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
+            .expect("parse catalog");
+
+        let build_script = r#"
+val ignored = "implementation(libs.foo)"
+
+dependencies {
+  implementation(libs.guava)
+}
+"#;
+
+        let deps =
+            parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
+        assert_eq!(deps.len(), 1, "deps: {deps:?}");
+        assert_eq!(deps[0].group_id, "com.google.guava");
+        assert_eq!(deps[0].artifact_id, "guava");
+        assert_eq!(deps[0].version.as_deref(), Some("32.0.0"));
+    }
+
+    #[test]
+    fn extract_named_brace_blocks_handles_triple_quoted_strings_with_braces() {
+        let script = r#"
+subprojects {
+  val json = """
+    { "k": 1 }
+  """
+
+  dependencies {
+    implementation("real:dep:1")
+  }
+}
+"#;
+
+        let subprojects_blocks = extract_named_brace_blocks(script, "subprojects");
+        assert_eq!(subprojects_blocks.len(), 1);
+        let deps_blocks = extract_named_brace_blocks(&subprojects_blocks[0], "dependencies");
+        assert_eq!(deps_blocks.len(), 1);
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(&deps_blocks[0], None, &gradle_properties);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].group_id, "real");
+        assert_eq!(deps[0].artifact_id, "dep");
+    }
+
+    #[test]
+    fn parse_gradle_local_classpath_entries_ignores_commented_out_file_tree() {
+        let dir = tempdir().expect("tempdir");
+        let module_root = dir.path();
+        fs::create_dir_all(module_root.join("libs")).expect("create libs dir");
+        let jar_path = module_root.join("libs").join("a.jar");
+        fs::write(&jar_path, b"").expect("write jar");
+
+        let commented = r#"
+dependencies {
+  // implementation fileTree(dir: 'libs', include: ['*.jar'])
+}
+"#;
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, commented);
+        assert!(
+            entries.is_empty(),
+            "expected commented-out fileTree to be ignored; got: {entries:?}"
+        );
+
+        let active = r#"
+dependencies {
+  implementation fileTree(dir: 'libs', include: ['*.jar'])
+}
+"#;
+        let entries = parse_gradle_local_classpath_entries_from_text(module_root, active);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+            "expected {jar_path:?} to be present; got: {entries:?}"
+        );
+    }
+} 
