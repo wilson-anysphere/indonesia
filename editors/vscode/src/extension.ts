@@ -2253,7 +2253,9 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         const text = await runAiLspExecuteCommand(args, 'Nova AI: Generating method body…');
         if (!text.trim()) {
-          void vscode.window.showInformationMessage('Nova AI: No method body returned.');
+          // Patch-based AI code-edit commands apply their edits via `workspace/applyEdit` and return
+          // `null` (no snippet). In that case, treat an empty response as success.
+          void vscode.window.showInformationMessage('Nova AI: Method body edit applied.');
           return;
         }
 
@@ -2298,7 +2300,9 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         const text = await runAiLspExecuteCommand(args, 'Nova AI: Generating tests…');
         if (!text.trim()) {
-          void vscode.window.showInformationMessage('Nova AI: No tests returned.');
+          // Patch-based AI code-edit commands apply their edits via `workspace/applyEdit` and return
+          // `null` (no snippet). In that case, treat an empty response as success.
+          void vscode.window.showInformationMessage('Nova AI: Test edit applied.');
           return;
         }
 
