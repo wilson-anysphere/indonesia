@@ -174,29 +174,25 @@ fn writes_gradle_snapshot_after_java_compile_config() {
     std::fs::create_dir_all(dep_jar.parent().unwrap()).unwrap();
     std::fs::write(&dep_jar, b"not a real jar").unwrap();
 
+    // Note: this payload mirrors Gradle's init script behavior, which emits JSON-escaped strings
+    // (important for Windows paths containing backslashes).
+    let payload = serde_json::json!({
+        "compileClasspath": [dep_jar.to_string_lossy().to_string()],
+        "testCompileClasspath": [],
+        "mainSourceRoots": [app_src.to_string_lossy().to_string()],
+        "testSourceRoots": [],
+        "mainOutputDirs": [main_output.to_string_lossy().to_string()],
+        "testOutputDirs": [test_output.to_string_lossy().to_string()],
+        "sourceCompatibility": "17",
+        "targetCompatibility": "17",
+        "toolchainLanguageVersion": "21",
+        "compileCompilerArgs": ["--enable-preview"],
+        "testCompilerArgs": [],
+        "inferModulePath": false
+    });
     let stdout = format!(
-        r#"
-NOVA_JSON_BEGIN
-{{
-  "compileClasspath": ["{dep_jar}"],
-  "testCompileClasspath": [],
-  "mainSourceRoots": ["{app_src}"],
-  "testSourceRoots": [],
-  "mainOutputDirs": ["{main_output}"],
-  "testOutputDirs": ["{test_output}"],
-  "sourceCompatibility": "17",
-  "targetCompatibility": "17",
-  "toolchainLanguageVersion": "21",
-  "compileCompilerArgs": ["--enable-preview"],
-  "testCompilerArgs": [],
-  "inferModulePath": false
-}}
-NOVA_JSON_END
-"#,
-        dep_jar = dep_jar.display(),
-        app_src = app_src.display(),
-        main_output = main_output.display(),
-        test_output = test_output.display(),
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
     );
 
     let runner = Arc::new(FakeRunner {
@@ -379,25 +375,22 @@ fn writes_gradle_snapshot_after_root_java_compile_config() {
     .unwrap();
     std::fs::write(project_root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
 
+    let payload = serde_json::json!({
+        "projectPath": ":",
+        "projectDir": project_root.to_string_lossy().to_string(),
+        "compileClasspath": [],
+        "testCompileClasspath": [],
+        "mainSourceRoots": [],
+        "testSourceRoots": [],
+        "mainOutputDirs": [],
+        "testOutputDirs": [],
+        "compileCompilerArgs": [],
+        "testCompilerArgs": [],
+        "inferModulePath": false,
+    });
     let stdout = format!(
-        r#"
-NOVA_JSON_BEGIN
-{{
-  "projectPath": ":",
-  "projectDir": "{project_dir}",
-  "compileClasspath": [],
-  "testCompileClasspath": [],
-  "mainSourceRoots": [],
-  "testSourceRoots": [],
-  "mainOutputDirs": [],
-  "testOutputDirs": [],
-  "compileCompilerArgs": [],
-  "testCompilerArgs": [],
-  "inferModulePath": false
-}}
-NOVA_JSON_END
-"#,
-        project_dir = project_root.display(),
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
     );
 
     let runner = Arc::new(FakeRunner {
@@ -442,24 +435,23 @@ fn writes_gradle_snapshot_for_root_java_compile_config_without_project_path_fiel
 
     // Intentionally omit `projectPath`. Root config queries pass `project_path=None`, so the
     // snapshot key should fall back to `":"`.
+    let payload = serde_json::json!({
+        // Intentionally omit `projectPath`. Root config queries pass `project_path=None`, so the
+        // snapshot key should fall back to `":"`.
+        "projectDir": project_root.to_string_lossy().to_string(),
+        "compileClasspath": [],
+        "testCompileClasspath": [],
+        "mainSourceRoots": [],
+        "testSourceRoots": [],
+        "mainOutputDirs": [],
+        "testOutputDirs": [],
+        "compileCompilerArgs": [],
+        "testCompilerArgs": [],
+        "inferModulePath": false,
+    });
     let stdout = format!(
-        r#"
-NOVA_JSON_BEGIN
-{{
-  "projectDir": "{project_dir}",
-  "compileClasspath": [],
-  "testCompileClasspath": [],
-  "mainSourceRoots": [],
-  "testSourceRoots": [],
-  "mainOutputDirs": [],
-  "testOutputDirs": [],
-  "compileCompilerArgs": [],
-  "testCompilerArgs": [],
-  "inferModulePath": false
-}}
-NOVA_JSON_END
-"#,
-        project_dir = project_root.display(),
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
     );
 
     let runner = Arc::new(FakeRunner {
