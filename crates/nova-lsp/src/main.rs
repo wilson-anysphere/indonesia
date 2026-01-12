@@ -4394,13 +4394,21 @@ fn goto_definition_jdk(
 
             if stub.is_none() {
                 let suffix = format!(".{name}");
-                if let Ok(names) = jdk.class_names_with_prefix("") {
-                    let matches: Vec<String> = names
-                        .into_iter()
-                        .filter(|candidate| candidate.ends_with(&suffix))
-                        .collect();
-                    if matches.len() == 1 {
-                        stub = jdk.lookup_type(&matches[0]).ok().flatten();
+                if let Ok(names) = jdk.iter_binary_class_names() {
+                    let mut found: Option<&str> = None;
+                    for candidate in names {
+                        if candidate.ends_with(&suffix) {
+                            if found.is_some() {
+                                // Ambiguous; stop early.
+                                found = None;
+                                break;
+                            }
+                            found = Some(candidate);
+                        }
+                    }
+
+                    if let Some(binary_name) = found {
+                        stub = jdk.lookup_type(binary_name).ok().flatten();
                     }
                 }
             }
