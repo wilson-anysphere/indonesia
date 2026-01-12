@@ -4303,6 +4303,42 @@ fn inline_variable_inline_all_rejected_when_unindexed_qualified_occurrence_exist
 }
 
 #[test]
+fn inline_variable_all_usages_succeeds_when_only_usage_is_qualified() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m() {
+    String a = "hi";
+    System.out.println(a.length());
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("String a").unwrap() + "String ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        !after.contains("String a"),
+        "expected declaration to be removed: {after}"
+    );
+    assert!(
+        after.contains("System.out.println(\"hi\".length());"),
+        "expected qualified usage to be inlined: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializer_has_side_effects(
 ) {
     // If `find_references` does not report all textual occurrences, `inline_all=false` must keep the
