@@ -122,12 +122,8 @@ fn framework_analyzer_runs_via_extension_registry_in_lsp_pipeline_and_respects_c
 
     let cancelled_diags = state.diagnostics(cancelled.clone(), &uri);
     assert!(
-        cancelled_diags.is_empty()
-            || !cancelled_diags.iter().any(|diag| matches!(
-                &diag.code,
-                Some(NumberOrString::String(code)) if code == TEST_DIAG_CODE
-            )),
-        "expected cancelled diagnostics to omit framework analyzer results; got {cancelled_diags:?}"
+        cancelled_diags.is_empty(),
+        "expected cancelled diagnostics request to return no results; got {cancelled_diags:?}"
     );
 
     let cancelled_completion_params = CompletionParams {
@@ -147,12 +143,8 @@ fn framework_analyzer_runs_via_extension_registry_in_lsp_pipeline_and_respects_c
         lsp_types::CompletionResponse::Array(items) => items,
         lsp_types::CompletionResponse::List(list) => list.items,
     };
-    let cancelled_labels: Vec<_> = cancelled_items
-        .iter()
-        .map(|item| item.label.as_str())
-        .collect();
     assert!(
-        !cancelled_labels.contains(&"frameworkCompletion"),
-        "expected cancelled completion response to omit framework completion item; got {cancelled_labels:?}"
+        cancelled_items.is_empty(),
+        "expected cancelled completion request to return no results; got {cancelled_items:?}"
     );
 }
