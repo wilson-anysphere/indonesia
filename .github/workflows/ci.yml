@@ -37,6 +37,7 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -66,6 +67,7 @@ jobs:
       - name: test (nextest)
         run: cargo nextest run --locked --workspace --profile ci
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -96,6 +98,7 @@ jobs:
       - name: doctest
         run: cargo test --locked --workspace --doc
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -117,6 +120,7 @@ jobs:
       - name: check (wasm32-unknown-unknown)
         run: cargo check --locked -p nova-ext-wasm-example-todos --target wasm32-unknown-unknown
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail

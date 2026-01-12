@@ -39,6 +39,7 @@ jobs:
         if: steps.nextest.outcome != 'success'
         run: cargo test --locked --workspace --all-features
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail

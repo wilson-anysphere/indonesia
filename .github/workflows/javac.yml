@@ -48,6 +48,7 @@ jobs:
         run: cargo test --locked -p nova-refactor --test javac_refactors -- --ignored
 
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail

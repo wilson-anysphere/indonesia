@@ -114,6 +114,7 @@ jobs:
           done
 
       - name: Cargo.lock unchanged
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
