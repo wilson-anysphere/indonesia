@@ -430,6 +430,21 @@ fn parse_parameter(tokens: &[Token]) -> Option<VarDef> {
 
         if let Some(ty) = tokens[idx].ident() {
             if qualifies_as_type(ty) {
+                // Skip identifiers that are part of type annotations, e.g. `Foo @Ann[] foo`.
+                //
+                // We treat `@Ann` / `@foo.bar.Ann` as not-a-type here, so we don't incorrectly
+                // resolve the parameter type to the annotation rather than the underlying type.
+                let mut chain_start = idx;
+                while chain_start >= 2
+                    && tokens[chain_start - 1].symbol() == Some('.')
+                    && tokens[chain_start - 2].ident().is_some()
+                {
+                    chain_start -= 2;
+                }
+                if chain_start > 0 && tokens[chain_start - 1].symbol() == Some('@') {
+                    continue;
+                }
+
                 return Some(VarDef {
                     ty: ty.to_string(),
                     ty_span: tokens[idx].span,
