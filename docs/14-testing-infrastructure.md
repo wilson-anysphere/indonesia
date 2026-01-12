@@ -468,12 +468,16 @@ CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled +
 **Where:**
 
 - Main fuzz targets live under `fuzz/fuzz_targets/`
-- Remote protocol fuzz targets live under:
+- Per-crate fuzz targets live under:
   - `crates/nova-remote-proto/fuzz/fuzz_targets/`
   - `crates/nova-remote-rpc/fuzz/fuzz_targets/`
+  - `crates/nova-dap/fuzz/fuzz_targets/`
+  - `crates/nova-jdwp/fuzz/fuzz_targets/`
 - Seed corpora (main harness) live under `fuzz/corpus/<target>/`
 - Crash artifacts (if any) are written under:
   - `fuzz/artifacts/<target>/` (main harness)
+  - `crates/nova-dap/fuzz/artifacts/<target>/`
+  - `crates/nova-jdwp/fuzz/artifacts/<target>/`
   - `crates/nova-remote-proto/fuzz/artifacts/<target>/`
   - `crates/nova-remote-rpc/fuzz/artifacts/<target>/`
 
@@ -492,6 +496,7 @@ RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_range_format -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_on_type_format -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_decompile_classfile -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_completion -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_literals -- -max_total_time=60 -max_len=262144
@@ -507,7 +512,7 @@ There are additional targets (e.g. `parse_java`, `format_java`, and `refactor_sm
 cargo +nightly fuzz list
 ```
 
-Remote protocol fuzzers must be run from their crate directory:
+Per-crate fuzzers must be run from their crate directory:
 
 ```bash
 cd crates/nova-remote-proto
@@ -519,6 +524,14 @@ cargo +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262
 cd ../nova-remote-rpc
 cargo +nightly fuzz list
 cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+
+cd ../nova-dap
+cargo +nightly fuzz list
+cargo +nightly fuzz run read_dap_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-jdwp
+cargo +nightly fuzz list
+cargo +nightly fuzz run decode_packet_bytes -- -max_total_time=60 -max_len=262144
 ```
 
 ---

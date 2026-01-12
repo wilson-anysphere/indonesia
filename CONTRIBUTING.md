@@ -304,6 +304,7 @@ RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_range_format -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_on_type_format -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_decompile_classfile -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_literals -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_yaml_parse -- -max_total_time=60 -max_len=262144
@@ -347,12 +348,22 @@ bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_v3_rpc_payload -- -ma
 cd ../nova-remote-rpc
 bash ../../scripts/cargo_agent.sh +nightly fuzz list
 bash ../../scripts/cargo_agent.sh +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+
+cd ../nova-dap
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run read_dap_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-jdwp
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_packet_bytes -- -max_total_time=60 -max_len=262144
 ```
 
 Crash artifacts for these per-crate harnesses are written under:
 
 - `crates/nova-remote-proto/fuzz/artifacts/<target>/`
 - `crates/nova-remote-rpc/fuzz/artifacts/<target>/`
+- `crates/nova-dap/fuzz/artifacts/<target>/`
+- `crates/nova-jdwp/fuzz/artifacts/<target>/`
 
 ## VS Code extension development
 

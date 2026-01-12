@@ -234,6 +234,7 @@ fuzz/
 │   ├── fuzz_range_format/
 │   ├── fuzz_on_type_format/
 │   ├── fuzz_classfile/
+│   ├── fuzz_decompile_classfile/
 │   ├── fuzz_junit_report/
 │   ├── fuzz_completion/
 │   ├── fuzz_yaml_parse/
@@ -251,6 +252,7 @@ fuzz/
     ├── fuzz_range_format.rs
     ├── fuzz_on_type_format.rs
     ├── fuzz_classfile.rs
+    ├── fuzz_decompile_classfile.rs
     ├── fuzz_junit_report.rs
     ├── fuzz_yaml_parse.rs
     ├── fuzz_properties_parse.rs
@@ -271,6 +273,8 @@ Nova also has per-crate fuzz harnesses for protocol/transport surface areas:
   - `v3_framed_transport`
 - `crates/nova-dap/fuzz/`:
   - `read_dap_message`
+- `crates/nova-jdwp/fuzz/`:
+  - `decode_packet_bytes`
 
 Run these from the crate directory:
 
@@ -286,6 +290,10 @@ bash ../../scripts/cargo_agent.sh +nightly fuzz run v3_framed_transport -- -max_
 cd ../nova-dap
 bash ../../scripts/cargo_agent.sh +nightly fuzz list
 bash ../../scripts/cargo_agent.sh +nightly fuzz run read_dap_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-jdwp
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_packet_bytes -- -max_total_time=60 -max_len=262144
 ```
 
 ### Writing Fuzz Targets
