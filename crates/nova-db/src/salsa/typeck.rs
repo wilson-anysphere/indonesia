@@ -4587,7 +4587,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             if !is_subtype(env_ro, &catch_ty, &throwable_ty) {
                                 let found = format_type(env_ro, &catch_ty);
                                 self.diagnostics.push(Diagnostic::error(
-                                    "catch-non-throwable",
+                                    "invalid-catch-type",
                                     format!(
                                         "catch parameter type must be a subtype of Throwable; found {found}"
                                     ),
@@ -4621,7 +4621,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if assignment_conversion(env_ro, &expr_ty, &throwable_ty).is_none() {
                     let found = format_type(env_ro, &expr_ty);
                     self.diagnostics.push(Diagnostic::error(
-                        "throw-non-throwable",
+                        "invalid-throw",
                         format!("cannot throw expression of type {found}"),
                         Some(self.body.exprs[*expr].range()),
                     ));

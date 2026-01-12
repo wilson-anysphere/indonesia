@@ -6982,8 +6982,8 @@ class C {
 
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "catch-non-throwable"),
-        "expected no catch-non-throwable diagnostic for classpath Throwable subclass; got {diags:?}"
+        diags.iter().all(|d| d.code.as_ref() != "invalid-catch-type"),
+        "expected no invalid-catch-type diagnostic for classpath Throwable subclass; got {diags:?}"
     );
     assert!(
         diags.iter().all(|d| !(d.code.as_ref() == "unresolved-type"
@@ -7036,8 +7036,8 @@ class C {
 
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "throw-non-throwable"),
-        "expected no throw-non-throwable diagnostic for classpath Throwable subclass; got {diags:?}"
+        diags.iter().all(|d| d.code.as_ref() != "invalid-throw"),
+        "expected no invalid-throw diagnostic for classpath Throwable subclass; got {diags:?}"
     );
 }
 

@@ -102,7 +102,7 @@ class C {
 #[test]
 fn throw_requires_throwable() {
     let src = r#"
-class C { void m(){ throw "x"; } }
+class C { void m(){ throw 1; } }
 "#;
 
     let (db, file) = setup_db(src);
@@ -110,15 +110,15 @@ class C { void m(){ throw "x"; } }
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "throw-non-throwable"),
-        "expected throw-non-throwable diagnostic; got: {diags:?}"
+            .any(|d| d.code.as_ref() == "invalid-throw"),
+        "expected invalid-throw diagnostic; got: {diags:?}"
     );
 }
 
 #[test]
 fn catch_param_requires_throwable() {
     let src = r#"
-class C { void m(){ try {} catch (String e) {} } }
+class C { void m(){ try {} catch (int e) {} } }
 "#;
 
     let (db, file) = setup_db(src);
@@ -126,8 +126,28 @@ class C { void m(){ try {} catch (String e) {} } }
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "catch-non-throwable"),
-        "expected catch-non-throwable diagnostic; got: {diags:?}"
+            .any(|d| d.code.as_ref() == "invalid-catch-type"),
+        "expected invalid-catch-type diagnostic; got: {diags:?}"
+    );
+}
+
+#[test]
+fn catch_exception_is_allowed() {
+    let src = r#"
+class C { void m(){ try {} catch (Exception e) {} } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-catch-type"),
+        "expected no invalid-catch-type diagnostic; got: {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| !(d.code.as_ref() == "unresolved-type" && d.message.contains("Exception"))),
+        "expected Exception to resolve from built-in JDK index; got: {diags:?}"
     );
 }
 

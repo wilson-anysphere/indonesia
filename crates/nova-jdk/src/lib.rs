@@ -153,6 +153,7 @@ impl JdkIndex {
         this.add_type("java.lang", "Class");
         this.add_type("java.lang", "Iterable");
         this.add_type("java.lang", "Runnable");
+        this.add_type("java.lang", "Exception");
         this.add_type("java.lang", "String");
         this.add_type("java.lang", "Integer");
         this.add_type("java.lang", "Number");
