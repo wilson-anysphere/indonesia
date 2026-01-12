@@ -1078,17 +1078,48 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     }
 
     pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) -> Result<()> {
-        let changed = changed
-            .iter()
-            .map(|path| {
-                let abs = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    self.root.join(path)
-                };
-                normalize_absolute_path_lexically(&abs)
-            })
-            .collect::<Vec<_>>();
+        let mut changed_norm = Vec::with_capacity(changed.len());
+        let mut root_canon: Option<PathBuf> = None;
+
+        for path in changed {
+            let abs = if path.is_absolute() {
+                path.clone()
+            } else {
+                self.root.join(path)
+            };
+            let abs = normalize_absolute_path_lexically(&abs);
+
+            if abs.starts_with(&self.root) {
+                changed_norm.push(abs);
+                continue;
+            }
+
+            // If the workspace root is a symlink, filesystem watchers may report canonical paths.
+            // Map canonical paths back to workspace-root-relative paths so cache invalidation works
+            // consistently (both for `.bazelrc` import checks and for `BazelCache` path matching).
+            if root_canon.is_none() {
+                let root_canon_result = self.canonical_root.get_or_init(|| {
+                    fs::canonicalize(&self.root).map_err(|err| {
+                        format!(
+                            "failed to canonicalize Bazel workspace root {}: {err}",
+                            self.root.display()
+                        )
+                    })
+                });
+                root_canon = root_canon_result.as_ref().ok().cloned();
+            }
+
+            if let Some(root_canon) = &root_canon {
+                if let Ok(rel) = abs.strip_prefix(root_canon) {
+                    changed_norm.push(normalize_absolute_path_lexically(&self.root.join(rel)));
+                    continue;
+                }
+            }
+
+            changed_norm.push(abs);
+        }
+
+        let changed = changed_norm;
 
         // If a `.bazelrc` file changed, invalidate any cached import graph so new imports are
         // discovered.

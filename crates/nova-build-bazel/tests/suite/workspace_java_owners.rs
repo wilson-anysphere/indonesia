@@ -1028,6 +1028,48 @@ fn owning_targets_cache_is_cleared_by_invalidate_changed_files_on_bazelrc_import
 }
 
 #[test]
+#[cfg(unix)]
+fn invalidate_changed_files_matches_bazelrc_import_paths_when_root_is_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let real = tempdir().unwrap();
+    minimal_java_package(real.path());
+
+    // `.bazelrc` imports a file without a `.rc` extension.
+    write_file(&real.path().join(".bazelrc"), "try-import tools/bazelconfig\n");
+    write_file(&real.path().join("tools/bazelconfig"), "query --output=label_kind\n");
+
+    let link_parent = tempdir().unwrap();
+    let link_root = link_parent.path().join("ws");
+    symlink(real.path(), &link_root).unwrap();
+
+    let file_label = "//java:Hello.java";
+    let file = real.path().join("java/Hello.java");
+
+    let runner = QueryRunner::new([(
+        format!("same_pkg_direct_rdeps({file_label})"),
+        MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+    )]);
+    let mut workspace = BazelWorkspace::new(link_root, runner.clone()).unwrap();
+
+    // Cache owning targets using a canonical (real) file path, while the workspace root is a
+    // symlink.
+    let owners1 = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners1, vec!["//java:hello_lib".to_string()]);
+    assert_eq!(runner.calls().len(), 1);
+
+    // Invalidate using the canonical path to the imported file; this should still clear caches
+    // even though the workspace root is a symlink.
+    workspace
+        .invalidate_changed_files(&[real.path().join("tools/bazelconfig")])
+        .unwrap();
+
+    let owners2 = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners2, owners1);
+    assert_eq!(runner.calls().len(), 2);
+}
+
+#[test]
 fn owning_targets_run_target_closure_cache_key_includes_run_target() {
     let dir = tempdir().unwrap();
     let file = minimal_java_package(dir.path());
