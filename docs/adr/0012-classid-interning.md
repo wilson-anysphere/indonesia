@@ -44,7 +44,8 @@ For `ClassId`, we care about stability across:
 1. **Within a single db instance** (`SalsaDatabase` in one process).
 2. **Across Salsa snapshots** (`ParallelDatabase::snapshot()`).
 3. **Across revisions** (inputs change; unchanged classes should ideally keep the same id).
-4. **Across memo eviction** (`evict_salsa_memos` rebuilds memo storage; Nova restores interned tables).
+4. **Across memo eviction** (`evict_salsa_memos` rebuilds memo storage; Nova restores the selected
+   interned tables captured by `InternedTablesSnapshot`).
 5. **Across process restarts** (new server process; optional depending on persistence strategy).
 
 ## Decision
@@ -114,7 +115,8 @@ Regression coverage for this behavior lives in `crates/nova-db/tests/class_id_re
 `#[ra_salsa::interned]` is acceptable for storing the *key/value data* of classes, but Nova MUST NOT
 rely on the raw interned integer as a stable `nova_ids::ClassId` unless we also ensure one of:
 
-1. `evict_salsa_memos` preserves intern tables (does not reset interning state), **or**
+1. `evict_salsa_memos` preserves the relevant intern tables (for the subset captured by
+   `InternedTablesSnapshot`), **or**
 2. interned values are (re)created deterministically as part of input application such that storage
    rebuild produces the same interned ids.
 

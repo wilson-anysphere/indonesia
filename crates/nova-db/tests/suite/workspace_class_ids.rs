@@ -159,9 +159,10 @@ fn eviction_preserves_interned_ids_across_salsa_memo_eviction() {
     assert_ne!(b2, a2);
     assert_ne!(b2, c2);
 
-    // `evict_salsa_memos` rebuilds Salsa memo storage under memory pressure, but Nova preserves
-    // interned tables so `#[ra_salsa::interned]` IDs remain stable across eviction within the
-    // lifetime of a single `SalsaDatabase`.
+    // `evict_salsa_memos` rebuilds Salsa memo storage under memory pressure, but Nova snapshots and
+    // restores the interned tables it relies on (see `InternedTablesSnapshot`) so
+    // `#[ra_salsa::interned]` IDs remain stable across eviction within the lifetime of a single
+    // `SalsaDatabase`.
     db.evict_salsa_memos(MemoryPressure::Critical);
 
     let (a3, b3, c3) = db.with_snapshot(|snap| {
