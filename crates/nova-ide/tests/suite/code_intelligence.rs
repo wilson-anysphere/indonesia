@@ -2256,6 +2256,30 @@ fn completion_inside_string_literal_is_empty() {
 }
 
 #[test]
+fn completion_is_suppressed_inside_string_literal() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = "hel<|>lo";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        items.is_empty(),
+        "expected no completions inside a normal string literal; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"if"),
+        "expected completion list to not contain Java keywords like `if`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_inside_char_literal_is_empty() {
     let (db, file, pos) = fixture("class A { void m(){ char c = 'a<|>'; } }");
     let items = completions(&db, file, pos);
