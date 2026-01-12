@@ -38,6 +38,21 @@ async fn read_response(
     panic!("did not receive response for seq {request_seq}");
 }
 
+async fn read_event(
+    reader: &mut DapReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    event: &str,
+) -> Value {
+    for _ in 0..50 {
+        let msg = read_next(reader).await;
+        if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some(event)
+        {
+            return msg;
+        }
+    }
+    panic!("did not receive event {event}");
+}
+
 fn find_var<'a>(vars: &'a [Value], name: &str) -> &'a Value {
     vars.iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(name))
@@ -80,6 +95,12 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
     let initialized = read_next(&mut reader).await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
+    let initialized = read_event(&mut reader, "initialized").await;
     assert_eq!(
         initialized.get("event").and_then(|v| v.as_str()),
         Some("initialized")
