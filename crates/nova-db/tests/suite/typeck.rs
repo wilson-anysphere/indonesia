@@ -4780,6 +4780,80 @@ class D { void m(){ new C("x"); } }
 }
 
 #[test]
+fn resolve_method_call_demand_resolves_constructor_call() {
+    let src = r#"
+class C { C(int x) {} }
+class D { void m(){ new C(1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the `new C(1)` expression inside `D.m`.
+    let tree = db.hir_item_tree(file);
+    let m_id = find_method_named(&tree, "m");
+    let body = db.hir_body(m_id);
+    let new_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement with new expression");
+
+    assert!(
+        matches!(&body.exprs[new_expr], nova_hir::hir::Expr::New { .. }),
+        "expected expression statement to be a New expr, got {:?}",
+        body.exprs[new_expr]
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: new_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected constructor call resolution");
+
+    assert_eq!(resolved.name, "<init>");
+    assert_eq!(resolved.params, vec![Type::Primitive(PrimitiveType::Int)]);
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn ambiguous_constructor_call_reports_diag() {
+    let src = r#"
+class C {
+    C(java.lang.Integer x) {}
+    C(java.lang.Long x) {}
+    void m(){ new C(null); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "ambiguous-constructor"),
+        "expected ambiguous-constructor diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn class_ids_are_stable_across_files_for_classpath_types() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
