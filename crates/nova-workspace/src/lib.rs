@@ -7,6 +7,8 @@ use nova_index::{
     CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
+#[cfg(test)]
+use nova_index::SymbolLocation;
 use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryManager};
 use nova_project::ProjectError;
 use nova_scheduler::{CancellationToken, Cancelled};
@@ -194,6 +196,37 @@ impl Workspace {
     /// workspace context while preserving the `FileId`s allocated by the VFS.
     pub fn snapshot(&self) -> WorkspaceSnapshot {
         WorkspaceSnapshot::from_engine(self.engine.as_ref())
+    }
+
+    /// Force a memory enforcement pass, potentially evicting cold caches.
+    ///
+    /// This is primarily exposed for integration tests and debug tooling.
+    pub fn enforce_memory(&self) -> nova_memory::MemoryReport {
+        self.memory.enforce()
+    }
+
+    /// Return a detailed memory report including per-component usage.
+    ///
+    /// This is primarily exposed for integration tests and debug tooling.
+    pub fn memory_report_detailed(
+        &self,
+    ) -> (
+        nova_memory::MemoryReport,
+        Vec<nova_memory::ComponentUsage>,
+    ) {
+        self.memory.report_detailed()
+    }
+
+    /// Debug helper to inspect the current Salsa `file_content` input for a `FileId`.
+    ///
+    /// This does **not** trigger on-demand reload; callers may observe evicted content.
+    pub fn debug_salsa_file_content(&self, file_id: FileId) -> Option<Arc<String>> {
+        self.engine.salsa_file_content(file_id)
+    }
+
+    /// Run Salsa's Java parser for a file, reloading evicted closed-file content on demand.
+    pub fn salsa_parse_java(&self, file_id: FileId) -> Arc<nova_syntax::JavaParseResult> {
+        self.engine.salsa_parse_java(file_id)
     }
 
     pub fn trigger_indexing(&self) {

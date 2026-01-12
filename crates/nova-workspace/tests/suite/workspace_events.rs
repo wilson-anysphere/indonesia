@@ -3,7 +3,7 @@ use nova_vfs::{ContentChange, VfsPath};
 use nova_workspace::{Workspace, WorkspaceEvent, WorkspaceStatus};
 use tokio::time::{timeout, Duration};
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn diagnostics_event_on_open_and_change() {
     let workspace = Workspace::new_in_memory();
     let events = workspace.subscribe();
@@ -57,7 +57,7 @@ async fn diagnostics_event_on_open_and_change() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn indexing_emits_progress_and_ready() {
     let workspace = Workspace::new_in_memory();
     let events = workspace.subscribe();

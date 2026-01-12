@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -13,7 +13,7 @@ use nova_cache::{normalize_rel_path, Fingerprint};
 use nova_config::EffectiveConfig;
 use nova_core::{TextEdit, TextRange, TextSize};
 use nova_db::persistence::PersistenceConfig;
-use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId};
+use nova_db::{salsa, Database, NovaIndexing, NovaInputs, NovaSyntax, ProjectId, SourceRootId};
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
 use nova_memory::{
@@ -31,7 +31,7 @@ use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
     ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
-    LocalFs, NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
+    LocalFs, NotifyFileWatcher, OpenDocuments, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 use walkdir::WalkDir;
 
@@ -237,6 +237,243 @@ impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
     }
 }
 
+#[derive(Debug, Default)]
+struct ClosedFileTextState {
+    bytes_by_file: HashMap<FileId, u64>,
+    evicted: HashSet<FileId>,
+}
+
+/// Workspace-owned accounting + eviction for Salsa `file_content` inputs of *closed* files.
+///
+/// Open documents must remain pinned and are excluded from tracking/eviction.
+struct ClosedFileTextStore {
+    name: String,
+    query_db: salsa::Database,
+    open_docs: Arc<OpenDocuments>,
+    state: Mutex<ClosedFileTextState>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+}
+
+impl ClosedFileTextStore {
+    fn new(
+        manager: &MemoryManager,
+        query_db: salsa::Database,
+        open_docs: Arc<OpenDocuments>,
+    ) -> Arc<Self> {
+        let store = Arc::new(Self {
+            name: "workspace_closed_file_texts".to_string(),
+            query_db,
+            open_docs,
+            state: Mutex::new(ClosedFileTextState::default()),
+            tracker: OnceLock::new(),
+            registration: OnceLock::new(),
+        });
+
+        let registration = manager.register_evictor(
+            store.name.clone(),
+            MemoryCategory::QueryCache,
+            store.clone(),
+        );
+        store
+            .tracker
+            .set(registration.tracker())
+            .expect("tracker only set once");
+        store
+            .registration
+            .set(registration)
+            .expect("registration only set once");
+
+        store
+    }
+
+    fn is_evicted(&self, file_id: FileId) -> bool {
+        self.state
+            .lock()
+            .expect("workspace closed file text store mutex poisoned")
+            .evicted
+            .contains(&file_id)
+    }
+
+    fn on_open_document(&self, file_id: FileId) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("workspace closed file text store mutex poisoned");
+        let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
+        state.evicted.remove(&file_id);
+
+        if removed != 0 {
+            if let Some(tracker) = self.tracker.get() {
+                tracker.add_bytes(-(removed as i64));
+            }
+        }
+    }
+
+    fn track_closed_file_content(&self, file_id: FileId, text: &Arc<String>) {
+        if self.open_docs.is_open(file_id) {
+            self.on_open_document(file_id);
+            return;
+        }
+
+        let new_bytes = text.len() as u64;
+        let mut state = self
+            .state
+            .lock()
+            .expect("workspace closed file text store mutex poisoned");
+
+        state.evicted.remove(&file_id);
+        let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
+        if removed != 0 {
+            if let Some(tracker) = self.tracker.get() {
+                tracker.add_bytes(-(removed as i64));
+            }
+        }
+
+        if new_bytes != 0 {
+            state.bytes_by_file.insert(file_id, new_bytes);
+            if let Some(tracker) = self.tracker.get() {
+                tracker.add_bytes(new_bytes as i64);
+            }
+        }
+    }
+
+    fn clear(&self, file_id: FileId) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("workspace closed file text store mutex poisoned");
+        let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
+        state.evicted.remove(&file_id);
+        if removed != 0 {
+            if let Some(tracker) = self.tracker.get() {
+                tracker.add_bytes(-(removed as i64));
+            }
+        }
+    }
+
+    fn restore_if_evicted(&self, vfs: &Vfs<LocalFs>, file_id: FileId) {
+        if self.open_docs.is_open(file_id) {
+            return;
+        }
+
+        let should_restore = {
+            let state = self
+                .state
+                .lock()
+                .expect("workspace closed file text store mutex poisoned");
+            state.evicted.contains(&file_id)
+        };
+
+        if !should_restore {
+            return;
+        }
+
+        let Some(path) = vfs.path_for_id(file_id) else {
+            return;
+        };
+
+        // Avoid clobbering overlay documents if the file was opened while we were loading.
+        if self.open_docs.is_open(file_id) {
+            return;
+        }
+
+        let Ok(text) = vfs.read_to_string(&path) else {
+            return;
+        };
+
+        if self.open_docs.is_open(file_id) {
+            return;
+        }
+
+        let text_arc = Arc::new(text);
+        self.query_db.set_file_exists(file_id, vfs.exists(&path));
+        self.query_db
+            .set_file_content(file_id, Arc::clone(&text_arc));
+        self.query_db.set_file_is_dirty(file_id, false);
+        self.track_closed_file_content(file_id, &text_arc);
+    }
+}
+
+impl MemoryEvictor for ClosedFileTextStore {
+    fn name(&self) -> &str {
+        self.registration
+            .get()
+            .map(|registration| registration.name())
+            .unwrap_or(&self.name)
+    }
+
+    fn category(&self) -> MemoryCategory {
+        self.registration
+            .get()
+            .map(|registration| registration.category())
+            .unwrap_or(MemoryCategory::QueryCache)
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        let before = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+        if before <= request.target_bytes {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        let open_files = self.open_docs.snapshot();
+        let mut candidates: Vec<(FileId, u64)> = {
+            let state = self
+                .state
+                .lock()
+                .expect("workspace closed file text store mutex poisoned");
+            state
+                .bytes_by_file
+                .iter()
+                .filter(|(file_id, _)| !open_files.contains(file_id))
+                .map(|(file_id, bytes)| (*file_id, *bytes))
+                .collect()
+        };
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        for (file_id, _bytes) in candidates {
+            let current = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+            if current <= request.target_bytes {
+                break;
+            }
+
+            if self.open_docs.is_open(file_id) {
+                continue;
+            }
+
+            // Replace with a shared empty `Arc<String>` to drop the strong reference to the large
+            // allocation while keeping Salsa inputs well-formed.
+            self.query_db.set_file_content(file_id, empty_file_content());
+            // Mark dirty so persistence logic doesn't overwrite on-disk caches with the evicted
+            // placeholder contents.
+            self.query_db.set_file_is_dirty(file_id, true);
+
+            let mut state = self
+                .state
+                .lock()
+                .expect("workspace closed file text store mutex poisoned");
+            let removed = state.bytes_by_file.remove(&file_id).unwrap_or(0);
+            state.evicted.insert(file_id);
+            drop(state);
+
+            if removed != 0 {
+                if let Some(tracker) = self.tracker.get() {
+                    tracker.add_bytes(-(removed as i64));
+                }
+            }
+        }
+
+        let after = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WatchDebounceConfig {
     pub source: Duration,
@@ -302,6 +539,7 @@ pub(crate) struct WorkspaceEngine {
     vfs: Vfs<LocalFs>,
     overlay_docs_memory_registration: MemoryRegistration,
     pub(crate) query_db: salsa::Database,
+    closed_file_texts: Arc<ClosedFileTextStore>,
     indexes: Arc<Mutex<ProjectIndexes>>,
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
 
@@ -516,6 +754,8 @@ impl WorkspaceEngine {
         let java_parse_store = JavaParseStore::new(&memory, open_docs.clone());
         query_db.set_java_parse_store(Some(java_parse_store));
 
+        let closed_file_texts = ClosedFileTextStore::new(&memory, query_db.clone(), open_docs.clone());
+
         let overlay_docs_memory_registration =
             memory.register_tracker("vfs_documents", MemoryCategory::Other);
         overlay_docs_memory_registration
@@ -550,6 +790,7 @@ impl WorkspaceEngine {
             vfs,
             overlay_docs_memory_registration,
             query_db,
+            closed_file_texts,
             indexes,
             indexes_evictor,
             build_runner,
@@ -1196,6 +1437,7 @@ impl WorkspaceEngine {
         let project_state = Arc::clone(&self.project_state);
         let vfs = self.vfs.clone();
         let query_db = self.query_db.clone();
+        let closed_file_texts = Arc::clone(&self.closed_file_texts);
         let subscribers = Arc::clone(&self.subscribers);
         let build_runner = Arc::clone(&self.build_runner);
         let scheduler = self.scheduler.clone();
@@ -1225,6 +1467,7 @@ impl WorkspaceEngine {
                     &changed,
                     &vfs,
                     &query_db,
+                    closed_file_texts.as_ref(),
                     &project_state,
                     &watch_config,
                     &watcher_command_store,
@@ -1277,6 +1520,7 @@ impl WorkspaceEngine {
             changed_files,
             &self.vfs,
             &self.query_db,
+            self.closed_file_texts.as_ref(),
             &self.project_state,
             &self.watch_config,
             &self.watcher_command_store,
@@ -1295,15 +1539,59 @@ impl WorkspaceEngine {
         let file_id = self.vfs.open_document(path.clone(), text, version);
         self.sync_overlay_documents_memory();
         self.ensure_file_inputs(file_id, &path);
+        let was_evicted = self.closed_file_texts.is_evicted(file_id);
+        self.closed_file_texts.on_open_document(file_id);
 
-        // Newly opened documents are assumed clean until modified.
+        // Track whether this open document is "dirty" (differs from on-disk contents).
         //
-        // `apply_changes` will mark the file dirty after in-memory edits, ensuring warm-start
-        // indexing doesn't reuse persisted index shards for unsaved editor overlays.
-        self.query_db.set_file_is_dirty(file_id, false);
+        // This is used by Salsa warm-start indexing to ensure we don't reuse persisted index
+        // shards when editor overlays have unsaved changes.
+        let dirty = match path.as_local_path() {
+            Some(local_path) => {
+                if !local_path.exists() {
+                    // New, unsaved file.
+                    true
+                } else {
+                    // Prefer any existing Salsa `file_content` (which should reflect disk state for
+                    // non-open files) to avoid redundant disk I/O.
+                    let existing_content = if was_evicted {
+                        None
+                    } else {
+                        self.query_db.with_snapshot(|snap| {
+                            let has_content = snap
+                                .all_file_ids()
+                                .iter()
+                                .any(|&existing_id| existing_id == file_id);
+                            has_content.then(|| snap.file_content(file_id))
+                        })
+                    };
+
+                    let disk_text = if let Some(existing) = existing_content {
+                        Some(existing)
+                    } else {
+                        match fs::read_to_string(local_path) {
+                            Ok(text) => Some(Arc::new(text)),
+                            Err(_) => None,
+                        }
+                    };
+
+                    match disk_text {
+                        Some(disk_text) => disk_text.as_str() != text_for_db.as_str(),
+                        None => true,
+                    }
+                }
+            }
+            None => {
+                // Non-local paths (archives, virtual/decompiled docs, opaque URIs, etc) are
+                // conservatively treated as dirty since we can't reliably compare with a stable
+                // on-disk snapshot.
+                true
+            }
+        };
 
         self.query_db.set_file_exists(file_id, true);
         self.query_db.set_file_content(file_id, text_for_db);
+        self.query_db.set_file_is_dirty(file_id, dirty);
         self.update_project_files_membership(&path, file_id, true);
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
@@ -1325,9 +1613,18 @@ impl WorkspaceEngine {
             let mut restored_from_disk = false;
             if exists {
                 if let Ok(text) = self.vfs.read_to_string(path) {
-                    self.query_db.set_file_content(file_id, Arc::new(text));
+                    let text_arc = Arc::new(text);
+                    self.query_db
+                        .set_file_content(file_id, Arc::clone(&text_arc));
+                    self.closed_file_texts
+                        .track_closed_file_content(file_id, &text_arc);
                     restored_from_disk = true;
                 }
+            } else {
+                // The overlay was closed and the file doesn't exist on disk; drop the last-known
+                // contents to avoid holding onto large inputs for deleted/unsaved buffers.
+                self.query_db.set_file_content(file_id, empty_file_content());
+                self.closed_file_texts.clear(file_id);
             }
             if !exists || restored_from_disk {
                 self.query_db.set_file_is_dirty(file_id, false);
@@ -1370,6 +1667,7 @@ impl WorkspaceEngine {
         if let Ok(text) = self.vfs.read_to_string(path) {
             let text_for_db = Arc::new(text);
             self.ensure_file_inputs(file_id, path);
+            self.closed_file_texts.on_open_document(file_id);
             self.query_db.set_file_exists(file_id, true);
             match edits.as_slice() {
                 [edit] => {
@@ -1419,6 +1717,7 @@ impl WorkspaceEngine {
             return Vec::new();
         }
         let cap = report.degraded.completion_candidate_cap;
+        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
         let text = snapshot.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
@@ -1483,6 +1782,8 @@ impl WorkspaceEngine {
         let scheduler = self.scheduler.clone();
         let memory = self.memory.clone();
         let open_docs = self.vfs.open_documents();
+        let vfs = self.vfs.clone();
+        let closed_file_texts = Arc::clone(&self.closed_file_texts);
 
         self.index_debouncer
             .debounce("workspace-index", move |token| {
@@ -1575,6 +1876,12 @@ impl WorkspaceEngine {
                     }
                 });
 
+                if degraded == BackgroundIndexingMode::Full {
+                    for file_id in project_files.iter().copied() {
+                        closed_file_texts.restore_if_evicted(&vfs, file_id);
+                    }
+                }
+
                 let indexing_result: std::result::Result<ProjectIndexes, Cancelled> = match degraded
                 {
                     BackgroundIndexingMode::Full => query_db
@@ -1592,6 +1899,8 @@ impl WorkspaceEngine {
                                 cancelled = true;
                                 break;
                             }
+
+                            closed_file_texts.restore_if_evicted(&vfs, *file_id);
 
                             let delta = match query_db.with_snapshot_catch_cancelled(|snap| {
                                 snap.file_index_delta(*file_id)
@@ -1700,6 +2009,18 @@ impl WorkspaceEngine {
             .unwrap_or_default()
     }
 
+    pub(crate) fn salsa_file_content(&self, file_id: FileId) -> Option<Arc<String>> {
+        self.query_db.with_snapshot(|snap| {
+            let has_content = snap.all_file_ids().iter().any(|&id| id == file_id);
+            has_content.then(|| snap.file_content(file_id))
+        })
+    }
+
+    pub(crate) fn salsa_parse_java(&self, file_id: FileId) -> Arc<nova_syntax::JavaParseResult> {
+        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        self.query_db.with_snapshot(|snap| snap.parse_java(file_id))
+    }
+
     fn ensure_file_inputs(&self, file_id: FileId, path: &VfsPath) {
         let project = ProjectId::from_raw(0);
         self.query_db.set_file_project(file_id, project);
@@ -1746,6 +2067,7 @@ impl WorkspaceEngine {
         let open_docs = self.vfs.open_documents();
         if exists {
             if open_docs.is_open(file_id) {
+                self.closed_file_texts.on_open_document(file_id);
                 // The file is open in the editor; keep overlay contents but update dirty state if the
                 // file was saved to disk (or modified externally).
                 let disk_text = fs::read_to_string(path);
@@ -1758,18 +2080,25 @@ impl WorkspaceEngine {
             } else {
                 match fs::read_to_string(path) {
                     Ok(text) => {
-                        self.query_db.set_file_content(file_id, Arc::new(text));
+                        let text_arc = Arc::new(text);
+                        self.query_db
+                            .set_file_content(file_id, Arc::clone(&text_arc));
                         self.query_db.set_file_is_dirty(file_id, false);
+                        self.closed_file_texts
+                            .track_closed_file_content(file_id, &text_arc);
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                         self.query_db.set_file_exists(file_id, false);
                         exists = false;
                         self.query_db.set_file_is_dirty(file_id, false);
+                        self.query_db.set_file_content(file_id, empty_file_content());
+                        self.closed_file_texts.clear(file_id);
                     }
                     Err(_) if !was_known => {
                         self.query_db
                             .set_file_content(file_id, Arc::new(String::new()));
                         self.query_db.set_file_is_dirty(file_id, true);
+                        self.closed_file_texts.clear(file_id);
                     }
                     Err(_) => {
                         // Best-effort: keep the previous contents if we fail to read during a transient
@@ -1779,6 +2108,8 @@ impl WorkspaceEngine {
             }
         } else if !open_docs.is_open(file_id) {
             self.query_db.set_file_is_dirty(file_id, false);
+            self.query_db.set_file_content(file_id, empty_file_content());
+            self.closed_file_texts.clear(file_id);
         }
 
         if !exists && was_known && !open_docs.is_open(file_id) {
@@ -1815,6 +2146,7 @@ impl WorkspaceEngine {
 
         if exists {
             if open_docs.is_open(file_id) {
+                self.closed_file_texts.on_open_document(file_id);
                 // The document is open in the editor (either because it was already open at `to`,
                 // or because it was moved there from `from`). Ensure Salsa sees the overlay contents
                 // so workspace analysis doesn't accidentally use stale disk state.
@@ -1831,17 +2163,25 @@ impl WorkspaceEngine {
             } else {
                 match fs::read_to_string(to) {
                     Ok(text) => {
-                        self.query_db.set_file_content(file_id, Arc::new(text));
+                        let text_arc = Arc::new(text);
+                        self.query_db
+                            .set_file_content(file_id, Arc::clone(&text_arc));
                         self.query_db.set_file_is_dirty(file_id, false);
+                        self.closed_file_texts
+                            .track_closed_file_content(file_id, &text_arc);
                     }
                     Err(_) if is_new_id => {
                         self.query_db
                             .set_file_content(file_id, Arc::new(String::new()));
-                        self.query_db.set_file_is_dirty(file_id, false);
+                        self.query_db.set_file_is_dirty(file_id, true);
+                        self.closed_file_texts.clear(file_id);
                     }
                     Err(_) => {}
                 }
             }
+        } else if !open_docs.is_open(file_id) {
+            self.query_db.set_file_content(file_id, empty_file_content());
+            self.closed_file_texts.clear(file_id);
         }
 
         // A move can have two effects on ids:
@@ -1863,6 +2203,7 @@ impl WorkspaceEngine {
                 self.query_db.set_file_exists(id_to, false);
                 if !open_docs.is_open(id_to) {
                     self.query_db.set_file_content(id_to, empty_file_content());
+                    self.closed_file_texts.clear(id_to);
                 }
                 self.update_project_files_membership(&to_vfs, id_to, false);
             }
@@ -1879,8 +2220,8 @@ impl WorkspaceEngine {
                 self.query_db.unpin_item_tree(id_from);
                 self.query_db.set_file_exists(id_from, false);
                 if !open_docs.is_open(id_from) {
-                    self.query_db
-                        .set_file_content(id_from, empty_file_content());
+                    self.query_db.set_file_content(id_from, empty_file_content());
+                    self.closed_file_texts.clear(id_from);
                 }
                 self.update_project_files_membership(&from_vfs, id_from, false);
             } else {
@@ -2012,6 +2353,7 @@ impl WorkspaceEngine {
             return self.syntax_diagnostics_only(file, file_id);
         }
 
+        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
         self.query_db.with_snapshot(|snap| {
             nova_ide::file_diagnostics_with_semantic_db(&snapshot, snap, file_id)
@@ -2702,6 +3044,7 @@ fn reload_project_and_sync(
     changed_files: &[PathBuf],
     vfs: &Vfs<LocalFs>,
     query_db: &salsa::Database,
+    closed_file_texts: &ClosedFileTextStore,
     project_state: &Arc<Mutex<ProjectState>>,
     watch_config: &Arc<RwLock<WatchConfig>>,
     watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
@@ -3024,23 +3367,32 @@ fn reload_project_and_sync(
         let exists = vfs.exists(&VfsPath::local(path.clone()));
         query_db.set_file_exists(file_id, exists);
         if !exists {
+            if !open_docs.is_open(file_id) {
+                query_db.set_file_content(file_id, empty_file_content());
+                closed_file_texts.clear(file_id);
+            }
             continue;
         }
 
         if !open_docs.is_open(file_id) {
             match fs::read_to_string(&path) {
                 Ok(text) => {
-                    query_db.set_file_content(file_id, Arc::new(text));
+                    let text_arc = Arc::new(text);
+                    query_db.set_file_content(file_id, Arc::clone(&text_arc));
                     query_db.set_file_is_dirty(file_id, false);
+                    closed_file_texts.track_closed_file_content(file_id, &text_arc);
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     query_db.set_file_exists(file_id, false);
+                    query_db.set_file_content(file_id, empty_file_content());
+                    closed_file_texts.clear(file_id);
                     continue;
                 }
                 Err(_) if !previous_set.contains(&file_id) => {
                     // Ensure the input is initialized for new files even if we cannot read them.
-                    query_db.set_file_content(file_id, Arc::new(String::new()));
+                    query_db.set_file_content(file_id, empty_file_content());
                     query_db.set_file_is_dirty(file_id, true);
+                    closed_file_texts.clear(file_id);
                 }
                 Err(_) => {
                     // Keep previous contents for existing files on transient errors.
@@ -3058,6 +3410,7 @@ fn reload_project_and_sync(
             query_db.set_file_exists(old, false);
             if !open_docs.is_open(old) {
                 query_db.set_file_content(old, empty_file_content());
+                closed_file_texts.clear(old);
             }
         }
     }
