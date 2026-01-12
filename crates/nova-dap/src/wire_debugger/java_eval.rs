@@ -229,14 +229,69 @@ impl Debugger {
                 if cancel.is_cancelled() {
                     return Err(JdwpError::Cancelled.into());
                 }
-                let message = format_stream_eval_compile_failure(
-                    &source_path,
-                    &source,
-                    &stage_exprs,
-                    terminal_expr.as_deref(),
-                    &err,
-                );
-                return Err(DebuggerError::InvalidRequest(message));
+                // JDK 8's `javac` doesn't support `--release`. If we hit that case, retry with
+                // `-source/-target` so stream-debug works even when only a JDK 8 toolchain is
+                // available on the host.
+                let should_retry_without_release = javac.release.is_some()
+                    && crate::javac::javac_error_is_release_flag_unsupported(&err);
+                if should_retry_without_release {
+                    let mut fallback = javac.clone();
+                    if let Some(release) = fallback.release.take() {
+                        if fallback.source.is_none() {
+                            fallback.source = Some(release.clone());
+                        }
+                        if fallback.target.is_none() {
+                            fallback.target = Some(release);
+                        }
+                    }
+
+                    // Ensure a clean output directory so we don't accidentally load stale classes.
+                    let _ = std::fs::remove_dir_all(&output_dir);
+                    std::fs::create_dir_all(&output_dir).map_err(|err| {
+                        DebuggerError::InvalidRequest(format!(
+                            "failed to recreate javac output dir {}: {err}",
+                            output_dir.display()
+                        ))
+                    })?;
+                    std::fs::write(&source_path, &source).map_err(|err| {
+                        DebuggerError::InvalidRequest(format!(
+                            "failed to write generated eval source {}: {err}",
+                            source_path.display()
+                        ))
+                    })?;
+
+                    match compile_java_to_dir(cancel, &fallback, &source_path, &output_dir).await {
+                        Ok(classes) => classes,
+                        Err(err2) => {
+                            let original = format_stream_eval_compile_failure(
+                                &source_path,
+                                &source,
+                                &stage_exprs,
+                                terminal_expr.as_deref(),
+                                &err,
+                            );
+                            let retry = format_stream_eval_compile_failure(
+                                &source_path,
+                                &source,
+                                &stage_exprs,
+                                terminal_expr.as_deref(),
+                                &err2,
+                            );
+                            return Err(DebuggerError::InvalidRequest(format!(
+                                "{original}\n\nretry without `--release` failed:\n{retry}"
+                            )));
+                        }
+                    }
+                } else {
+                    let message = format_stream_eval_compile_failure(
+                        &source_path,
+                        &source,
+                        &stage_exprs,
+                        terminal_expr.as_deref(),
+                        &err,
+                    );
+                    return Err(DebuggerError::InvalidRequest(message));
+                }
             }
         };
 

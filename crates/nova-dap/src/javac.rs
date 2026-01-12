@@ -66,7 +66,7 @@ pub(crate) async fn resolve_hot_swap_javac_config(
 /// cannot load (e.g. compiling with JDK 21 against a JDK 8 debuggee).
 ///
 /// Streams require Java 8+, so we default to `--release 8` only when no explicit language level is
-/// available (no `--release` / `--source` / `--target` and preview is disabled).
+/// available (no `--release` / `-source` / `-target` and preview is disabled).
 pub(crate) fn apply_stream_eval_defaults(base: &HotSwapJavacConfig) -> HotSwapJavacConfig {
     let mut config = base.clone();
     let has_explicit_language_level =
@@ -75,6 +75,15 @@ pub(crate) fn apply_stream_eval_defaults(base: &HotSwapJavacConfig) -> HotSwapJa
         config.release = Some("8".to_string());
     }
     config
+}
+
+pub(crate) fn javac_error_is_release_flag_unsupported(err: &CompileError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    // JDK 8's `javac` does not support `--release`. Error messages vary by distribution:
+    // - "error: invalid flag: --release"
+    // - "javac: invalid flag: --release"
+    // - "Unrecognized option: --release"
+    msg.contains("invalid flag: --release") || msg.contains("unrecognized option: --release")
 }
 
 pub(crate) async fn resolve_vm_classpath(
@@ -215,11 +224,11 @@ pub(crate) async fn compile_java_to_dir(
         cmd.arg(release);
     } else {
         if let Some(source) = javac.source.as_deref() {
-            cmd.arg("--source");
+            cmd.arg("-source");
             cmd.arg(source);
         }
         if let Some(target) = javac.target.as_deref() {
-            cmd.arg("--target");
+            cmd.arg("-target");
             cmd.arg(target);
         }
     }
@@ -347,6 +356,24 @@ mod tests {
         };
         let cfg = apply_stream_eval_defaults(&base);
         assert_eq!(cfg.release.as_deref(), Some("21"));
+    }
+
+    #[test]
+    fn javac_error_is_release_flag_unsupported_matches_common_messages() {
+        for msg in [
+            "error: invalid flag: --release",
+            "javac: invalid flag: --release",
+            "Unrecognized option: --release",
+        ] {
+            let err = CompileError::new(msg);
+            assert!(javac_error_is_release_flag_unsupported(&err), "msg={msg:?}");
+        }
+    }
+
+    #[test]
+    fn javac_error_is_release_flag_unsupported_does_not_match_other_errors() {
+        let err = CompileError::new("some other javac error");
+        assert!(!javac_error_is_release_flag_unsupported(&err));
     }
 }
 
