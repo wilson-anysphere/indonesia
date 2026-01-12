@@ -1248,17 +1248,17 @@ fn fuzzy_rank_workspace_symbols_sharded(
 
     let (results, stats) = searcher.search_with_stats_cached(query, limit);
 
-        let mut ranked = Vec::new();
-        for res in results {
-            let name = res.symbol.name;
-            let mut locations: Vec<SymbolLocation> = Vec::new();
-            for shard in shards {
-                if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
-                    locations.extend(found.iter().map(|sym| sym.location.clone()));
-                }
+    let mut ranked = Vec::new();
+    for res in results {
+        let name = res.symbol.name;
+        let mut locations: Vec<SymbolLocation> = Vec::new();
+        for shard in shards {
+            if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
+                locations.extend(found.iter().map(|sym| sym.location.clone()));
             }
-            locations.sort_by(|a, b| {
-                a.file
+        }
+        locations.sort_by(|a, b| {
+            a.file
                 .cmp(&b.file)
                 .then_with(|| a.line.cmp(&b.line))
                 .then_with(|| a.column.cmp(&b.column))

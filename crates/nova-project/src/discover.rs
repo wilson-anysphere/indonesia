@@ -507,6 +507,7 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
                 "jvm.config" => path.ends_with(Path::new(".mvn/jvm.config")),
                 "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
+                "maven-wrapper.jar" => path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.jar")),
                 "maven-wrapper.properties" => {
                     path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
                 }
@@ -537,6 +538,7 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 || name.ends_with(".gradle")
                 || name.ends_with(".gradle.kts")
                 || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
+                || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar"))
         }
         BuildSystem::Bazel => {
             matches!(
@@ -593,6 +595,7 @@ mod tests {
             ".mvn/maven.config",
             ".mvn/jvm.config",
             ".mvn/extensions.xml",
+            ".mvn/wrapper/maven-wrapper.jar",
             ".mvn/wrapper/maven-wrapper.properties",
         ];
 
@@ -650,6 +653,33 @@ mod tests {
         assert!(
             !is_build_file(BuildSystem::Maven, Path::new("maven-wrapper.properties")),
             "misplaced maven-wrapper.properties at workspace root should not be treated as a build file"
+        );
+    }
+
+    #[test]
+    fn maven_build_file_detection_is_path_aware_for_wrapper_jar() {
+        assert!(
+            !is_build_file(BuildSystem::Maven, Path::new("maven-wrapper.jar")),
+            "misplaced maven-wrapper.jar at workspace root should not be treated as a build file"
+        );
+    }
+
+    #[test]
+    fn gradle_build_file_detection_includes_wrapper_jar() {
+        assert!(
+            is_build_file(
+                BuildSystem::Gradle,
+                Path::new("gradle/wrapper/gradle-wrapper.jar")
+            ),
+            "expected gradle/wrapper/gradle-wrapper.jar to be treated as a Gradle build marker"
+        );
+    }
+
+    #[test]
+    fn gradle_build_file_detection_is_path_aware_for_wrapper_jar() {
+        assert!(
+            !is_build_file(BuildSystem::Gradle, Path::new("gradle-wrapper.jar")),
+            "misplaced gradle-wrapper.jar at workspace root should not be treated as a build file"
         );
     }
 
