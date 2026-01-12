@@ -3,6 +3,50 @@
 // Keeping these as modules (instead of separate `tests/*.rs` crates) reduces the
 // number of test binaries Cargo needs to compile.
 
+#[test]
+fn integration_tests_are_consolidated_into_this_harness() {
+    let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+
+    let expected = std::path::Path::new(file!())
+        .file_name()
+        .expect("harness filename is missing")
+        .to_string_lossy()
+        .into_owned();
+
+    assert_eq!(
+        expected, "harness.rs",
+        "expected nova-project integration test harness to be named harness.rs (so `cargo test -p nova-project --test harness` works); got: {expected}"
+    );
+
+    let mut root_rs_files = Vec::new();
+    for entry in std::fs::read_dir(&tests_dir).unwrap_or_else(|err| {
+        panic!(
+            "failed to read nova-project tests dir {}: {err}",
+            tests_dir.display()
+        )
+    }) {
+        let entry = entry
+            .unwrap_or_else(|err| panic!("failed to read entry in {}: {err}", tests_dir.display()));
+        let path = entry.path();
+
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            root_rs_files.push(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+
+    root_rs_files.sort();
+    assert_eq!(
+        root_rs_files,
+        [expected.clone()],
+        "expected a single root integration test harness file (tests/{expected}); found: {root_rs_files:?}"
+    );
+}
+
 #[cfg(feature = "bazel")]
 #[path = "cases/bazel_model.rs"]
 mod bazel_model;
