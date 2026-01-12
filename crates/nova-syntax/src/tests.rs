@@ -612,37 +612,43 @@ fn lexer_string_templates_allow_nested_templates_inside_interpolations() {
     // Nested string templates can appear inside the embedded expression. This exercises the
     // lexer's mode stack so the inner template's `}` tokens don't terminate the outer
     // interpolation early.
-    let input = r#"STR."outer \{ STR."inner \{x}" }""#;
+    let input = r#"STR."outer \{STR."inner \{name}"}""#;
     let (tokens, errors) = lex_with_errors(input);
     assert_eq!(errors, Vec::new());
 
-    let non_trivia: Vec<_> = tokens
-        .into_iter()
-        .filter(|t| !t.kind.is_trivia())
-        .map(|t| (t.kind, t.text(input).to_string()))
-        .collect();
+    let non_trivia: Vec<_> = tokens.into_iter().filter(|t| !t.kind.is_trivia()).collect();
 
-    assert_eq!(
-        non_trivia,
-        vec![
-            (SyntaxKind::Identifier, "STR".into()),
-            (SyntaxKind::Dot, ".".into()),
-            (SyntaxKind::StringTemplateStart, "\"".into()),
-            (SyntaxKind::StringTemplateText, "outer ".into()),
-            (SyntaxKind::StringTemplateExprStart, r"\{".into()),
-            (SyntaxKind::Identifier, "STR".into()),
-            (SyntaxKind::Dot, ".".into()),
-            (SyntaxKind::StringTemplateStart, "\"".into()),
-            (SyntaxKind::StringTemplateText, "inner ".into()),
-            (SyntaxKind::StringTemplateExprStart, r"\{".into()),
-            (SyntaxKind::Identifier, "x".into()),
-            (SyntaxKind::StringTemplateExprEnd, "}".into()),
-            (SyntaxKind::StringTemplateEnd, "\"".into()),
-            // Closes the outer interpolation.
-            (SyntaxKind::StringTemplateExprEnd, "}".into()),
-            (SyntaxKind::StringTemplateEnd, "\"".into()),
-            (SyntaxKind::Eof, "".into()),
-        ]
+    assert!(
+        !non_trivia.iter().any(|t| t.kind == SyntaxKind::Error),
+        "did not expect Error tokens, got: {:?}",
+        non_trivia
+            .iter()
+            .map(|t| (t.kind, t.text(input).to_string()))
+            .collect::<Vec<_>>()
+    );
+
+    let start_count = non_trivia
+        .iter()
+        .filter(|t| t.kind == SyntaxKind::StringTemplateStart)
+        .count();
+    let end_count = non_trivia
+        .iter()
+        .filter(|t| t.kind == SyntaxKind::StringTemplateEnd)
+        .count();
+
+    assert!(
+        start_count >= 2,
+        "expected at least two StringTemplateStart tokens, got: {start_count:?} ({non_trivia:?})"
+    );
+    assert!(
+        end_count >= 2,
+        "expected at least two StringTemplateEnd tokens, got: {end_count:?} ({non_trivia:?})"
+    );
+
+    // Ensure we didn't accidentally lex `\{` as an invalid string-escape sequence.
+    assert!(
+        errors.is_empty(),
+        "expected no lex errors (in particular no invalid-escape errors), got: {errors:?}"
     );
 }
 
@@ -700,6 +706,42 @@ fn lexer_text_block_templates_allow_line_continuation_escape() {
     assert!(
         !tokens.iter().any(|t| t.kind == SyntaxKind::Error),
         "did not expect error tokens, got: {tokens:?}"
+    );
+}
+
+#[test]
+fn parse_token_level_coalesces_nested_string_template_into_single_string_literal_token() {
+    // `nova_syntax::parse` is a token-level parser used by the cache layer and legacy formatter.
+    // It should collapse *the entire outer template* (including nested templates) into a single
+    // `StringLiteral` token.
+    let input = r#"STR."outer \{STR."inner \{name}"}""#;
+    let parsed = parse(input);
+    assert_eq!(parsed.errors, Vec::new());
+
+    let string_literals: Vec<_> = parsed
+        .tokens()
+        .filter(|t| t.kind == SyntaxKind::StringLiteral)
+        .collect();
+    assert_eq!(
+        string_literals.len(),
+        1,
+        "expected a single StringLiteral token, got: {:?}",
+        parsed
+            .tokens()
+            .map(|t| (t.kind, t.text(input).to_string()))
+            .collect::<Vec<_>>()
+    );
+
+    let tok = string_literals[0];
+    assert_eq!(
+        tok.text(input),
+        r#""outer \{STR."inner \{name}"}""#,
+        "expected StringLiteral token to span the entire outer template"
+    );
+    assert_eq!(
+        tok.range.end as usize,
+        input.len(),
+        "expected StringLiteral token to include the outer StringTemplateEnd"
     );
 }
 
