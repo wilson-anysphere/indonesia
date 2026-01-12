@@ -1,0 +1,371 @@
+# Testing & Quality Workstream
+
+> **⚠️ MANDATORY: Read and follow [AGENTS.md](../AGENTS.md) completely before proceeding.**
+> **All rules in AGENTS.md apply at all times. This file adds workstream-specific guidance.**
+
+---
+
+## Scope
+
+This workstream owns testing infrastructure, quality assurance, and fuzzing:
+
+| Crate/Directory | Purpose |
+|-----------------|---------|
+| `nova-testing` | Test harnesses, test runners |
+| `nova-test-utils` | Test utilities shared across crates |
+| `fuzz/` | Fuzz testing targets |
+
+---
+
+## Key Documents
+
+**Required reading:**
+- [14 - Testing Strategy](../docs/14-testing-strategy.md) - Testing philosophy
+- [14 - Testing Infrastructure](../docs/14-testing-infrastructure.md) - How to run tests
+- [docs/fuzzing.md](../docs/fuzzing.md) - Fuzzing setup
+
+---
+
+## Testing Philosophy
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Testing Pyramid                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│                        ┌───────┐                                 │
+│                        │  E2E  │  ← Few, slow, high confidence  │
+│                       ┌┴───────┴┐                                │
+│                       │ Integration │  ← Moderate                │
+│                      ┌┴───────────┴┐                             │
+│                      │    Unit      │  ← Many, fast, focused    │
+│                     ┌┴─────────────┴┐                            │
+│                     │   Property     │  ← Fuzzing, proptests    │
+│                    └─────────────────┘                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Goals:**
+1. **Correctness**: Match Java Language Specification
+2. **Robustness**: Handle malformed input gracefully
+3. **Performance**: Catch regressions early
+4. **Coverage**: Test edge cases systematically
+
+---
+
+## Test Types
+
+### Unit Tests
+
+In-module tests for individual functions:
+
+```rust
+// crates/nova-types/src/subtype.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn primitive_widening() {
+        assert!(is_subtype(&Type::Int, &Type::Long));
+        assert!(!is_subtype(&Type::Long, &Type::Int));
+    }
+}
+```
+
+### Integration Tests
+
+Cross-crate tests in `tests/` directory:
+
+```rust
+// crates/nova-types/tests/inference.rs
+
+#[test]
+fn diamond_inference() {
+    let code = r#"
+        import java.util.*;
+        class Test {
+            List<String> list = new ArrayList<>();
+        }
+    "#;
+    
+    let workspace = TestWorkspace::with_file("Test.java", code);
+    let ty = workspace.type_of("Test", "list");
+    
+    assert_eq!(ty.to_string(), "List<String>");
+}
+```
+
+### Snapshot Tests
+
+Compare output against expected snapshots:
+
+```rust
+#[test]
+fn parse_method_declaration() {
+    let code = "void foo(int x, String y) { }";
+    let tree = parse(code);
+    
+    // Compares against tests/snapshots/parse_method_declaration.snap
+    insta::assert_snapshot!(format_tree(&tree));
+}
+```
+
+**Update snapshots:**
+```bash
+UPDATE_EXPECT=1 bash scripts/cargo_agent.sh test -p nova-syntax --lib
+```
+
+### JLS Compliance Tests
+
+Tests derived from Java Language Specification:
+
+```
+testdata/jls/
+├── ch05_conversions/
+│   ├── widening_primitive.java
+│   ├── narrowing_primitive.java
+│   └── boxing.java
+├── ch06_names/
+│   └── ...
+└── ch15_expressions/
+    └── ...
+```
+
+### Property Tests
+
+Random input testing with proptest:
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn parse_never_panics(input in ".*") {
+        let _ = parse(&input);  // Should never panic
+    }
+    
+    #[test]
+    fn type_transitivity(a: Type, b: Type, c: Type) {
+        if is_subtype(&a, &b) && is_subtype(&b, &c) {
+            prop_assert!(is_subtype(&a, &c));
+        }
+    }
+}
+```
+
+---
+
+## Fuzzing
+
+### Setup
+
+```bash
+# Install cargo-fuzz
+cargo install cargo-fuzz
+
+# Run fuzz target
+cd fuzz
+cargo +nightly fuzz run parse_java
+```
+
+### Fuzz Targets
+
+```
+fuzz/
+├── Cargo.toml
+├── corpus/           # Seed inputs
+│   └── parse_java/
+└── fuzz_targets/
+    ├── parse_java.rs
+    ├── type_check.rs
+    └── completion.rs
+```
+
+### Writing Fuzz Targets
+
+```rust
+// fuzz/fuzz_targets/parse_java.rs
+
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use nova_syntax::parse;
+
+fuzz_target!(|data: &[u8]| {
+    if let Ok(input) = std::str::from_utf8(data) {
+        let _ = parse(input);  // Should never panic
+    }
+});
+```
+
+### Crash Triage
+
+When fuzzer finds a crash:
+
+1. **Reproduce**: `cargo +nightly fuzz run <target> <crash_file>`
+2. **Minimize**: `cargo +nightly fuzz tmin <target> <crash_file>`
+3. **Debug**: Add minimized input as test case
+4. **Fix**: Fix the bug
+5. **Verify**: Ensure crash no longer reproduces
+
+---
+
+## Performance Testing
+
+### Benchmarks
+
+```rust
+// crates/nova-core/benches/critical_paths.rs
+
+use criterion::{criterion_group, criterion_main, Criterion};
+
+fn benchmark_completion(c: &mut Criterion) {
+    let workspace = setup_workspace();
+    
+    c.bench_function("completion_member_access", |b| {
+        b.iter(|| {
+            workspace.completions_at(file, offset)
+        })
+    });
+}
+
+criterion_group!(benches, benchmark_completion);
+criterion_main!(benches);
+```
+
+**Run benchmarks:**
+```bash
+bash scripts/cargo_agent.sh bench -p nova-core
+```
+
+### Threshold Tests
+
+Runtime thresholds in `perf/runtime-thresholds.toml`:
+
+```toml
+[completion]
+p50_ms = 30
+p95_ms = 50
+p99_ms = 100
+
+[diagnostics]
+p50_ms = 50
+p95_ms = 100
+p99_ms = 200
+```
+
+---
+
+## Cross-Platform Testing
+
+### Gotchas
+
+See [Testing Infrastructure](../docs/14-testing-infrastructure.md) for details:
+
+1. **Path canonicalization**: macOS `/var` → `/private/var`
+2. **Path separators**: Use `Path::join`, not hardcoded `/`
+3. **Line endings**: Normalize or use `.lines()`
+4. **Case sensitivity**: Don't rely on case-sensitive paths
+
+### CI Matrix
+
+Tests run on:
+- Ubuntu Linux x64
+- macOS (arm64)
+- Windows x64
+
+---
+
+## Test Organization
+
+### DO:
+
+```
+crates/nova-foo/
+├── src/
+│   └── lib.rs        # Unit tests in #[cfg(test)] modules
+└── tests/
+    └── integration_tests.rs  # ONE binary
+```
+
+### DON'T:
+
+```
+crates/nova-foo/
+└── tests/
+    ├── test_a.rs     # BAD: Each file = separate binary
+    ├── test_b.rs     # BAD: Slow compilation
+    └── test_c.rs     # BAD: Memory pressure
+```
+
+---
+
+## Running Tests
+
+```bash
+# Single crate
+bash scripts/cargo_agent.sh test -p nova-core --lib
+
+# Specific test
+bash scripts/cargo_agent.sh test -p nova-types --lib -- test_name
+
+# With output
+bash scripts/cargo_agent.sh test -p nova-syntax --lib -- --nocapture
+
+# Update snapshots
+UPDATE_EXPECT=1 bash scripts/cargo_agent.sh test -p nova-syntax --lib
+```
+
+**NEVER run:**
+```bash
+cargo test                    # Unbounded
+cargo test --all-targets      # Will OOM
+```
+
+---
+
+## Code Coverage
+
+Generate coverage reports:
+
+```bash
+# Install llvm-cov
+cargo install cargo-llvm-cov
+
+# Generate report
+bash scripts/cargo_agent.sh llvm-cov -p nova-core --html
+```
+
+---
+
+## Common Pitfalls
+
+1. **Flaky tests** - Use deterministic seeds, mock time
+2. **Test pollution** - Isolate state between tests
+3. **Slow tests** - Profile and optimize, or mark `#[ignore]`
+4. **Missing edge cases** - Use property testing
+5. **Platform differences** - Test on all CI platforms
+
+---
+
+## Dependencies
+
+**Upstream:** All crates (testing is cross-cutting)
+**Downstream:** CI, release quality
+
+---
+
+## Responsibilities
+
+- Maintain test infrastructure
+- Define testing standards
+- Run and triage fuzzing
+- Monitor test coverage
+- Investigate flaky tests
+- Performance benchmarking
+
+---
+
+*Remember: Always follow [AGENTS.md](../AGENTS.md) rules. Use wrapper scripts. Scope your cargo commands.*

@@ -1,4 +1,8 @@
-# Project Nova: Building a Superior Java Language Server
+# Nova Agent Guide
+
+**This file contains rules ALL agents MUST follow.** Workstream-specific instructions are in `instructions/*.md`.
+
+---
 
 ## ⚠️ CRITICAL: Memory Is the Only Hard Constraint
 
@@ -28,84 +32,106 @@ cargo test
 cargo build --all-targets
 ```
 
-See [docs/00-operational-guide.md](docs/00-operational-guide.md) for details on the wrapper scripts.
+See [docs/00-operational-guide.md](docs/00-operational-guide.md) for wrapper script details.
 
 ---
 
-## Executive Summary
+## Workstreams
 
-This document outlines a comprehensive plan to build **Nova**, a next-generation Java Language Server Protocol (LSP) implementation that aims to surpass the capabilities of IntelliJ IDEA and other existing Java development tools. This is not an incremental improvement—it's a fundamental rethinking of what a Java language server can be.
+Each workstream has its own instruction file in `instructions/`:
 
-**Why "Nova"?** A nova is a stellar explosion that dramatically increases a star's brightness. We aim to bring that same transformative brilliance to Java development tooling.
+| Workstream | File | Key Crates |
+|------------|------|------------|
+| Core Infrastructure | [`instructions/core-infrastructure.md`](instructions/core-infrastructure.md) | `nova-core`, `nova-db`, `nova-vfs`, `nova-cache`, `nova-memory` |
+| Syntax & Parsing | [`instructions/syntax-parsing.md`](instructions/syntax-parsing.md) | `nova-syntax`, `nova-format` |
+| Semantic Analysis | [`instructions/semantic-analysis.md`](instructions/semantic-analysis.md) | `nova-types`, `nova-resolve`, `nova-hir`, `nova-flow` |
+| Code Intelligence | [`instructions/code-intelligence.md`](instructions/code-intelligence.md) | `nova-ide`, `nova-index`, `nova-fuzzy` |
+| Refactoring | [`instructions/refactoring.md`](instructions/refactoring.md) | `nova-refactor` |
+| Framework Support | [`instructions/framework-support.md`](instructions/framework-support.md) | `nova-framework-*`, `nova-apt` |
+| Build Systems | [`instructions/build-systems.md`](instructions/build-systems.md) | `nova-build`, `nova-build-bazel`, `nova-project` |
+| LSP & Editors | [`instructions/lsp-editor.md`](instructions/lsp-editor.md) | `nova-lsp`, `nova-cli`, `editors/*` |
+| Debugging | [`instructions/debugging.md`](instructions/debugging.md) | `nova-dap`, `nova-jdwp` |
+| AI Features | [`instructions/ai-features.md`](instructions/ai-features.md) | `nova-ai`, `nova-ai-codegen` |
+| Testing & Quality | [`instructions/testing-quality.md`](instructions/testing-quality.md) | `nova-testing`, `nova-test-utils`, `fuzz/` |
 
-## The Opportunity
-
-IntelliJ IDEA has dominated Java tooling for over two decades. Its excellence comes from deep technical investments that competitors have struggled to match. However, several factors create an unprecedented opportunity:
-
-1. **Architecture Constraints**: IntelliJ was designed as a monolithic IDE, not a composable language server. This creates friction in modern polyglot, editor-agnostic development workflows.
-
-2. **Technical Debt**: 20+ years of evolution means legacy architectural decisions that can't easily be changed.
-
-3. **Modern Techniques**: Advances in incremental computation, query-based compilers, and modern language design (Rust, etc.) provide architectural patterns unavailable when IntelliJ was designed.
-
-4. **AI Revolution**: The integration of AI into development tools requires architectural foundations that weren't anticipated.
-
-5. **Cloud/Remote Development**: Modern development increasingly happens in cloud environments where resource efficiency matters more than ever.
-
-## Document Structure
- 
-This plan is organized into detailed linked documents covering every aspect of the project:
-
-### Architectural decisions (ADRs)
-
-Binding architectural choices (libraries, core patterns, invariants) are tracked as **Architecture Decision Records**:
-
-- [Architecture + ADR index](docs/architecture.md)
-
-### Part 0: Operations (READ FIRST)
-- **[00 - Operational Guide](docs/00-operational-guide.md)** - **CRITICAL**: Resource limits, timeouts, cgroups, monitoring for high-concurrency execution
-
-### Part I: Understanding the Problem Space
-- **[01 - Problem Analysis: What Makes IntelliJ Excellent](docs/01-problem-analysis.md)** - Deep technical analysis of IntelliJ's architecture and what makes it superior
-- **[02 - Current Landscape Analysis](docs/02-current-landscape.md)** - Analysis of existing Java LSPs (Eclipse JDT-LS, etc.) and their limitations
- 
-### Part II: Architectural Foundation
-- **[03 - Architecture Overview](docs/03-architecture-overview.md)** - High-level system architecture and design principles
-- **[04 - Incremental Computation Engine](docs/04-incremental-computation.md)** - Query-based incremental computation system (the core innovation)
-- **[05 - Syntax and Parsing](docs/05-syntax-and-parsing.md)** - Error-resilient parsing and syntax tree architecture
-- **[06 - Semantic Analysis](docs/06-semantic-analysis.md)** - Type checking, symbol resolution, type inference
-- **[16 - Java Language Levels and Feature Gating](docs/16-java-language-levels.md)** - Per-module Java version model, preview features, and version-aware diagnostics
-
-### Part III: Intelligence Features
-- **[07 - Code Intelligence](docs/07-code-intelligence.md)** - Completions, diagnostics, navigation, code actions
-- **[08 - Refactoring Engine](docs/08-refactoring-engine.md)** - Safe, semantic-aware code transformations
-- **[09 - Framework Support](docs/09-framework-support.md)** - Spring, Jakarta EE, annotation processing, Lombok
-
-### Part IV: Performance & Integration
-- **[10 - Performance Engineering](docs/10-performance-engineering.md)** - Indexing, caching, persistence, concurrency
-- **[11 - Editor Integration](docs/11-editor-integration.md)** - LSP protocol, custom extensions, multi-editor support
-- **[12 - Debugging Integration](docs/12-debugging-integration.md)** - DAP implementation, advanced debugging features
-- **[17 - Observability and Reliability](docs/17-observability-and-reliability.md)** - Logging, safe mode, bug reports, runtime metrics
-
-### Part V: Advanced Capabilities
-- **[13 - AI Augmentation](docs/13-ai-augmentation.md)** - Machine learning integration for intelligent features
-- **[14 - Testing Strategy](docs/14-testing-strategy.md)** - Comprehensive testing and quality assurance
-- **[14 - Testing Infrastructure](docs/14-testing-infrastructure.md)** - How to run tests locally, update fixtures/snapshots, and what CI enforces
-
-### Part VI: Project Organization
-- **[15 - Work Breakdown](docs/15-work-breakdown.md)** - Suggested organization and phasing
+**Pick your workstream and read its instruction file.** All workstream files require reading this file first.
 
 ---
 
-## Core Design Principles
+## Project Overview
 
-### 1. Query-Based Architecture (The Key Innovation)
+**Nova** is a next-generation Java Language Server that aims to surpass IntelliJ IDEA. Key innovations:
 
-Unlike traditional compilers that process files sequentially, Nova uses a **query-based incremental computation engine** inspired by systems like Salsa (rust-analyzer) and Adapton. Every piece of information in the system is the result of a query, and queries automatically track their dependencies.
+1. **Query-Based Architecture** - Salsa-inspired incremental computation
+2. **Resilient by Design** - Works with broken, incomplete code
+3. **Performance as a Feature** - Sub-16ms latency for most operations
+4. **Composability** - Library-first design, standard protocols (LSP/DAP)
+
+### Document Structure
+
+| Part | Documents |
+|------|-----------|
+| **Operations** | [00 - Operational Guide](docs/00-operational-guide.md) (**READ FIRST**) |
+| **Problem Space** | [01 - Problem Analysis](docs/01-problem-analysis.md), [02 - Current Landscape](docs/02-current-landscape.md) |
+| **Architecture** | [03 - Architecture Overview](docs/03-architecture-overview.md), [04 - Incremental Computation](docs/04-incremental-computation.md), [05 - Syntax](docs/05-syntax-and-parsing.md), [06 - Semantic Analysis](docs/06-semantic-analysis.md), [16 - Java Language Levels](docs/16-java-language-levels.md) |
+| **Intelligence** | [07 - Code Intelligence](docs/07-code-intelligence.md), [08 - Refactoring](docs/08-refactoring-engine.md), [09 - Framework Support](docs/09-framework-support.md) |
+| **Integration** | [10 - Performance](docs/10-performance-engineering.md), [11 - Editor Integration](docs/11-editor-integration.md), [12 - Debugging](docs/12-debugging-integration.md), [17 - Observability](docs/17-observability-and-reliability.md) |
+| **Advanced** | [13 - AI Augmentation](docs/13-ai-augmentation.md), [14 - Testing Strategy](docs/14-testing-strategy.md), [14 - Testing Infrastructure](docs/14-testing-infrastructure.md) |
+| **Planning** | [15 - Work Breakdown](docs/15-work-breakdown.md), [Architecture + ADRs](docs/architecture.md) |
+
+---
+
+## Mandatory Rules (All Workstreams)
+
+### Cargo Commands
+
+```bash
+# ALWAYS use wrapper:
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh check -p nova-syntax
+
+# NEVER run these:
+cargo test                    # Unbounded
+cargo build --all-targets     # Will OOM
+cargo check --all-features    # Will OOM
+```
+
+### Test Organization
+
+**Never create loose `tests/*.rs` files.** Each `.rs` file in `tests/` becomes a separate binary.
+
+```
+tests/
+├── parser_tests.rs      ← harness (compiles as ONE binary)
+├── parser/              ← subdirectory
+│   ├── mod.rs
+│   └── your_new_test.rs ← ADD HERE
+```
+
+### Cross-Platform Compatibility
+
+1. **Path canonicalization**: macOS `/var` → `/private/var`. Canonicalize tempdir paths in tests.
+2. **Path separators**: Use `Path::join`, never hardcoded `/`.
+3. **Line endings**: Normalize or use `.lines()` for comparison.
+4. **Case sensitivity**: Don't rely on case-sensitive paths.
+
+See [Testing Infrastructure](docs/14-testing-infrastructure.md) for details.
+
+### Code Quality
+
+- Fix linter errors before committing
+- Run `bash scripts/cargo_agent.sh check -p <crate>` before pushing
+- Add tests for new functionality
+- Follow existing code conventions in each crate
+
+---
+
+## Architecture Quick Reference
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Query Database                                │
+│                    Query Database (nova-db)                      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Input Queries      │  Derived Queries                          │
 │  ─────────────────  │  ────────────────────────────────────────  │
@@ -115,93 +141,22 @@ Unlike traditional compilers that process files sequentially, Nova uses a **quer
 │                     │  • completions_at → Completion Items      │
 │                     │  • diagnostics_for → Error Messages       │
 └─────────────────────────────────────────────────────────────────┘
+
+Dependency Flow:
+VFS → Parser → HIR → Types/Resolve → IDE Features → LSP
+                                   ↘ Refactoring ↗
 ```
 
-**Why this matters:**
-- Automatic incremental updates when files change
-- Only recompute what's affected
-- Parallel execution of independent queries
-- Deterministic behavior
-- Trivial persistence and caching
+### Core Design Principles
 
-### 2. Resilient by Design
-
-Unlike a batch compiler, a language server must work with broken, incomplete code. Nova is designed from the ground up to:
-
-- **Parse broken syntax** and recover meaningfully
-- **Type-check partial programs** with graceful degradation
-- **Provide useful information** even when errors exist
-- **Never crash or hang** regardless of input
-
-### 3. Performance as a Feature
-
-Performance isn't just optimization—it's a core design constraint. Every architectural decision must consider:
-
-- **Latency**: Keystroke-level responsiveness (< 16ms for most operations)
-- **Memory**: Efficient handling of large codebases (millions of lines)
-- **Startup**: Fast time-to-useful (< 2 seconds for basic features)
-- **Scaling**: Linear or better scaling with codebase size
-
-### 4. Composability Over Integration
-
-Instead of building a monolithic system, Nova provides composable building blocks:
-
-- **Standalone semantic database**: Can be used by any tool
-- **Pluggable framework analyzers**: Add framework support without core changes
-- **Standard protocols**: LSP, DAP, custom extensions
-- **Library-first design**: Every component usable independently
-
----
-
-## Technical Innovation Highlights
-
-### Innovation 1: Demand-Driven Type Checking
-
-Traditional Java type checkers process entire compilation units. Nova introduces **demand-driven type checking** that computes type information on-demand:
-
-- Open a file? Only check that file (and dependencies as needed)
-- Hover over an expression? Only compute that expression's type
-- No wasted work on unused code paths
-
-### Innovation 2: Hybrid Persistence Model
-
-Nova maintains a persistent, memory-mapped database that survives restarts:
-
-- First keystroke to useful: Sub-second (indexes already loaded)
-- Background indexing: Continues where it left off after crashes
-- Shared indexes: Teams can share prebuilt indexes for common dependencies
-
-### Innovation 3: Semantic Diff Engine
-
-Instead of treating refactoring as text manipulation, Nova works with **semantic diffs**:
-
-- Refactoring produces semantic changes, not text edits
-- Changes can be previewed, modified, and composed
-- Multi-file refactorings maintain consistency guarantees
-
-### Innovation 4: Framework-Aware Analysis
-
-Deep, first-class support for frameworks like Spring:
-
-- Understands dependency injection at the semantic level
-- Bean resolution, autowiring, configuration validation
-- Navigation between code and configuration
-- Detects misconfigurations before runtime
-
-### Innovation 5: AI-Native Architecture
-
-Built with AI integration as a first-class concern:
-
-- Embedding generation for semantic code search
-- Context assembly for LLM prompts
-- Structured output parsing for AI-generated code
-- Hybrid analysis combining static and AI-based reasoning
+1. **Query-Based**: Everything is a memoized query with dependency tracking
+2. **Incremental**: Only recompute what's affected by changes
+3. **Resilient**: Handle broken code gracefully, never crash
+4. **Parallel**: Independent queries execute concurrently
 
 ---
 
 ## Success Metrics
-
-Nova will be considered successful when it demonstrably exceeds IntelliJ on these dimensions:
 
 | Metric | IntelliJ Baseline | Nova Target |
 |--------|-------------------|-------------|
@@ -214,82 +169,14 @@ Nova will be considered successful when it demonstrably exceeds IntelliJ on thes
 
 ---
 
-## Critical Challenges
+## Getting Help
 
-### Challenge 1: Java's Complexity
-
-Java is a complex language with:
-- Generics with complex variance and bounds
-- Type inference (var, diamond, lambda parameters)
-- Annotation processing that generates code
-- Module system (JPMS)
-- Multiple inheritance of interface methods
-- Sealed types, records, pattern matching
-
-**Mitigation**: Build on proven type system implementations, extensive test suite against Java specification.
-
-### Challenge 2: Framework Magic
-
-Modern Java development relies heavily on frameworks (Spring, Jakarta EE) that use:
-- Runtime reflection
-- Annotation-driven code generation
-- Convention over configuration
-- Proxy-based AOP
-
-**Mitigation**: Dedicated framework analyzers, configurable analysis scope, hybrid static/dynamic analysis.
-
-### Challenge 3: Scale
-
-Large enterprise codebases can have:
-- Millions of lines of code
-- Thousands of modules
-- Deep dependency trees
-- Complex build configurations
-
-**Mitigation**: Incremental architecture, persistent indexes, distributed analysis capability.
-
-### Challenge 4: Ecosystem Compatibility
-
-Must work with:
-- Multiple build tools (Maven, Gradle, Bazel)
-- Various Java versions (8, 11, 17, 21+)
-- Existing developer workflows
-- Team conventions and configurations
-
-**Mitigation**: Plugin architecture for build tools, version-aware analysis, configuration layering.
+- **Architecture questions**: Read [docs/03-architecture-overview.md](docs/03-architecture-overview.md)
+- **ADRs**: Check [docs/adr/](docs/adr/) for binding decisions
+- **Testing**: See [docs/14-testing-infrastructure.md](docs/14-testing-infrastructure.md)
+- **Performance**: See [docs/10-performance-engineering.md](docs/10-performance-engineering.md)
 
 ---
 
-## Next Steps
-
-This document provides the strategic overview. For detailed technical design, implementation guidance, and work breakdown, proceed to the linked documents.
-
-**Recommended reading order for technical depth:**
-1. [Problem Analysis](docs/01-problem-analysis.md) - Understand what we're competing against
-2. [Architecture Overview](docs/03-architecture-overview.md) - Core system design
-3. [Incremental Computation](docs/04-incremental-computation.md) - The key innovation
-4. [Semantic Analysis](docs/06-semantic-analysis.md) - The hardest technical problem
-
-**For project planning:**
-1. [Work Breakdown](docs/15-work-breakdown.md) - Organization and phasing
-2. [Testing Strategy](docs/14-testing-strategy.md) - Quality assurance approach
-3. [Testing Infrastructure](docs/14-testing-infrastructure.md) - How to run/update suites locally and what CI enforces
-
----
-
-## A Note on Ambition
-
-Building a Java language server superior to IntelliJ is one of the most ambitious projects in developer tooling. IntelliJ represents 20+ years of investment by hundreds of engineers. This is not a weekend project.
-
-However, several factors make success possible:
-1. **Modern architectural patterns** that weren't available when IntelliJ was designed
-2. **Lessons learned** from successful projects like rust-analyzer
-3. **Focus**: We're building a language server, not a full IDE
-4. **Collaboration**: Unlimited intelligent agents working in concert
-
-The path is difficult but not impossible. This document and its companions provide the map.
-
----
-
-*Document Version: 1.0*  
+*Document Version: 2.0*  
 *Created: January 2026*
