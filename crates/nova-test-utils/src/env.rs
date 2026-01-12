@@ -20,7 +20,7 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("env_lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// RAII guard that sets/unsets an environment variable and restores the previous value on drop.
@@ -150,5 +150,16 @@ mod tests {
             let got = std::env::var_os(KEY).expect("env var should be set");
             assert_eq!(got.into_vec(), value.into_vec());
         }
+    }
+
+    #[test]
+    fn env_lock_recovers_from_poisoning() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = env_lock();
+            panic!("intentionally poison env_lock");
+        }));
+
+        // Subsequent users should still be able to acquire the lock even though it's poisoned.
+        let _guard = env_lock();
     }
 }
