@@ -82,6 +82,36 @@ fn lower_body_preserves_explicit_constructor_invocation_super() {
 }
 
 #[test]
+fn lower_body_preserves_array_access() {
+    let block = parse_block("{ a[0]; }", 0);
+    assert_eq!(block.statements.len(), 1);
+
+    let body = lower_body(&block);
+    let Stmt::Block { statements, .. } = &body.stmts[body.root] else {
+        panic!("expected root statement to be a block");
+    };
+    assert_eq!(statements.len(), 1);
+
+    let Stmt::Expr { expr, .. } = &body.stmts[statements[0]] else {
+        panic!("expected expression statement");
+    };
+
+    let Expr::ArrayAccess { array, index, .. } = &body.exprs[*expr] else {
+        panic!("expected array access expr, got {:?}", body.exprs[*expr]);
+    };
+    assert!(
+        matches!(&body.exprs[*array], Expr::Name { name, .. } if name == "a"),
+        "expected array access receiver to be name `a`, got {:?}",
+        body.exprs[*array]
+    );
+    assert!(
+        matches!(&body.exprs[*index], Expr::Literal { kind: LiteralKind::Int, value, .. } if value == "0"),
+        "expected array access index to be int literal `0`, got {:?}",
+        body.exprs[*index]
+    );
+}
+
+#[test]
 fn lower_item_tree_and_body() {
     let source = r#"
 package com.example;
