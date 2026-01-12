@@ -3171,6 +3171,23 @@ class C { int m(){ return max(1,2); } }
 }
 
 #[test]
+fn static_star_imported_math_min_resolves() {
+    let src = r#"
+import static java.lang.Math.*;
+class C { int m(){ return min(1,2); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unresolved-name"
+            && d.code.as_ref() != "unresolved-static-member"),
+        "expected Math.* static star import to provide min; got {diags:?}"
+    );
+}
+
+#[test]
 fn java_lang_math_max_resolves_via_implicit_import() {
     let src = r#"
 class C {
@@ -3188,6 +3205,30 @@ class C {
     );
 
     let offset = src.find("max(").expect("snippet should contain max call") + "max".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn java_lang_math_min_resolves_via_implicit_import() {
+    let src = r#"
+class C {
+    int m() {
+        return Math.min(1, 2);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected Math.min(int,int) to resolve via implicit java.lang import; got {diags:?}"
+    );
+
+    let offset = src.find("min(").expect("snippet should contain min call") + "min".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -3277,6 +3318,32 @@ class C { double m(){ return PI; } }
 }
 
 #[test]
+fn static_star_imported_math_e_resolves() {
+    let src = r#"
+import static java.lang.Math.*;
+class C { double m(){ return E; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
+            && d.code.as_ref() != "unresolved-field"
+            && d.code.as_ref() != "unresolved-name"),
+        "expected Math.* static star import to provide E; got {diags:?}"
+    );
+
+    let offset = src
+        .find("return E")
+        .expect("snippet should contain E return")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "double");
+}
+
+#[test]
 fn java_lang_math_pi_resolves_via_implicit_import() {
     let src = r#"
 class C {
@@ -3295,6 +3362,34 @@ class C {
     );
 
     let offset = src.find("PI").expect("snippet should contain PI") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "double");
+}
+
+#[test]
+fn java_lang_math_e_resolves_via_implicit_import() {
+    let src = r#"
+class C {
+    double m() {
+        return Math.E;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"
+            && d.code.as_ref() != "unresolved-static-member"),
+        "expected Math.E to resolve via implicit java.lang import; got {diags:?}"
+    );
+
+    let offset = src
+        .find("Math.E")
+        .expect("snippet should contain Math.E")
+        + "Math.".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
