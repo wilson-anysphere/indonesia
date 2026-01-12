@@ -331,3 +331,41 @@ public interface I {}
         &Type::Named("z.I".to_string())
     ));
 }
+
+#[test]
+fn source_types_do_not_misinterpret_uppercase_package_segments_as_nested_types() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    // `x.Y` is a legal (if uncommon) package name segment capitalization. When the referenced type
+    // hasn't been loaded yet, we should avoid guessing a nested binary name like `x.Y$C`.
+    source.update_file(
+        &mut store,
+        PathBuf::from("/a/Impl.java"),
+        r#"
+package a;
+import x.Y.C;
+class Impl implements C {}
+class Impl2 implements x.Y.C {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/x/Y/C.java"),
+        r#"
+package x.Y;
+public interface C {}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("a.Impl".to_string()),
+        &Type::Named("x.Y.C".to_string())
+    ));
+    assert!(is_subtype(
+        &store,
+        &Type::Named("a.Impl2".to_string()),
+        &Type::Named("x.Y.C".to_string())
+    ));
+}

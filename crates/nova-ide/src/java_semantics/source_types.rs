@@ -792,10 +792,9 @@ impl ResolveCtx {
             }
         }
 
-        // If the type isn't known yet, attempt to canonicalize the name into a best-effort binary
-        // name by splitting the package prefix from the type suffix based on Java naming
-        // conventions (package segments tend to be lowercase, type segments tend to be uppercase).
-        if let Some(candidate) = guess_qualified_binary_name(name) {
+        // If the type isn't known yet, but the *outer* type is known, keep the type reference in a
+        // canonical binary form so it can resolve once the nested type is later added to the store.
+        if let Some(candidate) = guess_nested_binary_name(store, name) {
             return Type::Named(candidate);
         }
 
@@ -836,7 +835,7 @@ impl ResolveCtx {
             }
         }
 
-        if let Some(candidate) = guess_qualified_binary_name(name) {
+        if let Some(candidate) = guess_nested_binary_name(store, name) {
             return Type::Named(candidate);
         }
 
@@ -847,7 +846,7 @@ impl ResolveCtx {
         // If `name` is imported as a single type, we can treat it as a type name even if the class
         // isn't in the store yet.
         if let Some(path) = self.single_type_imports.get(name) {
-            return guess_qualified_binary_name(path).or_else(|| Some(path.clone()));
+            return guess_nested_binary_name(store, path).or_else(|| Some(path.clone()));
         }
 
         match self.resolve_simple_name(store, name) {
@@ -865,41 +864,36 @@ fn looks_like_type_segment(segment: &str) -> bool {
     }
 }
 
-fn guess_qualified_binary_name(name: &str) -> Option<String> {
+fn guess_nested_binary_name(store: &TypeStore, name: &str) -> Option<String> {
     let segments: Vec<&str> = name.split('.').collect();
     if segments.len() < 2 {
         return None;
     }
 
-    // Heuristic: treat the *suffix* of "type-looking" segments as the type portion of the name,
-    // and the prefix as the package portion. This handles common cases like:
-    // - `z.I` -> `z.I`
-    // - `java.util.Map.Entry` -> `java.util.Map$Entry`
-    // - `com.example.Outer.Inner` -> `com.example.Outer$Inner`
-    let mut start = segments.len();
-    while start > 0 && looks_like_type_segment(segments[start - 1]) {
-        start -= 1;
-    }
-    if start == segments.len() {
-        return None;
+    // Only convert `.` -> `$` when we have evidence that the outer type exists in the store.
+    //
+    // This avoids misinterpreting uppercase package segments (which are legal, if uncommon) as
+    // type names. Example:
+    //
+    // - `x.Y.C` might be a top-level type `C` in package `x.Y`.
+    // - It *might also* be a nested type `C` inside type `Y` in package `x`.
+    //
+    // Without additional evidence, we keep the source name unchanged. If we can confirm that
+    // `x.Y` exists as a class in the current store, we treat `.C` as a nested suffix and
+    // canonicalize it to `x.Y$C`.
+    for outer_end in (0..segments.len() - 1).rev() {
+        let outer = segments[..=outer_end].join(".");
+        if store.lookup_class(&outer).is_some() {
+            let mut candidate = outer;
+            for seg in &segments[outer_end + 1..] {
+                candidate.push('$');
+                candidate.push_str(seg);
+            }
+            return Some(candidate);
+        }
     }
 
-    let (pkg, ty_segments) = segments.split_at(start);
-    let Some((outer, nested)) = ty_segments.split_first() else {
-        return None;
-    };
-
-    let mut candidate = String::new();
-    if !pkg.is_empty() {
-        candidate.push_str(&pkg.join("."));
-        candidate.push('.');
-    }
-    candidate.push_str(outer);
-    for seg in nested {
-        candidate.push('$');
-        candidate.push_str(seg);
-    }
-    Some(candidate)
+    None
 }
 
 fn parse_type_ref(ctx: &ResolveCtx, store: &TypeStore, text: &str) -> Type {
