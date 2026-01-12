@@ -4814,7 +4814,8 @@ fn handle_prepare_rename(
             | JavaSymbolKind::Parameter
             | JavaSymbolKind::Field
             | JavaSymbolKind::Method
-            | JavaSymbolKind::Type,
+            | JavaSymbolKind::Type
+            | JavaSymbolKind::TypeParameter,
         ) => {
             // Prepare rename should only succeed when there is an identifier *and* a refactorable
             // symbol at (or adjacent to) the cursor. The identifier check is important because some

@@ -707,6 +707,115 @@ fn stdio_server_supports_field_rename() {
 }
 
 #[test]
+fn stdio_server_prepare_rename_supports_type_parameter_rename() {
+    let _lock = crate::support::stdio_server_lock();
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let source = r#"class C<T>{ T f; void m(T t){ T x = t; } }"#;
+
+    let t_param_offset = source.find("<T>").expect("type parameter list") + 1;
+    let t_param_position = lsp_position_utf16(source, t_param_offset);
+    let t_param_range = lsp_range_utf16(source, t_param_offset, t_param_offset + "T".len());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) open document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    // 3) prepareRename on type parameter => identifier range
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareRename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": t_param_position,
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("prepareRename result");
+    let range: Range = serde_json::from_value(result).expect("decode prepareRename range");
+    assert_eq!(range, t_param_range);
+
+    // 4) rename type parameter T -> U updates all occurrences
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": t_param_position,
+                "newName": "U"
+            }
+        }),
+    );
+    let rename_resp = read_response_with_id(&mut stdout, 3);
+    let result = rename_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_text_edits(source, edits);
+    let expected = source.replace('T', "U");
+    assert_eq!(actual, expected);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_rename_type_updates_multiple_files() {
     let _lock = crate::support::stdio_server_lock();
     let tmp = tempdir().expect("tempdir");
