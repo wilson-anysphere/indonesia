@@ -21,6 +21,15 @@ use nova_deps_cache::{
 use nova_modules::{ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
+const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
+    "module-info.class",
+    "META-INF/versions/9/module-info.class",
+    "classes/module-info.class",
+    "classes/META-INF/versions/9/module-info.class",
+];
+
+const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
+
 /// Derive the automatic module name for a module-path entry based on its path.
 ///
 /// This follows the same derivation the Java module system uses for automatic
@@ -255,7 +264,8 @@ impl ClasspathEntry {
                     kind: ModuleNameKind::Explicit,
                 }),
                 None => {
-                    let name = derive_automatic_module_name_from_path(dir);
+                    let name = automatic_module_name_from_dir_manifest(dir)
+                        .or_else(|| derive_automatic_module_name_from_path(dir));
                     let kind = if name.is_some() {
                         ModuleNameKind::Automatic
                     } else {
@@ -288,7 +298,7 @@ fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
     };
     let mut archive = zip::ZipArchive::new(file)?;
 
-    for candidate in ["module-info.class", "META-INF/versions/9/module-info.class"] {
+    for candidate in MODULE_INFO_CLASS_CANDIDATES {
         match archive.by_name(candidate) {
             Ok(mut entry) => {
                 let mut bytes = Vec::with_capacity(entry.size() as usize);
@@ -314,6 +324,24 @@ fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
     };
 
     Ok(EntryModuleMeta { name, kind })
+}
+
+fn automatic_module_name_from_dir_manifest(dir: &Path) -> Option<ModuleName> {
+    for candidate in MANIFEST_CANDIDATES {
+        let path = dir.join(candidate);
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let manifest = String::from_utf8_lossy(&bytes);
+        let name = module_name::manifest_main_attribute(&manifest, "Automatic-Module-Name")?;
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        return Some(ModuleName::new(name.to_string()));
+    }
+
+    None
 }
 
 fn canonicalize_if_possible(path: &Path) -> std::io::Result<PathBuf> {
@@ -1452,10 +1480,12 @@ enum ZipKind {
 
 fn read_module_info_from_dir(dir: &Path) -> Result<Option<ModuleInfo>, ClasspathError> {
     // Multi-release JARs can store `module-info.class` under `META-INF/versions/9/`.
-    // While directories are not formally multi-release archives, some build tools
-    // (or Bazel-style dependency extraction) surface JAR contents as directories,
-    // so we check the versioned location as a best-effort.
-    for candidate in ["module-info.class", "META-INF/versions/9/module-info.class"] {
+    // JMODs (or exploded JMODs) can store it under `classes/`.
+    //
+    // While directories are not formally multi-release archives, some build tools (or Bazel-style
+    // dependency extraction) surface JAR/JMOD contents as directories, so we check these locations
+    // as a best-effort.
+    for candidate in MODULE_INFO_CLASS_CANDIDATES {
         let path = dir.join(candidate);
         if !path.is_file() {
             continue;
@@ -1480,8 +1510,8 @@ fn read_module_info_from_zip(
     let mut archive = zip::ZipArchive::new(file)?;
 
     let candidates: &[&str] = match kind {
-        ZipKind::Jar => &["module-info.class", "META-INF/versions/9/module-info.class"],
-        ZipKind::Jmod => &["classes/module-info.class"],
+        ZipKind::Jar => &MODULE_INFO_CLASS_CANDIDATES,
+        ZipKind::Jmod => &MODULE_INFO_CLASS_CANDIDATES,
     };
 
     for candidate in candidates {

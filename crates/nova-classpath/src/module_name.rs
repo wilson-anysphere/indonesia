@@ -3,6 +3,8 @@ use std::path::Path;
 
 use nova_modules::ModuleName;
 
+const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
+
 /// Return the value of `key` from the main section of a JAR manifest.
 ///
 /// Manifest files are line-oriented and can fold long values onto continuation
@@ -53,18 +55,24 @@ pub(crate) fn zip_manifest_main_attribute<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     key: &str,
 ) -> Option<String> {
-    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
-        Ok(file) => file,
-        Err(zip::result::ZipError::FileNotFound) => return None,
-        Err(_) => return None,
-    };
+    for candidate in MANIFEST_CANDIDATES {
+        let mut file = match archive.by_name(candidate) {
+            Ok(file) => file,
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(_) => continue,
+        };
 
-    let mut bytes = Vec::with_capacity(file.size() as usize);
-    if file.read_to_end(&mut bytes).is_err() {
-        return None;
+        let mut bytes = Vec::with_capacity(file.size() as usize);
+        if file.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        let manifest = String::from_utf8_lossy(&bytes);
+        if let Some(value) = manifest_main_attribute(&manifest, key) {
+            return Some(value);
+        }
     }
-    let manifest = String::from_utf8_lossy(&bytes);
-    manifest_main_attribute(&manifest, key)
+
+    None
 }
 
 pub(crate) fn automatic_module_name_from_jar_manifest<R: Read + Seek>(
