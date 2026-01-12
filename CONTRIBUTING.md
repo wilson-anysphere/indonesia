@@ -80,13 +80,13 @@ INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test forma
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)
 
-```bash
-./scripts/run-real-project-tests.sh
-
-# or run directly after cloning fixtures:
-cargo test -p nova-project --test real_projects -- --include-ignored
-cargo test -p nova-cli --test real_projects -- --include-ignored
-```
+ ```bash
+ ./scripts/run-real-project-tests.sh
+ 
+ # or run directly after cloning fixtures:
+ cargo test -p nova-project --test harness -- --include-ignored real_projects::
+ cargo test -p nova-cli --test real_projects -- --include-ignored
+ ```
 
 ### Format & lint
 

@@ -559,7 +559,7 @@ fuzz_target!(|edits: Vec<FuzzEdit>| {
 **Implementation note (current repo):** Real-project validation is implemented as ignored tests using
 local-only clones under `test-projects/`:
 
-- `crates/nova-project/tests/real_projects.rs`
+- `crates/nova-project/tests/cases/real_projects.rs`
 - `crates/nova-cli/tests/real_projects.rs`
 
 Run them with `./scripts/run-real-project-tests.sh` (see [`test-projects/README.md`](../test-projects/README.md))
