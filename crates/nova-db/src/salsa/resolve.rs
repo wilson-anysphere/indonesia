@@ -14,9 +14,11 @@ use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
 use super::ArcEq;
+use super::{InternedClassKey, InternedClassKeyId, NovaInternedClassKeys};
+use ra_salsa::InternKey;
 
 #[ra_salsa::query_group(NovaResolveStorage)]
-pub trait NovaResolve: NovaHir + HasQueryStats + HasPersistence {
+pub trait NovaResolve: NovaHir + HasQueryStats + HasPersistence + NovaInternedClassKeys {
     /// Build the scope graph for a file.
     fn scope_graph(&self, file: FileId) -> Arc<nova_resolve::ItemTreeScopeBuildResult>;
 
@@ -40,6 +42,21 @@ pub trait NovaResolve: NovaHir + HasQueryStats + HasPersistence {
 
     /// Inverse lookup: map a `ClassId` back to its `(ProjectId, TypeName)` key.
     fn class_key(&self, id: ClassId) -> Option<(ProjectId, TypeName)>;
+
+    /// Intern all workspace class keys for `project` in a deterministic order.
+    ///
+    /// Salsa `#[interned]` IDs are assigned monotonically in insertion order; by
+    /// forcing a single sorted insertion point we ensure:
+    /// - stable `ClassId` for existing types across incremental edits (adding
+    ///   new types does not renumber old ones)
+    /// - deterministic ID assignment for multiple new types added in a single
+    ///   revision
+    fn workspace_interned_class_keys(&self, project: ProjectId) -> Arc<Vec<InternedClassKeyId>>;
+
+    /// Map a workspace type name to a stable numeric [`nova_ids::ClassId`].
+    ///
+    /// Returns `None` if `name` is not defined in the workspace.
+    fn class_id_for_workspace_type(&self, project: ProjectId, name: TypeName) -> Option<ClassId>;
 
     /// JPMS compilation environment (module graph + module-aware classpath index).
     fn jpms_compilation_env(
@@ -221,6 +238,92 @@ fn class_id_for_type(db: &dyn NovaResolve, project: ProjectId, name: TypeName) -
 
 fn class_key(db: &dyn NovaResolve, id: ClassId) -> Option<(ProjectId, TypeName)> {
     db.workspace_class_id_map().class_key(id)
+}
+
+fn workspace_interned_class_keys(
+    db: &dyn NovaResolve,
+    project: ProjectId,
+) -> Arc<Vec<InternedClassKeyId>> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span =
+        tracing::debug_span!("query", name = "workspace_interned_class_keys", ?project).entered();
+
+    cancel::check_cancelled(db);
+
+    let workspace = db.workspace_def_map(project);
+
+    // NOTE: `WorkspaceDefMap` is backed by hash maps; iteration order is
+    // intentionally unspecified. We sort by `TypeName::as_str()` to guarantee a
+    // deterministic bulk-intern insertion order.
+    let mut names: Vec<TypeName> = workspace.iter_type_names().cloned().collect();
+    names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+    let mut keys = Vec::with_capacity(names.len());
+    for (i, name) in names.into_iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, i as u32, 256);
+        let key = InternedClassKey {
+            project,
+            binary_name: name.as_str().to_string(),
+        };
+        keys.push(db.intern_class_key(key));
+    }
+
+    let result = Arc::new(keys);
+    db.record_query_stat("workspace_interned_class_keys", start.elapsed());
+    result
+}
+
+fn class_id_for_workspace_type(
+    db: &dyn NovaResolve,
+    project: ProjectId,
+    name: TypeName,
+) -> Option<ClassId> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!(
+        "query",
+        name = "class_id_for_workspace_type",
+        ?project,
+        name = %name
+    )
+    .entered();
+
+    cancel::check_cancelled(db);
+
+    // Ensure all workspace class keys are interned *in a deterministic order*
+    // before mapping an individual type name. This avoids order-dependent ID
+    // assignment (and potential nondeterminism under concurrent query
+    // execution).
+    let _ = db.workspace_interned_class_keys(project);
+
+    let workspace = db.workspace_def_map(project);
+    if workspace.item_by_type_name(&name).is_none() {
+        db.record_query_stat("class_id_for_workspace_type", start.elapsed());
+        return None;
+    }
+
+    let key = InternedClassKey {
+        project,
+        binary_name: name.as_str().to_string(),
+    };
+    let interned = db.intern_class_key(key);
+
+    // Conversion: interned raw id -> u32 -> `nova_core::ClassId`.
+    //
+    // `ra_ap_salsa` assigns intern ids densely as values are first seen. The raw
+    // integer id is therefore order-dependent unless we force a deterministic
+    // insertion order (see `workspace_interned_class_keys`).
+    //
+    // We intentionally persist the raw intern id as Nova's canonical `ClassId`:
+    //   InternedClassKeyId -> ra_salsa::InternId -> u32 -> nova_ids::ClassId
+    let raw: u32 = interned.as_intern_id().as_u32();
+    let result = Some(ClassId::from_raw(raw));
+
+    db.record_query_stat("class_id_for_workspace_type", start.elapsed());
+    result
 }
 
 fn jpms_compilation_env(

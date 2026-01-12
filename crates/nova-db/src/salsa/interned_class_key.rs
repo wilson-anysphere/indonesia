@@ -40,7 +40,7 @@ use crate::ProjectId;
 ///
 /// let key = InternedClassKey {
 ///     project,
-///     name: "Foo".to_string(),
+///     binary_name: "Foo".to_string(),
 /// };
 ///
 /// let interned: InternedClassKeyId = db.with_write(|db| db.intern_class_key(key));
@@ -70,7 +70,7 @@ use crate::ProjectId;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InternedClassKey {
     pub project: ProjectId,
-    pub name: String,
+    pub binary_name: String,
 }
 
 // The interned query requires `Key: ra_salsa::InternValue`. We use the trivial
@@ -143,7 +143,7 @@ mod tests {
         let project = ProjectId::from_raw(0);
         let key = InternedClassKey {
             project,
-            name: "Foo".to_string(),
+            binary_name: "Foo".to_string(),
         };
 
         let id1 = db.with_write(|db| db.intern_class_key(key.clone()));
@@ -162,7 +162,7 @@ mod tests {
         let project = ProjectId::from_raw(0);
         let key = InternedClassKey {
             project,
-            name: "Foo".to_string(),
+            binary_name: "Foo".to_string(),
         };
 
         let id = db.with_write(|db| db.intern_class_key(key.clone()));
@@ -187,13 +187,13 @@ mod tests {
         let _sentinel = db.with_write(|db| {
             db.intern_class_key(InternedClassKey {
                 project,
-                name: "Sentinel".to_string(),
+                binary_name: "Sentinel".to_string(),
             })
         });
 
         let key = InternedClassKey {
             project,
-            name: "Foo".to_string(),
+            binary_name: "Foo".to_string(),
         };
         let id_before = db.with_write(|db| db.intern_class_key(key.clone()));
 
@@ -217,11 +217,11 @@ mod tests {
         let project = ProjectId::from_raw(0);
         let a = InternedClassKey {
             project,
-            name: "A".to_string(),
+            binary_name: "A".to_string(),
         };
         let b = InternedClassKey {
             project,
-            name: "B".to_string(),
+            binary_name: "B".to_string(),
         };
 
         let db1 = SalsaDatabase::new();
@@ -246,13 +246,13 @@ mod tests {
         let _sentinel = db.with_write(|db| {
             db.intern_class_key(InternedClassKey {
                 project,
-                name: "Sentinel".to_string(),
+                binary_name: "Sentinel".to_string(),
             })
         });
         let id_before = db.with_write(|db| {
             db.intern_class_key(InternedClassKey {
                 project,
-                name: "Foo".to_string(),
+                binary_name: "Foo".to_string(),
             })
         });
 
@@ -263,7 +263,7 @@ mod tests {
         // valid (and lookups should not panic).
         let looked_up = db.with_write(|db| db.lookup_intern_class_key(id_before));
         assert_eq!(
-            looked_up.name, "Foo",
+            looked_up.binary_name, "Foo",
             "expected lookup to return the pre-eviction interned key"
         );
     }
@@ -276,12 +276,12 @@ mod tests {
         let _sentinel = db.with_write(|db| {
             db.intern_class_key(InternedClassKey {
                 project,
-                name: "Sentinel".to_string(),
+                binary_name: "Sentinel".to_string(),
             })
         });
         let key = InternedClassKey {
             project,
-            name: "Foo".to_string(),
+            binary_name: "Foo".to_string(),
         };
         let id_before = db.with_write(|db| db.intern_class_key(key.clone()));
 
