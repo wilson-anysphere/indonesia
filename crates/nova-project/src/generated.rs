@@ -33,9 +33,14 @@ pub(crate) fn append_generated_source_roots(
 
         match build_system {
             BuildSystem::Maven => {
+                candidates.push((SourceRootKind::Main, module_root.join("target/generated-sources")));
                 candidates.push((
                     SourceRootKind::Main,
                     module_root.join("target/generated-sources/annotations"),
+                ));
+                candidates.push((
+                    SourceRootKind::Test,
+                    module_root.join("target/generated-test-sources"),
                 ));
                 candidates.push((
                     SourceRootKind::Test,
@@ -231,5 +236,49 @@ mod tests {
             roots.iter().any(|root| root.path == custom_root),
             "expected custom root to be appended; got: {roots:?}"
         );
+    }
+
+    #[test]
+    fn maven_default_generated_roots_are_appended() {
+        let temp = TempDir::new().expect("tempdir");
+        let workspace_root = temp.path();
+        let module_root = workspace_root.join("module");
+        std::fs::create_dir_all(&module_root).expect("create module");
+
+        let config = NovaConfig::default();
+        let mut roots = Vec::new();
+        append_generated_source_roots(
+            &mut roots,
+            workspace_root,
+            &module_root,
+            BuildSystem::Maven,
+            &config,
+        );
+
+        let expected = [
+            (
+                SourceRootKind::Main,
+                module_root.join("target/generated-sources"),
+            ),
+            (
+                SourceRootKind::Main,
+                module_root.join("target/generated-sources/annotations"),
+            ),
+            (
+                SourceRootKind::Test,
+                module_root.join("target/generated-test-sources"),
+            ),
+            (
+                SourceRootKind::Test,
+                module_root.join("target/generated-test-sources/test-annotations"),
+            ),
+        ];
+
+        for (kind, path) in expected {
+            assert!(
+                roots.iter().any(|root| root.kind == kind && root.path == path),
+                "expected {kind:?} root {path:?} to be appended; got: {roots:?}"
+            );
+        }
     }
 }
