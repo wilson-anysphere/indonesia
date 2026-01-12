@@ -36,6 +36,7 @@ jobs:
             crates/nova-remote-rpc/fuzz -> target
 
       - name: Cargo.lock up-to-date
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           cargo metadata --locked --format-version 1 > /dev/null
@@ -117,6 +118,7 @@ jobs:
       - name: Cargo.lock unchanged
         if: always()
         shell: bash
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           if ! git diff --exit-code -- Cargo.lock; then
