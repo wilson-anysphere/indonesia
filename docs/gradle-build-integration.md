@@ -308,3 +308,16 @@ If the file is missing after running Gradle integration:
 `buildFingerprint` is based on **build inputs**, not on Gradle cache contents. If dependency
 resolution changes without build file edits (e.g. dynamic versions, refreshed caches), the snapshot
 may still validate and be used, but can be outdated. Re-run Gradle extraction to refresh it.
+
+---
+
+## Tests (writer/reader contract)
+
+The snapshot handoff has cross-crate tests that exercise both sides of the contract:
+
+- writer: `crates/nova-build/tests/gradle_snapshot.rs` (asserts `.nova/queries/gradle.json` is
+  created and contains expected fields after Gradle config extraction)
+- reader: `crates/nova-project/tests/cases/gradle_snapshot.rs` (asserts `nova-project` consumes a
+  valid snapshot and uses it to override module roots/classpaths/source roots)
+
+When evolving the schema, update these tests alongside the schema version constants.
