@@ -6,7 +6,7 @@ use nova_hir::queries::HirDatabase;
 use nova_jdk::JdkIndex;
 use nova_resolve::type_ref::resolve_type_ref_text;
 use nova_resolve::{build_scopes, Resolver};
-use nova_types::{ClassDef, ClassKind, PrimitiveType, Type, TypeEnv, TypeStore, WildcardBound};
+use nova_types::{ClassDef, ClassKind, PrimitiveType, Span, Type, TypeEnv, TypeStore, WildcardBound};
 
 #[derive(Default)]
 struct TestDb {
@@ -886,6 +886,37 @@ fn type_use_annotations_are_ignored() {
         result.diagnostics
     );
     assert_eq!(result.ty, Type::class(string_id, vec![]));
+}
+
+#[test]
+fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let text = "List<@Missing String>";
+    let base_span = Span::new(0, text.len());
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        text,
+        Some(base_span),
+    );
+    let diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for missing annotation type");
+    let span = diag.span.expect("expected anchored span for unresolved-type diagnostic");
+    assert_eq!(
+        &text[span.start..span.end],
+        "Missing",
+        "expected diagnostic span to cover the annotation name"
+    );
 }
 
 #[test]
