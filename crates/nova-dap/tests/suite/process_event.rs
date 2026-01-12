@@ -242,9 +242,19 @@ async fn dap_attach_emits_process_event() {
         .unwrap_or(false));
 
     let process_evt = read_until_event(&mut reader, &mut messages, "process", 100).await;
+    let body = process_evt
+        .get("body")
+        .and_then(|v| v.as_object())
+        .expect("process event missing body");
+    assert_eq!(body.get("name").and_then(|v| v.as_str()), Some("java"));
     assert_eq!(
-        process_evt.pointer("/body/startMethod").and_then(|v| v.as_str()),
-        Some("attach")
+        body.get("isLocalProcess").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(body.get("startMethod").and_then(|v| v.as_str()), Some("attach"));
+    assert!(
+        body.get("systemProcessId").is_none(),
+        "attach process event should not include systemProcessId"
     );
 
     send_request(&mut writer, 3, "disconnect", json!({})).await;
