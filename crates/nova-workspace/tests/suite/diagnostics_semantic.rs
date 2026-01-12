@@ -99,4 +99,3 @@ async fn workspace_diagnostics_use_workspace_salsa_db_for_imports_and_language_l
         "expected JAVA_FEATURE_RECORDS diagnostic under Java 11; got: {record_diags:#?}"
     );
 }
-

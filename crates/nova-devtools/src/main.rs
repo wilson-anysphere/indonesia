@@ -645,7 +645,7 @@ COMMANDS:
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
   check-architecture-map Validate docs/architecture-map.md coverage for workspace crates
   check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
-  check-test-layout      Validate integration test layout (warn at 2 root `tests/*.rs`, error at >2)
+  check-test-layout      Validate integration test layout (warn at 2 root `tests/*.rs`, error at >2 unless allowlisted)
   check-repo-invariants  Run all nova-devtools repo invariants (deps, layers, architecture-map --strict, protocol-extensions, test-layout)
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
