@@ -519,8 +519,11 @@ In the IDE, `crates/nova-ide/src/extensions.rs` wires two framework paths:
 - The `nova-framework` `AnalyzerRegistry` path exists via `FrameworkAnalyzerRegistryProvider`
   (which uses `crates/nova-ide/src/framework_db.rs` to adapt `nova_db::Database` to
   `nova_framework::Database`), and calls `framework_*_with_cancel` methods to cooperate with request
-  cancellation/timeouts. The default registry currently registers
-  `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op), so registry-backed analyzers are opt-in.
+  cancellation/timeouts.
+ 
+  In `IdeExtensions::with_default_registry`, Nova constructs the registry from
+  `nova_framework_builtins::builtin_registry()` and registers the provider for diagnostics,
+  completions, navigation, and inlay hints.
 
 ### Plugin integration constraint (Database adapter)
 
