@@ -2286,3 +2286,75 @@ interface I {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn extract_method_inside_interface_static_method_with_public_visibility_is_static() {
+    let fixture = r#"
+interface I {
+    static void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Public,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+interface I {
+    static void m(int a) {
+        int b = 1;
+        extracted(a, b);
+        System.out.println("done");
+    }
+
+    public static void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_rejects_package_private_visibility_in_interface() {
+    let fixture = r#"
+interface I {
+    default void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::PackagePrivate,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject package-private visibility in interface context");
+    assert!(
+        err.contains("InvalidVisibilityForInterface"),
+        "unexpected error: {err}"
+    );
+}
