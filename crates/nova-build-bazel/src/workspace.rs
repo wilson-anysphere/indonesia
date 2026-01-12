@@ -1897,6 +1897,22 @@ mod bsp_config_tests {
     }
 
     #[test]
+    fn dot_bsp_discovery_accepts_utf8_bom() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(br#"{"argv":["bom-prog","--arg"],"languages":["java"]}"#);
+        std::fs::write(bsp_dir.join("server.json"), bytes).unwrap();
+
+        let config =
+            crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
+        assert_eq!(config.program, "bom-prog");
+        assert_eq!(config.args, vec!["--arg".to_string()]);
+    }
+
+    #[test]
     fn env_overrides_win_over_dot_bsp_discovery() {
         let _lock = crate::test_support::env_lock();
 

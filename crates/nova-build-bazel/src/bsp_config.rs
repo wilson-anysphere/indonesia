@@ -58,13 +58,21 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
 
     let mut candidates = Vec::<DotBspCandidate>::new();
     for path in json_paths {
-        let contents = match fs::read_to_string(&path) {
-            Ok(contents) => contents,
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
             Err(_) => continue,
         };
 
-        let parsed: DotBspConnectionJson = match serde_json::from_str(&contents) {
+        // `serde_json` does not accept a UTF-8 BOM by default; handle it explicitly so discovery is
+        // robust to tools/editors that add it.
+        let parsed: DotBspConnectionJson = match serde_json::from_slice(&bytes) {
             Ok(parsed) => parsed,
+            Err(_) if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) => {
+                match serde_json::from_slice(&bytes[3..]) {
+                    Ok(parsed) => parsed,
+                    Err(_) => continue,
+                }
+            }
             Err(_) => continue,
         };
 
