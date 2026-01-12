@@ -2567,10 +2567,42 @@ impl Lowerer {
 
     fn lower_name_expr(&self, node: &SyntaxNode) -> ast::Expr {
         let mut segments = Vec::new();
+        let mut tokens = Vec::new();
         for tok in node.children_with_tokens().filter_map(|el| el.into_token()) {
             if tok.kind().is_identifier_like() || is_type_name_token(tok.kind()) {
                 segments.push((tok.text().to_string(), self.spans.map_token(&tok)));
             }
+            tokens.push(tok);
+        }
+
+        // Recover array type suffixes used in class literals and method references.
+        // The parser attaches trailing `[]` tokens to the `NameExpression` node so downstream
+        // semantic layers can preserve `String[].class` / `String[]::new` without treating `[]`
+        // as an array access.
+        //
+        // Lower these suffixes into synthetic `ArrayAccess` expressions with a missing index so
+        // later passes can interpret them as `T[]` type references.
+        let mut array_dims = 0usize;
+        let mut i = tokens.len();
+        loop {
+            while i > 0 && tokens[i - 1].kind().is_trivia() {
+                i -= 1;
+            }
+            if i < 2 {
+                break;
+            }
+            if tokens[i - 1].kind() != SyntaxKind::RBracket {
+                break;
+            }
+            let mut j = i - 1;
+            while j > 0 && tokens[j - 1].kind().is_trivia() {
+                j -= 1;
+            }
+            if j < 1 || tokens[j - 1].kind() != SyntaxKind::LBracket {
+                break;
+            }
+            array_dims += 1;
+            i = j - 1;
         }
 
         let Some((first, first_range)) = segments.first().cloned() else {
@@ -2592,7 +2624,19 @@ impl Lowerer {
             });
         }
 
-        expr
+        if array_dims == 0 {
+            expr
+        } else {
+            let range = self.spans.map_node(node);
+            for _ in 0..array_dims {
+                expr = ast::Expr::ArrayAccess(ast::ArrayAccessExpr {
+                    array: Box::new(expr),
+                    index: Box::new(ast::Expr::Missing(range)),
+                    range,
+                });
+            }
+            expr
+        }
     }
 
     fn lower_method_reference_expr(&self, node: &SyntaxNode) -> ast::Expr {

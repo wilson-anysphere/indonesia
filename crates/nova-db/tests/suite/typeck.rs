@@ -2868,6 +2868,57 @@ class C { void m(){ Object x = int.class; } }
 }
 
 #[test]
+fn array_class_literal_is_typed_as_java_lang_class() {
+    let src = r#"
+class C { void m(){ Object x = String[].class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String[].class")
+        .expect("snippet should contain class literal")
+        + "String[].".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String[]>");
+}
+
+#[test]
+fn primitive_array_class_literal_is_typed_as_java_lang_class() {
+    let src = r#"
+class C { void m(){ Object x = int[].class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("int[].class")
+        .expect("snippet should contain class literal")
+        + "int[].".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<int[]>");
+}
+
+#[test]
+fn multi_dim_array_class_literal_is_typed_as_java_lang_class() {
+    let src = r#"
+class C { void m(){ Object x = String[][].class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String[][].class")
+        .expect("snippet should contain class literal")
+        + "String[][].".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String[][]>");
+}
+
+#[test]
 fn class_literal_infers_var_type_as_java_lang_class() {
     let src = r#"
 class C {

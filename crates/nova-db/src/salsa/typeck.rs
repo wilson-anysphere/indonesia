@@ -5872,52 +5872,65 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 index,
                 range,
             } => {
-                let array_ty = self.infer_expr(loader, *array).ty;
-                let index_ty = self.infer_expr(loader, *index).ty;
-
-                match array_ty {
-                    Type::Array(elem) => {
-                        let index_prim = primitive_like(&*loader.store, &index_ty);
-                        if !index_ty.is_errorish()
-                            && !matches!(
-                                index_prim,
-                                Some(
-                                    PrimitiveType::Byte
-                                        | PrimitiveType::Short
-                                        | PrimitiveType::Char
-                                        | PrimitiveType::Int
-                                )
-                            )
-                        {
-                            let found = format_type(&*loader.store, &index_ty);
-                            self.diagnostics.push(Diagnostic::error(
-                                "invalid-array-index",
-                                format!(
-                                    "array index must be an integral type (byte, short, char, or int), found {found}"
-                                ),
-                                Some(self.body.exprs[*index].range()),
-                            ));
-                        }
-
-                        ExprInfo {
-                            ty: elem.as_ref().clone(),
-                            is_type_ref: false,
-                        }
+                let array_info = self.infer_expr(loader, *array);
+                // Array type suffixes (e.g. `String[].class`) are lowered as `ArrayAccess` with a
+                // missing index expression. If the base is a type reference, treat this as an
+                // array *type* reference rather than an array access expression.
+                if array_info.is_type_ref
+                    && matches!(&self.body.exprs[*index], HirExpr::Missing { .. })
+                {
+                    ExprInfo {
+                        ty: Type::Array(Box::new(array_info.ty)),
+                        is_type_ref: true,
                     }
-                    ty if ty.is_errorish() => ExprInfo {
-                        ty,
-                        is_type_ref: false,
-                    },
-                    ty => {
-                        let found = format_type(&*loader.store, &ty);
-                        self.diagnostics.push(Diagnostic::error(
-                            "invalid-array-access",
-                            format!("cannot index non-array type {found}"),
-                            Some(*range),
-                        ));
-                        ExprInfo {
-                            ty: Type::Error,
+                } else {
+                    let array_ty = array_info.ty;
+                    let index_ty = self.infer_expr(loader, *index).ty;
+
+                    match array_ty {
+                        Type::Array(elem) => {
+                            let index_prim = primitive_like(&*loader.store, &index_ty);
+                            if !index_ty.is_errorish()
+                                && !matches!(
+                                    index_prim,
+                                    Some(
+                                        PrimitiveType::Byte
+                                            | PrimitiveType::Short
+                                            | PrimitiveType::Char
+                                            | PrimitiveType::Int
+                                    )
+                                )
+                            {
+                                let found = format_type(&*loader.store, &index_ty);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "invalid-array-index",
+                                    format!(
+                                        "array index must be an integral type (byte, short, char, or int), found {found}"
+                                    ),
+                                    Some(self.body.exprs[*index].range()),
+                                ));
+                            }
+
+                            ExprInfo {
+                                ty: elem.as_ref().clone(),
+                                is_type_ref: false,
+                            }
+                        }
+                        ty if ty.is_errorish() => ExprInfo {
+                            ty,
                             is_type_ref: false,
+                        },
+                        ty => {
+                            let found = format_type(&*loader.store, &ty);
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-array-access",
+                                format!("cannot index non-array type {found}"),
+                                Some(*range),
+                            ));
+                            ExprInfo {
+                                ty: Type::Error,
+                                is_type_ref: false,
+                            }
                         }
                     }
                 }
@@ -11476,7 +11489,6 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         HirStmt::Block { range, .. }
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
-        | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
