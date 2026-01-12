@@ -4156,6 +4156,20 @@ fn check_side_effectful_inline_order(
     targets: &[crate::semantic::Reference],
     decl_file: &FileId,
 ) -> Result<(), RefactorError> {
+    fn range_contains(outer: TextRange, inner: TextRange) -> bool {
+        outer.start <= inner.start && inner.end <= outer.end
+    }
+
+    if targets.len() != 1 {
+        return Err(RefactorError::InlineSideEffects);
+    }
+    let target = &targets[0];
+
+    // The side-effect ordering checks only support analyzing the declaration file.
+    if &target.file != decl_file {
+        return Err(RefactorError::InlineSideEffects);
+    }
+
     let decl_block = decl_stmt
         .syntax()
         .parent()
@@ -4166,36 +4180,112 @@ fn check_side_effectful_inline_order(
         .position(|stmt| stmt.syntax() == decl_stmt.syntax())
         .ok_or(RefactorError::InlineSideEffects)?;
 
-    let mut earliest_usage_index: Option<usize> = None;
-    for target in targets {
-        // The statement-order check only supports analyzing the declaration file.
-        if &target.file != decl_file {
-            return Err(RefactorError::InlineSideEffects);
-        }
+    let usage_stmt = find_innermost_statement_containing_range(root, target.range)
+        .ok_or(RefactorError::InlineSideEffects)?;
+    let (usage_block, usage_index) =
+        statement_block_and_index(&usage_stmt).ok_or(RefactorError::InlineSideEffects)?;
 
-        let usage_stmt = find_innermost_statement_containing_range(root, target.range)
-            .ok_or(RefactorError::InlineSideEffects)?;
-        let (usage_block, usage_index) =
-            statement_block_and_index(&usage_stmt).ok_or(RefactorError::InlineSideEffects)?;
-
-        if usage_block.syntax() != decl_block.syntax() {
-            return Err(RefactorError::InlineSideEffects);
-        }
-
-        earliest_usage_index = Some(match earliest_usage_index {
-            Some(existing) => existing.min(usage_index),
-            None => usage_index,
-        });
-    }
-
-    let Some(earliest) = earliest_usage_index else {
+    if usage_block.syntax() != decl_block.syntax() {
         return Err(RefactorError::InlineSideEffects);
-    };
+    }
 
     match decl_index.checked_add(1) {
-        Some(expected) if expected == earliest => Ok(()),
-        _ => Err(RefactorError::InlineSideEffects),
+        Some(expected) if expected == usage_index => {}
+        _ => return Err(RefactorError::InlineSideEffects),
     }
+
+    let usage_token = root
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| syntax_token_range(tok) == target.range)
+        .ok_or(RefactorError::InlineSideEffects)?;
+
+    let token_parent = usage_token
+        .parent()
+        .ok_or(RefactorError::InlineSideEffects)?;
+
+    // Guard against cases where inlining would change how many times the initializer executes.
+    //
+    // In particular, loop conditions and loop updates execute multiple times, even though the
+    // loop statement itself is a single statement in the surrounding block.
+    match &usage_stmt {
+        ast::Statement::WhileStatement(_) | ast::Statement::DoWhileStatement(_) => {
+            return Err(RefactorError::InlineSideEffects);
+        }
+        ast::Statement::ForStatement(for_stmt) => {
+            // `for (<init>; <condition>; <update>) { ... }` re-evaluates <condition> and <update>.
+            // Only allow inlining into the init portion (before the first semicolon).
+            let header = for_stmt.header().ok_or(RefactorError::InlineSideEffects)?;
+            let mut semicolons: Vec<TextRange> = header
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind() == SyntaxKind::Semicolon)
+                .map(|tok| syntax_token_range(&tok))
+                .collect();
+            semicolons.sort_by_key(|r| r.start);
+
+            if let Some(first) = semicolons.first() {
+                if target.range.start >= first.start {
+                    return Err(RefactorError::InlineSideEffects);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Reject cases where the usage expression is not guaranteed to be evaluated when the
+    // statement executes (short-circuit operators, ternaries, etc.).
+    for node in token_parent.ancestors() {
+        if let Some(binary) = ast::BinaryExpression::cast(node.clone()) {
+            let op = binary
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .map(|tok| tok.kind())
+                .find(|kind| matches!(kind, SyntaxKind::AmpAmp | SyntaxKind::PipePipe));
+
+            if matches!(op, Some(SyntaxKind::AmpAmp | SyntaxKind::PipePipe)) {
+                let Some(rhs) = binary.rhs() else {
+                    return Err(RefactorError::InlineSideEffects);
+                };
+                let rhs_range = syntax_range(rhs.syntax());
+                if range_contains(rhs_range, target.range) {
+                    return Err(RefactorError::InlineSideEffects);
+                }
+            }
+        }
+
+        if let Some(conditional) = ast::ConditionalExpression::cast(node) {
+            let then_range = conditional
+                .then_branch()
+                .map(|expr| syntax_range(expr.syntax()));
+            let else_range = conditional
+                .else_branch()
+                .map(|expr| syntax_range(expr.syntax()));
+
+            if then_range.is_some_and(|range| range_contains(range, target.range))
+                || else_range.is_some_and(|range| range_contains(range, target.range))
+            {
+                return Err(RefactorError::InlineSideEffects);
+            }
+        }
+    }
+
+    // Finally, prevent reordering by ensuring the inlined usage appears before any other
+    // side-effectful expression in the statement (e.g. `bar() + a`).
+    let usage_start = target.range.start;
+    if usage_stmt.syntax().descendants().any(|node| {
+        if !has_side_effects(&node) {
+            return false;
+        }
+        let range = syntax_range(&node);
+        range.end <= usage_start
+    }) {
+        return Err(RefactorError::InlineSideEffects);
+    }
+
+    Ok(())
 }
 
 fn check_order_sensitive_inline_order(

@@ -4115,7 +4115,10 @@ fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializ
         },
     )
     .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+    assert!(
+        matches!(err, SemanticRefactorError::InlineSideEffects),
+        "expected InlineSideEffects, got: {err:?}"
+    );
 }
 
 #[test]
@@ -4533,7 +4536,10 @@ fn inline_variable_multi_declarator_side_effects_in_other_initializer_is_rejecte
         },
     )
     .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+    assert!(
+        matches!(err, SemanticRefactorError::InlineSideEffects),
+        "expected InlineSideEffects, got: {err:?}"
+    );
 }
 
 #[test]
@@ -4884,7 +4890,10 @@ fn inline_variable_rejects_side_effectful_initializer_with_intervening_statement
         },
     )
     .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+    assert!(
+        matches!(err, SemanticRefactorError::InlineSideEffects),
+        "expected InlineSideEffects, got: {err:?}"
+    );
 }
 
 #[test]
@@ -4922,6 +4931,183 @@ fn inline_variable_allows_side_effectful_initializer_when_usage_is_immediately_n
 }
 "#;
     assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_rejects_side_effectful_initializer_when_usage_reorders_other_side_effects() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  int bar() { return 2; }
+  void m() {
+    int a = foo();
+    System.out.println(bar() + a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineSideEffects),
+        "expected InlineSideEffects, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_side_effectful_initializer_when_usage_is_conditionally_evaluated() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  int m(boolean cond) {
+    int a = foo();
+    return cond ? 0 : a;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::InlineNotSupported | SemanticRefactorError::InlineSideEffects
+        ),
+        "expected InlineNotSupported/InlineSideEffects, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_side_effectful_initializer_in_short_circuit_rhs() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  boolean m(boolean cond) {
+    int a = foo();
+    return cond && a > 0;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::InlineNotSupported | SemanticRefactorError::InlineSideEffects
+        ),
+        "expected InlineNotSupported/InlineSideEffects, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_side_effectful_initializer_in_while_condition() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int a = foo();
+    while (a < 10) {
+      break;
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::InlineNotSupported | SemanticRefactorError::InlineSideEffects
+        ),
+        "expected InlineNotSupported/InlineSideEffects, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_side_effectful_initializer_in_for_condition() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int a = foo();
+    for (int i = 0; i < a; i++) {
+      break;
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::InlineNotSupported | SemanticRefactorError::InlineSideEffects
+        ),
+        "expected InlineNotSupported/InlineSideEffects, got: {err:?}"
+    );
 }
 
 #[test]
