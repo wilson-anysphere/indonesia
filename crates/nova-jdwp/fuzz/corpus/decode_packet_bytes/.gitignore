@@ -3,7 +3,7 @@
 *
 !.gitignore
 !minimal_command
+!reply_ok
 !length_0
 !length_10
 !length_ffff_ffff
-

@@ -93,7 +93,7 @@ impl TcpJdwpClient {
         let id = self.next_packet_id;
         self.next_packet_id = self.next_packet_id.wrapping_add(1);
 
-        let length = 11usize
+        let length = crate::JDWP_HEADER_LEN
             .checked_add(data.len())
             .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
 
@@ -1794,7 +1794,19 @@ mod tests {
         let mut cursor = std::io::Cursor::new(length.to_be_bytes());
 
         let err = read_packet(&mut cursor).unwrap_err();
-        assert!(matches!(err, JdwpError::Protocol(msg) if msg.contains("packet too large")));
+        match err {
+            JdwpError::Protocol(msg) => {
+                assert_eq!(
+                    msg,
+                    format!(
+                        "JDWP packet length {} exceeds maximum allowed ({} bytes); refusing to allocate",
+                        crate::MAX_JDWP_PACKET_BYTES + 1,
+                        crate::MAX_JDWP_PACKET_BYTES
+                    )
+                );
+            }
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -26,12 +26,12 @@ pub(crate) const JDWP_HEADER_LEN: usize = 11;
 /// The JDWP length prefix is untrusted and historically our packet readers would
 /// allocate based solely on it. A corrupted or malicious debuggee could send an
 /// arbitrarily large length value and trigger an OOM before the read fails.
-pub(crate) const MAX_JDWP_PACKET_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_JDWP_PACKET_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) fn validate_jdwp_packet_length(length: usize) -> std::result::Result<(), String> {
     if length > MAX_JDWP_PACKET_BYTES {
         return Err(format!(
-            "packet too large ({length} bytes, max {MAX_JDWP_PACKET_BYTES})"
+            "JDWP packet length {length} exceeds maximum allowed ({MAX_JDWP_PACKET_BYTES} bytes); refusing to allocate"
         ));
     }
     if length < JDWP_HEADER_LEN {
