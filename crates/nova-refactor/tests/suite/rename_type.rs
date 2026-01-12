@@ -18,7 +18,7 @@ class Use { Outer.Inner x; }
         RenameTypeParams {
             file: file.clone(),
             offset,
-            new_name: "NewOuter".into(),
+            new_name: "Widget".into(),
         },
     )
     .unwrap();
@@ -27,11 +27,11 @@ class Use { Outer.Inner x; }
     let updated = out.get(&file).unwrap();
 
     assert!(
-        updated.contains("class NewOuter"),
+        updated.contains("class Widget"),
         "expected declaration rename: {updated}"
     );
     assert!(
-        updated.contains("NewOuter.Inner"),
+        updated.contains("Widget.Inner"),
         "expected qualified usage rename: {updated}"
     );
     assert!(
@@ -284,4 +284,38 @@ class Use {
     // The `Foo` in `Foo.toString()` is the local variable, not a type reference.
     assert!(updated.contains("Foo.toString();"), "{updated}");
     assert!(!updated.contains("Bar.toString();"), "{updated}");
+}
+
+#[test]
+fn rename_type_updates_array_initializer() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {}
+
+class Use {
+  Outer[] xs = { new Outer() };
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("class Outer").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "Widget".into(),
+        },
+    )
+    .unwrap();
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let updated = out.get(&file).unwrap();
+
+    assert!(updated.contains("class Widget"), "{updated}");
+    assert!(updated.contains("Widget[] xs"), "{updated}");
+    assert!(updated.contains("new Widget()"), "{updated}");
+    assert!(!updated.contains("Outer[] xs"), "{updated}");
+    assert!(!updated.contains("new Outer()"), "{updated}");
 }
