@@ -22,7 +22,10 @@ use lsp_types::{
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
-use nova_ai::{ExcludedPathMatcher, NovaAi};
+use nova_ai::ExcludedPathMatcher;
+use nova_ai::workspace::VirtualWorkspace;
+use nova_ai::NovaAi;
+use nova_ai_codegen::{CodeGenerationConfig, PromptCompletionProvider};
 #[cfg(feature = "ai")]
 use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
@@ -42,9 +45,8 @@ use nova_ide::{
 use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
 use nova_index::{Index, SymbolKind};
 use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
-use nova_memory::{
-    MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager,
-};
+use nova_lsp::{AiCodeAction, AiCodeActionExecutor, CodeActionOutcome};
+use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
@@ -71,6 +73,32 @@ static SEMANTIC_TOKENS_RESULT_ID: AtomicU64 = AtomicU64::new(1);
 fn next_semantic_tokens_result_id() -> String {
     let id = SEMANTIC_TOKENS_RESULT_ID.fetch_add(1, Ordering::Relaxed);
     format!("nova-lsp-semantic-tokens:{id}")
+}
+
+struct LlmPromptCompletionProvider<'a> {
+    llm: &'a dyn nova_ai::LlmClient,
+}
+
+#[async_trait::async_trait]
+impl<'a> PromptCompletionProvider for LlmPromptCompletionProvider<'a> {
+    async fn complete(
+        &self,
+        prompt: &str,
+        cancel: &nova_ai::CancellationToken,
+    ) -> Result<String, nova_ai_codegen::PromptCompletionError> {
+        let request = nova_ai::ChatRequest {
+            messages: vec![nova_ai::ChatMessage::user(prompt.to_string())],
+            max_tokens: None,
+            temperature: None,
+        };
+        self.llm
+            .chat(request, cancel.clone())
+            .await
+            .map_err(|err| match err {
+                nova_ai::AiError::Cancelled => nova_ai_codegen::PromptCompletionError::Cancelled,
+                other => nova_ai_codegen::PromptCompletionError::Provider(other.to_string()),
+            })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4167,12 +4195,17 @@ fn handle_code_action(
             .as_deref()
             .is_some_and(|path| is_ai_excluded_path(state, path));
 
-    if ai_enabled && !ai_excluded {
-        let allow_code_edit_actions =
-            nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
+    if ai_enabled {
         // Explain error (diagnostic-driven).
+        //
+        // For `excluded_paths`, we still offer the action, but omit the code snippet so the
+        // subsequent AI request can be privacy-safe.
         if let Some(diagnostic) = params.context.diagnostics.first() {
-            let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
+            let code = if ai_excluded {
+                None
+            } else {
+                text.map(|t| extract_snippet(t, &diagnostic.range, 2))
+            };
             let action = explain_error_action(ExplainErrorArgs {
                 diagnostic_message: diagnostic.message.clone(),
                 code,
@@ -4182,7 +4215,12 @@ fn handle_code_action(
             actions.push(code_action_to_lsp(action));
         }
 
-        if allow_code_edit_actions {
+        // AI code-editing actions.
+        //
+        // We intentionally do *not* gate these on `enforce_code_edit_policy` at code-action time so
+        // users can still discover the feature and receive actionable error messages when
+        // attempting to execute it (policy is enforced in the executeCommand handlers).
+        if !ai_excluded {
             if let Some(text) = text {
                 if let Some(selected) = extract_range_text(text, &params.range) {
                     // Generate method body (empty method selection).
@@ -6961,6 +6999,152 @@ fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
         Err(_) => true,
     }
 }
+
+fn root_uri_for_path(path: &Path) -> Result<LspUri, (i32, String)> {
+    let mut abs = path.to_path_buf();
+    if !abs.is_absolute() {
+        abs = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(abs);
+    }
+    let url = url::Url::from_directory_path(&abs)
+        .map_err(|_| (-32603, format!("invalid root path: {}", abs.display())))?;
+    url.to_string()
+        .parse::<LspUri>()
+        .map_err(|e| (-32603, format!("invalid root uri: {e}")))
+}
+
+fn resolve_workspace_relative_path(
+    state: &ServerState,
+    abs_path: &Path,
+) -> Result<(PathBuf, String), (i32, String)> {
+    let mut root = state
+        .project_root
+        .clone()
+        .or_else(|| abs_path.parent().map(Path::to_path_buf))
+        .ok_or_else(|| (-32602, format!("unable to determine project root for {}", abs_path.display())))?;
+    if !root.is_absolute() {
+        root = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(root);
+    }
+
+    // Prefer a stable workspace root when possible.
+    if let Ok(rel) = abs_path.strip_prefix(&root) {
+        return Ok((root, path_to_slash(rel)));
+    }
+
+    // Fallback: treat the file's directory as the workspace root so join_uri still
+    // produces a correct URI for applyEdit.
+    let fallback_root = abs_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| (-32602, format!("file has no parent directory: {}", abs_path.display())))?;
+    let file_name = abs_path
+        .file_name()
+        .ok_or_else(|| (-32602, format!("file has no name: {}", abs_path.display())))?
+        .to_string_lossy()
+        .to_string();
+    Ok((fallback_root, file_name))
+}
+
+fn path_to_slash(path: &Path) -> String {
+    let mut out = String::new();
+    for (idx, component) in path.components().enumerate() {
+        if idx > 0 {
+            out.push('/');
+        }
+        out.push_str(&component.as_os_str().to_string_lossy());
+    }
+    out
+}
+
+fn ide_range_to_lsp_types_range(range: nova_ide::LspRange) -> LspTypesRange {
+    LspTypesRange::new(
+        LspTypesPosition::new(range.start.line, range.start.character),
+        LspTypesPosition::new(range.end.line, range.end.character),
+    )
+}
+
+fn method_body_insertion_range(
+    text: &str,
+    selection: nova_ide::LspRange,
+) -> Result<LspTypesRange, (i32, String)> {
+    let selection_bytes = byte_range_for_ide_range(text, selection).ok_or_else(|| {
+        (
+            -32602,
+            "invalid selection range for generateMethodBody".to_string(),
+        )
+    })?;
+    let selected = text
+        .get(selection_bytes.clone())
+        .ok_or_else(|| (-32602, "selection range out of bounds".to_string()))?;
+    let open = selected
+        .find('{')
+        .ok_or_else(|| (-32602, "selection does not contain '{'".to_string()))?;
+    let close = selected
+        .rfind('}')
+        .ok_or_else(|| (-32602, "selection does not contain '}'".to_string()))?;
+    if close <= open {
+        return Err((-32602, "malformed method selection".to_string()));
+    }
+    let body = selected[open + 1..close].trim();
+    if !body.is_empty() {
+        return Err((
+            -32602,
+            "selected method body is not empty; select an empty method".to_string(),
+        ));
+    }
+
+    let start_offset = selection_bytes.start + open + 1;
+    let end_offset = selection_bytes.start + close;
+    let start = offset_to_position_utf16(text, start_offset);
+    let end = offset_to_position_utf16(text, end_offset);
+    Ok(LspTypesRange::new(start, end))
+}
+
+fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String> {
+    let class_name = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)?;
+    if !is_java_identifier(&class_name) {
+        return None;
+    }
+    let test_class = format!("{class_name}Test");
+
+    let pkg = parse_java_package(source_text);
+    let pkg_path = pkg
+        .as_deref()
+        .map(|pkg| {
+            let segments: Vec<_> = pkg.split('.').collect();
+            if segments.is_empty() || segments.iter().any(|s| !is_java_identifier(s)) {
+                return None;
+            }
+            Some(segments.join("/"))
+        })
+        .unwrap_or(Some(String::new()))?;
+
+    let mut out = String::from("src/test/java/");
+    if !pkg_path.is_empty() {
+        out.push_str(&pkg_path);
+        out.push('/');
+    }
+    out.push_str(&test_class);
+    out.push_str(".java");
+    Some(out)
+}
+
+fn is_java_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7632,13 +7816,11 @@ fn run_ai_explain_error(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    let mut is_excluded = false;
     if let Some(uri) = args.uri.as_deref() {
         if let Some(path) = path_from_uri(uri) {
             if is_ai_excluded_path(state, &path) {
-                return Err((
-                    -32600,
-                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
-                ));
+                is_excluded = true;
             }
         }
     }
@@ -7646,26 +7828,37 @@ fn run_ai_explain_error(
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Explain this error")?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(rpc_out, "AI: explaining error…")?;
+    let (uri, range, code) = if is_excluded {
+        // We still allow the explain-error action, but strip all file-backed context when the
+        // diagnostic originates from an excluded path.
+        (None, None, String::new())
+    } else {
+        (args.uri.as_deref(), args.range, args.code.unwrap_or_default())
+    };
     let mut ctx = build_context_request_from_args(
         state,
-        args.uri.as_deref(),
-        args.range,
-        args.code.unwrap_or_default(),
+        uri,
+        range,
+        code,
         /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
     ctx.diagnostics.push(ContextDiagnostic {
-        file: args.uri.clone(),
-        range: args.range.map(|range| nova_ai::patch::Range {
-            start: nova_ai::patch::Position {
-                line: range.start.line,
-                character: range.start.character,
-            },
-            end: nova_ai::patch::Position {
-                line: range.end.line,
-                character: range.end.character,
-            },
-        }),
+        file: if is_excluded { None } else { args.uri.clone() },
+        range: if is_excluded {
+            None
+        } else {
+            args.range.map(|range| nova_ai::patch::Range {
+                start: nova_ai::patch::Position {
+                    line: range.start.line,
+                    character: range.start.character,
+                },
+                end: nova_ai::patch::Position {
+                    line: range.end.line,
+                    character: range.end.character,
+                },
+            })
+        },
         severity: ContextDiagnosticSeverity::Error,
         message: args.diagnostic_message.clone(),
         kind: Some(ContextDiagnosticKind::Other),
@@ -7699,48 +7892,97 @@ fn run_ai_generate_method_body(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    if let Some(uri) = args.uri.as_deref() {
-        if let Some(path) = path_from_uri(uri) {
-            if is_ai_excluded_path(state, &path) {
-                return Err((
-                    -32600,
-                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
-                ));
-            }
-        }
-    }
-
-    // AI code generation is a code-editing operation. Enforce privacy policy (cloud mode requires
-    // explicit opt-in, and anonymization currently makes edits impossible to apply reliably).
+    // AI code generation is a code-editing operation. Enforce privacy policy early so clients
+    // always see the policy error even if they invoke the command with incomplete arguments.
     nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
         .map_err(|e| (-32603, e.to_string()))?;
 
-    send_progress_begin(
-        rpc_out,
-        work_done_token.as_ref(),
-        "AI: Generate method body",
-    )?;
-    send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(rpc_out, "AI: generating method body…")?;
-    let ctx = build_context_request_from_args(
-        state,
-        args.uri.as_deref(),
-        args.range,
-        args.method_signature.clone(),
-        args.context.clone(),
-        /*include_doc_comments=*/ true,
+    let uri = args
+        .uri
+        .as_deref()
+        .ok_or_else(|| (-32602, "missing uri for generateMethodBody".to_string()))?;
+    let range = args
+        .range
+        .ok_or_else(|| (-32602, "missing range for generateMethodBody".to_string()))?;
+    let text = load_document_text(state, uri).ok_or_else(|| {
+        (
+            -32602,
+            format!("missing document text for `{}`", uri),
+        )
+    })?;
+    let abs_path = path_from_uri(uri)
+        .ok_or_else(|| (-32602, format!("unsupported uri scheme: {uri}")))?;
+
+    if is_ai_excluded_path(state, &abs_path) {
+        return Err((
+            -32600,
+            "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+        ));
+    }
+
+    let (root_path, rel_path) = resolve_workspace_relative_path(state, &abs_path)?;
+    let root_uri = root_uri_for_path(&root_path)?;
+
+    let insert_range = method_body_insertion_range(&text, range)?;
+
+    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Generating patch…", None)?;
+    send_log_message(rpc_out, "AI: generating method body patch…")?;
+
+    let llm = ai.llm();
+    let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
+    let executor = AiCodeActionExecutor::new(
+        &provider,
+        CodeGenerationConfig {
+            safety: nova_ai::PatchSafetyConfig {
+                allowed_path_prefixes: vec![rel_path.clone()],
+                ..nova_ai::PatchSafetyConfig::default()
+            },
+            ..CodeGenerationConfig::default()
+        },
+        state.ai_config.privacy.clone(),
     );
-    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
-    let output = runtime
-        .block_on(ai.generate_method_body(&args.method_signature, ctx, cancel.clone()))
+
+    let workspace = VirtualWorkspace::new([(rel_path.clone(), text.clone())]);
+
+    let outcome = runtime
+        .block_on(executor.execute(
+            AiCodeAction::GenerateMethodBody {
+                file: rel_path.clone(),
+                insert_range,
+            },
+            &workspace,
+            &root_uri,
+            &cancel,
+            /*progress=*/ None,
+        ))
         .map_err(|e| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(rpc_out, "AI: method body ready")?;
-    send_ai_output(rpc_out, "AI generateMethodBody", &output)?;
+
+    let CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+        let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+        return Err((-32603, "expected workspace edit outcome".to_string()));
+    };
+
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Applying edit…", None)?;
+    let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+        .map_err(|e| (-32603, e.to_string()))?;
+    rpc_out
+        .send_request(
+            id,
+            "workspace/applyEdit",
+            json!({
+                "label": "AI: Generate method body",
+                "edit": edit,
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    send_log_message(rpc_out, "AI: method body edit applied")?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-    Ok(serde_json::Value::String(output))
+    Ok(serde_json::Value::Null)
 }
 
 fn run_ai_generate_tests(
@@ -7759,44 +8001,119 @@ fn run_ai_generate_tests(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    if let Some(uri) = args.uri.as_deref() {
-        if let Some(path) = path_from_uri(uri) {
-            if is_ai_excluded_path(state, &path) {
-                return Err((
-                    -32600,
-                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
-                ));
-            }
-        }
-    }
-
-    // AI test generation is a code-editing operation. Enforce privacy policy (cloud mode requires
-    // explicit opt-in, and anonymization currently makes edits impossible to apply reliably).
+    // AI test generation is a code-editing operation. Enforce privacy policy early so clients
+    // always see the policy error even if they invoke the command with incomplete arguments.
     nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
         .map_err(|e| (-32603, e.to_string()))?;
 
+    let uri = args
+        .uri
+        .as_deref()
+        .ok_or_else(|| (-32602, "missing uri for generateTests".to_string()))?;
+    let range = args
+        .range
+        .ok_or_else(|| (-32602, "missing range for generateTests".to_string()))?;
+    let source_text = load_document_text(state, uri).ok_or_else(|| {
+        (
+            -32602,
+            format!("missing document text for `{}`", uri),
+        )
+    })?;
+    let abs_path = path_from_uri(uri).ok_or_else(|| (-32602, format!("unsupported uri: {uri}")))?;
+
+    if is_ai_excluded_path(state, &abs_path) {
+        return Err((
+            -32600,
+            "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
+        ));
+    }
+
+    let (root_path, source_rel_path) = resolve_workspace_relative_path(state, &abs_path)?;
+    let root_uri = root_uri_for_path(&root_path)?;
+
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
-    send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(rpc_out, "AI: generating tests…")?;
-    let ctx = build_context_request_from_args(
-        state,
-        args.uri.as_deref(),
-        args.range,
-        args.target.clone(),
-        args.context.clone(),
-        /*include_doc_comments=*/ true,
-    );
-    send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
-    let output = runtime
-        .block_on(ai.generate_tests(&args.target, ctx, cancel.clone()))
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Generating patch…", None)?;
+    send_log_message(rpc_out, "AI: generating tests patch…")?;
+
+    let mut config = CodeGenerationConfig::default();
+    let (action_file, insert_range, workspace) = if let Some(test_file) =
+        derive_test_file_path(&source_text, &abs_path)
+    {
+        // Preferred: generate/update a test file under src/test/java/.
+        config.safety = nova_ai::PatchSafetyConfig {
+            allowed_path_prefixes: vec![test_file.clone()],
+            allow_new_files: true,
+            ..nova_ai::PatchSafetyConfig::default()
+        };
+
+        // Best-effort: include any existing test file contents in the workspace. If it doesn't
+        // exist, the patch pipeline can create it (allow_new_files=true).
+        let mut workspace = VirtualWorkspace::new([(source_rel_path.clone(), source_text.clone())]);
+        if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
+            workspace.insert(test_file.clone(), existing);
+        }
+
+        (
+            test_file,
+            lsp_types::Range::new(lsp_types::Position::new(0, 0), lsp_types::Position::new(0, 0)),
+            workspace,
+        )
+    } else {
+        // Fallback: insert tests into the current file at the selection range.
+        config.safety = nova_ai::PatchSafetyConfig {
+            allowed_path_prefixes: vec![source_rel_path.clone()],
+            ..nova_ai::PatchSafetyConfig::default()
+        };
+        let workspace = VirtualWorkspace::new([(source_rel_path.clone(), source_text.clone())]);
+        (
+            source_rel_path.clone(),
+            ide_range_to_lsp_types_range(range),
+            workspace,
+        )
+    };
+
+    let llm = ai.llm();
+    let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
+    let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
+
+    let outcome = runtime
+        .block_on(executor.execute(
+            AiCodeAction::GenerateTest {
+                file: action_file.clone(),
+                insert_range,
+            },
+            &workspace,
+            &root_uri,
+            &cancel,
+            /*progress=*/ None,
+        ))
         .map_err(|e| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(rpc_out, "AI: tests ready")?;
-    send_ai_output(rpc_out, "AI generateTests", &output)?;
+
+    let CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+        let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
+        return Err((-32603, "expected workspace edit outcome".to_string()));
+    };
+
+    send_progress_report(rpc_out, work_done_token.as_ref(), "Applying edit…", None)?;
+    let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+        .map_err(|e| (-32603, e.to_string()))?;
+    rpc_out
+        .send_request(
+            id,
+            "workspace/applyEdit",
+            json!({
+                "label": "AI: Generate tests",
+                "edit": edit,
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    send_log_message(rpc_out, "AI: tests edit applied")?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
-    Ok(serde_json::Value::String(output))
+    Ok(serde_json::Value::Null)
 }
 
 const AI_LOG_MESSAGE_CHUNK_BYTES: usize = 6 * 1024;

@@ -273,7 +273,7 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
 }
 
 #[test]
-fn stdio_server_rejects_field_rename() {
+fn stdio_server_supports_field_rename() {
     let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
     let source = r#"class Test {
@@ -368,15 +368,21 @@ fn stdio_server_rejects_field_rename() {
         }),
     );
     let rename_resp = read_response_with_id(&mut stdout, 3);
-    let error = rename_resp.get("error").cloned().expect("rename error");
-    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
-    assert!(
-        error
-            .get("message")
-            .and_then(|v| v.as_str())
-            .is_some_and(|msg| msg.contains("rename is only supported for local variables")),
-        "expected field rename to be rejected, got: {rename_resp:#}"
-    );
+    let result = rename_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_text_edits(source, edits);
+    let expected = r#"class Test {
+  int bar = 0;
+
+  void m() {
+    bar = 1;
+  }
+}
+"#;
+    assert_eq!(actual, expected);
 
     // 5) shutdown + exit
     write_jsonrpc_message(
@@ -516,7 +522,7 @@ class C {
         .expect("newline before class closing brace");
     let inserted_method = "\r\n\r\n    private void extracted(int a, int b) {\r\n        System.out.println(\"😀\" + a + b);\r\n    }";
     let mut expected = source.clone();
-    expected.insert_str(insertion_offset, inserted_method);
+    expected.insert_str(insertion_offset, &inserted_method);
     expected.replace_range(selection.start..selection.end, "extracted(a, b);");
 
     assert_eq!(actual, expected);

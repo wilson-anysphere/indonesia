@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use lsp_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
+use lsp_types::{
+    CreateFile, CreateFileOptions, DocumentChangeOperation, DocumentChanges, OneOf,
+    OptionalVersionedTextDocumentIdentifier, Position, Range, ResourceOp, TextDocumentEdit,
+    TextEdit, Uri, WorkspaceEdit,
+};
 use nova_ai::context::{ContextBuilder, ContextRequest};
 use nova_ai::workspace::VirtualWorkspace;
 use nova_ai::PrivacyMode;
@@ -165,25 +169,77 @@ fn workspace_edit_from_virtual_workspace<'a>(
     after: &VirtualWorkspace,
     touched_files: impl IntoIterator<Item = &'a String>,
 ) -> WorkspaceEdit {
-    let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+    let mut changed: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+    let mut has_new_file = false;
+
     for file in touched_files {
-        let before_text = before.get(file).unwrap_or("");
-        let after_text = after.get(file).unwrap_or("");
+        let before_text = before.get(file).map(str::to_string);
+        let after_text = after.get(file).map(str::to_string);
         if before_text == after_text {
             continue;
         }
-        let uri = crate::workspace_edit::join_uri(root_uri, Path::new(file));
-        changes.insert(
-            uri,
-            vec![TextEdit {
-                range: crate::workspace_edit::full_document_range(before_text),
-                new_text: after_text.to_string(),
-            }],
-        );
+        if before_text.is_none() && after_text.is_some() {
+            has_new_file = true;
+        }
+        changed.push((file.clone(), before_text, after_text));
     }
+
+    if !has_new_file {
+        let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+        for (file, before_text, after_text) in changed {
+            let (Some(before_text), Some(after_text)) = (before_text, after_text) else {
+                continue;
+            };
+            let uri = crate::workspace_edit::join_uri(root_uri, Path::new(&file));
+            changes.insert(
+                uri,
+                vec![TextEdit {
+                    range: crate::workspace_edit::full_document_range(&before_text),
+                    new_text: after_text,
+                }],
+            );
+        }
+        return WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        };
+    }
+
+    let mut ops: Vec<DocumentChangeOperation> = Vec::new();
+    for (file, before_text, after_text) in &changed {
+        if before_text.is_none() && after_text.is_some() {
+            let uri = crate::workspace_edit::join_uri(root_uri, Path::new(file));
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(CreateFile {
+                uri,
+                options: Some(CreateFileOptions {
+                    overwrite: Some(false),
+                    ignore_if_exists: Some(true),
+                }),
+                annotation_id: None,
+            })));
+        }
+    }
+
+    for (file, before_text, after_text) in changed {
+        let Some(after_text) = after_text else {
+            // Deletions are not surfaced in `WorkspaceEdit` via this helper today.
+            continue;
+        };
+        let before_text = before_text.unwrap_or_default();
+        let uri = crate::workspace_edit::join_uri(root_uri, Path::new(&file));
+        ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            edits: vec![OneOf::Left(TextEdit {
+                range: crate::workspace_edit::full_document_range(&before_text),
+                new_text: after_text,
+            })],
+        }));
+    }
+
     WorkspaceEdit {
-        changes: Some(changes),
-        document_changes: None,
+        changes: None,
+        document_changes: Some(DocumentChanges::Operations(ops)),
         change_annotations: None,
     }
 }
@@ -426,6 +482,8 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Mutex,
     };
+    use tokio::sync::oneshot;
+    use tokio::time::{timeout, Duration};
     use tempfile::TempDir;
 
     #[derive(Default)]
@@ -500,6 +558,49 @@ mod tests {
                     character: 0,
                 },
             },
+        }
+    }
+
+    struct StaticProvider {
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl PromptCompletionProvider for StaticProvider {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, PromptCompletionError> {
+            Ok(self.response.clone())
+        }
+    }
+
+    struct BlockingProvider {
+        started_tx: Mutex<Option<oneshot::Sender<()>>>,
+        resume_rx: Mutex<Option<oneshot::Receiver<()>>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl PromptCompletionProvider for BlockingProvider {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, PromptCompletionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.started_tx.lock().expect("lock started").take() {
+                let _ = tx.send(());
+            }
+            let rx = {
+                let mut guard = self.resume_rx.lock().expect("lock resume");
+                guard.take()
+            };
+            if let Some(rx) = rx {
+                let _ = rx.await;
+            }
+            Ok(r#"{"edits":[]}"#.to_string())
         }
     }
 
@@ -606,7 +707,7 @@ mod tests {
       "text": "        int x = \"oops\";\n        return x;\n"
     }
   ]
-}"#;
+ }"#;
 
         let provider = MockAiProvider::new(vec![
             Ok(invalid_patch.into()),
@@ -644,6 +745,126 @@ mod tests {
         assert_eq!(
             workspace.get("Example.java").unwrap(),
             example_workspace().get("Example.java").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_model_call_aborts_quickly() {
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (resume_tx, resume_rx) = oneshot::channel::<()>();
+        let provider = BlockingProvider {
+            started_tx: Mutex::new(Some(started_tx)),
+            resume_rx: Mutex::new(Some(resume_rx)),
+            calls: AtomicUsize::new(0),
+        };
+
+        let executor = AiCodeActionExecutor::new(
+            &provider,
+            CodeGenerationConfig::default(),
+            AiPrivacyConfig::default(),
+        );
+        let workspace = example_workspace();
+        let cancel = CancellationToken::new();
+        let root = root_uri();
+        let mut fut =
+            Box::pin(executor.execute(example_action(), &workspace, &root, &cancel, None));
+
+        tokio::select! {
+            started = timeout(Duration::from_secs(1), started_rx) => {
+                started.expect("provider should start").expect("started");
+            }
+            res = &mut fut => {
+                panic!("executor returned unexpectedly early: {res:?}");
+            }
+        }
+
+        cancel.cancel();
+        // Let the provider return so the codegen loop can observe cancellation.
+        let _ = resume_tx.send(());
+
+        let err = timeout(Duration::from_secs(1), &mut fut)
+            .await
+            .expect("executor should return quickly after cancellation")
+            .unwrap_err();
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Cancelled) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_tests_creates_new_file_workspace_edit_includes_create_file_op() {
+        let test_file = "src/test/java/com/example/ExampleTest.java";
+        let patch = format!(
+            r#"{{
+  "edits": [
+    {{
+      "file": "{test_file}",
+      "range": {{ "start": {{ "line": 0, "character": 0 }}, "end": {{ "line": 0, "character": 0 }} }},
+      "text": "package com.example;\n\npublic class ExampleTest {{}}\n"
+    }}
+  ]
+}}"#
+        );
+        let provider = StaticProvider { response: patch };
+
+        let mut config = CodeGenerationConfig::default();
+        config.safety = PatchSafetyConfig {
+            allow_new_files: true,
+            allowed_path_prefixes: vec![test_file.to_string()],
+            ..PatchSafetyConfig::default()
+        };
+
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
+        let workspace = VirtualWorkspace::default();
+        let cancel = CancellationToken::new();
+
+        let outcome = executor
+            .execute(
+                AiCodeAction::GenerateTest {
+                    file: test_file.to_string(),
+                    insert_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                },
+                &workspace,
+                &root_uri(),
+                &cancel,
+                None,
+            )
+            .await
+            .expect("success");
+
+        let CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+            panic!("expected workspace edit");
+        };
+
+        let doc_changes = edit.document_changes.expect("document_changes");
+        let DocumentChanges::Operations(ops) = doc_changes else {
+            panic!("expected operations-based document changes");
+        };
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                DocumentChangeOperation::Op(ResourceOp::Create(_))
+            )),
+            "expected CreateFile op, got: {ops:?}"
+        );
+
+        let text_edits = ops
+            .iter()
+            .filter_map(|op| match op {
+                DocumentChangeOperation::Edit(TextDocumentEdit { edits, .. }) => Some(edits),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        assert!(
+            text_edits.iter().any(|edit| match edit {
+                OneOf::Left(TextEdit { new_text, .. }) => new_text.contains("class ExampleTest"),
+                OneOf::Right(_) => false,
+            }),
+            "expected text edit with class contents, got: {text_edits:?}"
         );
     }
 

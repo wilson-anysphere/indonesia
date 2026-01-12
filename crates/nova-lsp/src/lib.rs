@@ -565,25 +565,28 @@ pub fn diagnostics_with_extensions(
 ) -> Vec<lsp_types::Diagnostic> {
     let db = extensions.db();
     let text = db.file_content(file);
-    extensions
-        .all_diagnostics(cancel, file)
-        .into_iter()
-        .map(|d| lsp_types::Diagnostic {
-            range: d
-                .span
-                .map(|span| span_to_lsp_range(text, span.start, span.end))
-                .unwrap_or_else(zero_range),
-            severity: Some(match d.severity {
-                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
-                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+    let mut diagnostics = crate::diagnostics(db.as_ref(), file);
+    diagnostics.extend(
+        extensions
+            .diagnostics(cancel, file)
+            .into_iter()
+            .map(|d| lsp_types::Diagnostic {
+                range: d
+                    .span
+                    .map(|span| span_to_lsp_range(text, span.start, span.end))
+                    .unwrap_or_else(zero_range),
+                severity: Some(match d.severity {
+                    nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                    nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                    nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+                }),
+                code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+                source: Some("nova".into()),
+                message: d.message,
+                ..lsp_types::Diagnostic::default()
             }),
-            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-            source: Some("nova".into()),
-            message: d.message,
-            ..lsp_types::Diagnostic::default()
-        })
-        .collect()
+    );
+    diagnostics
 }
 
 use lsp_types::{
