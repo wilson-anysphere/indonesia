@@ -11,6 +11,8 @@ tls = [
     "dep:sha2",
     "dep:hex",
 ]
+# Enables Unicode-aware fuzzy matching and trigram preprocessing in `nova-fuzzy`.
+unicode = ["nova-fuzzy/unicode"]
 
 [dependencies]
 anyhow.workspace = true

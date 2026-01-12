@@ -2802,11 +2802,58 @@ impl GlobalSymbolIndex {
             return self.symbols.iter().take(limit).cloned().collect();
         }
 
-        let query_bytes = query.as_bytes();
-        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
         let mut matcher = FuzzyMatcher::new(query);
 
         let mut scored = BinaryHeap::with_capacity(limit);
+
+        // With `nova-fuzzy/unicode`, non-ASCII queries become Unicode case-folded (NFKC +
+        // casefold) and scored over grapheme clusters. The router's legacy candidate filtering
+        // used byte-based heuristics (`query.as_bytes().len()` and a first-byte prefix bucket),
+        // which can miss valid Unicode case-insensitive matches (e.g. Σ vs σ have different
+        // leading UTF-8 bytes).
+        //
+        // Keep the ASCII candidate-selection path exactly as before, but for non-ASCII queries:
+        // - Use a Unicode-aware notion of "length" (Unicode scalar values) rather than bytes.
+        // - Avoid the `prefix1` first-byte buckets and fall back to trigram candidates when
+        //   the query is long enough, else bounded scan.
+        #[cfg(feature = "unicode")]
+        if !query.is_ascii() {
+            let query_len_chars = query.chars().take(3).count();
+
+            if query_len_chars >= 3 {
+                let have_trigram_candidates = TRIGRAM_SCRATCH.with(|scratch| {
+                    let mut scratch = scratch.borrow_mut();
+                    let candidates = self.trigram.candidates_with_scratch(query, &mut *scratch);
+                    if candidates.is_empty() {
+                        false
+                    } else {
+                        self.score_candidates_top_k(
+                            candidates.iter().copied(),
+                            &mut matcher,
+                            limit,
+                            &mut scored,
+                        );
+                        true
+                    }
+                });
+
+                if have_trigram_candidates {
+                    return self.finish_top_k(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+            self.score_candidates_top_k(
+                (0..scan_limit).map(|id| id as u32),
+                &mut matcher,
+                limit,
+                &mut scored,
+            );
+            return self.finish_top_k(scored, limit);
+        }
+
+        let query_bytes = query.as_bytes();
+        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
 
         if query_bytes.len() < 3 {
             if let Some(b0) = query_first {
@@ -2985,11 +3032,41 @@ impl GlobalSymbolIndex {
             return self.symbols.iter().take(limit).cloned().collect();
         }
 
-        let query_bytes = query.as_bytes();
-        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
         let mut matcher = FuzzyMatcher::new(query);
 
         let mut scored = Vec::new();
+
+        #[cfg(feature = "unicode")]
+        if !query.is_ascii() {
+            let query_len_chars = query.chars().take(3).count();
+
+            if query_len_chars >= 3 {
+                let mut candidate_scratch = TrigramCandidateScratch::default();
+                let candidates = self
+                    .trigram
+                    .candidates_with_scratch(query, &mut candidate_scratch);
+
+                if !candidates.is_empty() {
+                    self.score_candidates_all(
+                        candidates.iter().copied(),
+                        &mut matcher,
+                        &mut scored,
+                    );
+                    return self.finish(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+            self.score_candidates_all(
+                (0..scan_limit).map(|id| id as u32),
+                &mut matcher,
+                &mut scored,
+            );
+            return self.finish(scored, limit);
+        }
+
+        let query_bytes = query.as_bytes();
+        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
 
         if query_bytes.len() < 3 {
             if let Some(b0) = query_first {
@@ -3495,5 +3572,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn global_symbol_search_unicode_casefold_expansions_work_end_to_end() {
+        // `nova-fuzzy` Unicode mode performs full case folding, including expansions like
+        // `ß -> ss`. Verify this works end-to-end through the router's global symbol index.
+        let symbols = vec![Symbol {
+            name: "Straße".into(),
+            path: "a.java".into(),
+        }];
+
+        let index = GlobalSymbolIndex::new(symbols, 0);
+
+        // ASCII query should match Unicode symbol after NFKC+casefold.
+        let results = index.search("strasse", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Straße");
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn global_symbol_search_unicode_queries_do_not_use_first_utf8_byte_prefix_buckets() {
+        // Greek sigma has different leading UTF-8 bytes for uppercase/lowercase (Σ starts with
+        // 0xCE, σ starts with 0xCF). If we bucket by first byte, a lowercase query would miss
+        // uppercase symbols (or vice-versa) as soon as any symbol exists in the query's bucket.
+        //
+        // In Unicode mode, ensure we fall back to scan (for short queries) so both match.
+        let symbols = vec![
+            Symbol {
+                name: "σome".into(),
+                path: "a.java".into(),
+            },
+            Symbol {
+                name: "Σome".into(),
+                path: "b.java".into(),
+            },
+        ];
+
+        let index = GlobalSymbolIndex::new(symbols, 0);
+        let results = index.search("σ", 10);
+        let names: Vec<&str> = results.iter().map(|sym| sym.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"σome"),
+            "expected lowercase sigma symbol to match, got {names:?}"
+        );
+        assert!(
+            names.contains(&"Σome"),
+            "expected uppercase sigma symbol to match via Unicode case folding, got {names:?}"
+        );
     }
 }
