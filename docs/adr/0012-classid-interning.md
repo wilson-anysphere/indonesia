@@ -124,6 +124,26 @@ Cons:
   different evaluation orders (including parallel scheduling) can yield different raw ids after a
   rebuild, violating the “eviction is a semantic no-op” requirement.
 
+#### Empirical confirmation (prototype)
+
+See `crates/nova-db/src/salsa/interned_class_key.rs` for a minimal `ra_ap_salsa` interning
+prototype and tests.
+
+Findings with `ra_ap_salsa` `0.0.269` and Nova’s current `evict_salsa_memos` implementation
+(rebuilds `ra_salsa::Storage::default()`):
+
+- Same key ⇒ same interned handle within a single storage.
+- Snapshots can lookup/intern consistently for already-interned keys.
+- **After memo eviction, the intern tables are dropped.** Re-interning the same key yields a
+  different `InternId`, and looking up a pre-eviction id panics (no longer valid).
+- Intern ids are **insertion-order dependent** across fresh storages (interning `A` then `B`
+  produces different raw ids than interning `B` then `A`).
+
+Also note the actual `ra_ap_salsa` API surface: there is no struct-level
+`#[salsa::interned] struct Foo { .. }` macro; interning is expressed as a query annotated with
+`#[ra_salsa::interned]` inside a `#[ra_salsa::query_group]` trait, and a `lookup_*` query is
+auto-generated.
+
 ### C) Custom interner stored outside Salsa
 
 Pros:

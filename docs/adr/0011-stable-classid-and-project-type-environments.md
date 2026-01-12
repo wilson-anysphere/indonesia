@@ -100,11 +100,15 @@ Move `ClassId` allocation to a **global interner** keyed by `(ProjectId, binary_
 Two acceptable implementations:
 
 1. **Salsa intern tables** (preferred)
-   - Define an interned entity (via `ra_salsa`/Salsa macros) whose key is:
-     - `project: ProjectId`
-     - `binary_name: String` (canonical Java binary name, dotted, with `$` for nested types)
-   - The returned `ClassId` is globally unique and stable within the lifetime of the database, and
-     adding new classes does not renumber existing ids.
+    - Define an interned entity (via `ra_salsa`/Salsa macros) whose key is:
+      - `project: ProjectId`
+      - `binary_name: String` (canonical Java binary name, dotted, with `$` for nested types)
+    - The returned `ClassId` is globally unique and stable within the lifetime of the database, and
+      adding new classes does not renumber existing ids.
+    - **Important:** with Nova’s current memory eviction strategy (`SalsaDatabase::evict_salsa_memos`
+      rebuilds `ra_salsa::Storage::default()`), raw interned ids do **not** survive eviction unless
+      we either preserve intern tables or deterministically seed them. See ADR 0012 and the
+      prototype tests in `crates/nova-db/src/salsa/interned_class_key.rs`.
 
 2. **A persistent interner outside Salsa**
    - A project-scoped interner stored as database state, updated only by the single writer thread.
