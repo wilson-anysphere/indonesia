@@ -74,7 +74,7 @@ class NovaDebugConfigurationProvider implements vscode.DebugConfigurationProvide
       return debugConfiguration;
     }
 
-    cfg.projectRoot ??= folder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    cfg.projectRoot ??= folder?.uri.fsPath ?? fallbackWorkspaceRoot();
 
     const defaults = getDebugDefaults();
     cfg.host ??= defaults.host;
@@ -101,8 +101,23 @@ function defaultAttachConfig(folder: vscode.WorkspaceFolder | undefined): vscode
     name: `Nova: Attach (${defaults.port})`,
     host: defaults.host,
     port: defaults.port,
-    projectRoot: folder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    projectRoot: folder?.uri.fsPath ?? fallbackWorkspaceRoot(),
   };
+}
+
+function fallbackWorkspaceRoot(): string | undefined {
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  const activeFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+  if (activeFolder) {
+    return activeFolder.uri.fsPath;
+  }
+
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 1) {
+    return folders[0].uri.fsPath;
+  }
+
+  return undefined;
 }
 
 function getDebugDefaults(): { host: string; port: number } {

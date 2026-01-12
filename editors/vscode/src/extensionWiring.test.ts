@@ -55,7 +55,7 @@ describe('extension wiring', () => {
 
     // Avoid treating a stale/stopped client instance as "running" for the Project Explorer view.
     expect(contents).toMatch(
-      /registerNovaProjectExplorer\([\s\S]*isServerRunning:\s*\(\)\s*=>\s*client\?\.state\s*===\s*State\.Running[\s\S]*client\?\.state\s*===\s*State\.Starting/s,
+      /registerNovaProjectExplorer\([\s\S]*isServerRunning:\s*\(\)\s*=>[\s\S]*clientManager\?\.\s*entries\(\)\.some\([\s\S]*entry\.client\.state\s*===\s*State\.Running[\s\S]*entry\.client\.state\s*===\s*State\.Starting/s,
     );
   });
 

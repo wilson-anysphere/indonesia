@@ -59,11 +59,6 @@ function extractRoutingHint(params: unknown): RoutingHint {
 
   const record = params as Record<string, unknown>;
 
-  const projectRoot = normalizeString(record.projectRoot);
-  if (projectRoot) {
-    return { kind: 'projectRoot', projectRoot };
-  }
-
   const uri = normalizeString(record.uri);
   if (uri) {
     return { kind: 'uri', uri };
@@ -75,6 +70,11 @@ function extractRoutingHint(params: unknown): RoutingHint {
     if (tdUri) {
       return { kind: 'uri', uri: tdUri };
     }
+  }
+
+  const projectRoot = normalizeString(record.projectRoot);
+  if (projectRoot) {
+    return { kind: 'projectRoot', projectRoot };
   }
 
   return { kind: 'none' };
@@ -223,4 +223,3 @@ function pickDeepestUniqueMatch<T>(matches: readonly T[], depth: (value: T) => n
 
   return best;
 }
-

@@ -28,6 +28,7 @@ import { isRequestCancelledError, sendRequestWithOptionalToken } from './novaReq
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 import { getNovaConfigChangeEffects } from './configChange';
+import { MultiRootClientManager, type WorkspaceClientEntry, type WorkspaceKey } from './multiRootClientManager';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
 import {
   SAFE_MODE_EXEMPT_REQUESTS,
@@ -55,11 +56,12 @@ import {
   type DownloadMode,
 } from './binaries';
 
-let client: LanguageClient | undefined;
-let clientStart: Promise<void> | undefined;
-let ensureClientStarted: ((opts?: { promptForInstall?: boolean }) => Promise<void>) | undefined;
-let stopClient: (() => Promise<void>) | undefined;
-let setSafeModeEnabled: ((enabled: boolean) => void) | undefined;
+let clientManager: MultiRootClientManager | undefined;
+let ensureWorkspaceClient:
+  | ((folder: vscode.WorkspaceFolder, opts?: { promptForInstall?: boolean }) => Promise<WorkspaceClientEntry>)
+  | undefined;
+let stopAllWorkspaceClients: (() => Promise<void>) | undefined;
+let setWorkspaceSafeModeEnabled: ((workspaceKey: WorkspaceKey, enabled: boolean, reason?: string) => void) | undefined;
 let testOutput: vscode.OutputChannel | undefined;
 let bugReportOutput: vscode.OutputChannel | undefined;
 let testController: vscode.TestController | undefined;
@@ -72,20 +74,41 @@ type VsTestMetadata = {
 const vscodeTestMetadataById = new Map<string, VsTestMetadata>();
 
 let aiRefreshInProgress = false;
-let lastCompletionContextId: string | undefined;
+let lastCompletionContextKey: string | undefined;
 let lastCompletionDocumentUri: string | undefined;
-const aiItemsByContextId = new Map<string, vscode.CompletionItem[]>();
+const aiItemsByContextKey = new Map<string, vscode.CompletionItem[]>();
 const aiRequestsInFlight = new Set<string>();
 const MAX_AI_CONTEXT_IDS = 50;
+const AI_CONTEXT_KEY_SEPARATOR = '\u0000';
+
+function makeAiContextKey(workspaceKey: string, contextId: string): string {
+  return `${workspaceKey}${AI_CONTEXT_KEY_SEPARATOR}${contextId}`;
+}
+
+function clearAiCompletionCacheForWorkspace(workspaceKey: string): void {
+  const prefix = `${workspaceKey}${AI_CONTEXT_KEY_SEPARATOR}`;
+
+  for (const key of Array.from(aiItemsByContextKey.keys())) {
+    if (key.startsWith(prefix)) {
+      aiItemsByContextKey.delete(key);
+    }
+  }
+
+  for (const key of Array.from(aiRequestsInFlight.values())) {
+    if (key.startsWith(prefix)) {
+      aiRequestsInFlight.delete(key);
+    }
+  }
+
+  if (lastCompletionContextKey?.startsWith(prefix)) {
+    lastCompletionContextKey = undefined;
+    lastCompletionDocumentUri = undefined;
+  }
+}
 
   const BUG_REPORT_COMMAND = 'nova.bugReport';
   const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
 
-// Capability tracking is keyed for multi-root workspaces (one client per folder). The VS Code
-// extension currently uses a single LanguageClient instance, so we keep a stable default key and
-// also mirror the same capability set onto each workspace folder URI key (until multi-client
-// support lands).
-const DEFAULT_NOVA_CAPABILITIES_KEY = 'default';
 type TestKind = 'class' | 'test';
 
 interface LspPosition {
@@ -141,18 +164,18 @@ function isAiCompletionsEnabled(): boolean {
 }
 
 function clearAiCompletionCache(): void {
-  aiItemsByContextId.clear();
+  aiItemsByContextKey.clear();
   aiRequestsInFlight.clear();
-  lastCompletionContextId = undefined;
+  lastCompletionContextKey = undefined;
   lastCompletionDocumentUri = undefined;
 }
 
-function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
-  const config = vscode.workspace.getConfiguration('nova');
+function readLspLaunchConfig(workspaceFolder: vscode.WorkspaceFolder): { args: string[]; env: NodeJS.ProcessEnv } {
+  const config = vscode.workspace.getConfiguration('nova', workspaceFolder.uri);
   const serverArgsSetting = config.get<string[]>('server.args', ['--stdio']);
   const configPath = config.get<string | null>('lsp.configPath', null);
   const extraArgs = config.get<string[]>('lsp.extraArgs', []);
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+  const workspaceRoot = workspaceFolder.uri.fsPath;
 
   const aiEnabled = config.get<boolean>('ai.enabled', true);
   const aiCompletionsEnabled = config.get<boolean>('aiCompletions.enabled', true);
@@ -281,83 +304,37 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest, {
-    isServerRunning: () => client?.state === State.Running || client?.state === State.Starting,
+    isServerRunning: () =>
+      clientManager?.entries().some((entry) => entry.client.state === State.Running || entry.client.state === State.Starting) ?? false,
     isSafeMode: () => frameworksSafeMode,
   });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
-    isServerRunning: () => client?.state === State.Running || client?.state === State.Starting,
+    isServerRunning: () =>
+      clientManager?.entries().some((entry) => entry.client.state === State.Running || entry.client.state === State.Starting) ?? false,
     isSafeMode: () => frameworksSafeMode,
   });
 
-  // Keep capability entries for workspace-folder keys in sync as folders are added/removed.
-  // This is mainly transitional until Nova runs one LanguageClient per workspace folder.
+  // Tear down per-workspace language clients as folders are removed.
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders((event) => {
       for (const folder of event.removed) {
-        resetNovaExperimentalCapabilities(folder.uri.toString());
+        const workspaceKey = folder.uri.toString();
+        resetNovaExperimentalCapabilities(workspaceKey);
+        void clientManager?.stopClient(workspaceKey);
       }
 
-      const languageClient = client;
-      if (languageClient?.initializeResult) {
-        for (const folder of event.added) {
-          setNovaExperimentalCapabilities(folder.uri.toString(), languageClient.initializeResult);
-        }
-      }
-
+      updateFrameworksServerRunningContext();
       updateFrameworksMethodSupportContexts();
     }),
   );
 
-  // Keep `novaCapabilities.ts` keyed capability maps in sync with the current workspace folders.
-  // Even though this extension runs a single LanguageClient today, callers often key by
-  // `workspaceFolder.uri.toString()`, so we mirror the same capability list to each workspace key.
-  const trackedNovaCapabilityKeys = new Set<string>();
-
-  const desiredNovaCapabilityKeys = (): Set<string> => {
-    const keys = new Set<string>();
-    keys.add(DEFAULT_NOVA_CAPABILITIES_KEY);
-    for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      keys.add(folder.uri.toString());
-    }
-    return keys;
-  };
-
-  const syncNovaCapabilityState = (initializeResult?: unknown): void => {
-    const desiredKeys = desiredNovaCapabilityKeys();
-
-    // Drop stale keys when workspace folders are removed.
-    for (const key of trackedNovaCapabilityKeys) {
-      if (!desiredKeys.has(key)) {
-        resetNovaExperimentalCapabilities(key);
-        trackedNovaCapabilityKeys.delete(key);
-      }
-    }
-
-    for (const key of desiredKeys) {
-      trackedNovaCapabilityKeys.add(key);
-      if (typeof initializeResult === 'undefined') {
-        resetNovaExperimentalCapabilities(key);
-      } else {
-        setNovaExperimentalCapabilities(key, initializeResult);
-      }
-    }
-  };
-
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      const c = client;
-      if (c && c.state === State.Running) {
-        syncNovaCapabilityState(c.initializeResult);
-      } else {
-        syncNovaCapabilityState(undefined);
-      }
-    }),
-  );
-
-  const readServerSettings = (): NovaServerSettings => {
-    const cfg = vscode.workspace.getConfiguration('nova');
+  const readServerSettings = (workspaceFolder?: vscode.WorkspaceFolder): NovaServerSettings => {
+    const cfg = vscode.workspace.getConfiguration('nova', workspaceFolder?.uri);
     const rawPath = cfg.get<string | null>('server.path', null);
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const workspaceRoot =
+      workspaceFolder?.uri.fsPath ??
+      (vscode.window.activeTextEditor ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)?.uri.fsPath : null) ??
+      (vscode.workspace.workspaceFolders?.length === 1 ? vscode.workspace.workspaceFolders[0].uri.fsPath : null);
     const resolvedPath = resolveNovaConfigPath({ configPath: rawPath, workspaceRoot }) ?? null;
 
     const downloadMode = cfg.get<DownloadMode>('download.mode', 'prompt');
@@ -465,379 +442,474 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  const documentSelector: LspTextDocumentFilter[] = [
-    { scheme: 'file', language: 'java' },
-    { scheme: 'untitled', language: 'java' },
-  ];
+  // Broad selector for extension-owned Java providers (AI completions, etc). Language clients use
+  // per-workspace selectors with folder-scoped patterns.
+  const javaDocumentSelector: vscode.DocumentSelector = [{ language: 'java' }];
 
-  const fileWatchers = getNovaWatchedFileGlobPatterns().map((pattern) => vscode.workspace.createFileSystemWatcher(pattern));
-  context.subscriptions.push(...fileWatchers);
+  clientManager = new MultiRootClientManager((entry) => {
+    resetNovaExperimentalCapabilities(entry.workspaceKey);
+    clearAiCompletionCacheForWorkspace(entry.workspaceKey);
+    clearWorkspaceObservabilityState(entry.workspaceKey);
+    projectModelCache.clear(entry.workspaceFolder);
+    void vscode.commands.executeCommand(
+      'setContext',
+      'nova.frameworks.serverRunning',
+      (clientManager?.entries().some((clientEntry) =>
+        clientEntry.client.state === State.Running || clientEntry.client.state === State.Starting,
+      ) ?? false),
+    );
+    updateFrameworksMethodSupportContexts();
+    frameworksView.refresh();
+    projectExplorerView.refresh();
+  });
 
   let serverCommandHandlers: NovaServerCommandHandlers | undefined;
-  const clientOptions: LanguageClientOptions = {
-    documentSelector,
-    outputChannel: serverOutput,
-    synchronize: {
-      fileEvents: fileWatchers,
-    },
-    middleware: {
-      executeCommand: async (command, args, next) => {
-        try {
-          const handled = serverCommandHandlers?.dispatch(command, args);
-          if (handled) {
-            return await handled;
-          }
 
-          // Safety net: if nova-lsp ever returns AI code lenses (or other `workspace/executeCommand`
-          // invocations) that we didn't rewrite in the code action middleware, route them through the
-          // existing VS Code-side "show" commands so users see the AI output.
-          const rewrittenAi = rewriteNovaAiCodeActionOrCommand({ command, arguments: args });
-          if (rewrittenAi) {
-            await vscode.commands.executeCommand(rewrittenAi.command, ...rewrittenAi.args);
-            return;
-          }
+  const createWorkspaceClientEntry = (
+    workspaceFolder: vscode.WorkspaceFolder,
+    workspaceKey: WorkspaceKey,
+    serverCommand: string,
+  ): WorkspaceClientEntry => {
+    const fileWatchers = getNovaWatchedFileGlobPatterns().map((pattern) =>
+      vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceFolder, pattern)),
+    );
 
-          // Safety net: if `nova.safeDelete` is invoked directly (e.g. via a command-only code action),
-          // VS Code will ignore the preview payload returned by the language server. Route that case
-          // through the VS Code-side preview/confirmation UX.
-          if (command === 'nova.safeDelete') {
-            const result = await next(command, args);
-            if (isSafeDeletePreviewPayload(result)) {
-              await vscode.commands.executeCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, result);
+    const disposables: vscode.Disposable[] = [...fileWatchers];
+
+    const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
+
+    // LanguageClientOptions expects LSP document selectors (not VS Code's `DocumentSelector`),
+    // so patterns must be strings. Use an absolute glob pattern rooted at the workspace folder
+    // to prevent overlapping selectors across multiple clients.
+    const workspacePatternBase = workspaceFolder.uri.fsPath.replace(/\\/g, '/');
+    const documentSelector: LspTextDocumentFilter[] = [
+      {
+        scheme: workspaceFolder.uri.scheme,
+        language: 'java',
+        pattern: `${workspacePatternBase}/**/*.java`,
+      },
+    ];
+
+    // Avoid routing untitled Java documents to multiple workspace clients.
+    if (!multiRoot) {
+      documentSelector.push({ scheme: 'untitled', language: 'java' });
+    }
+
+    let languageClient!: LanguageClient;
+    let startPromise!: Promise<void>;
+
+    const clientOptions: LanguageClientOptions = {
+      workspaceFolder,
+      documentSelector,
+      outputChannel: serverOutput,
+      synchronize: {
+        fileEvents: fileWatchers,
+      },
+      middleware: {
+        executeCommand: async (command, args, next) => {
+          try {
+            const handled = serverCommandHandlers?.dispatch(command, args);
+            if (handled) {
+              return await handled;
             }
+
+            // Safety net: if nova-lsp ever returns AI code lenses (or other `workspace/executeCommand`
+            // invocations) that we didn't rewrite in the code action middleware, route them through the
+            // existing VS Code-side "show" commands so users see the AI output.
+            const rewrittenAi = rewriteNovaAiCodeActionOrCommand({ command, arguments: args });
+            if (rewrittenAi) {
+              await vscode.commands.executeCommand(rewrittenAi.command, ...rewrittenAi.args);
+              return;
+            }
+
+            // Safety net: if `nova.safeDelete` is invoked directly (e.g. via a command-only code action),
+            // VS Code will ignore the preview payload returned by the language server. Route that case
+            // through the VS Code-side preview/confirmation UX.
+            if (command === 'nova.safeDelete') {
+              const result = await next(command, args);
+              if (isSafeDeletePreviewPayload(result)) {
+                await vscode.commands.executeCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, result);
+              }
+              return result;
+            }
+
+            return await next(command, args);
+          } catch (err) {
+            if (isSafeModeError(err)) {
+              setWorkspaceSafeModeEnabled?.(workspaceKey, true);
+            }
+            throw err;
+          }
+        },
+        sendRequest: async (type, param, token, next) => {
+          try {
+            const result = await next(type, param, token);
+            if (
+              typeof type === 'string' &&
+              type.startsWith('nova/') &&
+              !SAFE_MODE_EXEMPT_REQUESTS.has(type) &&
+              !token?.isCancellationRequested
+            ) {
+              setWorkspaceSafeModeEnabled?.(workspaceKey, false);
+            }
+            return result;
+          } catch (err) {
+            if (typeof type === 'string' && type.startsWith('nova/') && isSafeModeError(err)) {
+              setWorkspaceSafeModeEnabled?.(workspaceKey, true);
+            }
+            throw err;
+          }
+        },
+        provideCompletionItem: async (document, position, completionContext, token, next) => {
+          const result = await next(document, position, completionContext, token);
+
+          // Always attach the active document URI to Nova completion items so the server can
+          // compute document-context-sensitive edits (e.g. imports) during `completionItem/resolve`.
+          const baseItems = Array.isArray(result) ? result : result?.items;
+          if (baseItems?.length) {
+            const uri = document.uri.toString();
+            for (const item of baseItems) {
+              ensureNovaCompletionItemUri(item, uri);
+            }
+          }
+
+          if (aiRefreshInProgress || !isAiEnabled() || !isAiCompletionsEnabled()) {
             return result;
           }
 
-          return await next(command, args);
+          if (!baseItems?.length) {
+            return result;
+          }
+
+          const contextId = getCompletionContextId(baseItems);
+          if (!contextId) {
+            return result;
+          }
+
+          const contextKey = makeAiContextKey(workspaceKey, contextId);
+          lastCompletionContextKey = contextKey;
+          lastCompletionDocumentUri = document.uri.toString();
+
+          if (aiItemsByContextKey.has(contextKey) || aiRequestsInFlight.has(contextKey)) {
+            return result;
+          }
+
+          aiRequestsInFlight.add(contextKey);
+
+          void (async () => {
+            try {
+              try {
+                await startPromise;
+              } catch {
+                return;
+              }
+
+              // If the language server restarted, don't attempt to use stale state
+              // or send requests against a disposed client instance.
+              if (clientManager?.get(workspaceKey)?.client !== languageClient) {
+                return;
+              }
+
+              const more = await requestMoreCompletions(languageClient, baseItems, { token });
+              if (!more?.length) {
+                return;
+              }
+
+              if (token.isCancellationRequested) {
+                return;
+              }
+
+              if (!isAiEnabled() || !isAiCompletionsEnabled()) {
+                return;
+              }
+
+              if (lastCompletionContextKey !== contextKey || lastCompletionDocumentUri !== document.uri.toString()) {
+                return;
+              }
+
+              // Ensure AI items appear above "normal" completions without disrupting normal sorting.
+              for (const item of more) {
+                item.sortText = item.sortText ?? '0';
+                // Preserve the document URI on the completion item so we can resolve it later and
+                // compute correct import insertion edits via `completionItem/resolve`.
+                ensureNovaCompletionItemUri(item, document.uri.toString());
+              }
+
+              // LRU cache: keep the most recently produced AI context ids, and evict the oldest.
+              if (aiItemsByContextKey.has(contextKey)) {
+                aiItemsByContextKey.delete(contextKey);
+              }
+              aiItemsByContextKey.set(contextKey, more);
+              while (aiItemsByContextKey.size > MAX_AI_CONTEXT_IDS) {
+                const oldestKey = aiItemsByContextKey.keys().next().value;
+                if (typeof oldestKey !== 'string') {
+                  break;
+                }
+                aiItemsByContextKey.delete(oldestKey);
+              }
+
+              // Re-trigger suggestions once to surface async results.
+              aiRefreshInProgress = true;
+              try {
+                await vscode.commands.executeCommand('editor.action.triggerSuggest');
+              } finally {
+                aiRefreshInProgress = false;
+              }
+            } catch {
+              // Best-effort: ignore errors from background AI completion polling.
+            } finally {
+              aiRequestsInFlight.delete(contextKey);
+            }
+          })();
+
+          return result;
+        },
+        provideCodeActions: async (document, range, context, token, next) => {
+          const result = await next(document, range, context, token);
+          if (!Array.isArray(result)) {
+            return result;
+          }
+
+          let out = result;
+          if (!isAiEnabled()) {
+            // Hide AI code actions when AI is disabled in settings, even if the
+            // server is configured to advertise them.
+            out = result.filter((item) => !isNovaAiCodeActionOrCommand(item));
+          }
+
+          for (const item of out) {
+            if (!(item instanceof vscode.CodeAction)) {
+              continue;
+            }
+
+            const data = (item as unknown as { data?: unknown }).data;
+            if (!isSafeDeletePreviewPayload(data)) {
+              continue;
+            }
+
+            const command = item.command;
+            if (!command || command.command !== 'nova.safeDelete') {
+              continue;
+            }
+
+            // The LSP server returns a preview payload in `data` and a `nova.safeDelete` command
+            // (workspace/executeCommand). VS Code's default LSP client does not display that preview,
+            // so we route the command through a VS Code-side handler that can ask for confirmation.
+            item.command = {
+              title: command.title,
+              command: SAFE_DELETE_WITH_PREVIEW_COMMAND,
+              arguments: [data, { uri: document.uri.toString() }],
+            };
+          }
+
+          for (const item of out) {
+            const rewritten = rewriteNovaAiCodeActionOrCommand(item);
+            if (!rewritten) {
+              continue;
+            }
+
+            if (item instanceof vscode.CodeAction) {
+              const priorCommand = item.command;
+              const title = priorCommand?.title ?? item.title;
+              item.command = {
+                title,
+                command: rewritten.command,
+                arguments: rewritten.args,
+              };
+            } else {
+              const command = item as vscode.Command;
+              command.command = rewritten.command;
+              command.arguments = rewritten.args;
+            }
+          }
+
+          return out;
+        },
+      },
+    };
+
+    const launchConfig = readLspLaunchConfig(workspaceFolder);
+    const serverOptions: ServerOptions = {
+      command: serverCommand,
+      args: launchConfig.args,
+      options: { env: launchConfig.env, cwd: workspaceFolder.uri.fsPath },
+    };
+
+    languageClient = new LanguageClient(
+      `nova:${workspaceKey}`,
+      `Nova Java Language Server (${workspaceFolder.name})`,
+      serverOptions,
+      clientOptions,
+    );
+
+    // vscode-languageclient v9+ starts asynchronously.
+    startPromise = languageClient.start().then(() => {
+      if (clientManager?.get(workspaceKey)?.client !== languageClient) {
+        return;
+      }
+      setNovaExperimentalCapabilities(workspaceKey, languageClient.initializeResult);
+      updateFrameworksMethodSupportContexts();
+    });
+
+    // Keep capability-gated state in sync even if the underlying language client restarts
+    // automatically (default vscode-languageclient behaviour).
+    disposables.push(
+      languageClient.onDidChangeState((event) => {
+        if (clientManager?.get(workspaceKey)?.client !== languageClient) {
+          return;
+        }
+
+        void vscode.commands.executeCommand(
+          'setContext',
+          'nova.frameworks.serverRunning',
+          (clientManager?.entries().some((clientEntry) =>
+            clientEntry.client.state === State.Running || clientEntry.client.state === State.Starting,
+          ) ?? false),
+        );
+
+        if (event.newState === State.Starting || event.newState === State.Stopped) {
+          resetNovaExperimentalCapabilities(workspaceKey);
+          clearWorkspaceObservabilityState(workspaceKey);
+          updateFrameworksMethodSupportContexts();
+          frameworksView.refresh();
+          projectExplorerView.refresh();
+          return;
+        }
+
+        if (event.newState === State.Running) {
+          setNovaExperimentalCapabilities(workspaceKey, languageClient.initializeResult);
+          updateFrameworksMethodSupportContexts();
+          frameworksView.refresh();
+          projectExplorerView.refresh();
+        }
+      }),
+    );
+
+    disposables.push(
+      languageClient.onNotification('nova/safeModeChanged', (payload: unknown) => {
+        const enabled = parseSafeModeEnabled(payload);
+        if (typeof enabled === 'boolean') {
+          const reason = enabled ? parseSafeModeReason(payload) : undefined;
+          setWorkspaceSafeModeEnabled?.(workspaceKey, enabled, reason);
+        }
+      }),
+    );
+
+    disposables.push(
+      languageClient.onNotification('nova/memoryStatusChanged', (payload: unknown) => {
+        void updateWorkspaceMemoryStatus(workspaceKey, payload);
+      }),
+    );
+
+    void startPromise
+      .then(async () => {
+        try {
+          const payload = await languageClient.sendRequest('nova/safeModeStatus');
+          const enabled = parseSafeModeEnabled(payload);
+          if (typeof enabled === 'boolean') {
+            const reason = enabled ? parseSafeModeReason(payload) : undefined;
+            setWorkspaceSafeModeEnabled?.(workspaceKey, enabled, reason);
+          }
+        } catch (err) {
+          if (isRequestCancelledError(err) || isMethodNotFoundError(err)) {
+            // Best-effort: safe mode endpoints might not exist yet.
+          } else if (isSafeModeError(err)) {
+            setWorkspaceSafeModeEnabled?.(workspaceKey, true);
+          } else {
+            const message = formatError(err);
+            void vscode.window.showErrorMessage(`Nova: failed to query safe-mode status: ${message}`);
+          }
+        }
+
+        try {
+          const payload = await languageClient.sendRequest('nova/memoryStatus');
+          void updateWorkspaceMemoryStatus(workspaceKey, payload);
         } catch (err) {
           if (isSafeModeError(err)) {
-            setSafeModeEnabled?.(true);
-          }
-          throw err;
-        }
-      },
-      sendRequest: async (type, param, token, next) => {
-        try {
-          const result = await next(type, param, token);
-          if (
-            typeof type === 'string' &&
-            type.startsWith('nova/') &&
-            !SAFE_MODE_EXEMPT_REQUESTS.has(type) &&
-            !token?.isCancellationRequested
-          ) {
-            setSafeModeEnabled?.(false);
-          }
-          return result;
-        } catch (err) {
-          if (
-            typeof type === 'string' &&
-            type.startsWith('nova/') &&
-            isSafeModeError(err)
-          ) {
-            setSafeModeEnabled?.(true);
-          }
-          throw err;
-        }
-      },
-      provideCompletionItem: async (document, position, completionContext, token, next) => {
-        const result = await next(document, position, completionContext, token);
-
-        // Always attach the active document URI to Nova completion items so the server can
-        // compute document-context-sensitive edits (e.g. imports) during `completionItem/resolve`.
-        const baseItems = Array.isArray(result) ? result : result?.items;
-        if (baseItems?.length) {
-          const uri = document.uri.toString();
-          for (const item of baseItems) {
-            ensureNovaCompletionItemUri(item, uri);
+            setWorkspaceSafeModeEnabled?.(workspaceKey, true);
           }
         }
+      })
+      .catch(() => {});
 
-        if (!client || aiRefreshInProgress || !isAiEnabled() || !isAiCompletionsEnabled()) {
-          return result;
-        }
+    startPromise.catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp (${workspaceFolder.name}): ${message}`);
+      void clientManager?.stopClient(workspaceKey);
+    });
 
-        if (!baseItems?.length) {
-          return result;
-        }
-
-        const contextId = getCompletionContextId(baseItems);
-        if (!contextId) {
-          return result;
-        }
-
-        lastCompletionContextId = contextId;
-        lastCompletionDocumentUri = document.uri.toString();
-
-        if (aiItemsByContextId.has(contextId) || aiRequestsInFlight.has(contextId)) {
-          return result;
-        }
-
-        aiRequestsInFlight.add(contextId);
-
-        void (async () => {
-          const requestClient = client;
-          const requestClientStart = clientStart;
-          try {
-            if (!requestClient || !requestClientStart) {
-              return;
-            }
-
-            try {
-              await requestClientStart;
-            } catch {
-              return;
-            }
-
-            // If the language server restarted, don't attempt to use stale state
-            // or send requests against a disposed client instance.
-            if (client !== requestClient) {
-              return;
-            }
-
-            const more = await requestMoreCompletions(requestClient, baseItems, { token });
-            if (!more?.length) {
-              return;
-            }
-
-            if (token.isCancellationRequested) {
-              return;
-            }
-
-            if (!isAiEnabled() || !isAiCompletionsEnabled()) {
-              return;
-            }
-
-            if (lastCompletionContextId !== contextId || lastCompletionDocumentUri !== document.uri.toString()) {
-              return;
-            }
-
-            // Ensure AI items appear above "normal" completions without disrupting normal sorting.
-            for (const item of more) {
-              item.sortText = item.sortText ?? '0';
-              // Preserve the document URI on the completion item so we can resolve it later and
-              // compute correct import insertion edits via `completionItem/resolve`.
-              ensureNovaCompletionItemUri(item, document.uri.toString());
-            }
-
-            // LRU cache: keep the most recently produced AI context ids, and evict the oldest.
-            if (aiItemsByContextId.has(contextId)) {
-              aiItemsByContextId.delete(contextId);
-            }
-            aiItemsByContextId.set(contextId, more);
-            while (aiItemsByContextId.size > MAX_AI_CONTEXT_IDS) {
-              const oldestKey = aiItemsByContextId.keys().next().value;
-              if (typeof oldestKey !== 'string') {
-                break;
-              }
-              aiItemsByContextId.delete(oldestKey);
-            }
-
-            // Re-trigger suggestions once to surface async results.
-            aiRefreshInProgress = true;
-            try {
-              await vscode.commands.executeCommand('editor.action.triggerSuggest');
-            } finally {
-              aiRefreshInProgress = false;
-            }
-          } catch {
-            // Best-effort: ignore errors from background AI completion polling.
-          } finally {
-            aiRequestsInFlight.delete(contextId);
-          }
-        })();
-
-        return result;
-      },
-      provideCodeActions: async (document, range, context, token, next) => {
-        const result = await next(document, range, context, token);
-        if (!Array.isArray(result)) {
-          return result;
-        }
-
-        let out = result;
-        if (!isAiEnabled()) {
-          // Hide AI code actions when AI is disabled in settings, even if the
-          // server is configured to advertise them.
-          out = result.filter((item) => !isNovaAiCodeActionOrCommand(item));
-        }
-
-        for (const item of out) {
-          if (!(item instanceof vscode.CodeAction)) {
-            continue;
-          }
-
-          const data = (item as unknown as { data?: unknown }).data;
-          if (!isSafeDeletePreviewPayload(data)) {
-            continue;
-          }
-
-          const command = item.command;
-          if (!command || command.command !== 'nova.safeDelete') {
-            continue;
-          }
-
-          // The LSP server returns a preview payload in `data` and a `nova.safeDelete` command
-          // (workspace/executeCommand). VS Code's default LSP client does not display that preview,
-          // so we route the command through a VS Code-side handler that can ask for confirmation.
-          item.command = {
-            title: command.title,
-            command: SAFE_DELETE_WITH_PREVIEW_COMMAND,
-            arguments: [data],
-          };
-        }
-
-        for (const item of out) {
-          const rewritten = rewriteNovaAiCodeActionOrCommand(item);
-          if (!rewritten) {
-            continue;
-          }
-
-          if (item instanceof vscode.CodeAction) {
-            const priorCommand = item.command;
-            const title = priorCommand?.title ?? item.title;
-            item.command = {
-              title,
-              command: rewritten.command,
-              arguments: rewritten.args,
-            };
-          } else {
-            const command = item as vscode.Command;
-            command.command = rewritten.command;
-            command.arguments = rewritten.args;
-          }
-        }
-
-        return out;
-      },
-    },
+    return { workspaceKey, workspaceFolder, client: languageClient, startPromise, serverCommand, disposables };
   };
 
   let installTask: Promise<{ path: string; version: string }> | undefined;
-  let currentServerCommand: string | undefined;
   let missingServerPrompted = false;
-  let ensureTask: Promise<void> | undefined;
-  let ensurePromptRequested = false;
-  let ensurePending = false;
+
+  const updateFrameworksServerRunningContext = () => {
+    const running =
+      clientManager?.entries().some((entry) => entry.client.state === State.Running || entry.client.state === State.Starting) ?? false;
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', running);
+  };
 
   const updateFrameworksMethodSupportContexts = () => {
     // Use server-advertised capability lists when available; otherwise fall back to an
     // optimistic default so the Frameworks view can attempt requests and handle method-not-found
     // gracefully.
     //
-    // In multi-root mode, we may eventually have one LanguageClient per workspace folder; compute
-    // these global context booleans across all workspace keys.
+    // In multi-root mode, Nova runs one LanguageClient per workspace folder; compute these global
+    // context booleans across all workspace keys.
     const workspaceKeys = (vscode.workspace.workspaceFolders ?? []).map((workspace) => workspace.uri.toString());
-    const keys = workspaceKeys.length > 0 ? workspaceKeys : [DEFAULT_NOVA_CAPABILITIES_KEY];
+    if (workspaceKeys.length === 0) {
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', true);
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', true);
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', true);
+      return;
+    }
 
-    const webSupported = keys.some(
+    const webSupported = workspaceKeys.some(
       (key) =>
         isNovaRequestSupported(key, 'nova/web/endpoints') !== false ||
         isNovaRequestSupported(key, 'nova/quarkus/endpoints') !== false,
     );
-    const micronautEndpointsSupported = keys.some(
-      (key) => isNovaRequestSupported(key, 'nova/micronaut/endpoints') !== false,
-    );
-    const micronautBeansSupported = keys.some((key) => isNovaRequestSupported(key, 'nova/micronaut/beans') !== false);
+    const micronautEndpointsSupported = workspaceKeys.some((key) => isNovaRequestSupported(key, 'nova/micronaut/endpoints') !== false);
+    const micronautBeansSupported = workspaceKeys.some((key) => isNovaRequestSupported(key, 'nova/micronaut/beans') !== false);
 
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', webSupported);
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', micronautEndpointsSupported);
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', micronautBeansSupported);
   };
 
-  async function stopLanguageClient(): Promise<void> {
-    if (!client) {
+  const runningWorkspaceFolders = (): vscode.WorkspaceFolder[] => {
+    const manager = clientManager;
+    if (!manager) {
+      return [];
+    }
+    return manager
+      .entries()
+      .filter((entry) => entry.client.state === State.Running || entry.client.state === State.Starting)
+      .map((entry) => entry.workspaceFolder);
+  };
+
+  async function restartWorkspaceLanguageClients(workspaces: readonly vscode.WorkspaceFolder[]): Promise<void> {
+    if (workspaces.length === 0) {
       return;
     }
-    try {
-      await client.stop();
-    } catch {
-      // Best-effort: stopping can fail if the server never started cleanly.
-    } finally {
-      client = undefined;
-      clientStart = undefined;
-      currentServerCommand = undefined;
-      resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
-      for (const workspace of vscode.workspace.workspaceFolders ?? []) {
-        resetNovaExperimentalCapabilities(workspace.uri.toString());
-      }
-      void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', false);
-      updateFrameworksMethodSupportContexts();
-      detachObservability();
-      aiRefreshInProgress = false;
-      clearAiCompletionCache();
-      projectModelCache.clear();
-      frameworksView.refresh();
-      projectExplorerView.refresh();
-    }
-  }
 
-  async function startLanguageClient(serverCommand: string): Promise<void> {
-    currentServerCommand = serverCommand;
-    resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
-    for (const workspace of vscode.workspace.workspaceFolders ?? []) {
-      resetNovaExperimentalCapabilities(workspace.uri.toString());
-    }
-    void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', true);
+    await clientManager?.stopAll();
+    updateFrameworksServerRunningContext();
     updateFrameworksMethodSupportContexts();
-    const launchConfig = readLspLaunchConfig();
-    const serverOptions: ServerOptions = {
-      command: serverCommand,
-      args: launchConfig.args,
-      options: { env: launchConfig.env },
-    };
-    const languageClient = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
-    client = languageClient;
-    projectModelCache.clear();
-    // vscode-languageclient v9+ starts asynchronously.
-    const started = languageClient.start();
-    clientStart = started.then(() => {
-      // If the client restarted while we were awaiting initialization, don't overwrite the
-      // active client's capabilities.
-      if (client !== languageClient) {
-        return;
-      }
-      setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
-      // Until multi-root language clients land (one client per workspace folder), Nova still runs
-      // a single server for all workspace folders. Mirror the same capability set under each
-      // workspace folder key so per-workspace feature gating can use `workspaceFolder.uri.toString()`.
-      for (const workspace of vscode.workspace.workspaceFolders ?? []) {
-        setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
-      }
-      updateFrameworksMethodSupportContexts();
-    });
 
-    attachObservability(languageClient, clientStart);
-    frameworksView.refresh();
-    projectExplorerView.refresh();
-    clientStart.catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);
-      void stopLanguageClient();
-    });
+    for (const workspace of workspaces) {
+      try {
+        await ensureWorkspaceLanguageClientStarted(workspace, { promptForInstall: false });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        serverOutput.appendLine(`Failed to restart nova-lsp for ${workspace.name}: ${message}`);
+      }
+    }
   }
 
-  async function ensureLanguageClientRunning(serverCommand: string): Promise<void> {
-    if (client && currentServerCommand === serverCommand) {
-      if (client.state === State.Running) {
-        return;
-      }
-      if (clientStart) {
-        try {
-          await clientStart;
-          return;
-        } catch {
-          await stopLanguageClient();
-        }
-      } else {
-        await stopLanguageClient();
-      }
-    } else if (client) {
-      await stopLanguageClient();
-    }
-
-    if (!client) {
-      await startLanguageClient(serverCommand);
-    }
+  async function restartRunningWorkspaceClients(): Promise<void> {
+    await restartWorkspaceLanguageClients(runningWorkspaceFolders());
   }
 
   async function installOrUpdateServer(): Promise<void> {
@@ -858,6 +930,8 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }
 
+    const workspacesToRestart = settings.path === null ? runningWorkspaceFolders() : [];
+
     serverOutput.show(true);
     try {
       const installed = await vscode.window.withProgress(
@@ -872,8 +946,9 @@ export async function activate(context: vscode.ExtensionContext) {
           }
           // On Windows, updating the managed binary while it's running will fail due to file locks.
           // Even on Unix, stopping ensures the updated binary is picked up immediately.
-          if (settings.path === null && client) {
-            await stopLanguageClient();
+          if (settings.path === null && workspacesToRestart.length > 0) {
+            await clientManager?.stopAll();
+            updateFrameworksServerRunningContext();
           }
           installTask = serverManager.installOrUpdate({ ...settings, path: null });
           try {
@@ -906,29 +981,35 @@ export async function activate(context: vscode.ExtensionContext) {
             `Nova: installed nova-lsp is not usable (${suffix}): ${resolved}`,
             ...actions,
           );
-          if (choice === 'Make Executable') {
-            const updated = await makeExecutable(resolved);
-            if (updated) {
-              const rechecked = await checkBinaryVersion(resolved);
-              if (rechecked.ok && rechecked.version) {
-                await ensureLanguageClientRunning(resolved);
-                missingServerPrompted = false;
-                return;
+            if (choice === 'Make Executable') {
+              const updated = await makeExecutable(resolved);
+              if (updated) {
+                const rechecked = await checkBinaryVersion(resolved);
+                if (rechecked.ok && rechecked.version) {
+                  if (workspacesToRestart.length > 0) {
+                    await restartWorkspaceLanguageClients(workspacesToRestart);
+                  }
+                  missingServerPrompted = false;
+                  return;
+                }
               }
-            }
-            return;
-          } else if (choice === 'Enable allowVersionMismatch') {
-            await setAllowVersionMismatch(true);
-            await ensureLanguageClientRunning(resolved);
-            missingServerPrompted = false;
-          } else if (choice === 'Open Settings') {
-            await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.releaseTag');
-          } else if (choice === 'Open install docs') {
+              return;
+            } else if (choice === 'Enable allowVersionMismatch') {
+              await setAllowVersionMismatch(true);
+              if (workspacesToRestart.length > 0) {
+                await restartWorkspaceLanguageClients(workspacesToRestart);
+              }
+              missingServerPrompted = false;
+            } else if (choice === 'Open Settings') {
+              await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.releaseTag');
+            } else if (choice === 'Open install docs') {
             await openInstallDocs(context);
           }
           return;
         }
-        await ensureLanguageClientRunning(resolved);
+        if (workspacesToRestart.length > 0) {
+          await restartWorkspaceLanguageClients(workspacesToRestart);
+        }
       }
       missingServerPrompted = false;
     } catch (err) {
@@ -1010,7 +1091,7 @@ export async function activate(context: vscode.ExtensionContext) {
     await clearSettingAtAllTargets('server.path');
     await setServerPath(serverPath);
     missingServerPrompted = false;
-    await ensureLanguageClientRunning(serverPath);
+    await restartRunningWorkspaceClients();
   }
 
   async function showServerVersion(): Promise<void> {
@@ -1082,7 +1163,10 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     const rawDapPath = cfg.get<string | null>('dap.path', null) ?? cfg.get<string | null>('debug.adapterPath', null);
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const workspaceRoot =
+      (vscode.window.activeTextEditor
+        ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)?.uri.fsPath
+        : null) ?? (vscode.workspace.workspaceFolders?.length === 1 ? vscode.workspace.workspaceFolders[0].uri.fsPath : null);
     const dapPath = resolveNovaConfigPath({ configPath: rawDapPath, workspaceRoot }) ?? null;
     await printBinaryStatusEntry({
       id: 'nova-dap',
@@ -1176,51 +1260,19 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  async function ensureLanguageClientStarted(opts?: { promptForInstall?: boolean }): Promise<void> {
-    if (opts?.promptForInstall) {
-      ensurePromptRequested = true;
-    }
-    ensurePending = true;
-
+  async function resolveServerCommandForWorkspace(
+    workspaceFolder: vscode.WorkspaceFolder,
+    promptForInstall: boolean,
+  ): Promise<string | undefined> {
     while (true) {
-      if (!ensureTask) {
-        ensureTask = (async () => {
-          while (true) {
-            const promptForInstall = ensurePromptRequested;
-            const shouldRun = ensurePending || promptForInstall;
-            ensurePromptRequested = false;
-            ensurePending = false;
-            if (!shouldRun) {
-              break;
-            }
-            await doEnsureLanguageClientStarted(promptForInstall);
-          }
-        })();
-      }
-
-      try {
-        await ensureTask;
-      } finally {
-        ensureTask = undefined;
-      }
-
-      if (!ensurePending && !ensurePromptRequested) {
-        return;
-      }
-    }
-  }
-
-  async function doEnsureLanguageClientStarted(promptForInstall: boolean): Promise<void> {
-    while (true) {
-      const settings = readServerSettings();
+      const settings = readServerSettings(workspaceFolder);
       const downloadMode = readDownloadMode();
 
       if (settings.path) {
         const check = await checkBinaryVersion(settings.path);
         if (check.ok && check.version) {
           missingServerPrompted = false;
-          await ensureLanguageClientRunning(settings.path);
-          return;
+          return settings.path;
         }
 
         const suffix = check.version
@@ -1250,11 +1302,12 @@ export async function activate(context: vscode.ExtensionContext) {
           continue;
         } else if (choice === 'Use Local Server Binary...') {
           await useLocalServerBinary();
+          continue;
         } else if (choice === 'Clear Setting') {
           await clearSettingAtAllTargets('server.path');
           continue;
         }
-        return;
+        return undefined;
       }
 
       const fromPath = await findOnPath('nova-lsp');
@@ -1262,8 +1315,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const check = await checkBinaryVersion(fromPath);
         if (check.ok && check.version) {
           missingServerPrompted = false;
-          await ensureLanguageClientRunning(fromPath);
-          return;
+          return fromPath;
         }
         if (check.version) {
           serverOutput.appendLine(
@@ -1277,18 +1329,17 @@ export async function activate(context: vscode.ExtensionContext) {
         const check = await checkBinaryVersion(managed);
         if (check.ok && check.version) {
           missingServerPrompted = false;
-          await ensureLanguageClientRunning(managed);
-          return;
+          return managed;
         }
       }
 
       if (!promptForInstall) {
-        return;
+        return undefined;
       }
 
       if (downloadMode === 'off') {
         if (missingServerPrompted) {
-          return;
+          return undefined;
         }
         missingServerPrompted = true;
         const action = await vscode.window.showErrorMessage(
@@ -1299,21 +1350,22 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         if (action === 'Use Local Server Binary...') {
           await useLocalServerBinary();
+          continue;
         } else if (action === 'Open Settings') {
           await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.mode');
         } else if (action === 'Open install docs') {
           await openInstallDocs(context);
         }
-        return;
+        return undefined;
       }
 
       if (downloadMode === 'auto') {
         await installOrUpdateServer();
-        return;
+        continue;
       }
 
       if (missingServerPrompted) {
-        return;
+        return undefined;
       }
       missingServerPrompted = true;
       const choice = await vscode.window.showErrorMessage(
@@ -1326,15 +1378,37 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       if (choice === 'Download') {
         await installOrUpdateServer();
+        continue;
       } else if (choice === 'Use Local Server Binary...') {
         await useLocalServerBinary();
+        continue;
       } else if (choice === 'Open Settings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download');
       } else if (choice === 'Open install docs') {
         await openInstallDocs(context);
       }
-      return;
+      return undefined;
     }
+  }
+
+  async function ensureWorkspaceLanguageClientStarted(
+    workspaceFolder: vscode.WorkspaceFolder,
+    opts?: { promptForInstall?: boolean },
+  ): Promise<WorkspaceClientEntry> {
+    const manager = clientManager;
+    if (!manager) {
+      throw new Error('Nova: internal error: workspace client manager is not available.');
+    }
+
+    const serverCommand = await resolveServerCommandForWorkspace(workspaceFolder, opts?.promptForInstall ?? false);
+    if (!serverCommand) {
+      throw new Error('Nova: nova-lsp is not installed.');
+    }
+
+    const entry = await manager.ensureClient(workspaceFolder, serverCommand, createWorkspaceClientEntry);
+    updateFrameworksServerRunningContext();
+    updateFrameworksMethodSupportContexts();
+    return entry;
   }
 
   context.subscriptions.push(vscode.commands.registerCommand('nova.installOrUpdateServer', installOrUpdateServer));
@@ -1387,13 +1461,13 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   context.subscriptions.push(
-    vscode.languages.registerCompletionItemProvider(documentSelector, {
+    vscode.languages.registerCompletionItemProvider(javaDocumentSelector, {
       provideCompletionItems: (document) => {
         if (!isAiEnabled() || !isAiCompletionsEnabled()) {
           return undefined;
         }
 
-        if (!lastCompletionContextId) {
+        if (!lastCompletionContextKey) {
           return undefined;
         }
 
@@ -1401,11 +1475,11 @@ export async function activate(context: vscode.ExtensionContext) {
           return undefined;
         }
 
-        const cached = aiItemsByContextId.get(lastCompletionContextId);
+        const cached = aiItemsByContextKey.get(lastCompletionContextKey);
         if (cached) {
           // Touch for LRU.
-          aiItemsByContextId.delete(lastCompletionContextId);
-          aiItemsByContextId.set(lastCompletionContextId, cached);
+          aiItemsByContextKey.delete(lastCompletionContextKey);
+          aiItemsByContextKey.set(lastCompletionContextKey, cached);
         }
         return cached;
       },
@@ -1413,7 +1487,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (token.isCancellationRequested) {
           return item;
         }
-        if (!client || !clientStart || !isAiEnabled() || !isAiCompletionsEnabled()) {
+        if (!isAiEnabled() || !isAiCompletionsEnabled()) {
           return item;
         }
 
@@ -1429,16 +1503,24 @@ export async function activate(context: vscode.ExtensionContext) {
           return item;
         }
 
-        if (lastCompletionDocumentUri) {
-          ensureNovaCompletionItemUri(item, lastCompletionDocumentUri);
+        const uriFromItem = typeof data?.nova?.uri === 'string' && data.nova.uri.length > 0 ? data.nova.uri : undefined;
+        const uriForEdits = uriFromItem ?? lastCompletionDocumentUri;
+        if (uriForEdits) {
+          ensureNovaCompletionItemUri(item, uriForEdits);
         }
 
-        try {
-          await clientStart;
-        } catch {
+        const uriForRouting = uriFromItem ?? vscode.window.activeTextEditor?.document.uri.toString() ?? lastCompletionDocumentUri;
+        if (!uriForRouting) {
           return item;
         }
-        if (!client) {
+
+        let workspaceFolder: vscode.WorkspaceFolder | undefined;
+        try {
+          workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(uriForRouting));
+        } catch {
+          workspaceFolder = undefined;
+        }
+        if (!workspaceFolder) {
           return item;
         }
 
@@ -1447,8 +1529,21 @@ export async function activate(context: vscode.ExtensionContext) {
           return item;
         }
 
+        let entry: WorkspaceClientEntry;
         try {
-          const resolved = await client.sendRequest<any>(
+          entry = await ensureWorkspaceLanguageClientStarted(workspaceFolder, { promptForInstall: false });
+        } catch {
+          return item;
+        }
+
+        try {
+          await entry.startPromise;
+        } catch {
+          return item;
+        }
+
+        try {
+          const resolved = await entry.client.sendRequest<any>(
             'completionItem/resolve',
             { label, data: (item as unknown as { data?: unknown }).data },
             token,
@@ -1501,9 +1596,9 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      lastCompletionContextId = undefined;
+      lastCompletionContextKey = undefined;
       lastCompletionDocumentUri = undefined;
-      aiItemsByContextId.clear();
+      aiItemsByContextKey.clear();
     }),
   );
 
@@ -1514,20 +1609,47 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      lastCompletionContextId = undefined;
+      lastCompletionContextKey = undefined;
       lastCompletionDocumentUri = undefined;
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(BUG_REPORT_COMMAND, async () => {
+    vscode.commands.registerCommand(BUG_REPORT_COMMAND, async (workspaceFolder?: vscode.WorkspaceFolder) => {
       try {
-        await requireClient();
+        const workspaces = vscode.workspace.workspaceFolders ?? [];
+        if (workspaces.length === 0) {
+          void vscode.window.showErrorMessage('Nova: Open a workspace folder to generate a bug report.');
+          return;
+        }
+
         const method = 'nova/bugReport';
-        const workspaceKeys = (vscode.workspace.workspaceFolders ?? []).map((workspace) => workspace.uri.toString());
-        const keys = workspaceKeys.length > 0 ? workspaceKeys : [DEFAULT_NOVA_CAPABILITIES_KEY];
-        const supported = keys.some((key) => isNovaRequestSupported(key, method) !== false);
-        if (!supported) {
+
+        let targetFolder = workspaceFolder;
+        if (!targetFolder) {
+          const activeUri = vscode.window.activeTextEditor?.document.uri;
+          targetFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+        }
+        if (!targetFolder && workspaces.length === 1) {
+          targetFolder = workspaces[0];
+        }
+        if (!targetFolder) {
+          const picked = await vscode.window.showQuickPick(
+            workspaces.map((workspace) => ({
+              label: workspace.name,
+              description: workspace.uri.fsPath,
+              workspace,
+            })),
+            { placeHolder: 'Select workspace folder for bug report' },
+          );
+          targetFolder = picked?.workspace;
+        }
+        if (!targetFolder) {
+          return;
+        }
+
+        const entry = await ensureWorkspaceLanguageClientStarted(targetFolder, { promptForInstall: true });
+        if (isNovaRequestSupported(targetFolder.uri.toString(), method) === false) {
           void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
           return;
         }
@@ -1553,7 +1675,17 @@ export async function activate(context: vscode.ExtensionContext) {
         const resp = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Nova: Generating bug report…', cancellable: true },
           async (_progress, token) => {
-            return await sendNovaRequest<BugReportResponse>(method, params, { token });
+            if (token.isCancellationRequested) {
+              return undefined;
+            }
+            try {
+              return await sendRequestWithOptionalToken<BugReportResponse>(entry.client, method, params, token);
+            } catch (err) {
+              if (token.isCancellationRequested || isRequestCancelledError(err)) {
+                return undefined;
+              }
+              throw err;
+            }
           },
         );
         if (!resp) {
@@ -1621,14 +1753,41 @@ export async function activate(context: vscode.ExtensionContext) {
   memoryStatusItem.show();
   context.subscriptions.push(memoryStatusItem);
 
-  let lastMemoryPressure: MemoryPressureLevel | undefined;
-  let warnedHighMemoryPressure = false;
-  let warnedCriticalMemoryPressure = false;
-  let lastSafeModeEnabled = false;
-  let safeModeReason: string | undefined;
-  let safeModeWarningInFlight: Promise<void> | undefined;
+  type WorkspaceSafeModeState = {
+    enabled: boolean;
+    reason?: string;
+    warningInFlight?: Promise<void>;
+  };
 
-  const updateSafeModeStatus = (enabled: boolean) => {
+  type WorkspaceMemoryState = {
+    pressure?: MemoryPressureLevel;
+    label: string;
+    usedBytes?: number;
+    budgetBytes?: number;
+    pct?: number;
+    warnedHigh: boolean;
+    warnedCritical: boolean;
+  };
+
+  const safeModeByWorkspaceKey = new Map<WorkspaceKey, WorkspaceSafeModeState>();
+  const memoryByWorkspaceKey = new Map<WorkspaceKey, WorkspaceMemoryState>();
+
+  const workspaceNameForKey = (workspaceKey: WorkspaceKey): string => {
+    const folder = vscode.workspace.workspaceFolders?.find((entry) => entry.uri.toString() === workspaceKey);
+    return folder?.name ?? workspaceKey;
+  };
+
+  const workspaceFolderForKey = (workspaceKey: WorkspaceKey): vscode.WorkspaceFolder | undefined => {
+    return (
+      clientManager?.get(workspaceKey)?.workspaceFolder ??
+      vscode.workspace.workspaceFolders?.find((folder) => folder.uri.toString() === workspaceKey)
+    );
+  };
+
+  const updateAggregateSafeModeStatus = () => {
+    const enabledEntries = Array.from(safeModeByWorkspaceKey.entries()).filter(([, value]) => value.enabled);
+    const enabled = enabledEntries.length > 0;
+
     if (enabled) {
       safeModeStatusItem.show();
     } else {
@@ -1648,33 +1807,97 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     if (!enabled) {
-      safeModeReason = undefined;
+      safeModeStatusItem.tooltip = 'Nova is running in safe mode. Click to generate a bug report.';
+      return;
     }
 
-    const reasonSuffix = enabled && safeModeReason ? ` (${formatSafeModeReason(safeModeReason)})` : '';
-    safeModeStatusItem.tooltip = `Nova is running in safe mode${reasonSuffix}. Click to generate a bug report.`;
-
-    if (enabled && !lastSafeModeEnabled && !safeModeWarningInFlight) {
-      safeModeWarningInFlight = (async () => {
-        try {
-          const picked = await vscode.window.showWarningMessage(
-            `Nova: nova-lsp is running in safe mode${reasonSuffix}. Generate a bug report to help diagnose the issue.`,
-            'Generate Bug Report',
-          );
-          if (picked === 'Generate Bug Report') {
-            await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
-          }
-        } finally {
-          safeModeWarningInFlight = undefined;
-        }
-      })();
+    if (enabledEntries.length === 1) {
+      const [key, state] = enabledEntries[0];
+      const workspaceName = workspaceNameForKey(key);
+      const reasonSuffix = state.reason ? ` (${formatSafeModeReason(state.reason)})` : '';
+      safeModeStatusItem.tooltip = `Nova is running in safe mode in ${workspaceName}${reasonSuffix}. Click to generate a bug report.`;
+      return;
     }
 
-    lastSafeModeEnabled = enabled;
+    const lines: string[] = [];
+    lines.push(`Nova is running in safe mode in ${enabledEntries.length} workspace(s).`);
+    for (const [key, state] of enabledEntries) {
+      const workspaceName = workspaceNameForKey(key);
+      const reasonSuffix = state.reason ? ` (${formatSafeModeReason(state.reason)})` : '';
+      lines.push(`- ${workspaceName}${reasonSuffix}`);
+    }
+    lines.push('Click to generate a bug report.');
+    safeModeStatusItem.tooltip = lines.join('\n');
   };
-  setSafeModeEnabled = updateSafeModeStatus;
 
-  const updateMemoryStatus = async (payload: unknown) => {
+  const updateAggregateMemoryStatus = () => {
+    if (memoryByWorkspaceKey.size === 0) {
+      memoryStatusItem.text = '$(pulse) Nova Mem: —';
+      memoryStatusItem.tooltip = 'Nova memory status';
+      memoryStatusItem.backgroundColor = undefined;
+      memoryStatusItem.command = undefined;
+      return;
+    }
+
+    const order: Record<MemoryPressureLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+    const states = Array.from(memoryByWorkspaceKey.entries());
+    states.sort((a, b) => (order[b[1].pressure ?? 'low'] ?? -1) - (order[a[1].pressure ?? 'low'] ?? -1));
+    const [worstKey, worst] = states[0];
+
+    const pressure = worst.pressure;
+    const label = worst.label;
+
+    memoryStatusItem.backgroundColor =
+      pressure === 'high'
+        ? new vscode.ThemeColor('statusBarItem.warningBackground')
+        : pressure === 'critical'
+          ? new vscode.ThemeColor('statusBarItem.errorBackground')
+          : undefined;
+
+    const worstPct = worst.pct;
+    memoryStatusItem.text = `$(pulse) Nova Mem: ${label}${typeof worstPct === 'number' ? ` (${worstPct}%)` : ''}`;
+
+    const bugReportHint = pressure === 'high' || pressure === 'critical';
+    if (bugReportHint) {
+      const folder = workspaceFolderForKey(worstKey);
+      memoryStatusItem.command = folder
+        ? { command: BUG_REPORT_COMMAND, title: 'Generate Bug Report', arguments: [folder] }
+        : BUG_REPORT_COMMAND;
+    } else {
+      memoryStatusItem.command = undefined;
+    }
+
+    const tooltipLines: string[] = [];
+    tooltipLines.push(`Nova memory status (worst: ${label})`);
+    for (const [key, state] of states) {
+      const workspaceName = workspaceNameForKey(key);
+      const pctSuffix = typeof state.pct === 'number' ? ` (${state.pct}%)` : '';
+      const usage =
+        typeof state.usedBytes === 'number' && typeof state.budgetBytes === 'number'
+          ? ` ${formatBytes(state.usedBytes)} / ${formatBytes(state.budgetBytes)}`
+          : typeof state.usedBytes === 'number'
+            ? ` ${formatBytes(state.usedBytes)}`
+            : '';
+      tooltipLines.push(`- ${workspaceName}: ${state.label}${pctSuffix}${usage}`);
+    }
+    if (bugReportHint) {
+      tooltipLines.push('Click to generate a bug report.');
+    }
+    memoryStatusItem.tooltip = tooltipLines.join('\n');
+  };
+
+  const updateAggregateObservabilityUi = () => {
+    updateAggregateSafeModeStatus();
+    updateAggregateMemoryStatus();
+  };
+
+  function clearWorkspaceObservabilityState(workspaceKey: WorkspaceKey): void {
+    safeModeByWorkspaceKey.delete(workspaceKey);
+    memoryByWorkspaceKey.delete(workspaceKey);
+    updateAggregateObservabilityUi();
+  }
+
+  async function updateWorkspaceMemoryStatus(workspaceKey: WorkspaceKey, payload: unknown): Promise<void> {
     const report = (payload as MemoryStatusResponse | undefined)?.report;
     if (!report || typeof report !== 'object') {
       return;
@@ -1682,13 +1905,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const pressure = normalizeMemoryPressure(report.pressure);
     const label = pressure ? memoryPressureLabel(pressure) : 'Unknown';
-    memoryStatusItem.backgroundColor =
-      pressure === 'high'
-        ? new vscode.ThemeColor('statusBarItem.warningBackground')
-        : pressure === 'critical'
-          ? new vscode.ThemeColor('statusBarItem.errorBackground')
-          : undefined;
-    memoryStatusItem.command = pressure === 'high' || pressure === 'critical' ? BUG_REPORT_COMMAND : undefined;
 
     const usedBytes = totalMemoryBytes(report.usage);
     const budgetBytes = typeof report.budget?.total === 'number' ? report.budget.total : undefined;
@@ -1697,156 +1913,88 @@ export async function activate(context: vscode.ExtensionContext) {
         ? Math.round((usedBytes / budgetBytes) * 100)
         : undefined;
 
-    memoryStatusItem.text = `$(pulse) Nova Mem: ${label}${typeof pct === 'number' ? ` (${pct}%)` : ''}`;
-    memoryStatusItem.tooltip = formatMemoryTooltip(label, usedBytes, budgetBytes, pct, pressure === 'high' || pressure === 'critical');
+    const prev = memoryByWorkspaceKey.get(workspaceKey);
+    let warnedHigh = prev?.warnedHigh ?? false;
+    let warnedCritical = prev?.warnedCritical ?? false;
 
-    if (pressure) {
-      const prev = lastMemoryPressure;
-      lastMemoryPressure = pressure;
+    const prevPressure = prev?.pressure;
+    const shouldWarnCritical = pressure === 'critical' && !warnedCritical && prevPressure !== 'critical';
+    const shouldWarnHigh =
+      pressure === 'high' && !warnedHigh && prevPressure !== 'high' && prevPressure !== 'critical' && !shouldWarnCritical;
 
-      const shouldWarnCritical = pressure === 'critical' && !warnedCriticalMemoryPressure && prev !== 'critical';
-      const shouldWarnHigh =
-        pressure === 'high' &&
-        !warnedHighMemoryPressure &&
-        prev !== 'high' &&
-        prev !== 'critical' &&
-        !shouldWarnCritical;
+    if (shouldWarnCritical) {
+      warnedCritical = true;
+      warnedHigh = true;
+    } else if (shouldWarnHigh) {
+      warnedHigh = true;
+    }
 
-        if (shouldWarnCritical) {
-          warnedCriticalMemoryPressure = true;
-          warnedHighMemoryPressure = true;
-          const picked = await vscode.window.showWarningMessage(
-            'Nova: memory pressure is Critical. Consider generating a bug report.',
-            'Generate Bug Report',
-          );
-          if (picked === 'Generate Bug Report') {
-            await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
-          }
-        } else if (shouldWarnHigh) {
-          warnedHighMemoryPressure = true;
-          const picked = await vscode.window.showWarningMessage(
-            `Nova: memory pressure is ${memoryPressureLabel(pressure)}. Consider generating a bug report.`,
-            'Generate Bug Report',
-          );
-          if (picked === 'Generate Bug Report') {
-            await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
-          }
-        }
+    memoryByWorkspaceKey.set(workspaceKey, {
+      pressure,
+      label,
+      usedBytes,
+      budgetBytes,
+      pct,
+      warnedHigh,
+      warnedCritical,
+    });
+
+    updateAggregateObservabilityUi();
+
+    if (shouldWarnCritical || shouldWarnHigh) {
+      const workspaceName = workspaceNameForKey(workspaceKey);
+      const folder = workspaceFolderForKey(workspaceKey);
+
+      const message =
+        pressure === 'critical'
+          ? `Nova: memory pressure is Critical in ${workspaceName}. Consider generating a bug report.`
+          : `Nova: memory pressure is ${memoryPressureLabel(pressure ?? 'high')} in ${workspaceName}. Consider generating a bug report.`;
+
+      const picked = await vscode.window.showWarningMessage(message, 'Generate Bug Report');
+      if (picked === 'Generate Bug Report') {
+        await vscode.commands.executeCommand(BUG_REPORT_COMMAND, folder);
       }
-  };
-
-  let observabilityDisposables: vscode.Disposable[] = [];
-
-  const resetObservabilityState = () => {
-    lastMemoryPressure = undefined;
-    warnedHighMemoryPressure = false;
-    warnedCriticalMemoryPressure = false;
-    safeModeWarningInFlight = undefined;
-    lastSafeModeEnabled = false;
-    safeModeReason = undefined;
-    updateSafeModeStatus(false);
-    memoryStatusItem.text = '$(pulse) Nova Mem: —';
-    memoryStatusItem.tooltip = 'Nova memory status';
-    memoryStatusItem.backgroundColor = undefined;
-    memoryStatusItem.command = undefined;
-  };
-
-  const detachObservability = () => {
-    for (const disposable of observabilityDisposables) {
-      disposable.dispose();
     }
-    observabilityDisposables = [];
-    resetObservabilityState();
-  };
+  }
 
-  const attachObservability = (languageClient: LanguageClient, startPromise: Promise<void> | undefined) => {
-    detachObservability();
+  function setWorkspaceSafeModeEnabledInternal(workspaceKey: WorkspaceKey, enabled: boolean, reason?: string): void {
+    const prev = safeModeByWorkspaceKey.get(workspaceKey);
+    const prevEnabled = prev?.enabled ?? false;
 
-    // Keep capability-gated state in sync even if the underlying language client restarts
-    // automatically (default vscode-languageclient behaviour).
-    observabilityDisposables.push(
-      languageClient.onDidChangeState((event) => {
-        // If the language server restarted, don't update global state from a stale client instance.
-        if (client !== languageClient) {
-          return;
-        }
-        // Keep view welcome content in sync if the language server restarts automatically.
-        void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', event.newState !== State.Stopped);
-        if (event.newState === State.Starting || event.newState === State.Stopped) {
-          void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', event.newState === State.Starting);
-          resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
-          for (const workspace of vscode.workspace.workspaceFolders ?? []) {
-            resetNovaExperimentalCapabilities(workspace.uri.toString());
+    const nextState: WorkspaceSafeModeState = {
+      enabled,
+      reason: enabled ? reason : undefined,
+      warningInFlight: prev?.warningInFlight,
+    };
+    safeModeByWorkspaceKey.set(workspaceKey, nextState);
+
+    updateAggregateObservabilityUi();
+
+    if (enabled && !prevEnabled && !nextState.warningInFlight) {
+      const reasonSuffix = reason ? ` (${formatSafeModeReason(reason)})` : '';
+      const workspaceName = workspaceNameForKey(workspaceKey);
+      const folder = workspaceFolderForKey(workspaceKey);
+
+      nextState.warningInFlight = (async () => {
+        try {
+          const picked = await vscode.window.showWarningMessage(
+            `Nova: nova-lsp is running in safe mode in ${workspaceName}${reasonSuffix}. Generate a bug report to help diagnose the issue.`,
+            'Generate Bug Report',
+          );
+          if (picked === 'Generate Bug Report') {
+            await vscode.commands.executeCommand(BUG_REPORT_COMMAND, folder);
           }
-          updateFrameworksMethodSupportContexts();
-          frameworksView.refresh();
-          projectExplorerView.refresh();
-          return;
-        }
-        if (event.newState === State.Running) {
-          void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', true);
-          setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
-          for (const workspace of vscode.workspace.workspaceFolders ?? []) {
-            setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
+        } finally {
+          const latest = safeModeByWorkspaceKey.get(workspaceKey);
+          if (latest) {
+            latest.warningInFlight = undefined;
           }
-          updateFrameworksMethodSupportContexts();
-          frameworksView.refresh();
-          projectExplorerView.refresh();
         }
-      }),
-    );
-
-    observabilityDisposables.push(
-      languageClient.onNotification('nova/safeModeChanged', (payload: unknown) => {
-        const enabled = parseSafeModeEnabled(payload);
-        if (typeof enabled === 'boolean') {
-          safeModeReason = enabled ? parseSafeModeReason(payload) : undefined;
-          updateSafeModeStatus(enabled);
-        }
-      }),
-    );
-
-    observabilityDisposables.push(
-      languageClient.onNotification('nova/memoryStatusChanged', (payload: unknown) => {
-        void updateMemoryStatus(payload);
-      }),
-    );
-
-    if (!startPromise) {
-      return;
+      })();
     }
+  }
 
-    void startPromise
-      .then(async () => {
-        try {
-          const payload = await languageClient.sendRequest('nova/safeModeStatus');
-          const enabled = parseSafeModeEnabled(payload);
-          if (typeof enabled === 'boolean') {
-            safeModeReason = enabled ? parseSafeModeReason(payload) : undefined;
-            updateSafeModeStatus(enabled);
-          }
-        } catch (err) {
-          if (isRequestCancelledError(err) || isMethodNotFoundError(err)) {
-            // Best-effort: safe mode endpoints might not exist yet.
-          } else if (isSafeModeError(err)) {
-            updateSafeModeStatus(true);
-          } else {
-            const message = formatError(err);
-            void vscode.window.showErrorMessage(`Nova: failed to query safe-mode status: ${message}`);
-          }
-        }
-
-        try {
-          const payload = await languageClient.sendRequest('nova/memoryStatus');
-          await updateMemoryStatus(payload);
-        } catch (err) {
-          if (isSafeModeError(err)) {
-            updateSafeModeStatus(true);
-          }
-        }
-      })
-      .catch(() => {});
-  };
+  setWorkspaceSafeModeEnabled = setWorkspaceSafeModeEnabledInternal;
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.organizeImports', async () => {
@@ -2117,7 +2265,21 @@ export async function activate(context: vscode.ExtensionContext) {
     args: NovaAiShowCommandArgs,
     progressTitle: string,
   ): Promise<string> => {
-    const c = await requireClient();
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    const activeUri = vscode.window.activeTextEditor?.document.uri;
+    const targetFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : workspaces.length === 1 ? workspaces[0] : undefined;
+    if (!targetFolder) {
+      throw new Error('Nova AI: Open a workspace folder to run this command.');
+    }
+
+    const entry = await ensureWorkspaceLanguageClientStarted(targetFolder, { promptForInstall: true });
+    try {
+      await entry.startPromise;
+    } catch {
+      throw new Error('Nova AI: nova-lsp is not running.');
+    }
+
+    const c = entry.client;
     const lspArgs = Array.isArray(args.lspArguments) ? args.lspArguments : [];
 
     aiWorkDoneTokenCounter += 1;
@@ -2418,7 +2580,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, async (payload: unknown) => {
+    vscode.commands.registerCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, async (payload: unknown, context?: { uri?: string }) => {
       if (!isSafeDeletePreviewPayload(payload)) {
         void vscode.window.showErrorMessage('Nova: Safe delete preview payload was missing.');
         return;
@@ -2454,9 +2616,18 @@ export async function activate(context: vscode.ExtensionContext) {
               return;
             }
 
-            let c: LanguageClient;
+            const uriString = typeof context?.uri === 'string' ? context.uri : undefined;
+            const uri = uriString ? vscode.Uri.parse(uriString) : vscode.window.activeTextEditor?.document.uri;
+            const workspaces = vscode.workspace.workspaceFolders ?? [];
+            const targetFolder = uri ? vscode.workspace.getWorkspaceFolder(uri) : workspaces.length === 1 ? workspaces[0] : undefined;
+            if (!targetFolder) {
+              void vscode.window.showErrorMessage('Nova: Open a workspace folder to run safe delete.');
+              return;
+            }
+
+            let entry: WorkspaceClientEntry;
             try {
-              c = await requireClient({ token });
+              entry = await ensureWorkspaceLanguageClientStarted(targetFolder, { promptForInstall: true });
             } catch (err) {
               if (token.isCancellationRequested || isRequestCancelledError(err)) {
                 return;
@@ -2464,13 +2635,14 @@ export async function activate(context: vscode.ExtensionContext) {
               throw err;
             }
 
-            if (token.isCancellationRequested) {
+            const started = await waitForStartPromise(entry.startPromise, token);
+            if (!started || token.isCancellationRequested) {
               return;
             }
 
             try {
-              // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
-              await c.sendRequest(
+              await sendRequestWithOptionalToken(
+                entry.client,
                 'workspace/executeCommand',
                 {
                   command: 'nova.safeDelete',
@@ -2481,7 +2653,7 @@ export async function activate(context: vscode.ExtensionContext) {
             } catch (err) {
               if (token.isCancellationRequested || isRequestCancelledError(err)) {
                 if (isSafeModeError(err)) {
-                  setSafeModeEnabled?.(true);
+                  setWorkspaceSafeModeEnabled?.(entry.workspaceKey, true);
                 }
                 return;
               }
@@ -2494,12 +2666,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
             // `nova.safeDelete` is guarded by the server's safe-mode check; a successful response
             // implies safe-mode is not active.
-            setSafeModeEnabled?.(false);
+            setWorkspaceSafeModeEnabled?.(entry.workspaceKey, false);
           },
         );
       } catch (err) {
         if (isSafeModeError(err)) {
-          setSafeModeEnabled?.(true);
+          const uriString = typeof context?.uri === 'string' ? context.uri : undefined;
+          const uri = uriString ? vscode.Uri.parse(uriString) : vscode.window.activeTextEditor?.document.uri;
+          const folder = uri ? vscode.workspace.getWorkspaceFolder(uri) : undefined;
+          if (folder) {
+            setWorkspaceSafeModeEnabled?.(folder.uri.toString(), true);
+          }
         }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova: safe delete failed: ${message}`);
@@ -2588,8 +2765,10 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  ensureClientStarted = ensureLanguageClientStarted;
-  stopClient = stopLanguageClient;
+  ensureWorkspaceClient = ensureWorkspaceLanguageClientStarted;
+  stopAllWorkspaceClients = async () => {
+    await clientManager?.stopAll();
+  };
 
   registerNovaBuildFileWatchers(context, requestWithFallback, {
     output: serverOutput,
@@ -2606,7 +2785,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let restartPromptInFlight: Promise<void> | undefined;
   const promptRestartLanguageServer = () => {
-    if (restartPromptInFlight || !client) {
+    if (restartPromptInFlight || runningWorkspaceFolders().length === 0) {
       return;
     }
 
@@ -2617,8 +2796,7 @@ export async function activate(context: vscode.ExtensionContext) {
           'Restart',
         );
         if (choice === 'Restart') {
-          await stopLanguageClient();
-          await ensureLanguageClientStarted({ promptForInstall: false });
+          await restartRunningWorkspaceClients();
         }
       } finally {
         restartPromptInFlight = undefined;
@@ -2634,37 +2812,42 @@ export async function activate(context: vscode.ExtensionContext) {
       clearTimeout(existing);
     }
 
-    didChangeConfigurationTimer = setTimeout(() => {
-      didChangeConfigurationTimer = undefined;
+      didChangeConfigurationTimer = setTimeout(() => {
+        didChangeConfigurationTimer = undefined;
 
-      const languageClient = client;
-      const startPromise = clientStart;
-      if (!languageClient || !startPromise) {
-        return;
-      }
+        const manager = clientManager;
+        if (!manager) {
+          return;
+        }
 
-      // Wait for the client to finish starting up (or restart) before sending the notification.
-      void startPromise
-        .catch(() => undefined)
-        .then(() => {
-          // If the language server restarted, don't attempt to use stale state or send against a
-          // disposed client instance.
-          if (client !== languageClient) {
-            return;
-          }
-          if (languageClient.state !== State.Running) {
-            return;
-          }
-          try {
-            void languageClient
-              .sendNotification('workspace/didChangeConfiguration', { settings: null })
-              .catch(() => undefined);
-          } catch {
-            // Best-effort: ignore failures if the client/server is shutting down.
-          }
-        });
-    }, configurationChangeDebounceMs);
-  };
+        for (const entry of manager.entries()) {
+          const languageClient = entry.client;
+          const startPromise = entry.startPromise;
+          const workspaceKey = entry.workspaceKey;
+
+          // Wait for the client to finish starting up (or restart) before sending the notification.
+          void startPromise
+            .catch(() => undefined)
+            .then(() => {
+              // If the language server restarted, don't attempt to use stale state or send against a
+              // disposed client instance.
+              if (manager.get(workspaceKey)?.client !== languageClient) {
+                return;
+              }
+              if (languageClient.state !== State.Running) {
+                return;
+              }
+              try {
+                void languageClient
+                  .sendNotification('workspace/didChangeConfiguration', { settings: null })
+                  .catch(() => undefined);
+              } catch {
+                // Best-effort: ignore failures if the client/server is shutting down.
+              }
+            });
+        }
+      }, configurationChangeDebounceMs);
+    };
 
   context.subscriptions.push(
     new vscode.Disposable(() => {
@@ -2681,13 +2864,21 @@ export async function activate(context: vscode.ExtensionContext) {
       const effects = getNovaConfigChangeEffects(event);
 
       if (effects.serverPathChanged) {
-        void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
+        void (async () => {
+          for (const workspace of runningWorkspaceFolders()) {
+            await ensureWorkspaceLanguageClientStarted(workspace, { promptForInstall: false });
+          }
+        })().catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           serverOutput.appendLine(`Failed to restart nova-lsp: ${message}`);
         });
       }
       if (!effects.serverPathChanged && effects.serverDownloadChanged) {
-        void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
+        void (async () => {
+          for (const workspace of runningWorkspaceFolders()) {
+            await ensureWorkspaceLanguageClientStarted(workspace, { promptForInstall: false });
+          }
+        })().catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           serverOutput.appendLine(`Failed to re-resolve nova-lsp after download settings change: ${message}`);
         });
@@ -2714,64 +2905,200 @@ export async function activate(context: vscode.ExtensionContext) {
       if (doc.languageId !== 'java') {
         return;
       }
-      void ensureLanguageClientStarted({ promptForInstall: true }).catch((err) => {
+      const workspaces = vscode.workspace.workspaceFolders ?? [];
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri) ?? (workspaces.length === 1 ? workspaces[0] : undefined);
+      if (!workspaceFolder) {
+        return;
+      }
+      void ensureWorkspaceLanguageClientStarted(workspaceFolder, { promptForInstall: true }).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
-        serverOutput.appendLine(`Failed to initialize nova-lsp: ${message}`);
+        serverOutput.appendLine(`Failed to initialize nova-lsp (${workspaceFolder.name}): ${message}`);
       });
     }),
   );
 
-  const promptForInstall = vscode.workspace.textDocuments.some((doc) => doc.languageId === 'java');
-  void ensureLanguageClientStarted({ promptForInstall }).catch((err) => {
+  const openJavaDocuments = vscode.workspace.textDocuments.filter((doc) => doc.languageId === 'java');
+  const promptForInstall = openJavaDocuments.length > 0;
+  void (async () => {
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    const targets = new Map<string, vscode.WorkspaceFolder>();
+    for (const doc of openJavaDocuments) {
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri) ?? (workspaces.length === 1 ? workspaces[0] : undefined);
+      if (!workspaceFolder) {
+        continue;
+      }
+      targets.set(workspaceFolder.uri.toString(), workspaceFolder);
+    }
+
+    for (const workspaceFolder of targets.values()) {
+      await ensureWorkspaceLanguageClientStarted(workspaceFolder, { promptForInstall });
+    }
+  })().catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     serverOutput.appendLine(`Failed to initialize nova-lsp: ${message}`);
   });
 }
 
 export function deactivate(): Thenable<void> | undefined {
-  const stop = stopClient;
-  ensureClientStarted = undefined;
-  stopClient = undefined;
-  setSafeModeEnabled = undefined;
+  const stop = stopAllWorkspaceClients;
+  ensureWorkspaceClient = undefined;
+  stopAllWorkspaceClients = undefined;
+  setWorkspaceSafeModeEnabled = undefined;
+  clientManager = undefined;
 
   if (stop) {
     return stop();
   }
 
-  if (!client) {
+  return undefined;
+}
+
+function hasExplicitWorkspaceRoutingHint(params: unknown): boolean {
+  if (!params || typeof params !== 'object') {
+    return false;
+  }
+
+  const record = params as Record<string, unknown>;
+
+  const directUri = record.uri;
+  if (typeof directUri === 'string' && directUri.trim().length > 0) {
+    return true;
+  }
+
+  const textDocument = record.textDocument;
+  if (textDocument && typeof textDocument === 'object') {
+    const tdUri = (textDocument as Record<string, unknown>).uri;
+    if (typeof tdUri === 'string' && tdUri.trim().length > 0) {
+      return true;
+    }
+  }
+
+  const projectRoot = record.projectRoot;
+  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
+    return true;
+  }
+
+  return false;
+}
+
+async function promptWorkspaceFolder(
+  workspaces: readonly vscode.WorkspaceFolder[],
+  placeHolder: string,
+): Promise<vscode.WorkspaceFolder | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    workspaces.map((workspace) => ({
+      label: workspace.name,
+      description: workspace.uri.fsPath,
+      workspace,
+    })),
+    { placeHolder },
+  );
+  return picked?.workspace;
+}
+
+async function pickWorkspaceFolderForRequest(
+  method: string,
+  params: unknown,
+  opts?: { token?: vscode.CancellationToken },
+): Promise<vscode.WorkspaceFolder | undefined> {
+  const token = opts?.token;
+  if (token?.isCancellationRequested) {
     return undefined;
   }
 
-  return client.stop().catch(() => undefined);
-}
+  const workspaces = vscode.workspace.workspaceFolders ?? [];
+  if (workspaces.length === 0) {
+    return undefined;
+  }
 
-async function requireClient(_opts?: { token?: vscode.CancellationToken }): Promise<LanguageClient> {
-  if (!client && ensureClientStarted) {
-    await ensureClientStarted({ promptForInstall: true });
+  const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+  const routedWorkspaceKey = routeWorkspaceFolderUri({
+    workspaceFolders: workspaces.map((workspace) => ({
+      name: workspace.name,
+      fsPath: workspace.uri.fsPath,
+      uri: workspace.uri.toString(),
+    })),
+    activeDocumentUri,
+    method,
+    params,
+  });
+
+  const routedWorkspace =
+    (routedWorkspaceKey ? workspaces.find((workspace) => workspace.uri.toString() === routedWorkspaceKey) : undefined) ??
+    (workspaces.length === 1 ? workspaces[0] : undefined);
+  if (routedWorkspace) {
+    return routedWorkspace;
   }
-  if (!client) {
-    throw new Error('language client is not running');
-  }
-  const startPromise = clientStart;
-  if (startPromise) {
-    const token = _opts?.token;
-    if (!token) {
-      await startPromise;
-    } else if (!token.isCancellationRequested) {
-      let subscription: vscode.Disposable | undefined;
-      try {
-        await Promise.race([
-          startPromise,
-          new Promise<void>((resolve) => {
-            subscription = token.onCancellationRequested(() => resolve());
-          }),
-        ]);
-      } finally {
-        subscription?.dispose();
-      }
+
+  // If params contain an explicit routing hint (uri/textDocument/projectRoot), avoid silently routing
+  // the request elsewhere. Prompt instead.
+  if (!hasExplicitWorkspaceRoutingHint(params)) {
+    const activeUri = vscode.window.activeTextEditor?.document.uri;
+    const activeWorkspace = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+    if (activeWorkspace) {
+      return activeWorkspace;
     }
   }
-  return client;
+
+  if (workspaces.length === 1) {
+    return workspaces[0];
+  }
+
+  if (workspaces.length === 0) {
+    return undefined;
+  }
+
+  return await promptWorkspaceFolder(workspaces, `Select workspace folder for ${method}`);
+}
+
+async function waitForStartPromise(startPromise: Promise<void>, token?: vscode.CancellationToken): Promise<boolean> {
+  if (!token) {
+    await startPromise;
+    return true;
+  }
+
+  if (token.isCancellationRequested) {
+    return false;
+  }
+
+  let subscription: vscode.Disposable | undefined;
+  try {
+    const outcome = await Promise.race([
+      startPromise.then(() => 'started' as const),
+      new Promise<'cancelled'>((resolve) => {
+        subscription = token.onCancellationRequested(() => resolve('cancelled'));
+      }),
+    ]);
+    return outcome === 'started';
+  } finally {
+    subscription?.dispose();
+  }
+}
+
+async function requireClient(opts?: { token?: vscode.CancellationToken }): Promise<LanguageClient> {
+  const ensure = ensureWorkspaceClient;
+  if (!ensure) {
+    throw new Error('Nova: language client manager is not available.');
+  }
+
+  const workspaces = vscode.workspace.workspaceFolders ?? [];
+  if (workspaces.length === 0) {
+    throw new Error('Nova: Open a workspace folder to use Nova.');
+  }
+
+  const workspaceFolder =
+    (vscode.window.activeTextEditor
+      ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)
+      : undefined) ??
+    (workspaces.length === 1 ? workspaces[0] : await promptWorkspaceFolder(workspaces, 'Select workspace folder'));
+
+  if (!workspaceFolder) {
+    throw new Error('Request cancelled');
+  }
+
+  const entry = await ensure(workspaceFolder, { promptForInstall: true });
+  await waitForStartPromise(entry.startPromise, opts?.token);
+  return entry.client;
 }
 
 type SendNovaRequestOptions = {
@@ -2799,76 +3126,59 @@ async function sendNovaRequest<R>(
   if (token?.isCancellationRequested) {
     return undefined;
   }
-  let c: LanguageClient;
+
+  const workspaceFolder = await pickWorkspaceFolderForRequest(method, params, { token });
+  if (!workspaceFolder) {
+    if ((vscode.workspace.workspaceFolders ?? []).length === 0) {
+      void vscode.window.showErrorMessage('Nova: Open a workspace folder to use Nova.');
+    }
+    return undefined;
+  }
+
+  const ensure = ensureWorkspaceClient;
+  if (!ensure) {
+    throw new Error('Nova: language client manager is not available.');
+  }
+
+  let entry: WorkspaceClientEntry;
   try {
-    c = await requireClient({ token });
+    entry = await ensure(workspaceFolder, { promptForInstall: true });
   } catch (err) {
     if (token?.isCancellationRequested || isRequestCancelledError(err)) {
       return undefined;
     }
     throw err;
   }
-  if (token?.isCancellationRequested) {
+
+  const started = await waitForStartPromise(entry.startPromise, token);
+  if (!started || token?.isCancellationRequested) {
     return undefined;
   }
-  if (method.startsWith('nova/')) {
-    const workspaces = vscode.workspace.workspaceFolders ?? [];
-    const routedWorkspaceKey = routeWorkspaceFolderUri({
-      workspaceFolders: workspaces.map((workspace) => ({
-        name: workspace.name,
-        fsPath: workspace.uri.fsPath,
-        uri: workspace.uri.toString(),
-      })),
-      activeDocumentUri: vscode.window.activeTextEditor?.document.uri.toString(),
-      method,
-      params,
-    });
 
-    // If we can't unambiguously map the request to a single workspace folder (multi-root), be
-    // conservative: only treat the method as unsupported when *all* known capability sets report it
-    // missing. This avoids incorrectly blocking requests when different workspace servers may
-    // advertise different capability sets.
-    const workspaceKeys = workspaces.map((workspace) => workspace.uri.toString());
-    const keysToCheck = routedWorkspaceKey
-      ? [routedWorkspaceKey]
-      : workspaceKeys.length > 0
-        ? workspaceKeys
-        : [DEFAULT_NOVA_CAPABILITIES_KEY];
+  const workspaceKey = workspaceFolder.uri.toString();
 
-    let supported: boolean | 'unknown' = false;
-    let sawUnknown = false;
-    for (const key of keysToCheck) {
-      const keySupported = isNovaRequestSupported(key, method);
-      if (keySupported === true) {
-        supported = true;
-        break;
-      }
-      if (keySupported === 'unknown') {
-        sawUnknown = true;
-      }
-    }
-    if (supported !== true) {
-      supported = sawUnknown ? 'unknown' : false;
-    }
-    if (supported === false) {
-      if (opts.allowMethodFallback) {
-        throw createMethodNotFoundError(method);
-      } else {
-        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
-        return undefined;
-      }
-    }
+  if (token?.isCancellationRequested) {
+    return undefined;
   }
   try {
     if (token?.isCancellationRequested) {
       return undefined;
     }
-    const result = await sendRequestWithOptionalToken<R>(c, method, params, token);
+    const supported = isNovaRequestSupported(workspaceKey, method);
+    if (method.startsWith('nova/') && supported === false) {
+      if (opts.allowMethodFallback) {
+        throw createMethodNotFoundError(method);
+      }
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+      return undefined;
+    }
+
+    const result = await sendRequestWithOptionalToken<R>(entry.client, method, params, token);
     if (token?.isCancellationRequested) {
       return undefined;
     }
     if (method.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(method) && !token?.isCancellationRequested) {
-      setSafeModeEnabled?.(false);
+      setWorkspaceSafeModeEnabled?.(workspaceKey, false);
     }
     return result;
   } catch (err) {
@@ -2876,7 +3186,7 @@ async function sendNovaRequest<R>(
       // Treat cancellation as a non-error for callers and avoid clearing safe-mode UI.
       // Still record safe-mode state if the server reported it.
       if (isSafeModeError(err)) {
-        setSafeModeEnabled?.(true);
+        setWorkspaceSafeModeEnabled?.(workspaceKey, true);
       }
       return undefined;
     }
@@ -2889,7 +3199,7 @@ async function sendNovaRequest<R>(
       }
     }
     if (isSafeModeError(err)) {
-      setSafeModeEnabled?.(true);
+      setWorkspaceSafeModeEnabled?.(workspaceKey, true);
     }
     throw err;
   }
@@ -3404,37 +3714,6 @@ function formatBytes(bytes: number): string {
     return `${(bytes / kb).toFixed(0)}KiB`;
   }
   return `${bytes}B`;
-}
-
-function formatMemoryTooltip(
-  label: string,
-  usedBytes: number | undefined,
-  budgetBytes: number | undefined,
-  pct: number | undefined,
-  includeBugReportHint: boolean,
-): vscode.MarkdownString {
-  const tooltip = new vscode.MarkdownString(undefined, true);
-  tooltip.appendMarkdown(`**Nova memory pressure:** ${label}\n\n`);
-
-  if (typeof usedBytes === 'number') {
-    if (typeof budgetBytes === 'number') {
-      tooltip.appendMarkdown(`Usage: ${formatBytes(usedBytes)} / ${formatBytes(budgetBytes)}`);
-    } else {
-      tooltip.appendMarkdown(`Usage: ${formatBytes(usedBytes)}`);
-    }
-
-    if (typeof pct === 'number') {
-      tooltip.appendMarkdown(` (${pct}%)`);
-    }
-  } else {
-    tooltip.appendMarkdown('Usage: unavailable');
-  }
-
-  if (includeBugReportHint) {
-    tooltip.appendMarkdown('\n\nClick to generate a bug report.');
-  }
-
-  return tooltip;
 }
 
 function isAiNotConfiguredError(err: unknown): boolean {
