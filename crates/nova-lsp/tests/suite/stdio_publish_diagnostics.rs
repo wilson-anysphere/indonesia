@@ -93,6 +93,15 @@ fn stdio_publish_diagnostics_for_open_documents() {
         "expected diagnostics to be non-empty for the broken file; got: {publish:#}"
     );
 
+    let messages = diagnostics
+        .iter()
+        .filter_map(|d| d.get("message").and_then(|m| m.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        messages.iter().any(|m| m.contains("Cannot resolve symbol") && m.contains("bar")),
+        "expected a 'Cannot resolve symbol' diagnostic mentioning `bar`, got: {messages:?}"
+    );
+
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -163,3 +172,4 @@ fn stdio_publish_diagnostics_for_open_documents() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+

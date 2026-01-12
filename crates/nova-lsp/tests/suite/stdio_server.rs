@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use tempfile::TempDir;
 
-use crate::support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[derive(Debug, Clone, Deserialize)]
 struct LspPosition {
@@ -896,7 +896,7 @@ fn stdio_server_handles_completion_and_more_completions_request() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -984,7 +984,7 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

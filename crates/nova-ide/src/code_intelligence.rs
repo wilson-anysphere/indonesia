@@ -1886,7 +1886,7 @@ pub(crate) fn core_file_diagnostics_cancelable(
     db: &dyn Database,
     file: FileId,
     cancel: &nova_scheduler::CancellationToken,
-) -> Vec<nova_types::Diagnostic> {
+) -> Vec<Diagnostic> {
     // Match `core_file_diagnostics`, but add additional cancellation checkpoints so stale requests
     // can avoid starting expensive work (parsing, Salsa-backed typeck/flow diagnostics).
     if cancel.is_cancelled() {
@@ -1998,7 +1998,6 @@ pub(crate) fn core_file_diagnostics_cancelable(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-
     sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
 }
@@ -2106,7 +2105,6 @@ pub(crate) fn diagnostics_for_quick_fixes(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-
     sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
 }
