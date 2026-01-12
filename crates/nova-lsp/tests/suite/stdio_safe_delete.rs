@@ -137,6 +137,12 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
             .and_then(|v| v.as_str()),
         Some("nova.safeDelete")
     );
+    assert_eq!(
+        safe_delete_action
+            .pointer("/data/report/target/name")
+            .and_then(|v| v.as_str()),
+        Some("used")
+    );
     let target_id = safe_delete_action
         .pointer("/data/report/target/id")
         .and_then(|v| v.as_u64())
