@@ -440,8 +440,17 @@ pub enum SyntaxKind {
     StatementFragment,
     ExpressionFragment,
     ClassMemberFragment,
-    // --- Java 21+ preview nodes ---
+    // --- Java String Templates (preview) ---
+    //
+    // NOTE: `StringTemplateExpression` is kept first to preserve stable `SyntaxKind` discriminants
+    // for caches written after it was introduced.
     StringTemplateExpression,
+    StringTemplateStart,
+    StringTemplateText,
+    StringTemplateExprStart,
+    StringTemplateEnd,
+    StringTemplate,
+    StringTemplateInterpolation,
     __Last,
 }
 

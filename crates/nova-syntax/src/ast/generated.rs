@@ -2539,6 +2539,93 @@ impl FieldAccessExpression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringTemplateExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for StringTemplateExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::StringTemplateExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl StringTemplateExpression {
+    pub fn processor(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn template(&self) -> Option<StringTemplate> {
+        support::child::<StringTemplate>(&self.syntax)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringTemplate {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for StringTemplate {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::StringTemplate
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl StringTemplate {
+    pub fn start_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::StringTemplateStart)
+    }
+
+    pub fn parts(&self) -> impl Iterator<Item = StringTemplateInterpolation> + '_ {
+        support::children::<StringTemplateInterpolation>(&self.syntax)
+    }
+
+    pub fn end_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::StringTemplateEnd)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringTemplateInterpolation {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for StringTemplateInterpolation {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::StringTemplateInterpolation
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl StringTemplateInterpolation {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassLiteralExpression {
     syntax: SyntaxNode,
 }
@@ -3924,6 +4011,7 @@ pub enum Expression {
     ArrayCreationExpression(ArrayCreationExpression),
     MethodCallExpression(MethodCallExpression),
     FieldAccessExpression(FieldAccessExpression),
+    StringTemplateExpression(StringTemplateExpression),
     ArrayAccessExpression(ArrayAccessExpression),
     ClassLiteralExpression(ClassLiteralExpression),
     MethodReferenceExpression(MethodReferenceExpression),
@@ -3950,6 +4038,7 @@ impl AstNode for Expression {
             || ArrayCreationExpression::can_cast(kind)
             || MethodCallExpression::can_cast(kind)
             || FieldAccessExpression::can_cast(kind)
+            || StringTemplateExpression::can_cast(kind)
             || ArrayAccessExpression::can_cast(kind)
             || ClassLiteralExpression::can_cast(kind)
             || MethodReferenceExpression::can_cast(kind)
@@ -3997,6 +4086,9 @@ impl AstNode for Expression {
         }
         if let Some(it) = FieldAccessExpression::cast(syntax.clone()) {
             return Some(Self::FieldAccessExpression(it));
+        }
+        if let Some(it) = StringTemplateExpression::cast(syntax.clone()) {
+            return Some(Self::StringTemplateExpression(it));
         }
         if let Some(it) = ArrayAccessExpression::cast(syntax.clone()) {
             return Some(Self::ArrayAccessExpression(it));
@@ -4052,6 +4144,7 @@ impl AstNode for Expression {
             Self::ArrayCreationExpression(it) => it.syntax(),
             Self::MethodCallExpression(it) => it.syntax(),
             Self::FieldAccessExpression(it) => it.syntax(),
+            Self::StringTemplateExpression(it) => it.syntax(),
             Self::ArrayAccessExpression(it) => it.syntax(),
             Self::ClassLiteralExpression(it) => it.syntax(),
             Self::MethodReferenceExpression(it) => it.syntax(),

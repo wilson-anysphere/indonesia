@@ -1,0 +1,73 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                Identifier "String"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "s"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                StringTemplateExpression
+                  NameExpression
+                    Identifier "STR"
+                  Dot "."
+                  StringTemplate
+                    StringTemplateStart "\""
+                    StringTemplateText "Lambda: "
+                    StringTemplateInterpolation
+                      StringTemplateExprStart "\\{"
+                      LambdaExpression
+                        LambdaParameters
+                          LambdaParameterList
+                            LParen "("
+                            RParen ")"
+                        Whitespace " "
+                        Arrow "->"
+                        LambdaBody
+                          Whitespace " "
+                          Block
+                            LBrace "{"
+                            Whitespace " "
+                            ReturnStatement
+                              ReturnKw "return"
+                              Whitespace " "
+                              LiteralExpression
+                                IntLiteral "1"
+                              Semicolon ";"
+                            Whitespace " "
+                            RBrace "}"
+                      RBrace "}"
+                    StringTemplateText " done"
+                    StringTemplateEnd "\""
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

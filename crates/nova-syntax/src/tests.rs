@@ -3076,7 +3076,7 @@ fn syntax_kind_schema_fingerprint() -> u64 {
 
 // NOTE: If this fails, update the constant and *consider* bumping
 // `SYNTAX_SCHEMA_VERSION` in `syntax_kind.rs`.
-const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x6771_a04e_a664_5b86;
+const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0xd216_728a_d381_aec2;
 
 #[test]
 fn syntax_kind_schema_fingerprint_guardrail() {

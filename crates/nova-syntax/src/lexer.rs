@@ -76,11 +76,39 @@ pub fn lex_with_errors(input: &str) -> (Vec<Token>, Vec<LexError>) {
     Lexer::new(input).lex_with_errors()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateDelimiter {
+    /// A normal string template: `"..."`.
+    Quote,
+    /// A text block template: `"""..."""`.
+    TextBlock,
+}
+
+impl TemplateDelimiter {
+    fn is_text_block(self) -> bool {
+        matches!(self, TemplateDelimiter::TextBlock)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LexMode {
+    Template(TemplateDelimiter),
+    /// Lexing an embedded Java expression inside a string template interpolation.
+    ///
+    /// The interpolation is opened by a `\{` sequence lexed as
+    /// [`SyntaxKind::StringTemplateExprStart`]. We then lex Java tokens normally until the
+    /// matching `}` is reached, tracking `{`/`}` nesting to avoid terminating early on blocks
+    /// inside the interpolation expression.
+    TemplateInterpolation { brace_depth: u32 },
+}
+
 pub struct Lexer<'a> {
     input: Cow<'a, str>,
     text_map: TextMap,
     pos: usize,
     errors: Vec<LexError>,
+    mode_stack: Vec<LexMode>,
+    last_non_trivia_kind: SyntaxKind,
 }
 
 impl<'a> Lexer<'a> {
@@ -91,6 +119,8 @@ impl<'a> Lexer<'a> {
             text_map,
             pos: 0,
             errors: Vec::new(),
+            mode_stack: Vec::new(),
+            last_non_trivia_kind: SyntaxKind::Eof,
         }
     }
 
@@ -108,6 +138,9 @@ impl<'a> Lexer<'a> {
                 kind,
                 range: self.range(start, end),
             });
+            if !kind.is_trivia() {
+                self.last_non_trivia_kind = kind;
+            }
         }
         tokens.push(Token {
             kind: SyntaxKind::Eof,
@@ -131,11 +164,69 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_kind(&mut self) -> SyntaxKind {
+        match self.mode_stack.last().copied() {
+            Some(LexMode::Template(delim)) => {
+                return self.scan_string_template_token(delim);
+            }
+            Some(LexMode::TemplateInterpolation { .. }) => {
+                // Lex a normal Java token, but track `{`/`}` so we know when the interpolation
+                // closes and we should return to template lexing.
+                let kind = self.next_kind_java_token();
+                self.update_template_interpolation_depth(kind);
+                return kind;
+            }
+            None => {}
+        }
+
+        self.next_kind_java_token()
+    }
+
+    fn update_template_interpolation_depth(&mut self, kind: SyntaxKind) {
+        if !matches!(kind, SyntaxKind::LBrace | SyntaxKind::RBrace) {
+            return;
+        }
+
+        // The interpolation mode we need to update is the topmost one on the stack. It is
+        // normally the last element, but a nested template could have been pushed while
+        // lexing the current token (e.g. `\{ STR."x" }`). In that case the interpolation is
+        // immediately below the nested template.
+        let Some((idx, LexMode::TemplateInterpolation { brace_depth })) = self
+            .mode_stack
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, m)| matches!(m, LexMode::TemplateInterpolation { .. }))
+        else {
+            return;
+        };
+
+        match kind {
+            SyntaxKind::LBrace => {
+                *brace_depth = brace_depth.saturating_add(1);
+            }
+            SyntaxKind::RBrace => {
+                *brace_depth = brace_depth.saturating_sub(1);
+                if *brace_depth == 0 {
+                    // This `}` closes the interpolation.
+                    self.mode_stack.remove(idx);
+                }
+            }
+            _ => unreachable!("guard ensures we only see braces"),
+        }
+    }
+
+    fn next_kind_java_token(&mut self) -> SyntaxKind {
         let b = self.peek_byte(0).unwrap_or(b'\0');
         match b {
             b' ' | b'\t' | b'\n' | b'\r' | 0x0C => self.scan_whitespace(),
             b'/' => self.scan_slash_or_comment(),
-            b'"' => self.scan_quote(),
+            b'"' => {
+                if self.should_start_string_template() {
+                    self.start_string_template()
+                } else {
+                    self.scan_quote()
+                }
+            }
             b'\'' => self.scan_char_literal(),
             b'0'..=b'9' => self.scan_number(false),
             b'.' => {
@@ -218,6 +309,150 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+    }
+
+    fn should_start_string_template(&self) -> bool {
+        self.last_non_trivia_kind == SyntaxKind::Dot
+    }
+
+    fn start_string_template(&mut self) -> SyntaxKind {
+        let start = self.pos;
+
+        let delimiter = if self.peek_byte(0) == Some(b'"')
+            && self.peek_byte(1) == Some(b'"')
+            && self.peek_byte(2) == Some(b'"')
+        {
+            self.pos += 3;
+
+            // Match the text block diagnostic behavior: after `"""`, optional whitespace is
+            // permitted but it must be followed by a line terminator.
+            let mut i = self.pos;
+            let bytes = self.input.as_bytes();
+            while matches!(bytes.get(i).copied(), Some(b' ' | b'\t' | 0x0C)) {
+                i += 1;
+            }
+            if !matches!(bytes.get(i).copied(), Some(b'\n' | b'\r')) {
+                self.push_error(
+                    "text block opening delimiter must be followed by a line terminator",
+                    start,
+                    i,
+                );
+            }
+
+            TemplateDelimiter::TextBlock
+        } else {
+            self.pos += 1;
+            TemplateDelimiter::Quote
+        };
+
+        self.mode_stack.push(LexMode::Template(delimiter));
+        SyntaxKind::StringTemplateStart
+    }
+
+    fn scan_string_template_token(&mut self, delimiter: TemplateDelimiter) -> SyntaxKind {
+        // Closing delimiter?
+        if delimiter == TemplateDelimiter::Quote {
+            if self.peek_byte(0) == Some(b'"') {
+                self.pos += 1;
+                self.mode_stack.pop(); // Template
+                return SyntaxKind::StringTemplateEnd;
+            }
+        } else {
+            // Text block closing delimiter: the last `"""` in a run of quotes.
+            if self.peek_byte(0) == Some(b'"')
+                && self.peek_byte(1) == Some(b'"')
+                && self.peek_byte(2) == Some(b'"')
+                && !self.is_escaped_quote()
+            {
+                // Count the run length.
+                let mut run_len = 3usize;
+                while self.peek_byte(run_len) == Some(b'"') {
+                    run_len += 1;
+                }
+
+                if run_len == 3 {
+                    self.pos += 3;
+                    self.mode_stack.pop(); // Template
+                    return SyntaxKind::StringTemplateEnd;
+                }
+
+                // Consume all but the final `"""` (those quotes are part of the text block's
+                // contents).
+                self.pos += run_len - 3;
+                return SyntaxKind::StringTemplateText;
+            }
+        }
+
+        // Interpolation start?
+        if self.peek_byte(0) == Some(b'\\') && self.peek_byte(1) == Some(b'{') {
+            self.pos += 2;
+            self.mode_stack
+                .push(LexMode::TemplateInterpolation { brace_depth: 1 });
+            return SyntaxKind::StringTemplateExprStart;
+        }
+
+        // Consume template text until we reach an interpolation start or the closing delimiter.
+        let start = self.pos;
+        while !self.is_eof() {
+            // Stop before the next interpolation.
+            if self.peek_byte(0) == Some(b'\\') && self.peek_byte(1) == Some(b'{') {
+                break;
+            }
+
+            // Stop before the closing delimiter.
+            if delimiter == TemplateDelimiter::Quote {
+                if self.peek_byte(0) == Some(b'"') {
+                    break;
+                }
+            } else if self.peek_byte(0) == Some(b'"')
+                && self.peek_byte(1) == Some(b'"')
+                && self.peek_byte(2) == Some(b'"')
+                && !self.is_escaped_quote()
+            {
+                break;
+            }
+
+            match self.peek_char() {
+                Some('\\') => {
+                    // Preserve escape sequences as part of the text, but do not treat `\{` as an
+                    // escape (it begins an interpolation and is handled above).
+                    self.bump_char();
+
+                    match self.peek_char() {
+                        Some('\n' | '\r') | None => {
+                            // A backslash at end-of-line or end-of-file can't start an escape.
+                            self.push_error("unterminated string template", start, self.pos);
+                            self.mode_stack.pop(); // Template
+                            break;
+                        }
+                        Some(_) => {
+                            self.bump_char();
+                        }
+                    }
+                }
+                Some('\n' | '\r') if !delimiter.is_text_block() => {
+                    // Normal string templates can't contain raw newlines.
+                    self.push_error("unterminated string template", start, self.pos);
+                    self.mode_stack.pop(); // Template
+                    break;
+                }
+                Some(_) => {
+                    self.bump_char();
+                }
+                None => break,
+            }
+        }
+
+        if self.pos == start {
+            // We didn't make progress, but we also aren't at a boundary we handled above. Consume
+            // one char to avoid an infinite loop and surface an error.
+            let err_start = self.pos;
+            self.bump_char();
+            self.push_error("unexpected character in string template", err_start, self.pos);
+            return SyntaxKind::Error;
+        }
+
+        SyntaxKind::StringTemplateText
     }
 
     fn single(&mut self, kind: SyntaxKind) -> SyntaxKind {

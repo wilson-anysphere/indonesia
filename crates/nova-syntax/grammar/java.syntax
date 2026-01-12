@@ -61,19 +61,20 @@ Statement =
 
 Expression =
        LiteralExpression
-     | NameExpression
-     | ThisExpression
-     | SuperExpression
-     | ParenthesizedExpression
-     | NewExpression
-     | ArrayCreationExpression
-     | MethodCallExpression
-     | FieldAccessExpression
-     | ArrayAccessExpression
-     | ClassLiteralExpression
-     | MethodReferenceExpression
-     | ConstructorReferenceExpression
-     | UnaryExpression
+      | NameExpression
+      | ThisExpression
+      | SuperExpression
+      | ParenthesizedExpression
+      | NewExpression
+      | ArrayCreationExpression
+      | MethodCallExpression
+      | FieldAccessExpression
+      | StringTemplateExpression
+      | ArrayAccessExpression
+      | ClassLiteralExpression
+      | MethodReferenceExpression
+      | ConstructorReferenceExpression
+      | UnaryExpression
      | BinaryExpression
      | InstanceofExpression
      | AssignmentExpression
@@ -519,6 +520,21 @@ FieldAccessExpression {
   expression: Expression?
   type_arguments: TypeArguments?
   name_token: Ident?
+}
+
+StringTemplateExpression {
+  processor: Expression?
+  template: StringTemplate?
+}
+
+StringTemplate {
+  start_token: Token(StringTemplateStart)?
+  parts: StringTemplateInterpolation*
+  end_token: Token(StringTemplateEnd)?
+}
+
+StringTemplateInterpolation {
+  expression: Expression?
 }
 
 ClassLiteralExpression {

@@ -3128,6 +3128,15 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
+                    if self.nth(1) == Some(SyntaxKind::StringTemplateStart) {
+                        self.builder.start_node_at(
+                            checkpoint,
+                            SyntaxKind::StringTemplateExpression.into(),
+                        );
+                        self.bump(); // .
+                        self.parse_string_template();
+                        continue;
+                    }
                     if self.nth(1) == Some(SyntaxKind::ClassKw) {
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::ClassLiteralExpression.into());
@@ -3351,6 +3360,51 @@ impl<'a> Parser<'a> {
 
             break;
         }
+    }
+
+    fn parse_string_template(&mut self) {
+        self.builder.start_node(SyntaxKind::StringTemplate.into());
+
+        // We only enter this parser after recognizing `.` + `StringTemplateStart` in the postfix
+        // expression parser, but keep it resilient for partial code.
+        self.expect(SyntaxKind::StringTemplateStart, "expected string template delimiter");
+
+        while !self.at(SyntaxKind::StringTemplateEnd) && !self.at(SyntaxKind::Eof) {
+            match self.current() {
+                SyntaxKind::StringTemplateText => {
+                    self.bump();
+                }
+                SyntaxKind::StringTemplateExprStart => {
+                    self.builder
+                        .start_node(SyntaxKind::StringTemplateInterpolation.into());
+                    self.bump(); // \{
+                    self.parse_expression(0);
+                    self.expect(
+                        SyntaxKind::RBrace,
+                        "expected `}` to close template expression",
+                    );
+                    self.builder.finish_node(); // StringTemplateInterpolation
+                }
+                _ => {
+                    // Preserve a stable subtree shape and avoid infinite loops for unexpected
+                    // tokens in the template body (common while typing).
+                    self.builder.start_node(SyntaxKind::Error.into());
+                    self.error_here("expected template text or interpolation");
+                    if !self.at(SyntaxKind::Eof) {
+                        self.bump_any();
+                    }
+                    self.builder.finish_node(); // Error
+                }
+            }
+        }
+
+        self.expect(
+            SyntaxKind::StringTemplateEnd,
+            "expected closing string template delimiter",
+        );
+
+        self.builder.finish_node(); // StringTemplate
+        self.builder.finish_node(); // StringTemplateExpression
     }
 
     fn at_explicit_generic_invocation_start(&mut self) -> bool {
