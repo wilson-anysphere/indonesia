@@ -795,6 +795,35 @@ class C {
 }
 
 #[test]
+fn source_varargs_constructor_is_tagged() {
+    let src = r#"
+class Foo {
+    Foo(int... xs) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let (&ctor_ast_id, _) = tree
+        .constructors
+        .iter()
+        .next()
+        .expect("expected constructor in item tree");
+    let ctor_id = nova_hir::ids::ConstructorId::new(file, ctor_ast_id);
+
+    let result = db.typeck_body(DefWithBodyId::Constructor(ctor_id));
+    let env = &*result.env;
+    let foo = env.lookup_class("Foo").expect("expected Foo to be in env");
+    let def = env.class(foo).expect("expected Foo class def");
+    assert_eq!(def.constructors.len(), 1, "expected one constructor");
+    assert!(
+        def.constructors[0].is_varargs,
+        "expected varargs constructor to be tagged as varargs"
+    );
+}
+
+#[test]
 fn target_typing_infers_generic_method_return_from_expected_type() {
     let src = r#"
 import java.util.*;

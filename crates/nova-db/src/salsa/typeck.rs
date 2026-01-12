@@ -4370,6 +4370,11 @@ fn define_source_types<'idx>(
                         .unwrap_or(class_scope);
                     let vars: HashMap<String, TypeVarId> = HashMap::new();
 
+                    let is_varargs = ctor
+                        .params
+                        .last()
+                        .is_some_and(|param| param.ty.trim().contains("..."));
+
                     let params = ctor
                         .params
                         .iter()
@@ -4390,7 +4395,7 @@ fn define_source_types<'idx>(
 
                     constructors.push(nova_types::ConstructorDef {
                         params,
-                        is_varargs: false,
+                        is_varargs,
                         is_accessible: ctor.modifiers.raw & Modifiers::PRIVATE == 0,
                     });
                 }
