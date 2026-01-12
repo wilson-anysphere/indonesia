@@ -277,6 +277,27 @@ fn extract_variable_code_action_not_offered_in_annotation_default_value() {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_in_expression_bodied_lambda() {
+    let fixture = r#"
+class C {
+    void m() {
+        Runnable r = () -> System.out.println(/*start*/1 + 2/*end*/);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn extract_variable_code_action_not_offered_in_switch_case_label() {
     let fixture = r#"
 class C {
@@ -332,6 +353,30 @@ class C {
         return switch (x) {
             case /*start*/1 + 2/*end*/ -> 0;
             default -> 1;
+        };
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn extract_variable_code_action_not_offered_in_switch_expression_rule_expression() {
+    let fixture = r#"
+class C {
+    int m(int x) {
+        return switch (x) {
+            case 1 -> /*start*/1 + 2/*end*/;
+            default -> 0;
         };
     }
 }
