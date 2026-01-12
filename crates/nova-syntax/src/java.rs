@@ -1909,10 +1909,7 @@ impl Lowerer {
 
     fn lower_name_expr(&self, node: &SyntaxNode) -> ast::Expr {
         let mut segments = Vec::new();
-        for tok in node
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-        {
+        for tok in node.children_with_tokens().filter_map(|el| el.into_token()) {
             if tok.kind().is_identifier_like() || is_type_name_token(tok.kind()) {
                 segments.push((tok.text().to_string(), self.spans.map_token(&tok)));
             }
@@ -2693,5 +2690,33 @@ mod tests {
             panic!("expected primitive class literal type name");
         };
         assert_eq!(ty_name.name, "int");
+    }
+
+    #[test]
+    fn parse_block_lowers_generic_receiver_method_references() {
+        let text = "{var r = Foo<String>::bar; var c = Foo<String>::new;}";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 2);
+
+        let ast::Stmt::LocalVar(r_decl) = &block.statements[0] else {
+            panic!("expected local var statement");
+        };
+        let Some(ast::Expr::MethodReference(method_ref)) = &r_decl.initializer else {
+            panic!("expected method reference initializer");
+        };
+        assert_eq!(method_ref.name, "bar");
+        let ast::Expr::Name(receiver_name) = method_ref.receiver.as_ref() else {
+            panic!("expected name receiver");
+        };
+        assert_eq!(receiver_name.name, "Foo");
+
+        let ast::Stmt::LocalVar(c_decl) = &block.statements[1] else {
+            panic!("expected local var statement");
+        };
+        assert!(
+            matches!(c_decl.initializer, Some(ast::Expr::ConstructorReference(_))),
+            "expected constructor reference initializer"
+        );
     }
 }

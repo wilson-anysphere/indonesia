@@ -1,0 +1,178 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    TypeParameters
+      Less "<"
+      TypeParameter
+        Identifier "T"
+      Greater ">"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      ConstructorDeclaration
+        Modifiers
+        Identifier "Foo"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+          StaticKw "static"
+          Whitespace " "
+        VoidKw "void"
+        Whitespace " "
+        Identifier "bar"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "r"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                MethodReferenceExpression
+                  NameExpression
+                    Identifier "Foo"
+                    TypeArguments
+                      Less "<"
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "String"
+                      Greater ">"
+                  DoubleColon "::"
+                  Identifier "bar"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "c"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ConstructorReferenceExpression
+                  NameExpression
+                    Identifier "Foo"
+                    TypeArguments
+                      Less "<"
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "String"
+                      Greater ">"
+                  DoubleColon "::"
+                  NewKw "new"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "a"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ConstructorReferenceExpression
+                  NameExpression
+                    Identifier "java"
+                    Dot "."
+                    Identifier "util"
+                    Dot "."
+                    Identifier "ArrayList"
+                    TypeArguments
+                      Less "<"
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "String"
+                      Greater ">"
+                  DoubleColon "::"
+                  NewKw "new"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "e"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                MethodReferenceExpression
+                  NameExpression
+                    Identifier "java"
+                    Dot "."
+                    Identifier "util"
+                    Dot "."
+                    Identifier "Map"
+                    Dot "."
+                    Identifier "Entry"
+                    TypeArguments
+                      Less "<"
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "String"
+                      Comma ","
+                      Whitespace " "
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "String"
+                      Greater ">"
+                  DoubleColon "::"
+                  Identifier "getKey"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
