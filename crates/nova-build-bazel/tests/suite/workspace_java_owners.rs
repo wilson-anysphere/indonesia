@@ -1100,3 +1100,30 @@ fn bazelignore_ignores_invalid_entries_that_escape_workspace() {
         .unwrap();
     assert_eq!(label, None);
 }
+
+#[test]
+fn bazelignore_is_reloaded_after_invalidate_changed_files() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join(".bazelignore"), "ignored\n").unwrap();
+
+    write_file(&dir.path().join("ignored/BUILD"), "# ignored package\n");
+    create_file(&dir.path().join("ignored/Foo.java"));
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("ignored/Foo.java"))
+        .unwrap();
+    assert_eq!(label, None);
+
+    // Remove the ignore entry and notify the workspace; it should drop the cached ignore prefixes.
+    std::fs::write(dir.path().join(".bazelignore"), "").unwrap();
+    workspace
+        .invalidate_changed_files(&[PathBuf::from(".bazelignore")])
+        .unwrap();
+
+    let label = workspace
+        .workspace_file_label(Path::new("ignored/Foo.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//ignored:Foo.java"));
+}
