@@ -236,6 +236,62 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
 }
 
 #[test]
+fn code_actions_with_context_cast_wraps_bitwise_expression_in_parentheses() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = r#"class A {
+  void m() {
+    int a = 1;
+    int b = 2;
+    byte c = a|b;
+  }
+}
+"#;
+    db.set_file_text(file, source.to_string());
+
+    let stmt_start = source
+        .find("byte c = a|b;")
+        .expect("expected assignment in fixture");
+    let expr_start = stmt_start + "byte c = ".len();
+    let expr_end = expr_start + "a|b".len();
+
+    let range = Range::new(
+        offset_to_position(source, expr_start),
+        offset_to_position(source, expr_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("type-mismatch".to_string())),
+        message: "type mismatch: expected byte, found int".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(expr_start, expr_end)),
+        &[diag],
+    );
+
+    let cast_fix = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                && action.title == "Cast to byte" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+    let cast_fix = cast_fix.expect("expected Cast to byte quickfix");
+    assert_eq!(first_edit_new_text(cast_fix), "(byte) (a|b)");
+}
+
+#[test]
 fn code_actions_with_context_includes_return_mismatch_remove_returned_value_quickfix_for_cursor_at_span_start(
 ) {
     let mut db = InMemoryFileStore::new();
