@@ -21,7 +21,9 @@ impl JavaVersion {
     pub const JAVA_21: JavaVersion = JavaVersion(21);
 
     pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
+        // These values come from a wide range of build tools and configs. Be tolerant of
+        // surrounding whitespace and accidental quoting.
+        let text = text.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
         if text.is_empty() {
             return None;
         }
@@ -66,6 +68,8 @@ mod java_version_tests {
     fn parse_accepts_major_versions() {
         assert_eq!(JavaVersion::parse("17"), Some(JavaVersion(17)));
         assert_eq!(JavaVersion::parse(" 21 "), Some(JavaVersion(21)));
+        assert_eq!(JavaVersion::parse("\"17\""), Some(JavaVersion(17)));
+        assert_eq!(JavaVersion::parse("'21'"), Some(JavaVersion(21)));
     }
 
     #[test]
