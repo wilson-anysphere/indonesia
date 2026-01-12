@@ -192,6 +192,60 @@ function isSendNotificationReference(expr: ts.Expression, env: Map<string, strin
   return false;
 }
 
+function getSendNotificationMethodArg(
+  node: ts.CallExpression,
+  env: Map<string, string>,
+  aliases: Set<string>,
+): ts.Expression | undefined {
+  const callee = unwrapExpression(node.expression);
+
+  // Direct alias call: `sendNotification(...)` where `sendNotification` is an alias
+  // to the client's sendNotification method.
+  if (ts.isIdentifier(callee) && aliases.has(callee.text)) {
+    return node.arguments[0];
+  }
+
+  // Direct call: `client.sendNotification(...)` / `client['sendNotification'](...)`
+  if (getCalledMethodName(callee, env) === 'sendNotification') {
+    return node.arguments[0];
+  }
+
+  // `.call` forwarding: `client.sendNotification.call(client, method, ...)`
+  // or `sendNotification.call(client, method, ...)`
+  if (getCalledMethodName(callee, env) === 'call' && (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))) {
+    if (isSendNotificationReference(callee.expression, env, aliases)) {
+      return node.arguments[1];
+    }
+  }
+
+  // `.apply` forwarding: `client.sendNotification.apply(client, [method, ...])`
+  if (getCalledMethodName(callee, env) === 'apply' && (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))) {
+    if (isSendNotificationReference(callee.expression, env, aliases)) {
+      const arrayArg = node.arguments[1];
+      if (arrayArg) {
+        const unwrappedArray = unwrapExpression(arrayArg);
+        if (ts.isArrayLiteralExpression(unwrappedArray)) {
+          const first = unwrappedArray.elements[0];
+          return first && ts.isExpression(first) ? first : undefined;
+        }
+      }
+    }
+  }
+
+  // Inline bind + immediate call: `client.sendNotification.bind(client)(method, ...)`
+  // or `sendNotification.bind(client)(method, ...)`
+  if (ts.isCallExpression(callee) && isSendNotificationReference(callee, env, aliases)) {
+    const bindArgs = callee.arguments;
+    // `.bind(thisArg, method)` pre-binds the method argument.
+    if (bindArgs.length >= 2) {
+      return bindArgs[1];
+    }
+    return node.arguments[0];
+  }
+
+  return undefined;
+}
+
 function buildSendNotificationAliasesFromVariableStatements(
   statements: readonly ts.Statement[],
   env: Map<string, string>,
@@ -335,12 +389,9 @@ test('extension does not manually forward workspace file operations (vscode-lang
 
     const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>, aliases: Set<string>) => {
       if (ts.isCallExpression(node)) {
-        const callExpr = node.expression;
-        const isDirectSendNotification = getCalledMethodName(callExpr, env) === 'sendNotification';
-        const isAliasSendNotification = ts.isIdentifier(callExpr) && aliases.has(callExpr.text);
-        if (isDirectSendNotification || isAliasSendNotification) {
-          const arg0 = node.arguments[0];
-          const method = arg0 ? resolveNotificationMethod(arg0, env, importAliases) : undefined;
+        const methodExpr = getSendNotificationMethodArg(node, env, aliases);
+        if (methodExpr) {
+          const method = resolveNotificationMethod(methodExpr, env, importAliases);
           if (method && bannedNotificationMethods.has(method)) {
             const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
             violations.add(
