@@ -520,19 +520,18 @@ In the IDE, `crates/nova-ide/src/extensions.rs` wires two framework paths:
 - The shipped framework diagnostics/completions are currently provided by the legacy
   `FrameworkDiagnosticProvider`/`FrameworkCompletionProvider` (which delegate to
   `crates/nova-ide/src/framework_cache.rs`).
-- The `nova-framework` `AnalyzerRegistry` path exists via `FrameworkAnalyzerRegistryProvider`
-  (which uses `crates/nova-ide/src/framework_db.rs` to adapt `nova_db::Database` to
-  `nova_framework::Database`), and calls `framework_*_with_cancel` methods to cooperate with request
-  cancellation/timeouts.
+- Built-in `nova-framework` analyzers (Lombok/Dagger/MapStruct/etc) are wired as **per-analyzer**
+  providers via `FrameworkAnalyzerAdapterOnTextDb` (one provider per `FrameworkAnalyzer`, see
+  `nova_framework_builtins::builtin_analyzers_with_ids()`).
 
-  `IdeExtensions::with_default_registry` builds `nova_framework_builtins::builtin_registry()` and
-  registers a `FrameworkAnalyzerRegistryProvider` for diagnostics, completions, navigation, and
-  inlay hints. The default provider is configured with `with_build_metadata_only()`, meaning it
-  returns empty results for “simple” projects (no Maven/Gradle/Bazel metadata) to avoid duplicating
-  results from the legacy `framework_cache` providers.
+  In `IdeExtensions::with_default_registry`, these providers are configured with
+  `with_build_metadata_only()`, meaning they return empty results for “simple” projects (no
+  Maven/Gradle/Bazel metadata) to avoid duplicating results from the legacy `framework_cache`
+  providers.
 
-  `FrameworkAnalyzerRegistryProvider::empty()` exists as a fast no-op provider if you need to
-  disable registry-backed analyzers without changing call sites.
+  As an alternative integration, `FrameworkAnalyzerRegistryProvider` can run an entire
+  `nova_framework::AnalyzerRegistry` behind a single `nova-ext` provider ID (and
+  `FrameworkAnalyzerRegistryProvider::empty()` exists as a fast no-op placeholder).
 
 ### Plugin integration constraint (Database adapter)
 

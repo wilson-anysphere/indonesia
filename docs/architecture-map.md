@@ -247,25 +247,25 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Integration into the core semantic DB is still partial; analyzers mostly run as standalone passes.
   - IDE integration is currently split:
     - Most shipped framework diagnostics/completions live in `crates/nova-ide/src/framework_cache.rs`.
-    - Registry-backed analyzers can run via a best-effort adapter (`crates/nova-ide/src/framework_db.rs`)
-      and `FrameworkAnalyzerRegistryProvider` (`crates/nova-ide/src/extensions.rs`).
-      `nova-ide`'s generic `IdeExtensions::<DB>::with_default_registry` builds the analyzer list via
-      `nova-framework-builtins` and registers the provider for diagnostics/completions/navigation/inlay
-      hints. The default provider is configured with `with_build_metadata_only()` so it only runs on
-      projects with authoritative build metadata (Maven/Gradle/Bazel), avoiding duplicate results
-      alongside the legacy `framework_cache` providers. (`FrameworkAnalyzerRegistryProvider::empty()`
-      exists as a fast no-op option.)
+    - Built-in `nova-framework` analyzers can run via a best-effort adapter (`crates/nova-ide/src/framework_db.rs`)
+      and the extension wiring in `crates/nova-ide/src/extensions.rs`:
+      - `FrameworkAnalyzerAdapterOnTextDb` exposes a single `FrameworkAnalyzer` as its own `nova-ext`
+        provider (this is what `IdeExtensions::<DB>::with_default_registry` uses for built-in analyzers,
+        via `nova-framework-builtins::builtin_analyzers_with_ids()`, with `with_build_metadata_only()` to
+        avoid duplicating results from the legacy `framework_cache` providers).
+      - `FrameworkAnalyzerRegistryProvider` runs an entire `AnalyzerRegistry` behind a single provider
+        ID (`FrameworkAnalyzerRegistryProvider::empty()` exists as a fast no-op option).
 
 ### `nova-framework-builtins`
 - **Purpose:** centralized construction/registration of Nova’s built-in `nova-framework-*` analyzers so downstream crates (IDE, LSP, etc.) don’t need to maintain their own lists.
 - **Key entry points:** `crates/nova-framework-builtins/src/lib.rs` (`builtin_analyzers`, `register_builtin_analyzers`, `builtin_registry`).
 - **Maturity:** scaffolding
-- **Known gaps vs intended docs:**
+  - **Known gaps vs intended docs:**
   - Registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus by default.
   - Spring/JPA analyzers are feature-gated (`spring`/`jpa`) to avoid pulling heavier dependencies unless needed.
-  - Used by `nova-ide`'s generic `IdeExtensions::with_default_registry` to build the default
-    `AnalyzerRegistry` (see `crates/nova-ide/src/extensions.rs`), but some call sites still build their
-    own registries.
+  - Used by `nova-ide`'s generic `IdeExtensions::with_default_registry` to enumerate built-in analyzers
+    and register them as per-analyzer `nova-ext` providers (see `crates/nova-ide/src/extensions.rs`).
+    Some call sites still build their own `AnalyzerRegistry` instances instead.
 
 ### `nova-framework-dagger`
 - **Purpose:** best-effort Dagger DI graph extraction + diagnostics/navigation (text-based).
