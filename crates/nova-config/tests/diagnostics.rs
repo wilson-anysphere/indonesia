@@ -857,3 +857,103 @@ home = "{}"
         }]
     );
 }
+
+#[test]
+fn warns_when_jdk_toolchain_release_key_is_not_numeric() {
+    let text = r#"
+[jdk]
+toolchains = { "bogus" = "/tmp/jdk" }
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "jdk.toolchains.bogus".to_string(),
+            message: "release key must be numeric; entry will be ignored".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn warns_when_jdk_toolchain_release_is_duplicated() {
+    let dir = tempdir().expect("tempdir");
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::create_dir_all(&first).expect("create toolchain dir");
+    std::fs::create_dir_all(&second).expect("create toolchain dir");
+
+    let text = format!(
+        r#"
+[jdk]
+toolchains = {{ "08" = "{}", "8" = "{}" }}
+"#,
+        first.display(),
+        second.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "jdk.toolchains.8".to_string(),
+            message: "duplicate toolchain release 8 (overwriting key `08`)".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_jdk_toolchain_home_exists() {
+    let dir = tempdir().expect("tempdir");
+    let missing = dir.path().join("missing-jdk-toolchain");
+    let text = format!(
+        r#"
+[jdk]
+toolchains = {{ "17" = "{}" }}
+"#,
+        missing.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "jdk.toolchains.17".to_string(),
+            message: format!("path does not exist: {}", missing.display()),
+        }]
+    );
+}
+
+#[test]
+fn validates_jdk_toolchain_home_is_directory() {
+    let dir = tempdir().expect("tempdir");
+    let file_path = dir.path().join("not-a-dir");
+    std::fs::write(&file_path, "not a dir").expect("write file");
+
+    let text = format!(
+        r#"
+[jdk]
+toolchains = {{ "17" = "{}" }}
+"#,
+        file_path.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "jdk.toolchains.17".to_string(),
+            message: format!("path is not a directory: {}", file_path.display()),
+        }]
+    );
+}

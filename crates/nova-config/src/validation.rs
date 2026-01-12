@@ -78,39 +78,98 @@ fn validate_jdk(
     ctx: ConfigValidationContext<'_>,
     out: &mut ValidationDiagnostics,
 ) {
-    let Some(home) = config.jdk.home.as_ref() else {
-        return;
-    };
-
-    if home.as_os_str().is_empty() {
+    if matches!(config.jdk.release, Some(0)) {
         out.errors.push(ConfigValidationError::InvalidValue {
-            toml_path: "jdk.home".to_string(),
-            message: "must be non-empty".to_string(),
+            toml_path: "jdk.release".to_string(),
+            message: "must be >= 1".to_string(),
         });
-        return;
+    }
+
+    if let Some(home) = config.jdk.home.as_ref() {
+        if home.as_os_str().is_empty() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "jdk.home".to_string(),
+                message: "must be non-empty".to_string(),
+            });
+        } else {
+            let base_dir = ctx.base_dir();
+            let resolved = if home.is_absolute() {
+                Some(home.clone())
+            } else {
+                base_dir.map(|base_dir| base_dir.join(home))
+            };
+
+            if let Some(resolved) = resolved {
+                if !resolved.exists() {
+                    out.errors.push(ConfigValidationError::InvalidValue {
+                        toml_path: "jdk.home".to_string(),
+                        message: format!("path does not exist: {}", resolved.display()),
+                    });
+                } else if !resolved.is_dir() {
+                    out.errors.push(ConfigValidationError::InvalidValue {
+                        toml_path: "jdk.home".to_string(),
+                        message: format!("path is not a directory: {}", resolved.display()),
+                    });
+                }
+            }
+        }
     }
 
     let base_dir = ctx.base_dir();
-    let resolved = if home.is_absolute() {
-        home.clone()
-    } else if let Some(base_dir) = base_dir {
-        base_dir.join(home)
-    } else {
-        // No base directory to resolve relative paths. Callers that load from disk should use
-        // `validate_with_context` via the diagnostics-aware loaders.
-        return;
-    };
+    let mut seen_releases = std::collections::HashMap::<u16, String>::new();
 
-    if !resolved.exists() {
-        out.errors.push(ConfigValidationError::InvalidValue {
-            toml_path: "jdk.home".to_string(),
-            message: format!("path does not exist: {}", resolved.display()),
-        });
-    } else if !resolved.is_dir() {
-        out.errors.push(ConfigValidationError::InvalidValue {
-            toml_path: "jdk.home".to_string(),
-            message: format!("path is not a directory: {}", resolved.display()),
-        });
+    for (release_key, home) in &config.jdk.toolchains {
+        let toml_path = format!("jdk.toolchains.{release_key}");
+        let release = match release_key.parse::<u16>() {
+            Ok(release) => release,
+            Err(_) => {
+                out.warnings.push(ConfigWarning::InvalidValue {
+                    toml_path,
+                    message: "release key must be numeric; entry will be ignored".to_string(),
+                });
+                continue;
+            }
+        };
+
+        if let Some(prev) = seen_releases.insert(release, release_key.clone()) {
+            // Note: toolchains are deserialized as a map, so the iteration order is derived from the
+            // map's key ordering (not necessarily the original file order). We still make the
+            // override behavior explicit for clarity.
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: toml_path.clone(),
+                message: format!(
+                    "duplicate toolchain release {release} (overwriting key `{prev}`)"
+                ),
+            });
+        }
+
+        if home.as_os_str().is_empty() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path,
+                message: "must be non-empty".to_string(),
+            });
+            continue;
+        }
+
+        let resolved = if home.is_absolute() {
+            home.clone()
+        } else if let Some(base_dir) = base_dir {
+            base_dir.join(home)
+        } else {
+            continue;
+        };
+
+        if !resolved.exists() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path,
+                message: format!("path does not exist: {}", resolved.display()),
+            });
+        } else if !resolved.is_dir() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path,
+                message: format!("path is not a directory: {}", resolved.display()),
+            });
+        }
     }
 }
 
