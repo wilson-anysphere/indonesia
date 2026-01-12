@@ -1,6 +1,5 @@
 ---
 source: crates/nova-config/tests/suite/schema_snapshot.rs
-assertion_line: 4
 expression: schema
 ---
 {
@@ -673,6 +672,12 @@ expression: schema
       "description": "Optional integration with external build tools (Maven/Gradle).",
       "default": {
         "enabled": false,
+        "gradle": {
+          "enabled": true
+        },
+        "maven": {
+          "enabled": true
+        },
         "timeout_ms": 30000
       },
       "allOf": [
@@ -1212,7 +1217,6 @@ expression: schema
       "additionalProperties": false
     },
     "BuildIntegrationConfig": {
-      "description": "Configuration for optional integration with external build tools (Maven/Gradle).\n\nWhen enabled, Nova may invoke external build tool processes during workspace load/reload to compute accurate classpaths and source roots. This is disabled by default because it can be slow, spawn subprocesses, and may be undesirable in some environments.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -1220,12 +1224,46 @@ expression: schema
           "default": false,
           "type": "boolean"
         },
+        "gradle": {
+          "description": "Per-tool toggle for Gradle integration.",
+          "default": {
+            "enabled": true
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/BuildToolConfig"
+            }
+          ]
+        },
+        "maven": {
+          "description": "Per-tool toggle for Maven integration.",
+          "default": {
+            "enabled": true
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/BuildToolConfig"
+            }
+          ]
+        },
         "timeout_ms": {
           "description": "Timeout for build tool invocations during workspace load/reload (in milliseconds).\n\nNote: a value of `0` is treated as `1` millisecond at runtime.",
           "default": 30000,
           "type": "integer",
           "format": "uint64",
           "minimum": 1.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuildToolConfig": {
+      "description": "Configuration for optional integration with external build tools (Maven/Gradle).\n\nWhen enabled, Nova may invoke external build tool processes during workspace load/reload to compute accurate classpaths and source roots. This is disabled by default because it can be slow, spawn subprocesses, and may be undesirable in some environments.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether this specific build tool is allowed to run (when `build.enabled = true`).",
+          "default": true,
+          "type": "boolean"
         }
       },
       "additionalProperties": false

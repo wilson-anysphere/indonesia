@@ -83,6 +83,26 @@ pub struct JdkConfig {
 /// slow, spawn subprocesses, and may be undesirable in some environments.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
+pub struct BuildToolConfig {
+    /// Whether this specific build tool is allowed to run (when `build.enabled = true`).
+    #[serde(default = "default_build_tool_enabled")]
+    pub enabled: bool,
+}
+
+fn default_build_tool_enabled() -> bool {
+    true
+}
+
+impl Default for BuildToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_build_tool_enabled(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct BuildIntegrationConfig {
     /// Whether Nova is allowed to invoke build tools during workspace load/reload.
     ///
@@ -96,6 +116,14 @@ pub struct BuildIntegrationConfig {
     #[serde(default = "default_build_timeout_ms")]
     #[schemars(range(min = 1))]
     pub timeout_ms: u64,
+
+    /// Per-tool toggle for Maven integration.
+    #[serde(default)]
+    pub maven: BuildToolConfig,
+
+    /// Per-tool toggle for Gradle integration.
+    #[serde(default)]
+    pub gradle: BuildToolConfig,
 }
 
 fn default_build_timeout_ms() -> u64 {
@@ -107,6 +135,8 @@ impl Default for BuildIntegrationConfig {
         Self {
             enabled: false,
             timeout_ms: default_build_timeout_ms(),
+            maven: BuildToolConfig::default(),
+            gradle: BuildToolConfig::default(),
         }
     }
 }
@@ -117,6 +147,14 @@ impl BuildIntegrationConfig {
     /// This uses `max(1)` so even misconfigured values remain time-bounded.
     pub fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout_ms.max(1))
+    }
+
+    pub fn maven_enabled(&self) -> bool {
+        self.enabled && self.maven.enabled
+    }
+
+    pub fn gradle_enabled(&self) -> bool {
+        self.enabled && self.gradle.enabled
     }
 }
 
@@ -1868,6 +1906,10 @@ mod tests {
 
         assert!(!config.build.enabled);
         assert_eq!(config.build.timeout_ms, 30_000);
+        assert!(config.build.maven.enabled);
+        assert!(config.build.gradle.enabled);
+        assert!(!config.build.maven_enabled());
+        assert!(!config.build.gradle_enabled());
     }
 
     #[test]
@@ -1881,10 +1923,37 @@ timeout_ms = 12345
         let config: NovaConfig = toml::from_str(text).expect("config should parse");
         assert!(config.build.enabled);
         assert_eq!(config.build.timeout_ms, 12_345);
+        assert!(config.build.maven.enabled);
+        assert!(config.build.gradle.enabled);
+        assert!(config.build.maven_enabled());
+        assert!(config.build.gradle_enabled());
 
         let round_trip = toml::to_string(&config).expect("serialize");
         let decoded: NovaConfig = toml::from_str(&round_trip).expect("deserialize");
         assert_eq!(decoded.build, config.build);
+    }
+
+    #[test]
+    fn toml_build_tool_toggles_parse() {
+        let text = r#"
+[build]
+enabled = true
+timeout_ms = 1000
+
+[build.maven]
+enabled = false
+
+[build.gradle]
+enabled = true
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        assert!(config.build.enabled);
+        assert_eq!(config.build.timeout_ms, 1_000);
+        assert!(!config.build.maven.enabled);
+        assert!(config.build.gradle.enabled);
+        assert!(!config.build.maven_enabled());
+        assert!(config.build.gradle_enabled());
     }
 
     #[test]

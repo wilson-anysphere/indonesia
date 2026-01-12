@@ -56,6 +56,13 @@ and source roots), opt in via `nova.toml`:
 [build]
 enabled = true
 timeout_ms = 30000
+
+# Optional per-tool toggles (only apply when build.enabled = true)
+[build.maven]
+enabled = true
+
+[build.gradle]
+enabled = true
 ```
 
 Tradeoffs:
