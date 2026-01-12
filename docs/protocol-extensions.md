@@ -1495,6 +1495,42 @@ VS Code extension expects:
 
 ---
 
+### `nova/semanticSearch/indexStatus`
+
+Returns the status of the background semantic-search workspace indexing task.
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+#### Response
+
+```json
+{
+  "currentRunId": 1,
+  "completedRunId": 1,
+  "done": true,
+  "indexedFiles": 123,
+  "indexedBytes": 456789
+}
+```
+
+Notes:
+
+- `done` is `true` once `currentRunId != 0` and `currentRunId == completedRunId`.
+- The indexing run is **best-effort** and may be disabled when AI is not configured.
+
+#### Safe-mode
+
+This request is allowed while the server is in safe-mode (it is explicitly exempted from the
+safe-mode guard).
+
+---
+
 ### `nova/refactor/changeSignature` (experimental)
 
 - **Kind:** request

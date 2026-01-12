@@ -15,6 +15,8 @@
 //!   the default build.
 //!   - This feature should be enabled by binaries / integration crates that actually need OS file
 //!     watching (e.g. `nova-lsp`, `nova-cli`, `nova-workspace`), not by low-level library crates.
+//!   - If you add another backend, keep it in `nova-vfs` and feature-gate it similarly (optional
+//!     dependency + `watch-*` feature), so other crates don't take on extra OS-specific deps.
 //! - Move/rename normalization lives here (pairing `from`/`to` where possible) so consumers don't
 //!   need to implement per-platform rename heuristics.
 //!

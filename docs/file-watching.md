@@ -37,6 +37,22 @@ Guidance:
 - Lower-level crates should depend only on the `nova-vfs` abstraction and avoid depending on
   `notify` directly.
 
+## Adding a new watcher implementation
+
+If you need another OS backend (or a specialized watcher), implement it inside `nova-vfs` and keep
+it **feature-gated** so `nova-vfs` can remain lightweight by default.
+
+Guidelines:
+
+- Put the OS integration in `crates/nova-vfs/` (typically under `src/watch.rs` or a submodule) and
+  expose it from `nova-vfs` behind a Cargo feature (e.g. `watch-foo`).
+- Add the backend crate as an **optional dependency** of `nova-vfs`, and wire it to the feature via
+  `watch-foo = ["dep:foo"]` in `crates/nova-vfs/Cargo.toml`.
+- Normalize backend-specific events into `nova_vfs::FileChange` (Created/Modified/Deleted/Moved).
+  Prefer keeping rename/move pairing logic in `nova-vfs` so consumers stay portable.
+- Normalize paths using `VfsPath::local(...)` rather than passing raw `PathBuf`s through the system
+  (this centralizes path normalization rules in one place).
+
 ## Testing: keep watcher tests deterministic
 
 Avoid tests that:
