@@ -1,8 +1,6 @@
-mod framework_harness;
-
 use std::path::{Path, PathBuf};
 
-use framework_harness::{fixture_multi, ide_with_default_registry};
+use crate::framework_harness::{fixture_multi, ide_with_default_registry};
 use lsp_types::CompletionTextEdit;
 use nova_db::{Database as _, InMemoryFileStore};
 use nova_framework_quarkus::CDI_UNSATISFIED_CODE;
@@ -115,7 +113,7 @@ class UserRepository {
 
 #[test]
 fn spring_value_completions_replace_full_placeholder_prefix_via_ide_extensions() {
-    use framework_harness::offset_to_position;
+    use crate::framework_harness::offset_to_position;
 
     let config_path = PathBuf::from("/spring-value/src/main/resources/application.properties");
     let java_path = PathBuf::from("/spring-value/src/main/java/C.java");
@@ -157,7 +155,7 @@ class C {
 
 #[test]
 fn spring_properties_key_completions_replace_full_key_prefix_via_ide_extensions() {
-    use framework_harness::offset_to_position;
+    use crate::framework_harness::offset_to_position;
 
     let config_path = PathBuf::from("/spring-props/src/main/resources/application.properties");
     let java_path = PathBuf::from("/spring-props/src/main/java/Dummy.java");
@@ -200,7 +198,7 @@ server.p<|>
 
 #[test]
 fn spring_yaml_key_completions_replace_full_segment_prefix_via_ide_extensions() {
-    use framework_harness::offset_to_position;
+    use crate::framework_harness::offset_to_position;
 
     let config_path = PathBuf::from("/spring-yaml/src/main/resources/application.yml");
     let java_path = PathBuf::from("/spring-yaml/src/main/java/Dummy.java");
@@ -245,7 +243,7 @@ fn spring_yaml_key_completions_replace_full_segment_prefix_via_ide_extensions() 
 
 #[test]
 fn micronaut_value_completions_are_surfaced_via_ide_extensions() {
-    use framework_harness::offset_to_position;
+    use crate::framework_harness::offset_to_position;
 
     let config_path = PathBuf::from("/micronaut-value/src/main/resources/application.properties");
     let java_path = PathBuf::from("/micronaut-value/src/main/java/com/example/A.java");

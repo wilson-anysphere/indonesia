@@ -1,3 +1,6 @@
+mod framework_harness;
+mod suite;
+
 use nova_ide::analysis;
 
 #[test]

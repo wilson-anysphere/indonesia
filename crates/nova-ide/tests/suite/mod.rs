@@ -1,0 +1,14 @@
+mod ai_completion_context;
+mod code_intelligence;
+mod dagger_intel;
+mod file_navigation;
+mod framework_cache;
+mod framework_extensions;
+mod jpa_intel;
+mod lombok_intel;
+mod micronaut_intel;
+mod quarkus_intel;
+mod source_types;
+mod spring_config_metadata_intel;
+mod spring_di_intel;
+mod unicode_lsp_positions;
