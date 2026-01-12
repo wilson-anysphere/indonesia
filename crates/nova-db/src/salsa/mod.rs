@@ -287,15 +287,22 @@ struct SalsaInputFootprintInner {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct FileMemoBytes {
-    parse: u64,
-    parse_java: u64,
-    item_tree: u64,
+    /// Bytes recorded for the `parse` memo (None if the query has never been executed).
+    parse: Option<u64>,
+    /// Bytes recorded for the `parse_java` memo (None if the query has never been executed).
+    parse_java: Option<u64>,
+    /// Bytes recorded for the `item_tree` memo (None if the query has never been executed).
+    item_tree: Option<u64>,
+    /// Bytes recorded for the `file_index_delta` memo.
     file_index_delta: u64,
 }
 
 impl FileMemoBytes {
     fn total(self) -> u64 {
-        self.parse + self.parse_java + self.item_tree + self.file_index_delta
+        self.parse.unwrap_or(0)
+            + self.parse_java.unwrap_or(0)
+            + self.item_tree.unwrap_or(0)
+            + self.file_index_delta
     }
 }
 
@@ -338,9 +345,9 @@ impl SalsaMemoFootprint {
         let prev_total = entry.total();
 
         match memo {
-            TrackedSalsaMemo::Parse => entry.parse = bytes,
-            TrackedSalsaMemo::ParseJava => entry.parse_java = bytes,
-            TrackedSalsaMemo::ItemTree => entry.item_tree = bytes,
+            TrackedSalsaMemo::Parse => entry.parse = Some(bytes),
+            TrackedSalsaMemo::ParseJava => entry.parse_java = Some(bytes),
+            TrackedSalsaMemo::ItemTree => entry.item_tree = Some(bytes),
             TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
         }
 
@@ -1155,6 +1162,19 @@ impl Database {
             store.remove(file);
         }
 
+        // Only restore memo accounting if we have previously recorded a `parse`
+        // memo for this file and suppressed it to `0` while pinned.
+        let should_restore = self
+            .memo_footprint
+            .lock_inner()
+            .by_file
+            .get(&file)
+            .and_then(|bytes| bytes.parse)
+            .is_some_and(|bytes| bytes == 0);
+        if !should_restore {
+            return;
+        }
+
         // Best-effort: restore the parse memo approximation based on the most
         // recent input text snapshot.
         let bytes = self
@@ -1174,6 +1194,19 @@ impl Database {
         let store = self.inner.lock().item_tree_store.clone();
         if let Some(store) = store.as_ref() {
             store.remove(file);
+        }
+
+        // Only restore memo accounting if we have previously recorded an
+        // `item_tree` memo for this file and suppressed it to `0` while pinned.
+        let should_restore = self
+            .memo_footprint
+            .lock_inner()
+            .by_file
+            .get(&file)
+            .and_then(|bytes| bytes.item_tree)
+            .is_some_and(|bytes| bytes == 0);
+        if !should_restore {
+            return;
         }
 
         // Best-effort: restore the item_tree memo approximation based on the
