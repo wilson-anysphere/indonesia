@@ -76,7 +76,11 @@ impl ItemTreeStore {
 
         // Opportunistically drop closed documents so the store only retains
         // items for currently-open files.
+        let len_before = inner.len();
         inner.retain(|file, _| self.open_docs.is_open(*file));
+        if inner.len() != len_before {
+            self.update_tracker_locked(&inner);
+        }
 
         let entry = inner.get(&file)?;
         if Arc::ptr_eq(&entry.text, text) {
@@ -159,4 +163,3 @@ impl MemoryEvictor for ItemTreeStore {
         }
     }
 }
-
