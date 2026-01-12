@@ -8576,6 +8576,13 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     rpc_out: &O,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
+    let GenerateTestsArgs {
+        target,
+        context,
+        uri,
+        range,
+    } = args;
+
     let ai = state
         .ai
         .as_ref()
@@ -8585,8 +8592,7 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    let uri_string = args
-        .uri
+    let uri_string = uri
         .as_deref()
         .ok_or_else(|| (-32602, "missing uri".to_string()))?;
     let uri = uri_string
@@ -8615,13 +8621,16 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         ));
     };
 
-    let selection = args
-        .range
-        .ok_or_else(|| (-32602, "missing range".to_string()))?;
+    let selection = range.ok_or_else(|| (-32602, "missing range".to_string()))?;
     let insert_range =
         insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
 
-    let workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
+    let source_snippet = byte_range_for_ide_range(&source, selection)
+        .and_then(|bytes| source.get(bytes).map(ToString::to_string));
+
+    let file = file_rel;
+    let source_file = Some(file.clone());
+    let workspace = VirtualWorkspace::new([(file.clone(), source)]);
 
     let llm = ai.llm();
     let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
@@ -8642,8 +8651,12 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     let outcome = runtime
         .block_on(executor.execute(
             AiCodeAction::GenerateTest {
-                file: file_rel,
+                file,
                 insert_range,
+                target: Some(target),
+                source_file,
+                source_snippet,
+                context,
             },
             &workspace,
             &root_uri,
