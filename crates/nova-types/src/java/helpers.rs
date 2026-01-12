@@ -380,11 +380,16 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
                     queue.push_back(sc);
                 }
             }
-            for iface in &class_def.interfaces {
-                let iface = crate::canonicalize_named(env, &crate::substitute(iface, &subst));
-                if matches!(iface, Type::Class(_) | Type::Named(_)) {
-                    queue.push_back(iface);
-                }
+            // Sort interface traversal so we don't depend on source/classfile interface ordering.
+            let mut ifaces: Vec<Type> = class_def
+                .interfaces
+                .iter()
+                .map(|iface| crate::canonicalize_named(env, &crate::substitute(iface, &subst)))
+                .filter(|iface| matches!(iface, Type::Class(_) | Type::Named(_)))
+                .collect();
+            ifaces.sort_by_cached_key(|ty| crate::type_sort_key(env, ty));
+            for iface in ifaces {
+                queue.push_back(iface);
             }
 
             // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).

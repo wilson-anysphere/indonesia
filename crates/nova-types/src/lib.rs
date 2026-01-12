@@ -2348,8 +2348,17 @@ fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
         if let Some(sc) = &class_def.super_class {
             queue.push_back(substitute(sc, &subst));
         }
-        for iface in &class_def.interfaces {
-            queue.push_back(substitute(iface, &subst));
+        // Sort interface traversal so resolution is deterministic even if interface lists are
+        // built from sources with unstable ordering (e.g. recovery, external loaders, or
+        // future parallel graph construction).
+        let mut ifaces: Vec<Type> = class_def
+            .interfaces
+            .iter()
+            .map(|iface| substitute(iface, &subst))
+            .collect();
+        ifaces.sort_by_cached_key(|ty| type_sort_key(env, ty));
+        for iface in ifaces {
+            queue.push_back(iface);
         }
         // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
         if class_def.kind == ClassKind::Interface {
@@ -3699,8 +3708,16 @@ pub fn resolve_field(
         if let Some(sc) = &class_def.super_class {
             queue.push_back(substitute(sc, &subst));
         }
-        for iface in &class_def.interfaces {
-            queue.push_back(substitute(iface, &subst));
+        // Sort interface traversal so candidate collection is deterministic even if the
+        // interface list ordering isn't stable.
+        let mut ifaces: Vec<Type> = class_def
+            .interfaces
+            .iter()
+            .map(|iface| substitute(iface, &subst))
+            .collect();
+        ifaces.sort_by_cached_key(|ty| type_sort_key(env, ty));
+        for iface in ifaces {
+            queue.push_back(iface);
         }
         // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
         if class_def.kind == ClassKind::Interface {
