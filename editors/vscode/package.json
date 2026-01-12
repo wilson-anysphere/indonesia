@@ -32,6 +32,7 @@
     "onCommand:nova.discoverTests",
     "onCommand:nova.runTest",
     "onCommand:nova.addDebugConfiguration",
+    "onCommand:nova.frameworks.search",
     "onCommand:nova.hotSwapChangedFiles",
     "onCommand:nova.frameworks.copyEndpointPath",
     "onCommand:nova.frameworks.copyEndpointMethodAndPath",
@@ -102,6 +103,10 @@
       {
         "command": "nova.hotSwapChangedFiles",
         "title": "Nova: Hot Swap Changed Files"
+      },
+      {
+        "command": "nova.frameworks.search",
+        "title": "Nova: Search Framework Items\u2026"
       },
       {
         "command": "nova.frameworks.copyEndpointPath",

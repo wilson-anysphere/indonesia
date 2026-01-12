@@ -1,0 +1,453 @@
+import * as vscode from 'vscode';
+import * as path from 'node:path';
+
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+
+type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
+
+interface WebEndpoint {
+  path: string;
+  methods: string[];
+  file: string;
+  line: number; // 1-based
+}
+
+interface WebEndpointsResponse {
+  endpoints: WebEndpoint[];
+}
+
+interface MicronautSpan {
+  start: number; // UTF-8 byte offset
+  end: number; // UTF-8 byte offset
+}
+
+interface MicronautHandlerLocation {
+  file: string;
+  span: MicronautSpan;
+  className: string;
+  methodName: string;
+}
+
+interface MicronautEndpoint {
+  method: string;
+  path: string;
+  handler: MicronautHandlerLocation;
+}
+
+interface MicronautEndpointsResponse {
+  schemaVersion: number;
+  endpoints: MicronautEndpoint[];
+}
+
+interface MicronautBean {
+  id: string;
+  name: string;
+  ty: string;
+  kind: string;
+  qualifiers: string[];
+  file: string;
+  span: MicronautSpan;
+}
+
+interface MicronautBeansResponse {
+  schemaVersion: number;
+  beans: MicronautBean[];
+}
+
+interface WebEndpointPickItem extends vscode.QuickPickItem {
+  novaKind: 'web-endpoints';
+  projectRoot: string;
+  file: string;
+  line: number; // 1-based
+}
+
+interface MicronautEndpointPickItem extends vscode.QuickPickItem {
+  novaKind: 'micronaut-endpoints';
+  projectRoot: string;
+  file: string;
+  span: MicronautSpan;
+}
+
+interface MicronautBeanPickItem extends vscode.QuickPickItem {
+  novaKind: 'micronaut-beans';
+  projectRoot: string;
+  file: string;
+  span: MicronautSpan;
+}
+
+type FrameworkPickItem = WebEndpointPickItem | MicronautEndpointPickItem | MicronautBeanPickItem;
+
+const BUG_REPORT_COMMAND = 'nova.bugReport';
+
+export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, request: NovaRequest): void {
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.frameworks.search', async () => {
+      const workspaces = vscode.workspace.workspaceFolders ?? [];
+      if (workspaces.length === 0) {
+        void vscode.window.showErrorMessage('Nova: Open a workspace folder to search framework items.');
+        return;
+      }
+
+      const workspaceFolder =
+        workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+      if (!workspaceFolder) {
+        return;
+      }
+
+      const kind = await pickFrameworkSearchKind();
+      if (!kind) {
+        return;
+      }
+
+      const projectRoot = workspaceFolder.uri.fsPath;
+
+      try {
+        const items = await fetchItemsForKind(kind, request, projectRoot);
+        if (items.length === 0) {
+          void vscode.window.showInformationMessage('Nova: No framework items found.');
+          return;
+        }
+
+        const picked = await vscode.window.showQuickPick(items, {
+          placeHolder: 'Search framework items',
+          matchOnDescription: true,
+          matchOnDetail: true,
+        });
+        if (!picked) {
+          return;
+        }
+
+        await navigateToFrameworkItem(picked);
+      } catch (err) {
+        if (isSafeModeError(err)) {
+          await showSafeModeError();
+          return;
+        }
+
+        if (isMethodNotFoundError(err)) {
+          void vscode.window.showErrorMessage('Nova: This Nova server does not support the requested framework search.');
+          return;
+        }
+
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: framework search failed: ${message}`);
+      }
+    }),
+  );
+}
+
+async function pickWorkspaceFolder(
+  workspaces: readonly vscode.WorkspaceFolder[],
+  placeHolder: string,
+): Promise<vscode.WorkspaceFolder | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    workspaces.map((workspace) => ({
+      label: workspace.name,
+      description: workspace.uri.fsPath,
+      workspace,
+    })),
+    { placeHolder },
+  );
+  return picked?.workspace;
+}
+
+async function pickFrameworkSearchKind(): Promise<FrameworkSearchKind | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    [
+      { label: 'Web endpoints', description: 'nova/web/endpoints', value: 'web-endpoints' as const },
+      { label: 'Micronaut endpoints', description: 'nova/micronaut/endpoints', value: 'micronaut-endpoints' as const },
+      { label: 'Micronaut beans', description: 'nova/micronaut/beans', value: 'micronaut-beans' as const },
+    ],
+    { placeHolder: 'Select framework items to search', matchOnDescription: true },
+  );
+  return picked?.value;
+}
+
+async function fetchItemsForKind(
+  kind: FrameworkSearchKind,
+  request: NovaRequest,
+  projectRoot: string,
+): Promise<FrameworkPickItem[]> {
+  switch (kind) {
+    case 'web-endpoints': {
+      const response = await fetchWebEndpoints(request, projectRoot);
+      const endpoints = response.endpoints;
+      if (!Array.isArray(endpoints)) {
+        throw new Error('Invalid response from nova/web/endpoints: expected endpoints array.');
+      }
+
+      const items: WebEndpointPickItem[] = [];
+      for (const endpoint of endpoints) {
+        if (!endpoint || typeof endpoint !== 'object') {
+          continue;
+        }
+
+        const ep = endpoint as Partial<WebEndpoint>;
+        const methods = Array.isArray(ep.methods) ? ep.methods.filter((m): m is string => typeof m === 'string') : [];
+        const methodsOrFallback = methods.length > 0 ? methods : [''];
+        const endpointPath = typeof ep.path === 'string' ? ep.path : '';
+        const file = typeof ep.file === 'string' ? ep.file : '';
+        const line = typeof ep.line === 'number' ? ep.line : 1;
+
+        for (const method of methodsOrFallback) {
+          const label = `${method ? `${method} ` : ''}${endpointPath}`.trim();
+          const description = file && typeof line === 'number' ? `${file}:${line}` : undefined;
+          items.push({
+            novaKind: kind,
+            projectRoot,
+            file,
+            line,
+            label: label || '(unknown endpoint)',
+            description,
+          });
+        }
+      }
+      return items;
+    }
+    case 'micronaut-endpoints': {
+      const response = await request<MicronautEndpointsResponse>('nova/micronaut/endpoints', { projectRoot });
+      validateMicronautSchemaVersion(response?.schemaVersion, 'nova/micronaut/endpoints');
+
+      const endpoints = (response as MicronautEndpointsResponse).endpoints;
+      if (!Array.isArray(endpoints)) {
+        throw new Error('Invalid response from nova/micronaut/endpoints: expected endpoints array.');
+      }
+
+      const items: MicronautEndpointPickItem[] = [];
+      for (const endpoint of endpoints) {
+        if (!endpoint || typeof endpoint !== 'object') {
+          continue;
+        }
+
+        const ep = endpoint as Partial<MicronautEndpoint>;
+        const method = typeof ep.method === 'string' ? ep.method : '';
+        const endpointPath = typeof ep.path === 'string' ? ep.path : '';
+        const handler = ep.handler;
+        const file = typeof handler?.file === 'string' ? handler.file : '';
+        const span = handler?.span;
+        const spanStart = typeof span?.start === 'number' ? span.start : 0;
+        const spanEnd = typeof span?.end === 'number' ? span.end : spanStart;
+        const className = typeof handler?.className === 'string' ? handler.className : '';
+        const methodName = typeof handler?.methodName === 'string' ? handler.methodName : '';
+
+        const label = `${method} ${endpointPath}`.trim();
+        const classParts = className.split('.').filter(Boolean);
+        const shortClassName = classParts.length ? classParts[classParts.length - 1] : className;
+        const description = `${shortClassName}${methodName ? `#${methodName}` : ''}`.trim() || undefined;
+
+        items.push({
+          novaKind: kind,
+          projectRoot,
+          file,
+          span: { start: spanStart, end: spanEnd },
+          label: label || '(unknown endpoint)',
+          description,
+          detail: file || undefined,
+        });
+      }
+      return items;
+    }
+    case 'micronaut-beans': {
+      const response = await request<MicronautBeansResponse>('nova/micronaut/beans', { projectRoot });
+      validateMicronautSchemaVersion(response?.schemaVersion, 'nova/micronaut/beans');
+
+      const beans = (response as MicronautBeansResponse).beans;
+      if (!Array.isArray(beans)) {
+        throw new Error('Invalid response from nova/micronaut/beans: expected beans array.');
+      }
+
+      const items: MicronautBeanPickItem[] = [];
+      for (const bean of beans) {
+        if (!bean || typeof bean !== 'object') {
+          continue;
+        }
+
+        const b = bean as Partial<MicronautBean>;
+        const name = typeof b.name === 'string' ? b.name : '';
+        const ty = typeof b.ty === 'string' ? b.ty : '';
+        const file = typeof b.file === 'string' ? b.file : '';
+        const span = b.span;
+        const spanStart = typeof span?.start === 'number' ? span.start : 0;
+        const spanEnd = typeof span?.end === 'number' ? span.end : spanStart;
+
+        items.push({
+          novaKind: kind,
+          projectRoot,
+          file,
+          span: { start: spanStart, end: spanEnd },
+          label: name || '(unnamed bean)',
+          description: ty || undefined,
+          detail: file || undefined,
+        });
+      }
+      return items;
+    }
+  }
+}
+
+async function fetchWebEndpoints(request: NovaRequest, projectRoot: string): Promise<WebEndpointsResponse> {
+  try {
+    return await request<WebEndpointsResponse>('nova/web/endpoints', { projectRoot });
+  } catch (err) {
+    if (isMethodNotFoundError(err)) {
+      // Older Nova builds exposed these endpoints under a Quarkus-specific method.
+      return await request<WebEndpointsResponse>('nova/quarkus/endpoints', { projectRoot });
+    }
+    throw err;
+  }
+}
+
+function validateMicronautSchemaVersion(schemaVersion: unknown, method: string): asserts schemaVersion is 1 {
+  if (typeof schemaVersion !== 'number') {
+    throw new Error(`Invalid response from ${method}: missing schemaVersion.`);
+  }
+  if (schemaVersion !== 1) {
+    throw new Error(`Unsupported schemaVersion from ${method}: expected 1, got ${schemaVersion}.`);
+  }
+}
+
+async function navigateToFrameworkItem(item: FrameworkPickItem): Promise<void> {
+  const uri = resolveProjectFileUri(item.projectRoot, item.file);
+  if (!uri) {
+    void vscode.window.showErrorMessage('Nova: Could not resolve source location for this item.');
+    return;
+  }
+
+  const document = await vscode.workspace.openTextDocument(uri);
+  const editor = await vscode.window.showTextDocument(document, { preview: false });
+
+  if (item.novaKind === 'web-endpoints') {
+    const line0 = clampLineIndex(item.line - 1, document.lineCount);
+    const pos = new vscode.Position(line0, 0);
+    editor.selection = new vscode.Selection(pos, pos);
+    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    return;
+  }
+
+  const range = utf8SpanToRange(document, item.span);
+  editor.selection = new vscode.Selection(range.start, range.end);
+  editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+}
+
+function clampLineIndex(line: number, lineCount: number): number {
+  if (Number.isNaN(line) || lineCount <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(line, lineCount - 1));
+}
+
+function resolveProjectFileUri(projectRoot: string, file: string): vscode.Uri | undefined {
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+    return undefined;
+  }
+  if (typeof file !== 'string' || file.length === 0) {
+    return undefined;
+  }
+
+  const filePath = path.isAbsolute(file) ? file : path.join(projectRoot, file);
+  return vscode.Uri.file(filePath);
+}
+
+function utf8SpanToRange(document: vscode.TextDocument, span: MicronautSpan): vscode.Range {
+  const text = document.getText();
+
+  const startByte = typeof span.start === 'number' ? span.start : 0;
+  const endByte = typeof span.end === 'number' ? span.end : startByte;
+
+  const startOffset = utf8ByteOffsetToUtf16Offset(text, startByte);
+  const endOffset = utf8ByteOffsetToUtf16Offset(text, Math.max(endByte, startByte));
+
+  const start = document.positionAt(startOffset);
+  const end = document.positionAt(endOffset);
+  return new vscode.Range(start, end);
+}
+
+function utf8ByteOffsetToUtf16Offset(text: string, byteOffset: number): number {
+  if (Number.isNaN(byteOffset) || byteOffset <= 0) {
+    return 0;
+  }
+
+  let consumedBytes = 0;
+  let utf16Offset = 0;
+
+  while (utf16Offset < text.length) {
+    const codePoint = text.codePointAt(utf16Offset);
+    if (typeof codePoint !== 'number') {
+      break;
+    }
+
+    const utf16Width = codePoint > 0xffff ? 2 : 1;
+    const utf8Width =
+      codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+
+    if (consumedBytes + utf8Width > byteOffset) {
+      break;
+    }
+
+    consumedBytes += utf8Width;
+    utf16Offset += utf16Width;
+  }
+
+  return utf16Offset;
+}
+
+async function showSafeModeError(): Promise<void> {
+  const picked = await vscode.window.showErrorMessage(
+    'Nova: nova-lsp is running in safe mode. Framework search is unavailable until safe mode exits.',
+    'Generate Bug Report',
+  );
+  if (picked === 'Generate Bug Report') {
+    await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+  }
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === 'string') {
+    return err;
+  }
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function isMethodNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+
+  const code = (err as { code?: unknown }).code;
+  if (code === -32601) {
+    return true;
+  }
+
+  const message = (err as { message?: unknown }).message;
+  // `nova-lsp` currently reports unknown `nova/*` custom methods as `-32602` with an
+  // "unknown (stateless) method" message (because everything is routed through a single dispatcher).
+  if (
+    code === -32602 &&
+    typeof message === 'string' &&
+    message.toLowerCase().includes('unknown (stateless) method')
+  ) {
+    return true;
+  }
+
+  return typeof message === 'string' && message.toLowerCase().includes('method not found');
+}
+
+function isSafeModeError(err: unknown): boolean {
+  const message = formatError(err).toLowerCase();
+  if (message.includes('safe-mode') || message.includes('safe mode')) {
+    return true;
+  }
+
+  // Defensive: handle safe-mode guard messages that might not include the exact phrase.
+  return message.includes('nova/bugreport') && message.includes('only') && message.includes('available');
+}
