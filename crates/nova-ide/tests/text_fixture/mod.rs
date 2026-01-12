@@ -11,7 +11,12 @@ pub const CARET: &str = "<|>";
 /// Convert a UTF-8 byte offset into an LSP [`lsp_types::Position`] using UTF-16 `character`
 /// semantics.
 pub fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let offset = offset.min(text.len());
+    let mut offset = offset.min(text.len());
+    // `LineIndex::position` slices the source text, so ensure we never provide an offset that
+    // lands inside a UTF-8 code point.
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
     let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
 
     let index = LineIndex::new(text);
