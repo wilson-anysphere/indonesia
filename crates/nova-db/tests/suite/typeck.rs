@@ -2464,6 +2464,27 @@ class C {
 }
 
 #[test]
+fn static_context_rejects_unqualified_instance_field_access_in_lambda() {
+    let src = r#"
+class C {
+    int x;
+    static void m() {
+        Runnable r = () -> { x = 1; };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
+        "expected static context to reject implicit-this field access inside lambda, got {diags:?}"
+    );
+}
+
+#[test]
 fn fully_qualified_static_method_call_resolves() {
     let src = r#"
 class C {
