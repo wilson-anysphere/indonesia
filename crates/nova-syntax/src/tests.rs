@@ -665,6 +665,39 @@ fn lexer_string_templates_allow_unicode_escape_backslash_in_interpolation_start(
 }
 
 #[test]
+fn lexer_string_templates_do_not_start_interpolation_when_unicode_escape_backslash_is_escaped() {
+    // Two unicode escapes for backslash (`\u005C\u005C`) translate to `\\`, which should *not*
+    // start an interpolation when followed by `{`.
+    let input = r#"STR."hello \u005C\u005C{name}""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, r"hello \u005C\u005C{name}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+    assert!(
+        !tokens
+            .iter()
+            .any(|(kind, _)| *kind == SyntaxKind::StringTemplateExprStart),
+        "did not expect interpolation start tokens, got: {tokens:?}"
+    );
+}
+
+#[test]
 fn lexer_non_template_strings_still_reject_escape_brace() {
     let input = r#""hello \{name}""#;
     let (tokens, errors) = lex_with_errors(input);
