@@ -5856,6 +5856,17 @@ fn member_completions(
         items.append(&mut baseline);
     }
 
+    // Java arrays have a special pseudo-field `length` (no parens, always `int`).
+    if matches!(receiver_ty, Type::Array(_)) && call_kind == CallKind::Instance {
+        items.push(CompletionItem {
+            label: "length".to_string(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some("int".to_string()),
+            insert_text: Some("length".to_string()),
+            ..Default::default()
+        });
+    }
+
     // Lombok virtual members are useful for instance access and are intentionally
     // kept as a fallback/additional completion source.
     if call_kind == CallKind::Instance {
@@ -6050,6 +6061,17 @@ fn member_completions_for_receiver_type(
     }
 
     let mut items = semantic_member_completions(&mut types, &receiver_ty, CallKind::Instance);
+
+    // Java arrays have a special pseudo-field `length` (no parens, always `int`).
+    if matches!(receiver_ty, Type::Array(_)) {
+        items.push(CompletionItem {
+            label: "length".to_string(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some("int".to_string()),
+            insert_text: Some("length".to_string()),
+            ..Default::default()
+        });
+    }
 
     let static_names = static_member_names(&mut types, &receiver_ty);
     let receiver_type = nova_types::format_type(&types, &receiver_ty);
@@ -12437,21 +12459,38 @@ fn analyze(text: &str) -> Analysis {
                 }
                 break;
             }
-            if j + 2 < tokens.len() {
-                let ty = &tokens[j];
-                let name = &tokens[j + 1];
-                let next = &tokens[j + 2];
-                if ty.kind == TokenKind::Ident
-                    && name.kind == TokenKind::Ident
-                    && matches!(next.kind, TokenKind::Symbol(';') | TokenKind::Symbol('='))
-                {
-                    analysis.fields.push(FieldDecl {
-                        name: name.text.clone(),
-                        name_span: name.span,
-                        ty: ty.text.clone(),
-                    });
-                    i = j + 3;
-                    continue;
+            if let Some(ty_tok) = tokens.get(j) {
+                if ty_tok.kind == TokenKind::Ident {
+                    // Support `T[] name` field declarations (`[]` are separate tokens).
+                    let mut k = j + 1;
+                    let mut dims = 0usize;
+                    while k + 1 < tokens.len()
+                        && tokens[k].kind == TokenKind::Symbol('[')
+                        && tokens[k + 1].kind == TokenKind::Symbol(']')
+                    {
+                        dims += 1;
+                        k += 2;
+                    }
+
+                    if k + 1 < tokens.len() {
+                        let name_tok = &tokens[k];
+                        let next = &tokens[k + 1];
+                        if name_tok.kind == TokenKind::Ident
+                            && matches!(next.kind, TokenKind::Symbol(';') | TokenKind::Symbol('='))
+                        {
+                            let mut ty = ty_tok.text.clone();
+                            for _ in 0..dims {
+                                ty.push_str("[]");
+                            }
+                            analysis.fields.push(FieldDecl {
+                                name: name_tok.text.clone(),
+                                name_span: name_tok.span,
+                                ty,
+                            });
+                            i = k + 2;
+                            continue;
+                        }
+                    }
                 }
             }
         }
@@ -12570,6 +12609,52 @@ fn analyze(text: &str) -> Analysis {
             }
 
             idx += 1;
+        }
+
+        // Vars with array types: <ty> ('[' ']')+ <name> ('=' | ';')
+        //
+        // `tokenize` splits `[]` into two separate tokens, so the fixed-size
+        // window above cannot capture declarations like `int[] xs = ...`.
+        for (idx, ty_tok) in body_tokens.iter().enumerate() {
+            if ty_tok.kind != TokenKind::Ident || ty_tok.text == "var" {
+                continue;
+            }
+
+            let mut k = idx + 1;
+            let mut dims = 0usize;
+            while k + 1 < body_tokens.len()
+                && body_tokens[k].kind == TokenKind::Symbol('[')
+                && body_tokens[k + 1].kind == TokenKind::Symbol(']')
+            {
+                dims += 1;
+                k += 2;
+            }
+            if dims == 0 {
+                continue;
+            }
+
+            if k + 1 >= body_tokens.len() {
+                continue;
+            }
+            let name_tok = body_tokens[k];
+            let next = body_tokens[k + 1];
+            if name_tok.kind != TokenKind::Ident
+                || (next.kind != TokenKind::Symbol('=') && next.kind != TokenKind::Symbol(';'))
+            {
+                continue;
+            }
+
+            let mut ty = ty_tok.text.clone();
+            for _ in 0..dims {
+                ty.push_str("[]");
+            }
+
+            analysis.vars.push(VarDecl {
+                name: name_tok.text.clone(),
+                name_span: name_tok.span,
+                ty,
+                is_var: false,
+            });
         }
 
         // Calls: [receiver '.'] <name> '(' ... ')'
