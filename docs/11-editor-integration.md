@@ -165,6 +165,16 @@ The stdio server advertises the supported custom request list in the `initialize
 
 For the authoritative list and exact JSON schemas, see:
 [`protocol-extensions.md`](protocol-extensions.md) and `crates/nova-lsp/src/lib.rs`.
+
+Notes for client authors:
+
+- Always gate custom `nova/*` usage on the server-advertised method list
+  (`initializeResult.capabilities.experimental.nova.requests`). Several endpoints are conditionally
+  available depending on build features and runtime configuration.
+- In particular, `nova/completion/more` is only advertised when `nova-lsp` is built with the `ai`
+  feature (enabled by default in this repo).
+- The `nova/ai/*` request family is advertised by default, but will return a JSON-RPC error if AI is
+  not configured/enabled on the server (e.g. `"AI is not configured"`).
    
 ```
 ┌─────────────────────────────────────────────────────────────────┐
