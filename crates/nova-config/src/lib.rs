@@ -842,7 +842,7 @@ pub struct InProcessLlamaConfig {
     ///
     /// Larger values increase memory usage roughly linearly.
     #[serde(default = "default_in_process_llama_context_size")]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 1, max = 8192))]
     pub context_size: usize,
 
     /// Number of CPU threads to use (`n_threads`).
@@ -853,10 +853,12 @@ pub struct InProcessLlamaConfig {
 
     /// Sampling temperature.
     #[serde(default = "default_in_process_llama_temperature")]
+    #[schemars(range(min = 0.0))]
     pub temperature: f32,
 
     /// Nucleus sampling probability.
     #[serde(default = "default_in_process_llama_top_p")]
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub top_p: f32,
 
     /// Number of layers to offload to GPU (if supported by the build).

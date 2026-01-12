@@ -3,6 +3,8 @@ use std::path::Path;
 use crate::diagnostics::{ConfigValidationError, ConfigWarning, ValidationDiagnostics};
 use crate::{AiProviderKind, LoggingConfig, NovaConfig};
 
+const MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS: usize = 8_192;
+
 /// Context for semantic config validation.
 ///
 /// Some validations (like checking whether configured directories exist) require a base directory.
@@ -416,6 +418,34 @@ fn validate_ai(
     if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama) {
         if let Some(cfg) = config.ai.provider.in_process_llama.as_ref() {
             let base_dir = ctx.base_dir();
+            if cfg.context_size == 0 {
+                out.errors.push(ConfigValidationError::InvalidValue {
+                    toml_path: "ai.provider.in_process_llama.context_size".to_string(),
+                    message: "must be >= 1".to_string(),
+                });
+            } else if cfg.context_size > MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS {
+                out.errors.push(ConfigValidationError::InvalidValue {
+                    toml_path: "ai.provider.in_process_llama.context_size".to_string(),
+                    message: format!(
+                        "must be <= {MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS}"
+                    ),
+                });
+            }
+
+            if cfg.temperature.is_nan() || cfg.temperature < 0.0 {
+                out.errors.push(ConfigValidationError::InvalidValue {
+                    toml_path: "ai.provider.in_process_llama.temperature".to_string(),
+                    message: "must be >= 0".to_string(),
+                });
+            }
+
+            if !(0.0..=1.0).contains(&cfg.top_p) {
+                out.errors.push(ConfigValidationError::InvalidValue {
+                    toml_path: "ai.provider.in_process_llama.top_p".to_string(),
+                    message: "must be within [0, 1]".to_string(),
+                });
+            }
+
             if cfg.model_path.as_os_str().is_empty() {
                 out.errors.push(ConfigValidationError::InvalidValue {
                     toml_path: "ai.provider.in_process_llama.model_path".to_string(),
@@ -484,16 +514,8 @@ fn validate_ai(
         }
     }
 
-    if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama) {
-        if let Some(cfg) = config.ai.provider.in_process_llama.as_ref() {
-            if cfg.context_size == 0 {
-                out.errors.push(ConfigValidationError::InvalidValue {
-                    toml_path: "ai.provider.in_process_llama.context_size".to_string(),
-                    message: "must be >= 1".to_string(),
-                });
-            }
-        }
-    }
+    // In-process llama config is validated earlier (alongside model path checks) so we can report
+    // all relevant issues together.
 }
 
 fn validate_ai_privacy_patterns(config: &NovaConfig, out: &mut ValidationDiagnostics) {

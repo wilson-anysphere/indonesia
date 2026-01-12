@@ -264,6 +264,84 @@ model_path = ""
 }
 
 #[test]
+fn validates_in_process_llama_context_size_is_bounded() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "in_process_llama"
+
+[ai.provider.in_process_llama]
+model_path = "model.gguf"
+context_size = 9000
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.in_process_llama.context_size".to_string(),
+            message: "must be <= 8192".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_in_process_llama_temperature_is_non_negative() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "in_process_llama"
+
+[ai.provider.in_process_llama]
+model_path = "model.gguf"
+temperature = -0.1
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.in_process_llama.temperature".to_string(),
+            message: "must be >= 0".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_in_process_llama_top_p_is_in_range() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "in_process_llama"
+
+[ai.provider.in_process_llama]
+model_path = "model.gguf"
+top_p = 1.1
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.in_process_llama.top_p".to_string(),
+            message: "must be within [0, 1]".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_privacy_excluded_paths_are_valid_globs() {
     let text = r#"
 [ai]

@@ -1213,6 +1213,7 @@ expression: schema
           "default": 4096,
           "type": "integer",
           "format": "uint",
+          "maximum": 8192.0,
           "minimum": 1.0
         },
         "gpu_layers": {
@@ -1231,7 +1232,8 @@ expression: schema
           "description": "Sampling temperature.",
           "default": 0.20000000298023224,
           "type": "number",
-          "format": "float"
+          "format": "float",
+          "minimum": 0.0
         },
         "threads": {
           "description": "Number of CPU threads to use (`n_threads`).\n\nIf unset or set to `0`, the backend will use the available parallelism.",
@@ -1247,7 +1249,9 @@ expression: schema
           "description": "Nucleus sampling probability.",
           "default": 0.949999988079071,
           "type": "number",
-          "format": "float"
+          "format": "float",
+          "maximum": 1.0,
+          "minimum": 0.0
         }
       },
       "additionalProperties": false
