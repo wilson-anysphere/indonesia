@@ -4561,6 +4561,30 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
+        Stmt::Synchronized(stmt) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &stmt.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_block(
+                file,
+                text,
+                &stmt.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Empty(_) => {}
     }
 }
