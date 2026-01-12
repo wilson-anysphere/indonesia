@@ -514,8 +514,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, watcher abstractions).
 - **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`).
 - **Maturity:** prototype
-- **Known gaps vs intended docs:**
-   - `nova-lsp` uses `Vfs` overlays today for open-document tracking + reading from disk; the remaining work is making `VfsPath`/ADR 0006 canonical URIs the single end-to-end representation for *all* “virtual documents” (archives, decompiled sources, generated files), rather than a mix of schemes/strings across crates.
+ - **Known gaps vs intended docs:**
+   - `nova-lsp` uses `Vfs` overlays today for open-document tracking + reading from disk; decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store. The remaining work is making `VfsPath`/ADR 0006 canonical URIs the single end-to-end representation for *all* “virtual documents” (archives, decompiled sources, generated files), rather than a mix of schemes/strings across crates.
    - The watcher abstractions (`FileWatcher`, `WatchEvent`) are not yet widely integrated; most file-change information still comes from editor-sent LSP notifications.
 
 ### `nova-worker`
