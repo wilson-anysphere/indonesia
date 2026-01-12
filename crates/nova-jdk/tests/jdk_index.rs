@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -76,6 +77,66 @@ fn builtin_index_resolves_minimal_fixture_types() {
             &Name::from("singletonList")
         ),
         Some(StaticMemberId::new("java.util.Collections::singletonList"))
+    );
+}
+
+#[test]
+fn builtin_type_stubs_cover_math_overloads_and_collections_generics() {
+    let index = JdkIndex::new();
+    let math = index
+        .lookup_type("java.lang.Math")
+        .expect("lookup_type should not error in builtin mode")
+        .expect("builtin index should expose a Math stub");
+    let max_desc: BTreeSet<&str> = math
+        .methods
+        .iter()
+        .filter(|m| m.name == "max")
+        .map(|m| m.descriptor.as_str())
+        .collect();
+    let min_desc: BTreeSet<&str> = math
+        .methods
+        .iter()
+        .filter(|m| m.name == "min")
+        .map(|m| m.descriptor.as_str())
+        .collect();
+
+    // `Math.max`/`min` are overloaded across primitive numeric types in the real JDK. Keep the
+    // built-in stubs representative enough to make overload resolution behave sensibly in tests.
+    let expected_overloads: BTreeSet<&str> = ["(II)I", "(JJ)J", "(FF)F", "(DD)D"].into();
+    assert!(
+        expected_overloads.is_subset(&max_desc),
+        "expected Math.max overload set {expected_overloads:?} to be present; got {max_desc:?}"
+    );
+    assert!(
+        expected_overloads.is_subset(&min_desc),
+        "expected Math.min overload set {expected_overloads:?} to be present; got {min_desc:?}"
+    );
+
+    let collections = index
+        .lookup_type("java.util.Collections")
+        .expect("lookup_type should not error in builtin mode")
+        .expect("builtin index should expose a Collections stub");
+
+    let empty_list = collections
+        .methods
+        .iter()
+        .find(|m| m.name == "emptyList")
+        .expect("Collections.emptyList stub should exist");
+    assert_eq!(
+        empty_list.signature.as_deref(),
+        Some("<T:Ljava/lang/Object;>()Ljava/util/List<TT;>;"),
+        "expected Collections.emptyList to include a generic signature so target typing can infer T"
+    );
+
+    let singleton_list = collections
+        .methods
+        .iter()
+        .find(|m| m.name == "singletonList")
+        .expect("Collections.singletonList stub should exist");
+    assert_eq!(
+        singleton_list.signature.as_deref(),
+        Some("<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;"),
+        "expected Collections.singletonList to include a generic signature so target typing can infer T"
     );
 }
 
