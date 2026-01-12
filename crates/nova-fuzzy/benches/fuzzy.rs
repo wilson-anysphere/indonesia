@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nova_core::SymbolId;
-use nova_fuzzy::{FuzzyMatcher, TrigramIndexBuilder};
+use nova_fuzzy::{FuzzyMatcher, TrigramCandidateScratch, TrigramIndexBuilder};
 
 fn configure_rayon() {
     // Criterion uses Rayon internally for statistics. On constrained CI hosts we can fail to spawn
@@ -133,7 +133,12 @@ fn bench_trigram_candidates(c: &mut Criterion) {
 
     for (id, query) in cases {
         group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
-            b.iter(|| black_box(index.candidates(black_box(*query))))
+            let mut scratch = TrigramCandidateScratch::default();
+            b.iter(|| {
+                let candidates =
+                    index.candidates_with_scratch(black_box(*query), black_box(&mut scratch));
+                black_box(candidates.len())
+            })
         });
     }
 
