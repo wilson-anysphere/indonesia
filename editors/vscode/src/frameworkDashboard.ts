@@ -437,7 +437,8 @@ async function openFrameworkTarget(value: unknown): Promise<void> {
   const editor = await vscode.window.showTextDocument(doc, { preview: true });
 
   if (target.kind === 'line') {
-    const line0 = Math.max(0, (Number.isFinite(target.line) ? target.line : 1) - 1);
+    const raw = Number.isFinite(target.line) ? target.line : 1;
+    const line0 = clampLineIndex(raw - 1, doc.lineCount);
     const pos = new vscode.Position(line0, 0);
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
@@ -447,6 +448,13 @@ async function openFrameworkTarget(value: unknown): Promise<void> {
   const range = utf8SpanToRange(doc, target.span);
   editor.selection = new vscode.Selection(range.start, range.end);
   editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+}
+
+function clampLineIndex(line: number, lineCount: number): number {
+  if (!Number.isFinite(line) || lineCount <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(Math.floor(line), lineCount - 1));
 }
 
 function utf8SpanToRange(document: vscode.TextDocument, span: { start: number; end: number }): vscode.Range {
