@@ -4,8 +4,6 @@ use nova_memory::{
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
-mod suite;
-
 struct TestEvictor {
     name: String,
     category: MemoryCategory,
