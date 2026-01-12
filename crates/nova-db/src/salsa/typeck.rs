@@ -3034,6 +3034,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
             _ => ClassKind::Class,
         };
+
         // Reserve the id early so self-referential members (e.g. `A next;`) can resolve to a stable
         // `Type::Class` instead of forcing `Type::Named`.
         let class_id = loader.store.intern_class_id(binary_name);
@@ -3074,148 +3075,17 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         );
         let class_type_param_ids: Vec<TypeVarId> =
             class_type_params.iter().map(|(_, id)| *id).collect();
-
-        // Best-effort: model declared supertypes so `lub()` and inherited member resolution work
-        // for workspace/source types.
-        let mut super_class = if binary_name == "java.lang.Object" {
-            None
-        } else {
-            Some(object_ty.clone())
-        };
-        let mut interfaces: Vec<Type> = Vec::new();
-
-        match item {
-            nova_hir::ids::ItemId::Class(id) => {
-                let class = tree.class(id);
-                if let Some(super_text) = class.extends.first() {
-                    preload_type_names(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        loader,
-                        super_text,
-                    );
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        super_text,
-                        class.extends_ranges.first().copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        super_class = Some(ty);
-                    }
-                }
-
-                for (idx, iface_text) in class.implements.iter().enumerate() {
-                    preload_type_names(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        loader,
-                        iface_text,
-                    );
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        iface_text,
-                        class.implements_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Interface(id) => {
-                // Model the implicit `Object` super chain so inherited `toString()`/etc can be
-                // discovered via member resolution.
-                if binary_name != "java.lang.Object" {
-                    super_class = Some(object_ty.clone());
-                }
-
-                let iface = tree.interface(id);
-                for (idx, ext_text) in iface.extends.iter().enumerate() {
-                    preload_type_names(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        loader,
-                        ext_text,
-                    );
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        ext_text,
-                        iface.extends_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Enum(id) => {
-                let en = tree.enum_(id);
-                for (idx, iface_text) in en.implements.iter().enumerate() {
-                    preload_type_names(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        loader,
-                        iface_text,
-                    );
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        iface_text,
-                        en.implements_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Record(id) => {
-                let rec = tree.record(id);
-                for (idx, iface_text) in rec.implements.iter().enumerate() {
-                    preload_type_names(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        loader,
-                        iface_text,
-                    );
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        self.resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        iface_text,
-                        rec.implements_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Annotation(_) => {}
-        }
+        let (kind, super_class, interfaces) = source_item_supertypes(
+            self.resolver,
+            &scopes.scopes,
+            class_scope,
+            loader,
+            &class_vars,
+            &tree,
+            item,
+            binary_name,
+            class_id,
+        );
 
         let members = match item {
             nova_hir::ids::ItemId::Class(id) => tree
@@ -3451,32 +3321,111 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     }
 
     fn ensure_type_loaded(&mut self, loader: &mut ExternalTypeLoader<'_>, ty: &Type) {
-        match ty {
-            Type::Class(nova_types::ClassType { def, .. }) => {
-                let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) else {
-                    return;
-                };
-                if self.ensure_workspace_class(loader, &name).is_none() {
-                    let _ = loader.ensure_class(&name);
+        fn ensure_inner<'a, 'idx>(
+            checker: &mut BodyChecker<'a, 'idx>,
+            loader: &mut ExternalTypeLoader<'_>,
+            ty: &Type,
+            seen_classes: &mut HashSet<ClassId>,
+            seen_type_vars: &mut HashSet<TypeVarId>,
+        ) {
+            match ty {
+                Type::Class(nova_types::ClassType { def, args }) => {
+                    if !seen_classes.insert(*def) {
+                        return;
+                    }
+
+                    // Ensure the class body is available (either workspace or external).
+                    let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) else {
+                        return;
+                    };
+                    if checker.ensure_workspace_class(loader, &name).is_none() {
+                        let _ = loader.ensure_class(&name);
+                    }
+
+                    // Also ensure type arguments are loaded (best-effort), since wildcards/type vars
+                    // can refer to external bounds that member lookup may need to normalize.
+                    for arg in args {
+                        ensure_inner(checker, loader, arg, seen_classes, seen_type_vars);
+                    }
+
+                    // Ensure direct supertypes/interfaces are loaded so member resolution can
+                    // traverse them (including when the supertypes are external and only stubbed).
+                    let (super_class, interfaces) = match loader.store.class(*def) {
+                        Some(def) => (def.super_class.clone(), def.interfaces.clone()),
+                        None => return,
+                    };
+
+                    if let Some(sc) = super_class {
+                        ensure_inner(checker, loader, &sc, seen_classes, seen_type_vars);
+                    }
+                    for iface in interfaces {
+                        ensure_inner(checker, loader, &iface, seen_classes, seen_type_vars);
+                    }
                 }
-            }
-            Type::Named(name) => {
-                if self.ensure_workspace_class(loader, name).is_none() {
-                    let _ = loader.ensure_class(name);
+                Type::Named(name) => {
+                    let id = loader.store.intern_class_id(name);
+                    if !seen_classes.insert(id) {
+                        return;
+                    }
+                    if checker.ensure_workspace_class(loader, name).is_none() {
+                        let _ = loader.ensure_class(name);
+                    }
+
+                    let (super_class, interfaces) = match loader.store.class(id) {
+                        Some(def) => (def.super_class.clone(), def.interfaces.clone()),
+                        None => return,
+                    };
+
+                    if let Some(sc) = super_class {
+                        ensure_inner(checker, loader, &sc, seen_classes, seen_type_vars);
+                    }
+                    for iface in interfaces {
+                        ensure_inner(checker, loader, &iface, seen_classes, seen_type_vars);
+                    }
                 }
-            }
-            Type::Array(elem) => self.ensure_type_loaded(loader, elem),
-            Type::Intersection(types) => {
-                for ty in types {
-                    self.ensure_type_loaded(loader, ty);
+                Type::Array(elem) => {
+                    ensure_inner(checker, loader, elem, seen_classes, seen_type_vars);
                 }
+                Type::Intersection(types) => {
+                    for t in types {
+                        ensure_inner(checker, loader, t, seen_classes, seen_type_vars);
+                    }
+                }
+                Type::TypeVar(id) => {
+                    if !seen_type_vars.insert(*id) {
+                        return;
+                    }
+                    let Some(tp) = loader.store.type_param(*id).cloned() else {
+                        return;
+                    };
+                    for bound in tp.upper_bounds {
+                        ensure_inner(checker, loader, &bound, seen_classes, seen_type_vars);
+                    }
+                    if let Some(lower) = tp.lower_bound {
+                        ensure_inner(checker, loader, &lower, seen_classes, seen_type_vars);
+                    }
+                }
+                Type::Wildcard(bound) => match bound {
+                    WildcardBound::Unbounded => {}
+                    WildcardBound::Extends(upper) | WildcardBound::Super(upper) => {
+                        ensure_inner(checker, loader, upper, seen_classes, seen_type_vars);
+                    }
+                },
+                Type::VirtualInner { owner, .. } => {
+                    let owner_ty = Type::class(*owner, vec![]);
+                    ensure_inner(checker, loader, &owner_ty, seen_classes, seen_type_vars);
+                }
+                Type::Void
+                | Type::Primitive(_)
+                | Type::Null
+                | Type::Unknown
+                | Type::Error => {}
             }
-            Type::Wildcard(WildcardBound::Unbounded) => {}
-            Type::Wildcard(WildcardBound::Extends(ty) | WildcardBound::Super(ty)) => {
-                self.ensure_type_loaded(loader, ty);
-            }
-            _ => {}
         }
+
+        let mut seen_classes = HashSet::new();
+        let mut seen_type_vars = HashSet::new();
+        ensure_inner(self, loader, ty, &mut seen_classes, &mut seen_type_vars);
     }
 
     fn is_statement_expression(&self, expr: HirExprId) -> bool {
@@ -6969,6 +6918,122 @@ fn allocate_type_params<'idx>(
     allocated
 }
 
+fn source_item_supertypes<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    loader: &mut ExternalTypeLoader<'_>,
+    type_vars: &HashMap<String, TypeVarId>,
+    tree: &nova_hir::item_tree::ItemTree,
+    item: nova_hir::ids::ItemId,
+    binary_name: &str,
+    self_class_id: ClassId,
+) -> (ClassKind, Option<Type>, Vec<Type>) {
+    let object_ty = Type::class(loader.store.well_known().object, vec![]);
+
+    let mut kind = match item {
+        nova_hir::ids::ItemId::Interface(_) | nova_hir::ids::ItemId::Annotation(_) => {
+            ClassKind::Interface
+        }
+        _ => ClassKind::Class,
+    };
+
+    let mut super_class: Option<Type> = None;
+    let mut interfaces: Vec<Type> = Vec::new();
+
+    match item {
+        nova_hir::ids::ItemId::Class(id) => {
+            let class = tree.class(id);
+
+            if let Some(ext) = class.extends.first() {
+                let base_span = class.extends_ranges.first().copied();
+                let resolved =
+                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, ext, base_span);
+                if !resolved.ty.is_errorish() {
+                    super_class = Some(resolved.ty);
+                }
+            }
+
+            if super_class.is_none() && binary_name != "java.lang.Object" {
+                super_class = Some(object_ty.clone());
+            }
+
+            for (idx, imp) in class.implements.iter().enumerate() {
+                let base_span = class.implements_ranges.get(idx).copied();
+                let resolved =
+                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, imp, base_span);
+                if !resolved.ty.is_errorish() {
+                    interfaces.push(resolved.ty);
+                }
+            }
+        }
+        nova_hir::ids::ItemId::Interface(id) => {
+            kind = ClassKind::Interface;
+            let iface = tree.interface(id);
+            for (idx, ext) in iface.extends.iter().enumerate() {
+                let base_span = iface.extends_ranges.get(idx).copied();
+                let resolved =
+                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, ext, base_span);
+                if !resolved.ty.is_errorish() {
+                    interfaces.push(resolved.ty);
+                }
+            }
+            super_class = None;
+        }
+        nova_hir::ids::ItemId::Annotation(_) => {
+            kind = ClassKind::Interface;
+            super_class = None;
+
+            // Best-effort: annotation types implicitly extend `java.lang.annotation.Annotation`.
+            let ann_id = loader.store.intern_class_id("java.lang.annotation.Annotation");
+            interfaces.push(Type::class(ann_id, vec![]));
+        }
+        nova_hir::ids::ItemId::Enum(id) => {
+            kind = ClassKind::Class;
+
+            // Best-effort: enums implicitly extend `java.lang.Enum<Self>`.
+            let enum_id = loader.store.intern_class_id("java.lang.Enum");
+            let self_ty = Type::class(self_class_id, vec![]);
+            super_class = Some(Type::class(enum_id, vec![self_ty]));
+
+            let enm = tree.enum_(id);
+            for (idx, imp) in enm.implements.iter().enumerate() {
+                let base_span = enm.implements_ranges.get(idx).copied();
+                let resolved =
+                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, imp, base_span);
+                if !resolved.ty.is_errorish() {
+                    interfaces.push(resolved.ty);
+                }
+            }
+        }
+        nova_hir::ids::ItemId::Record(id) => {
+            kind = ClassKind::Class;
+
+            // Best-effort: records implicitly extend `java.lang.Record`.
+            let record_id = loader.store.intern_class_id("java.lang.Record");
+            super_class = Some(Type::class(record_id, vec![]));
+
+            let record = tree.record(id);
+            for (idx, imp) in record.implements.iter().enumerate() {
+                let base_span = record.implements_ranges.get(idx).copied();
+                let resolved =
+                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, imp, base_span);
+                if !resolved.ty.is_errorish() {
+                    interfaces.push(resolved.ty);
+                }
+            }
+        }
+    }
+
+    // Preserve `Object` as the default supertype for classes if we failed to resolve an explicit
+    // superclass due to errors.
+    if kind == ClassKind::Class && super_class.is_none() && binary_name != "java.lang.Object" {
+        super_class = Some(object_ty);
+    }
+
+    (kind, super_class, interfaces)
+}
+
 fn define_source_types<'idx>(
     resolver: &nova_resolve::Resolver<'idx>,
     scopes: &nova_resolve::ItemTreeScopeBuildResult,
@@ -7014,11 +7079,6 @@ fn define_source_types<'idx>(
         }
 
         let class_id = loader.store.intern_class_id(&name);
-        let kind = match item {
-            nova_hir::ids::ItemId::Interface(_) => ClassKind::Interface,
-            _ => ClassKind::Class,
-        };
-
         let object_ty = Type::class(loader.store.well_known().object, vec![]);
 
         let class_scope = scopes
@@ -7041,111 +7101,17 @@ fn define_source_types<'idx>(
         source_type_vars
             .classes
             .insert(item, class_type_params.clone());
-
-        // Best-effort: preserve declared supertypes so `lub()` and inherited member resolution work
-        // for source types.
-        let mut super_class = if name == "java.lang.Object" {
-            None
-        } else {
-            Some(object_ty.clone())
-        };
-        let mut interfaces: Vec<Type> = Vec::new();
-
-        match item {
-            nova_hir::ids::ItemId::Class(id) => {
-                let class = tree.class(id);
-                if let Some(super_text) = class.extends.first() {
-                    preload_type_names(resolver, &scopes.scopes, class_scope, loader, super_text);
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        super_text,
-                        class.extends_ranges.first().copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        super_class = Some(ty);
-                    }
-                }
-                for (idx, iface_text) in class.implements.iter().enumerate() {
-                    preload_type_names(resolver, &scopes.scopes, class_scope, loader, iface_text);
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        iface_text,
-                        class.implements_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Interface(id) => {
-                let iface = tree.interface(id);
-                for (idx, ext_text) in iface.extends.iter().enumerate() {
-                    preload_type_names(resolver, &scopes.scopes, class_scope, loader, ext_text);
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        ext_text,
-                        iface.extends_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Enum(id) => {
-                let en = tree.enum_(id);
-                for (idx, iface_text) in en.implements.iter().enumerate() {
-                    preload_type_names(resolver, &scopes.scopes, class_scope, loader, iface_text);
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        iface_text,
-                        en.implements_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Record(id) => {
-                let rec = tree.record(id);
-                for (idx, iface_text) in rec.implements.iter().enumerate() {
-                    preload_type_names(resolver, &scopes.scopes, class_scope, loader, iface_text);
-                    let ty = nova_resolve::type_ref::resolve_type_ref_text(
-                        resolver,
-                        &scopes.scopes,
-                        class_scope,
-                        &*loader.store,
-                        &class_vars,
-                        iface_text,
-                        rec.implements_ranges.get(idx).copied(),
-                    )
-                    .ty;
-                    if !ty.is_errorish() && ty.is_reference() {
-                        interfaces.push(ty);
-                    }
-                }
-            }
-            nova_hir::ids::ItemId::Annotation(_) => {}
-        }
+        let (kind, super_class, interfaces) = source_item_supertypes(
+            resolver,
+            &scopes.scopes,
+            class_scope,
+            loader,
+            &class_vars,
+            tree,
+            item,
+            &name,
+            class_id,
+        );
 
         let mut fields = Vec::new();
         let mut constructors = Vec::new();

@@ -2669,6 +2669,57 @@ class C {
 }
 
 #[test]
+fn extends_allows_inherited_method_call() {
+    let src = r#"
+class A { int foo(){ return 1; } }
+class B extends A { int m(){ return foo(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inherited method call to resolve via extends; got {diags:?}"
+    );
+}
+
+#[test]
+fn extends_makes_super_type_precise() {
+    let src = r#"
+class A { int foo(){ return 1; } }
+class B extends A { int m(){ return super.foo(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected super.foo() to resolve via extends; got {diags:?}"
+    );
+
+    let offset = src.find("super").expect("snippet should contain `super`") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "A");
+}
+
+#[test]
+fn implements_allows_interface_method_lookup() {
+    let src = r#"
+interface I { int foo(); }
+class C implements I { int m(){ return foo(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected interface method lookup to resolve via implements; got {diags:?}"
+    );
+}
+
+#[test]
 fn this_types_as_enclosing_class() {
     let src = r#"
 class C {
@@ -2923,6 +2974,45 @@ fn cross_file_instance_method_call_resolves_on_workspace_class() {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
         "expected cross-file workspace method call to resolve, got {diags:?}"
+    );
+}
+
+#[test]
+fn cross_file_extends_allows_inherited_method_call() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/A.java",
+        "package p; class A { int foo(){ return 1; } }",
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/p/B.java",
+        "package p; class B extends A { int m(){ return foo(); } }",
+    );
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected cross-file inherited method call to resolve; got {diags:?}"
     );
 }
 
