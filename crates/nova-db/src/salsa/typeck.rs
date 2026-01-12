@@ -10987,19 +10987,6 @@ fn find_enclosing_target_typed_expr_in_expr(
             for item in items {
                 find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
             }
-            if let Some(init) = initializer {
-                find_enclosing_target_typed_expr_in_expr(body, *init, target, target_range, best);
-            }
-        }
-        HirExpr::ArrayInitializer { items, .. } => {
-            for item in items {
-                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
-            }
-        }
-        HirExpr::ArrayInitializer { items, .. } => {
-            for item in items {
-                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
-            }
         }
         HirExpr::Unary { expr, .. } => {
             find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
@@ -11049,20 +11036,6 @@ fn find_enclosing_target_typed_expr_in_expr(
                 );
             }
         },
-        HirExpr::Switch {
-            selector,
-            body: switch_body,
-            ..
-        } => {
-            find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
-            find_enclosing_target_typed_expr_in_stmt_inner(
-                body,
-                *switch_body,
-                target,
-                target_range,
-                best,
-            );
-        }
         HirExpr::Invalid { children, .. } => {
             for child in children {
                 find_enclosing_target_typed_expr_in_expr(body, *child, target, target_range, best);

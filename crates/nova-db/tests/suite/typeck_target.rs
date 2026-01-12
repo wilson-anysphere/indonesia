@@ -756,3 +756,163 @@ class C { long m(){ return 1L << 2; } }
         .expect("expected a type at offset");
     assert_eq!(ty, "long");
 }
+
+#[test]
+fn conditional_with_null_infers_string() {
+    let src = r#"
+class C { String m(){ return true ? "a" : null; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn equality_expression_types_as_boolean() {
+    let src = r#"
+class C { void m(){ boolean b = 1 == 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("==").expect("snippet should contain ==");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn logical_not_requires_boolean_operand() {
+    let src = r#"
+class C { void m(){ boolean b = !1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-unary-op"),
+        "expected invalid-unary-op diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find('!').expect("snippet should contain !");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn post_increment_expression_has_operand_type() {
+    let src = r#"
+class C { void m(){ byte b = 0; byte c = b++; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("++").expect("snippet should contain ++");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "byte");
+}
+
+#[test]
+fn unary_plus_promotes_byte_to_int() {
+    let src = r#"
+class C { int m(byte b){ return +b; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('+').expect("snippet should contain unary +");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn numeric_addition_promotes_to_long() {
+    let src = r#"
+class C { long m(){ return 1 + 2L; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('+').expect("snippet should contain +");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "long");
+}
+
+#[test]
+fn bitwise_or_on_bytes_promotes_to_int() {
+    let src = r#"
+class C { int m(byte a, byte b){ return a | b; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('|').expect("snippet should contain |");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn shift_expression_with_byte_lhs_types_as_int() {
+    let src = r#"
+class C { int m(byte a){ return a << 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("<<").expect("snippet should contain <<");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
