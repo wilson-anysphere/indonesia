@@ -9,6 +9,7 @@
 //! - Best-effort navigation between injection sites and bean definitions
 
 mod analysis;
+mod analyzer;
 mod applicability;
 mod completions;
 mod config;
@@ -18,6 +19,7 @@ pub use analysis::{
     NavigationTarget, SourceDiagnostic, SourceSpan, SPRING_AMBIGUOUS_BEAN, SPRING_CIRCULAR_DEP,
     SPRING_NO_BEAN,
 };
+pub use analyzer::SpringAnalyzer;
 pub use applicability::is_spring_applicable;
 pub use completions::{
     profile_completions, property_keys_from_configs, qualifier_completions, value_completions,
