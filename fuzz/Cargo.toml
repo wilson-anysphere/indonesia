@@ -40,6 +40,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_reparse_java"
+path = "fuzz_targets/fuzz_reparse_java.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_java"
 path = "fuzz_targets/parse_java.rs"
 test = false
