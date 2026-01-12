@@ -7297,6 +7297,9 @@ import java.util.List;
 class C {
     List<@Missing String> xs;
     List<@ Missing String> ys;
+    List<@/*comment*/Missing String> zs;
+    List<@ // comment
+        Missing String> ws;
 }
 "#;
 
