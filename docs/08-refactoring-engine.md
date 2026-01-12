@@ -166,6 +166,7 @@ Current implementation policy (semantic + statement-aware):
   - expressions that are the condition of `while (...) { ... }` loops
   - expressions that are the condition of `do { ... } while (...);` loops
   - expressions that appear in the header of `for (...) { ... }` statements (init/condition/update)
+  - files that do not parse cleanly, or selections that do not resolve to a single expression node
 
 API shape (refactoring-engine entrypoint):
 
@@ -197,6 +198,7 @@ Current implementation policy:
   - do not have an initializer
   - are written to / mutated after initialization (must be effectively final)
   - have an initializer that is not safe to duplicate (side-effectful initializers are rejected, especially when inlining multiple usages)
+- **Expression hygiene:** the implementation may introduce parentheses around the inlined initializer to preserve operator precedence and avoid changing evaluation order.
 - **Safe deletion rules:** the declaration is removed only when:
   - the refactoring is run in **inline all usages** mode, or
   - the refactoring is run in **inline at cursor** mode *and* that usage is the **last remaining** usage.
