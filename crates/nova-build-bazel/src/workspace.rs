@@ -183,6 +183,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     ///
     /// This walks reverse dependencies starting from the file label, traversing only `filegroup`
     /// and `alias` rules until it hits `java_*` rules, which form the compiling frontier.
+    ///
+    /// To keep queries scoped to a single package (avoiding expensive `rdeps(//..., ...)`), this
+    /// prefers `same_pkg_direct_rdeps(...)` when available and falls back to `rdeps(//pkg:*, ...)`.
     pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
         self.java_owning_targets_for_file_with_universe(file.as_ref(), None)
     }

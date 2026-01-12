@@ -5,6 +5,7 @@
 //! - workspace discovery (`WORKSPACE`, `WORKSPACE.bazel`, `MODULE.bazel`)
 //! - Java target discovery via `bazel query`
 //! - per-target classpath / module-path / source roots via `bazel aquery` (Javac actions)
+//! - mapping workspace source files to owning `java_*` targets (for hot swap)
 //! - caching keyed by query/aquery expression version and Bazel build definition/config file digests
 
 mod aquery;
