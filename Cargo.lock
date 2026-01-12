@@ -3906,6 +3906,7 @@ dependencies = [
  "nova-syntax",
  "nova-types",
  "once_cell",
+ "ra_ap_salsa",
  "regex",
  "serde",
  "serde_json",

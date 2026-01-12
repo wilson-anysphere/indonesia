@@ -90,6 +90,17 @@ pub trait Database {
     fn file_id(&self, _path: &Path) -> Option<FileId> {
         None
     }
+
+    /// Optional hook for legacy `Database` implementations to expose a Salsa-backed database.
+    ///
+    /// This is used by higher-level IDE helpers to reuse a long-lived incremental query database
+    /// instead of rebuilding a fresh [`crate::SalsaDatabase`] per request.
+    ///
+    /// The returned handle must be a cheap clone of a thread-safe wrapper (see
+    /// [`crate::SalsaDatabase`]).
+    fn salsa_db(&self) -> Option<crate::SalsaDatabase> {
+        None
+    }
 }
 
 impl nova_core::WasmHostDb for dyn Database + Send + Sync {

@@ -18,7 +18,7 @@ use lsp_types::{
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use nova_db::{Database, FileId, NovaFlow, NovaTypeck, SalsaDatabase};
+use nova_db::{Database, FileId, NovaFlow, NovaInputs, NovaTypeck, SalsaDatabase};
 use nova_fuzzy::FuzzyMatcher;
 use nova_jdk::JdkIndex;
 use nova_types::{
@@ -412,11 +412,142 @@ fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
 // Diagnostics
 // -----------------------------------------------------------------------------
 
+fn with_salsa_snapshot_for_single_file<T>(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    f: impl FnOnce(&nova_db::Snapshot) -> T,
+) -> T {
+    let project = nova_db::ProjectId::from_raw(0);
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
+
+    let salsa = match db.salsa_db() {
+        Some(salsa) => {
+            ensure_salsa_inputs_for_single_file(&salsa, project, &jdk, file, text);
+            salsa
+        }
+        None => {
+            let salsa = SalsaDatabase::new();
+            seed_salsa_inputs_for_single_file(&salsa, project, &jdk, file, text);
+            salsa
+        }
+    };
+
+    let snap = salsa.snapshot();
+    f(&snap)
+}
+
+fn seed_salsa_inputs_for_single_file(
+    salsa: &SalsaDatabase,
+    project: nova_db::ProjectId,
+    jdk: &Arc<JdkIndex>,
+    file: FileId,
+    text: &str,
+) {
+    salsa.set_jdk_index(project, Arc::clone(jdk));
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file, text.to_string());
+    salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
+    salsa.set_project_files(project, Arc::new(vec![file]));
+}
+
+fn ensure_salsa_inputs_for_single_file(
+    salsa: &SalsaDatabase,
+    project: nova_db::ProjectId,
+    jdk: &Arc<JdkIndex>,
+    file: FileId,
+    text: &str,
+) {
+    let should_set_jdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.jdk_index(project))
+    }))
+    .map(|current| !Arc::ptr_eq(&current.0, jdk))
+    .unwrap_or(true);
+    if should_set_jdk {
+        salsa.set_jdk_index(project, Arc::clone(jdk));
+    }
+
+    let should_clear_classpath = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.classpath_index(project))
+    }))
+    .map(|current| current.is_some())
+    .unwrap_or(true);
+    if should_clear_classpath {
+        salsa.set_classpath_index(project, None);
+    }
+
+    let should_set_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.file_project(file))
+    }))
+    .map(|current| current != project)
+    .unwrap_or(true);
+    if should_set_file_project {
+        salsa.set_file_project(file, project);
+    }
+
+    let should_set_file_rel_path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.file_rel_path(file))
+    }))
+    .is_err();
+    if should_set_file_rel_path {
+        salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
+    }
+
+    let project_files = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.project_files(project))
+    }))
+    .ok();
+
+    match project_files {
+        Some(current) => {
+            if !current.iter().any(|id| *id == file) {
+                let mut files = current.as_ref().clone();
+                files.push(file);
+                files.sort_by_key(|id| id.to_raw());
+                files.dedup();
+                salsa.set_project_files(project, Arc::new(files));
+            }
+        }
+        None => {
+            salsa.set_project_files(project, Arc::new(vec![file]));
+        }
+    }
+
+    let should_set_file_exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.file_exists(file))
+    }))
+    .map(|current| !current)
+    .unwrap_or(true);
+    if should_set_file_exists {
+        salsa.set_file_exists(file, true);
+    }
+
+    let should_set_source_root = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.source_root(file))
+    }))
+    .is_err();
+    if should_set_source_root {
+        salsa.set_source_root(file, nova_db::SourceRootId::from_raw(0));
+    }
+
+    let should_set_file_text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.file_content(file))
+    }))
+    .map(|current| current.as_str() != text)
+    .unwrap_or(true);
+    if should_set_file_text {
+        salsa.set_file_text(file, text.to_string());
+    }
+}
+
 /// Core (non-framework) diagnostics for a single file.
 ///
 /// Framework diagnostics (Spring/JPA/Micronaut/Quarkus/Dagger) are provided via the unified
 /// `nova-ext` framework providers and `crate::framework_cache::framework_diagnostics`.
-pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+pub fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     // Avoid emitting Java-centric token diagnostics for application config files; those are handled
     // by the framework layer.
     if let Some(path) = db.file_path(file) {
@@ -460,23 +591,10 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
 
     // 2) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
     if is_java {
-        let project = nova_db::ProjectId::from_raw(0);
-        let jdk = JDK_INDEX
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(JdkIndex::new()));
-        let salsa = SalsaDatabase::new();
-        salsa.set_jdk_index(project, jdk);
-        salsa.set_classpath_index(project, None);
-        salsa.set_project_files(project, Arc::new(vec![file]));
-        salsa.set_file_text(file, text.to_string());
-        // `nova-db` type checking consults the workspace definition map, which in turn
-        // requires a minimal project file list + relative path for determinism.
-        salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
-        salsa.set_project_files(project, Arc::new(vec![file]));
-        let snap = salsa.snapshot();
-        diagnostics.extend(snap.type_diagnostics(file));
-        diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+            diagnostics.extend(snap.type_diagnostics(file));
+            diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        });
     }
 
     // 3) Unresolved references (best-effort).
@@ -550,21 +668,10 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
 
     // 2) Demand-driven type-checking diagnostics (best-effort, Salsa-backed).
     if is_java {
-        let project = nova_db::ProjectId::from_raw(0);
-        let jdk = JDK_INDEX
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(JdkIndex::new()));
-        let salsa = SalsaDatabase::new();
-        salsa.set_jdk_index(project, jdk);
-        salsa.set_classpath_index(project, None);
-        salsa.set_project_files(project, Arc::new(vec![file]));
-        salsa.set_file_text(file, text.to_string());
-        salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
-        salsa.set_project_files(project, Arc::new(vec![file]));
-        let snap = salsa.snapshot();
-        diagnostics.extend(snap.type_diagnostics(file));
-        diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+            diagnostics.extend(snap.type_diagnostics(file));
+            diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        });
     }
 
     // 3) Unresolved references (best-effort).
@@ -4038,20 +4145,9 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     }
 
     // Fallback: use Salsa-backed, demand-driven type checking to show an expression type.
-    let project = nova_db::ProjectId::from_raw(0);
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
-    let salsa = SalsaDatabase::new();
-    salsa.set_jdk_index(project, jdk);
-    salsa.set_classpath_index(project, None);
-    salsa.set_project_files(project, Arc::new(vec![file]));
-    salsa.set_file_text(file, text.to_string());
-    salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
-    salsa.set_project_files(project, Arc::new(vec![file]));
-    let snap = salsa.snapshot();
-    let ty = snap.type_at_offset_display(file, offset as u32)?;
+    let ty = with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+        snap.type_at_offset_display(file, offset as u32)
+    })?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -4238,6 +4334,8 @@ static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> = Lazy::new(|| {
 
     configured.or_else(|| JdkIndex::discover(None).ok().map(Arc::new))
 });
+
+static EMPTY_JDK_INDEX: Lazy<Arc<JdkIndex>> = Lazy::new(|| Arc::new(JdkIndex::new()));
 
 fn semantic_call_signatures(
     types: &mut TypeStore,

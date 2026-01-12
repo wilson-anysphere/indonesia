@@ -1,0 +1,107 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use nova_db::{Database as LegacyDatabase, FileId, ProjectId, QueryStat, SalsaDatabase};
+use nova_jdk::JdkIndex;
+
+fn stat(db: &SalsaDatabase, query: &str) -> QueryStat {
+    db.query_stats()
+        .by_query
+        .get(query)
+        .copied()
+        .unwrap_or_default()
+}
+
+struct TestDb {
+    file: FileId,
+    path: PathBuf,
+    text: String,
+    salsa: SalsaDatabase,
+}
+
+impl LegacyDatabase for TestDb {
+    fn file_content(&self, file_id: FileId) -> &str {
+        if file_id == self.file {
+            self.text.as_str()
+        } else {
+            ""
+        }
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<&Path> {
+        if file_id == self.file {
+            Some(self.path.as_path())
+        } else {
+            None
+        }
+    }
+
+    fn salsa_db(&self) -> Option<SalsaDatabase> {
+        Some(self.salsa.clone())
+    }
+}
+
+#[test]
+fn core_diagnostics_reuse_caller_provided_salsa_database() {
+    let file = FileId::from_raw(1);
+    let path = PathBuf::from("/test.java");
+    let text = r#"
+class A {
+  void m() {
+    int x = 0;
+  }
+}
+"#
+    .to_string();
+
+    let project = ProjectId::from_raw(0);
+    let salsa = SalsaDatabase::new();
+    salsa.set_jdk_index(project, Arc::new(JdkIndex::new()));
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file, text.clone());
+    salsa.clear_query_stats();
+
+    let db = TestDb {
+        file,
+        path,
+        text,
+        salsa: salsa.clone(),
+    };
+
+    let _ = nova_ide::core_file_diagnostics(&db, file);
+    let type_before = stat(&salsa, "type_diagnostics");
+    let flow_before = stat(&salsa, "flow_diagnostics_for_file");
+    assert!(
+        type_before.executions > 0,
+        "expected type_diagnostics to execute at least once when using the caller-provided salsa db"
+    );
+    assert!(
+        flow_before.executions > 0,
+        "expected flow_diagnostics_for_file to execute at least once when using the caller-provided salsa db"
+    );
+
+    salsa.with_write(|db| ra_salsa::Database::synthetic_write(db, ra_salsa::Durability::LOW));
+
+    let _ = nova_ide::core_file_diagnostics(&db, file);
+    let type_after = stat(&salsa, "type_diagnostics");
+    let flow_after = stat(&salsa, "flow_diagnostics_for_file");
+
+    assert_eq!(
+        type_after.executions, type_before.executions,
+        "expected type_diagnostics to be memoized across calls"
+    );
+    assert!(
+        type_after.validated_memoized > type_before.validated_memoized,
+        "expected type_diagnostics to validate memoized results on subsequent calls"
+    );
+
+    assert_eq!(
+        flow_after.executions, flow_before.executions,
+        "expected flow_diagnostics_for_file to be memoized across calls"
+    );
+    assert!(
+        flow_after.validated_memoized > flow_before.validated_memoized,
+        "expected flow_diagnostics_for_file to validate memoized results on subsequent calls"
+    );
+}
+
