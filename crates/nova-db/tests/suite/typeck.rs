@@ -3872,7 +3872,7 @@ class C {
 }
 
 #[test]
-fn unresolved_type_use_annotation_types_are_anchored() {
+fn type_use_annotation_types_are_ignored() {
     let src = r#"
 import java.util.List;
 
@@ -3883,14 +3883,12 @@ class C {
 
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
-    let diag = diags
-        .iter()
-        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for type-use annotation type");
-    let span = diag
-        .span
-        .expect("unresolved-type diagnostic should have a span");
-    assert_eq!(&src[span.start..span.end], "Missing");
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "expected type-use annotations to be ignored by typeck/type_ref parsing; got {diags:?}"
+    );
 }
 
 #[test]
