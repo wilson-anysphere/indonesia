@@ -2958,6 +2958,7 @@ fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
 
 fn import_completions(
     db: &dyn Database,
+    file: FileId,
     text_index: &TextIndex<'_>,
     offset: usize,
     ctx: &ImportContext,
@@ -3026,7 +3027,6 @@ fn import_completions(
         .collect();
     workspace_classes.sort();
     workspace_classes.dedup();
-
     let mut items = Vec::new();
 
     // Package segment completions.
@@ -3117,11 +3117,58 @@ fn import_completions(
                 new_text: remainder,
             })),
             ..Default::default()
-        };
-        mark_workspace_completion_item(&mut item);
-        items.push(item);
+    };
+    mark_workspace_completion_item(&mut item);
+    items.push(item);
+}
+let mut seen_binary: HashSet<String> = HashSet::new();
+
+    // Workspace nested types come from the completion-time `TypeStore` (Nova stores them using `$`
+    // binary names, while Java source references them using `.`).
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        'workspace_types: for query_prefix in nested_binary_prefixes(prefix.as_ref()) {
+            if items.len() >= MAX_ITEMS {
+                break 'workspace_types;
+            }
+
+            for (_id, def) in env.types().iter_classes() {
+                if items.len() >= MAX_ITEMS {
+                    break 'workspace_types;
+                }
+
+                let binary = def.name.as_str();
+                if !binary.starts_with(query_prefix.as_str()) {
+                    continue;
+                }
+                if !seen_binary.insert(binary.to_string()) {
+                    continue;
+                }
+
+                let source_full = binary_name_to_source_name(binary);
+                if !source_full.starts_with(base_prefix.as_ref()) {
+                    continue;
+                }
+                let remainder = source_full[base_prefix.len()..].to_string();
+                if remainder.is_empty() {
+                    continue;
+                }
+                if !seen_types.insert(remainder.clone()) {
+                    continue;
+                }
+
+                items.push(CompletionItem {
+                    label: remainder.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(source_full),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: replace_range,
+                        new_text: remainder,
+                    })),
+                    ..Default::default()
+                });
+            }
+        }
     }
-    let mut seen_binary: HashSet<String> = HashSet::new();
     'types: for query_prefix in nested_binary_prefixes(prefix.as_ref()) {
         let start = class_names.partition_point(|name| name.as_str() < query_prefix.as_str());
         for binary in &class_names[start..] {
@@ -3185,6 +3232,8 @@ fn import_completions(
 }
 
 fn qualified_type_name_completions(
+    db: &dyn Database,
+    file: FileId,
     java_source: &str,
     prefix_start: usize,
     offset: usize,
@@ -3208,66 +3257,191 @@ fn qualified_type_name_completions(
     };
 
     let imports = parse_java_imports(java_source);
-    let mut qualified_prefix = raw_prefix.clone();
-    let mut head_mapping: Option<String> = None;
-    if let Some(full) = imports
-        .explicit_types
-        .iter()
-        .find(|ty| ty.rsplit('.').next().is_some_and(|simple| simple == head))
-    {
-        let suffix = &raw_prefix[head.len()..];
-        qualified_prefix = format!("{full}{suffix}");
-        head_mapping = Some(full.clone());
-    }
 
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
         .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let fallback_jdk = JdkIndex::new();
+
+    let env = completion_cache::completion_env_for_file(db, file);
+    let env_types = env.as_deref().map(|env| env.types());
+
+    #[derive(Debug, Clone)]
+    struct HeadMapping {
+        qualified_head: String,
+        render_head: String,
+    }
+
+    // Always include the raw prefix as-typed (for fully-qualified names).
+    let mut prefix_candidates: Vec<(String, Option<HeadMapping>)> =
+        vec![(raw_prefix.clone(), None)];
+
+    // If the first segment is a type name in scope (explicit import, star import, or same package),
+    // also query the fully-qualified prefix so we can find binary `$`-named nested types.
+    let suffix = &raw_prefix[head.len()..];
+    let mut seen_heads: HashSet<String> = HashSet::new();
+
+    let mut add_head_candidate = |qualified_head: String| {
+        if qualified_head == head {
+            return;
+        }
+        if !seen_heads.insert(qualified_head.clone()) {
+            return;
+        }
+
+        // The completion-time `TypeStore` uses binary names (`Outer$Inner`), while Java source
+        // imports/references use `.` (`Outer.Inner`). Consider `$` variants when checking whether
+        // the type exists so we can resolve imported nested types.
+        let binary_variants = nested_binary_prefixes(qualified_head.as_str());
+        let exists_in_types = env_types.is_some_and(|types| {
+            binary_variants
+                .iter()
+                .any(|cand| types.class_id(cand.as_str()).is_some())
+        });
+        let exists_in_jdk = binary_variants.iter().any(|cand| {
+            let name = QualifiedName::from_dotted(cand.as_str());
+            jdk.resolve_type(&name).is_some() || fallback_jdk.resolve_type(&name).is_some()
+        });
+
+        if !exists_in_types && !exists_in_jdk {
+            return;
+        }
+
+        prefix_candidates.push((
+            format!("{qualified_head}{suffix}"),
+            Some(HeadMapping {
+                qualified_head,
+                render_head: head.to_string(),
+            }),
+        ));
+    };
+
+    for full in imports
+        .explicit_types
+        .iter()
+        .filter(|ty| ty.rsplit('.').next().is_some_and(|simple| simple == head))
+    {
+        add_head_candidate(full.clone());
+    }
+    if !imports.current_package.is_empty() {
+        add_head_candidate(format!("{}.{}", imports.current_package, head));
+    }
+    for pkg in &imports.star_packages {
+        add_head_candidate(format!("{pkg}.{head}"));
+    }
+    // Implicit `java.lang.*` imports.
+    add_head_candidate(format!("java.lang.{head}"));
 
     let mut out = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen_binary: HashSet<String> = HashSet::new();
 
-    for query_prefix in nested_binary_prefixes(&qualified_prefix) {
+    for (qualified_prefix, head_mapping) in prefix_candidates {
         if out.len() >= MAX_ITEMS {
             break;
         }
-        let names = jdk
-            .class_names_with_prefix(&query_prefix)
-            .or_else(|_| JdkIndex::new().class_names_with_prefix(&query_prefix))
-            .unwrap_or_default();
 
-        for binary in names {
+        for query_prefix in nested_binary_prefixes(&qualified_prefix) {
             if out.len() >= MAX_ITEMS {
                 break;
             }
-            if !seen.insert(binary.clone()) {
-                continue;
-            }
 
-            let source_full = binary_name_to_source_name(&binary);
-            let rendered = match head_mapping.as_deref() {
-                Some(qualified_head) if source_full.starts_with(qualified_head) => {
-                    format!("{head}{}", &source_full[qualified_head.len()..])
+            // 1) Workspace/source types (via `TypeStore`, includes nested types).
+            if let Some(types) = env_types {
+                for (_id, def) in types.iter_classes() {
+                    if out.len() >= MAX_ITEMS {
+                        break;
+                    }
+
+                    let binary = def.name.as_str();
+                    if !binary.starts_with(query_prefix.as_str()) {
+                        continue;
+                    }
+                    if !seen_binary.insert(binary.to_string()) {
+                        continue;
+                    }
+
+                    let source_full = binary_name_to_source_name(binary);
+                    let rendered = match head_mapping.as_ref() {
+                        Some(map) if source_full.starts_with(map.qualified_head.as_str()) => {
+                            format!(
+                                "{}{}",
+                                map.render_head,
+                                &source_full[map.qualified_head.len()..]
+                            )
+                        }
+                        _ => source_full.clone(),
+                    };
+
+                    if !rendered.starts_with(&base_prefix) {
+                        continue;
+                    }
+                    let remainder = rendered[base_prefix.len()..].to_string();
+                    if remainder.is_empty() {
+                        continue;
+                    }
+
+                    let kind = match def.kind {
+                        ClassKind::Interface => CompletionItemKind::INTERFACE,
+                        ClassKind::Class => CompletionItemKind::CLASS,
+                    };
+
+                    out.push(CompletionItem {
+                        label: remainder.clone(),
+                        kind: Some(kind),
+                        detail: Some(source_full),
+                        insert_text: Some(remainder),
+                        ..Default::default()
+                    });
                 }
-                _ => source_full.clone(),
-            };
-
-            if !rendered.starts_with(&base_prefix) {
-                continue;
-            }
-            let remainder = rendered[base_prefix.len()..].to_string();
-            if remainder.is_empty() {
-                continue;
             }
 
-            out.push(CompletionItem {
-                label: remainder.clone(),
-                kind: Some(CompletionItemKind::CLASS),
-                detail: Some(source_full),
-                insert_text: Some(remainder),
-                ..Default::default()
-            });
+            if out.len() >= MAX_ITEMS {
+                break;
+            }
+
+            // 2) JDK index types (includes nested types via `$` binary names).
+            let names = jdk
+                .class_names_with_prefix(&query_prefix)
+                .or_else(|_| fallback_jdk.class_names_with_prefix(&query_prefix))
+                .unwrap_or_default();
+
+            for binary in names {
+                if out.len() >= MAX_ITEMS {
+                    break;
+                }
+                if !seen_binary.insert(binary.clone()) {
+                    continue;
+                }
+
+                let source_full = binary_name_to_source_name(&binary);
+                let rendered = match head_mapping.as_ref() {
+                    Some(map) if source_full.starts_with(map.qualified_head.as_str()) => {
+                        format!(
+                            "{}{}",
+                            map.render_head,
+                            &source_full[map.qualified_head.len()..]
+                        )
+                    }
+                    _ => source_full.clone(),
+                };
+
+                if !rendered.starts_with(&base_prefix) {
+                    continue;
+                }
+                let remainder = rendered[base_prefix.len()..].to_string();
+                if remainder.is_empty() {
+                    continue;
+                }
+
+                out.push(CompletionItem {
+                    label: remainder.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(source_full),
+                    insert_text: Some(remainder),
+                    ..Default::default()
+                });
+            }
         }
     }
 
@@ -4108,7 +4282,7 @@ pub(crate) fn core_completions(
         if cancel.is_cancelled() {
             return Vec::new();
         }
-        let items = import_completions(db, &text_index, offset, &ctx);
+        let items = import_completions(db, file, &text_index, offset, &ctx);
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -4208,6 +4382,8 @@ pub(crate) fn core_completions(
             // prefix as a qualified type name (e.g. `Map.En` / `java.util.Map.En`).
             if !receiver_is_value_receiver(&analysis, &receiver, ctx.dot_offset) {
                 items.extend(qualified_type_name_completions(
+                    db,
+                    file,
                     text,
                     prefix_start,
                     offset,
@@ -4400,7 +4576,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
 
         if let Some(ctx) = import_context(text, offset) {
-            let items = import_completions(db, &text_index, offset, &ctx);
+            let items = import_completions(db, file, &text_index, offset, &ctx);
             return decorate_completions(&text_index, ctx.replace_start, offset, items);
         }
 
@@ -4723,6 +4899,8 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let analysis = analyze(text);
             if !receiver_is_value_receiver(&analysis, &receiver, ctx.dot_offset) {
                 items.extend(qualified_type_name_completions(
+                    db,
+                    file,
                     text,
                     prefix_start,
                     offset,

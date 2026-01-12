@@ -2300,6 +2300,79 @@ class A {}
 }
 
 #[test]
+fn completion_type_position_nested_type_with_star_import_includes_entry() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A { Map.En<|> e; }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Entry"),
+        "expected type-position completion list to contain Map.Entry via star import; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_workspace_nested_type_includes_inner() {
+    let (db, file, pos) = fixture(
+        r#"
+package p;
+
+class Outer {
+  static class Inner {}
+}
+
+class A { Outer.In<|> x; }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Inner"),
+        "expected type-position completion list to contain Outer.Inner; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_imported_workspace_nested_type_includes_deep() {
+    let (db, file, pos) = fixture_multi(
+        PathBuf::from("/workspace/src/main/java/a/A.java"),
+        r#"
+package a;
+
+import p.Outer.Inner;
+
+class A { Inner.De<|> x; }
+"#,
+        vec![(
+            PathBuf::from("/workspace/src/main/java/p/Outer.java"),
+            r#"
+package p;
+
+public class Outer {
+  public static class Inner {
+    public static class Deep {}
+  }
+}
+"#
+            .to_string(),
+        )],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Deep"),
+        "expected type-position completion list to contain Inner.Deep; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_inside_line_comment_is_empty() {
     let (db, file, pos) = fixture("class A { // if<|>\n }");
     let items = completions(&db, file, pos);
