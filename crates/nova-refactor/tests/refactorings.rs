@@ -667,7 +667,7 @@ fn extract_variable_trims_whitespace_in_selection_range() {
 }
 
 #[test]
-fn extract_variable_rejects_initializer_that_depends_on_earlier_declarator() {
+fn extract_variable_allows_initializer_that_depends_on_earlier_declarator() {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
   void m() {
@@ -679,25 +679,28 @@ fn extract_variable_rejects_initializer_that_depends_on_earlier_declarator() {
     let (src, range) = extract_range(fixture);
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
-    let err = extract_variable(
+    let edit = extract_variable(
         &db,
         ExtractVariableParams {
-            file,
+            file: file.clone(),
             expr_range: WorkspaceTextRange::new(range.start, range.end),
             name: "sum".into(),
             use_var: true,
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from multi-declarator local variable declaration when expression depends on an earlier declarator"
-        ),
-        "expected ExtractNotSupported due to earlier declarator dependency, got: {err:?}"
-    );
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    int b = 1;
+    var sum = b + 1;
+    int a = sum;
+    System.out.println(a);
+  }
+}
+"#;
+    assert_eq!(after, expected);
 }
 
 #[test]
@@ -735,7 +738,7 @@ fn extract_variable_allows_initializer_in_first_declarator_of_multi_declarator_s
 }
 
 #[test]
-fn extract_variable_rejects_later_declarator_initializer_even_if_outer_names_exist() {
+fn extract_variable_allows_later_declarator_initializer_even_if_outer_names_exist() {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
   void m() {
@@ -747,25 +750,28 @@ fn extract_variable_rejects_later_declarator_initializer_even_if_outer_names_exi
     let (src, range) = extract_range(fixture);
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
-    let err = extract_variable(
+    let edit = extract_variable(
         &db,
         ExtractVariableParams {
-            file,
+            file: file.clone(),
             expr_range: WorkspaceTextRange::new(range.start, range.end),
             name: "sum".into(),
             use_var: true,
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from multi-declarator local variable declaration when expression depends on an earlier declarator"
-        ),
-        "expected ExtractNotSupported due to earlier declarator dependency, got: {err:?}"
-    );
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    int b = 10;
+    int b2 = 1;
+    var sum = b2 + b;
+    int a = sum;
+  }
+}
+"#;
+    assert_eq!(after, expected);
 }
 
 #[test]
