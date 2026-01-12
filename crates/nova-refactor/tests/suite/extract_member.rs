@@ -52,6 +52,39 @@ class A {
 }
 
 #[test]
+fn extract_constant_infers_long_for_long_literal() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        long x = /*[*/1L/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final long VALUE = 1L;
+
+    void m() {
+        long x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn extract_constant_infers_long_for_long_expression() {
     let (code, range) = fixture_range(
         r#"
@@ -78,6 +111,39 @@ class A {
 
     void m() {
         long x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_double_for_double_literal() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        double x = /*[*/1.0/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final double VALUE = 1.0;
+
+    void m() {
+        double x = VALUE;
     }
 }
 "#
@@ -118,6 +184,39 @@ class A {
 }
 
 #[test]
+fn extract_constant_infers_float_for_float_literal() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        float x = /*[*/1.0f/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final float VALUE = 1.0f;
+
+    void m() {
+        float x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn extract_constant_infers_float_for_float_expression() {
     let (code, range) = fixture_range(
         r#"
@@ -144,76 +243,6 @@ class A {
 
     void m() {
         float x = VALUE;
-    }
-}
-"#
-    );
-}
-
-#[test]
-fn extract_constant_infers_boolean_for_boolean_expression() {
-    let (code, range) = fixture_range(
-        r#"
-class A {
-    void m() {
-        boolean x = /*[*/true && false/*]*/;
-    }
-}
-"#,
-    );
-
-    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
-
-    let mut files = BTreeMap::new();
-    let file_id = FileId::new("A.java");
-    files.insert(file_id.clone(), code);
-    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
-
-    assert_eq!(
-        updated.get(&file_id).unwrap(),
-        r#"
-class A {
-    private static final boolean VALUE = true && false;
-
-    void m() {
-        boolean x = VALUE;
-    }
-}
-"#
-    );
-}
-
-#[test]
-fn extract_constant_infers_string_for_text_block_literal() {
-    let (code, range) = fixture_range(
-        r#"
-class A {
-    void m() {
-        String x = /*[*/"""
-hi
-"""/*]*/;
-    }
-}
-"#,
-    );
-
-    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
-
-    let mut files = BTreeMap::new();
-    let file_id = FileId::new("A.java");
-    files.insert(file_id.clone(), code);
-    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
-
-    assert_eq!(
-        updated.get(&file_id).unwrap(),
-        r#"
-class A {
-    private static final String VALUE = """
-hi
-""";
-
-    void m() {
-        String x = VALUE;
     }
 }
 "#
@@ -313,6 +342,109 @@ class A {
 
     void m() {
         int x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_boolean_for_boolean_literal() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        boolean x = /*[*/true/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final boolean VALUE = true;
+
+    void m() {
+        boolean x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_boolean_for_boolean_expression() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        boolean x = /*[*/true && false/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final boolean VALUE = true && false;
+
+    void m() {
+        boolean x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_string_for_text_block_literal() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        String x = /*[*/"""
+hi
+"""/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final String VALUE = """
+hi
+""";
+
+    void m() {
+        String x = VALUE;
     }
 }
 "#
