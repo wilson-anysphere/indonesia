@@ -12,6 +12,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use nova_classpath::{ClasspathEntry, IndexOptions};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
+use nova_project::BuildSystem;
 
 #[derive(Debug, Clone)]
 pub struct JpmsEnvironment {
@@ -169,12 +170,16 @@ pub fn build_jpms_compilation_environment_with_options(
 ) -> Result<JpmsCompilationEnvironment> {
     let mut env = build_jpms_environment(jdk, workspace, module_path_entries)?;
 
-    // Many build tools keep non-modular JARs on the classpath even for JPMS
+    // Some build tools keep non-modular JARs on the classpath even for JPMS
     // compilation (e.g. Gradle `modularity.inferModulePath`). In practice they
-    // also apply `--add-reads <module>=ALL-UNNAMED` so that workspace modules can
+    // often apply `--add-reads <module>=ALL-UNNAMED` so that workspace modules can
     // still access types from the classpath's unnamed module.
+    //
+    // Nova's default JPMS model is strict (named modules do not read the unnamed
+    // module). We only apply this best-effort behavior for build systems where we
+    // expect it by default.
     if let Some(workspace) = workspace {
-        if !classpath_entries.is_empty() {
+        if matches!(workspace.build_system, BuildSystem::Gradle) && !classpath_entries.is_empty() {
             for root in &workspace.jpms_modules {
                 let Some(mut info) = env.graph.get(&root.name).cloned() else {
                     continue;
