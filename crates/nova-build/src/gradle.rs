@@ -2051,6 +2051,30 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             continue;
         }
 
+        // Version catalogs and convention script plugins are commonly stored in a
+        // `gradle/` directory, but they don't match the `build.gradle*` naming
+        // convention. Include them to ensure Gradle fingerprints change when
+        // dependency versions or applied scripts change.
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let in_gradle_dir = rel.iter().any(|c| c == std::ffi::OsStr::new("gradle"));
+        if in_gradle_dir {
+            if name.ends_with(".versions.toml") {
+                out.push(path);
+                continue;
+            }
+
+            // Gradle "script plugins" conventionally live under `gradle/` and are
+            // applied from `build.gradle*`. Avoid treating `build.gradle*` /
+            // `settings.gradle*` as script plugins to prevent accidental broad
+            // matching from changing existing semantics.
+            if (name.ends_with(".gradle") || name.ends_with(".gradle.kts"))
+                && !(name.starts_with("build.gradle") || name.starts_with("settings.gradle"))
+            {
+                out.push(path);
+                continue;
+            }
+        }
+
         match name {
             "gradle.properties" => out.push(path),
             "gradlew" | "gradlew.bat" => {
