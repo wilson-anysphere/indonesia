@@ -134,3 +134,122 @@ fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
         );
     }
 }
+
+#[test]
+fn maven_project_accepts_exploded_dependency_directory_as_jar() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    write(
+        &root.join("pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>demo</artifactId>
+              <version>0.0.1</version>
+              <dependencies>
+                <dependency>
+                  <groupId>com.example</groupId>
+                  <artifactId>dep</artifactId>
+                  <version>1.0</version>
+                </dependency>
+              </dependencies>
+            </project>
+        "#,
+    );
+
+    write(
+        &root.join("src/main/java/com/example/Main.java"),
+        "package com.example; class Main {}",
+    );
+
+    let tmp_repo = tempfile::tempdir().expect("tempdir maven repo");
+    let expected_jar_dir = tmp_repo.path().join("com/example/dep/1.0/dep-1.0.jar");
+    fs::create_dir_all(&expected_jar_dir).expect("mkdir exploded jar dir");
+    assert!(expected_jar_dir.is_dir(), "expected jar path to be a directory");
+
+    let options = LoadOptions {
+        maven_repo: Some(tmp_repo.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let config = load_project_with_options(root, &options).expect("load maven project");
+
+    assert!(
+        config
+            .classpath
+            .iter()
+            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
+        "exploded jar directory should be added to classpath"
+    );
+    assert!(
+        !config
+            .module_path
+            .iter()
+            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
+        "non-JPMS projects should not place exploded jars on module-path"
+    );
+}
+
+#[test]
+fn maven_workspace_model_accepts_exploded_dependency_directory_as_jar() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    write(
+        &root.join("pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>demo</artifactId>
+              <version>0.0.1</version>
+              <dependencies>
+                <dependency>
+                  <groupId>com.example</groupId>
+                  <artifactId>dep</artifactId>
+                  <version>1.0</version>
+                </dependency>
+              </dependencies>
+            </project>
+        "#,
+    );
+
+    write(
+        &root.join("src/main/java/com/example/Main.java"),
+        "package com.example; class Main {}",
+    );
+
+    let tmp_repo = tempfile::tempdir().expect("tempdir maven repo");
+    let expected_jar_dir = tmp_repo.path().join("com/example/dep/1.0/dep-1.0.jar");
+    fs::create_dir_all(&expected_jar_dir).expect("mkdir exploded jar dir");
+    assert!(expected_jar_dir.is_dir(), "expected jar path to be a directory");
+
+    let options = LoadOptions {
+        maven_repo: Some(tmp_repo.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(root, &options).expect("load maven workspace model");
+
+    for module in &model.modules {
+        assert!(
+            module
+                .classpath
+                .iter()
+                .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
+            "exploded jar directory should be added to module classpath ({})",
+            module.id
+        );
+        assert!(
+            !module
+                .module_path
+                .iter()
+                .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
+            "non-JPMS modules should not place exploded jars on module-path ({})",
+            module.id
+        );
+    }
+}
