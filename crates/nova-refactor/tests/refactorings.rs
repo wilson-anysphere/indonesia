@@ -4210,6 +4210,36 @@ fn extract_variable_rejected_in_annotation_default_value() {
 }
 
 #[test]
+fn extract_variable_rejected_in_annotation_default_value_nested_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"@interface TestAnno {
+  int value() default 1 + 2;
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let expr_start = src.find("2").unwrap();
+    let expr_end = expr_start + "2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "tmp".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejected_in_switch_case_label() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
@@ -4300,6 +4330,39 @@ fn extract_variable_rejected_in_switch_expression_case_label() {
         ExtractVariableParams {
             file: file.clone(),
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "tmp".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejected_in_switch_expression_case_label_nested_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int m(int x) {
+    return switch (x) {
+      case 1 + /*select*/2/*end*/ -> 0;
+      default -> 1;
+    };
+  }
+}
+"#;
+    let (src, selection) = strip_selection_markers(src);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: selection,
             name: "tmp".into(),
             use_var: true,
             replace_all: false,
