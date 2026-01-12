@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
@@ -94,10 +94,18 @@ struct FrameworkDb {
 
 impl FrameworkDbShared {
     fn class(&self, class: ClassId) -> &ClassData {
+        static UNKNOWN: OnceLock<ClassData> = OnceLock::new();
+
         let idx = class.to_raw() as usize;
         self.classes
             .get(idx)
-            .unwrap_or_else(|| panic!("unknown ClassId passed to framework db: {class:?}"))
+            .unwrap_or_else(|| {
+                UNKNOWN.get_or_init(|| {
+                    let mut data = ClassData::default();
+                    data.name = "<unknown>".to_string();
+                    data
+                })
+            })
     }
 
     fn all_classes(&self) -> Vec<ClassId> {
@@ -830,6 +838,8 @@ fn jar_is_multi_release<R: std::io::Read + std::io::Seek>(archive: &mut ZipArchi
 mod tests {
     use super::*;
 
+    use nova_db::InMemoryFileStore;
+
     #[test]
     fn zip_contains_exact_respects_multi_release_and_target_release() {
         let jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -866,6 +876,30 @@ mod tests {
             zip_contains_prefix(&jar, prefix, Some(17), &cancel),
             "expected MR-only package prefix to be present for Java 17"
         );
+    }
+
+    #[test]
+    fn unknown_class_id_is_best_effort() {
+        let mut store = InMemoryFileStore::new();
+        let file_path =
+            PathBuf::from("/__nova_test__/framework_db_unknown_class_id/src/Main.java");
+        let file = store.file_id_for_path(&file_path);
+        store.set_file_text(file, "package test; class Main {}".to_string());
+
+        let db: Arc<dyn HostDatabase + Send + Sync> = Arc::new(store);
+        let cancel = CancellationToken::new();
+        let framework_db =
+            framework_db_for_file(Arc::clone(&db), file, &cancel).expect("db should build");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            framework_db.class(ClassId::new(9999)).name.clone()
+        }));
+
+        assert!(
+            result.is_ok(),
+            "expected framework db adapter to never panic on unknown ClassId"
+        );
+        assert_eq!(result.unwrap(), "<unknown>");
     }
 }
 
