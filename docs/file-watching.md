@@ -74,8 +74,10 @@ after a project reload. For example:
   (e.g. Maven `<modules>` entries like `../common`). These module roots are included as watcher
   roots so build file changes still trigger project reloads.
 - Some build integrations write workspace-local **snapshot files** under `.nova/` (e.g.
-  `.nova/queries/gradle.json` for Gradle classpath/source roots). When these snapshots change,
-  treat them as **build changes** so the workspace reloads and picks up the new configuration.
+  `.nova/queries/gradle.json` for Gradle classpath/source roots, or
+  `.nova/apt-cache/generated-roots.json` for APT generated-source roots). When these snapshots
+  change, treat them as **build changes** so the workspace reloads and picks up the new
+  configuration.
 - If the resolved Nova config file lives outside the workspace root, the workspace will watch it
   **non-recursively** to avoid accidentally watching huge trees (e.g. `$HOME`).
 
@@ -87,6 +89,7 @@ from breaking file watching.
 Implementation references:
 
 - `crates/nova-workspace/src/engine.rs` (`compute_watch_roots`)
+- `crates/nova-workspace/src/watch.rs` (normalization + build-vs-source categorization)
 - `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`)
 
 ## Optional build-tool invocation during workspace load/reload
