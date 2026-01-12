@@ -95,7 +95,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     item.contextValue = 'novaFrameworkEndpoint';
     item.tooltip = `${endpoint.file}:${endpoint.line}`;
 
-    const uri = resolveEndpointUri(element.baseUri, element.projectRoot, endpoint.file);
+    const uri = resolveEndpointUri(element.baseUri, endpoint.file);
     if (uri) {
       item.command = {
         command: OPEN_ENDPOINT_COMMAND,
@@ -153,9 +153,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
       const endpoints: EndpointNode[] = [];
       for (const workspaceFolder of workspaces) {
         const projectRoot = workspaceFolder.uri.fsPath;
-        const resp = await readyClient.sendRequest<WebEndpointsResponse>('nova/web/endpoints', {
-          projectRoot,
-        });
+        const resp = await fetchWebEndpoints(readyClient, projectRoot);
 
         const values = Array.isArray(resp?.endpoints) ? resp.endpoints : [];
         for (const endpoint of values) {
@@ -218,7 +216,19 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<v
   await vscode.window.showTextDocument(doc, { selection: range, preview: true });
 }
 
-function resolveEndpointUri(baseUri: vscode.Uri, projectRoot: string, file: string): vscode.Uri | undefined {
+async function fetchWebEndpoints(client: LanguageClient, projectRoot: string): Promise<WebEndpointsResponse> {
+  try {
+    return await client.sendRequest<WebEndpointsResponse>('nova/web/endpoints', { projectRoot });
+  } catch (err) {
+    if (isMethodNotFoundError(err)) {
+      // Older Nova builds exposed these endpoints under a Quarkus-specific method.
+      return await client.sendRequest<WebEndpointsResponse>('nova/quarkus/endpoints', { projectRoot });
+    }
+    throw err;
+  }
+}
+
+function resolveEndpointUri(baseUri: vscode.Uri, file: string): vscode.Uri | undefined {
   if (typeof file !== 'string' || file.length === 0) {
     return undefined;
   }
