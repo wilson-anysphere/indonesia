@@ -11,6 +11,12 @@ use tree_sitter::Node;
 
 use crate::{AnalysisResult, FileDiagnostic, JavaType, MapperModel};
 
+type TypeName = String;
+type PropertyName = String;
+type PropertyTypes = HashMap<PropertyName, JavaType>;
+type CachedPropertyTypes = Option<Arc<PropertyTypes>>;
+type PropertyTypesCache = HashMap<TypeName, CachedPropertyTypes>;
+
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceCache {
     inner: Mutex<HashMap<ProjectId, CachedWorkspace>>,
@@ -92,7 +98,7 @@ fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
 pub(crate) struct MapStructWorkspace {
     pub(crate) analysis: AnalysisResult,
     type_to_file: HashMap<String, FileId>,
-    property_types: Mutex<HashMap<String, Option<Arc<HashMap<String, JavaType>>>>>,
+    property_types: Mutex<PropertyTypesCache>,
 }
 
 impl MapStructWorkspace {
@@ -137,7 +143,7 @@ impl MapStructWorkspace {
         &self,
         db: &dyn Database,
         ty: &JavaType,
-    ) -> Option<Arc<HashMap<String, JavaType>>> {
+    ) -> CachedPropertyTypes {
         let key = ty.qualified_name();
         if key.is_empty() {
             return None;

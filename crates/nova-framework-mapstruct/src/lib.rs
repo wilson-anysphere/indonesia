@@ -237,10 +237,7 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
         let project = db.project_of_file(file);
         let has_mapstruct_dependency = has_mapstruct_build_dependency(db, project);
-        match crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency) {
-            Ok(diags) => diags,
-            Err(_) => Vec::new(),
-        }
+        crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency).unwrap_or_default()
     }
 
     fn navigation(
