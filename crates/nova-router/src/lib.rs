@@ -668,7 +668,7 @@ impl InProcessRouter {
         }
 
         let symbols = build_global_symbols(indexes.values());
-        write_global_symbols(&self.global_symbols, symbols).await;
+        write_global_symbols(&self.global_symbols, symbols, revision).await;
         Ok(())
     }
 
@@ -761,7 +761,7 @@ impl InProcessRouter {
         };
 
         let symbols = build_global_symbols(indexes_snapshot.values());
-        write_global_symbols(&self.global_symbols, symbols).await;
+        write_global_symbols(&self.global_symbols, symbols, revision).await;
         Ok(())
     }
 
@@ -790,6 +790,7 @@ struct RouterState {
     global_revision: AtomicU64,
     shards: Mutex<HashMap<ShardId, ShardState>>,
     shard_indexes: Mutex<HashMap<ShardId, ShardIndex>>,
+    shard_indexes_update_id: AtomicU64,
     global_symbols: RwLock<GlobalSymbolIndex>,
     notify: Notify,
     handshake_semaphore: Arc<Semaphore>,
@@ -856,6 +857,7 @@ impl DistributedRouter {
             global_revision: AtomicU64::new(0),
             shards: Mutex::new(shards),
             shard_indexes: Mutex::new(HashMap::new()),
+            shard_indexes_update_id: AtomicU64::new(0),
             global_symbols: RwLock::new(GlobalSymbolIndex::default()),
             notify: Notify::new(),
             handshake_semaphore,
@@ -1003,10 +1005,16 @@ impl DistributedRouter {
                                 false
                             } else {
                                 guard.insert(shard_id, index);
+                                self.state
+                                    .shard_indexes_update_id
+                                    .fetch_add(1, Ordering::SeqCst);
                                 true
                             }
                         } else {
                             guard.insert(shard_id, index);
+                            self.state
+                                .shard_indexes_update_id
+                                .fetch_add(1, Ordering::SeqCst);
                             true
                         }
                     };
@@ -1035,12 +1043,13 @@ impl DistributedRouter {
         // rebuild once from a full snapshot at the end (even if we return early on error after
         // applying some shard indexes).
         if updated_any {
-            let indexes_snapshot = {
+            let (indexes_snapshot, update_id) = {
                 let guard = self.state.shard_indexes.lock().await;
-                guard.clone()
+                let update_id = self.state.shard_indexes_update_id.load(Ordering::SeqCst);
+                (guard.clone(), update_id)
             };
             let symbols = build_global_symbols(indexes_snapshot.values());
-            write_global_symbols(&self.state.global_symbols, symbols).await;
+            write_global_symbols(&self.state.global_symbols, symbols, update_id).await;
         }
 
         if let Some(err) = error {
@@ -1334,7 +1343,7 @@ async fn wait_for_worker_cancelable(
 }
 
 async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
-    let indexes_snapshot = {
+    let (indexes_snapshot, update_id) = {
         let mut guard = state.shard_indexes.lock().await;
         if let Some(current) = guard.get(&index.shard_id) {
             let current_key = (current.revision, current.index_generation);
@@ -1344,11 +1353,15 @@ async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
             }
         }
         guard.insert(index.shard_id, index);
-        guard.clone()
+        let update_id = state
+            .shard_indexes_update_id
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        (guard.clone(), update_id)
     };
 
     let symbols = build_global_symbols(indexes_snapshot.values());
-    write_global_symbols(&state.global_symbols, symbols).await;
+    write_global_symbols(&state.global_symbols, symbols, update_id).await;
 }
 
 async fn worker_call(worker: &WorkerHandle, request: Request) -> Result<Response> {
@@ -2395,6 +2408,7 @@ fn build_global_symbols<'a>(
 
 #[derive(Debug, Clone)]
 struct GlobalSymbolIndex {
+    update_id: u64,
     symbols: Vec<Symbol>,
     trigram: TrigramIndex,
     prefix1: Vec<Vec<u32>>,
@@ -2403,6 +2417,7 @@ struct GlobalSymbolIndex {
 impl Default for GlobalSymbolIndex {
     fn default() -> Self {
         Self {
+            update_id: 0,
             symbols: Vec::new(),
             trigram: TrigramIndexBuilder::new().build(),
             prefix1: vec![Vec::new(); 256],
@@ -2411,7 +2426,7 @@ impl Default for GlobalSymbolIndex {
 }
 
 impl GlobalSymbolIndex {
-    fn new(symbols: Vec<Symbol>) -> Self {
+    fn new(symbols: Vec<Symbol>, update_id: u64) -> Self {
         let mut prefix1: Vec<Vec<u32>> = vec![Vec::new(); 256];
         let mut builder = TrigramIndexBuilder::new();
 
@@ -2428,6 +2443,7 @@ impl GlobalSymbolIndex {
         }
 
         Self {
+            update_id,
             symbols,
             trigram: builder.build(),
             prefix1,
@@ -2547,9 +2563,16 @@ struct LocalScoredSymbol {
     score: MatchScore,
 }
 
-async fn write_global_symbols(dst: &RwLock<GlobalSymbolIndex>, symbols: Vec<Symbol>) {
+async fn write_global_symbols(
+    dst: &RwLock<GlobalSymbolIndex>,
+    symbols: Vec<Symbol>,
+    update_id: u64,
+) {
     let mut guard = dst.write().await;
-    *guard = GlobalSymbolIndex::new(symbols);
+    if update_id < guard.update_id {
+        return;
+    }
+    *guard = GlobalSymbolIndex::new(symbols, update_id);
 }
 
 async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
@@ -2632,7 +2655,7 @@ mod tests {
             },
         ];
 
-        let index = GlobalSymbolIndex::new(symbols);
+        let index = GlobalSymbolIndex::new(symbols, 0);
         let results = index.search("foo", 10);
         assert_eq!(results[0].name, "foobar");
     }
@@ -2650,7 +2673,7 @@ mod tests {
             },
         ];
 
-        let index = GlobalSymbolIndex::new(symbols);
+        let index = GlobalSymbolIndex::new(symbols, 0);
         let results = index.search("fb", 10);
         assert_eq!(results[0].name, "FooBar");
     }
@@ -2668,7 +2691,7 @@ mod tests {
             },
         ];
 
-        let index = GlobalSymbolIndex::new(symbols);
+        let index = GlobalSymbolIndex::new(symbols, 0);
         let results = index.search("Hash", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "HashMap");

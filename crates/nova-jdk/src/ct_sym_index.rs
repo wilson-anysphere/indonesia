@@ -162,7 +162,6 @@ impl CtSymReleaseIndex {
             binary_names_sorted: OnceLock::new(),
         })
     }
-
     /// Approximate heap memory usage of this index in bytes.
     ///
     /// This is intended for best-effort integration with `nova-memory`.
