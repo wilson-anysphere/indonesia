@@ -935,6 +935,24 @@ fn all_provider_kinds_roundtrip() {
     );
 }
 
+#[test]
+fn wasm_host_db_bridge_for_dyn_nova_db_database_delegates() {
+    use nova_db::InMemoryFileStore;
+    use std::path::PathBuf;
+
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test/File.java"));
+    db.set_file_text(file, "class A {}".to_string());
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+
+    assert_eq!(WasmHostDb::file_text(db.as_ref(), file), "class A {}");
+    assert_eq!(
+        WasmHostDb::file_path(db.as_ref(), file),
+        Some(std::path::Path::new("/test/File.java"))
+    );
+}
+
 #[derive(Clone)]
 struct DummyDiagProvider {
     id: String,
