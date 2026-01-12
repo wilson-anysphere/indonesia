@@ -4292,13 +4292,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             return None;
         }
 
-        if self.workspace_loaded.contains(binary_name) {
-            return Some(loader.store.intern_class_id(binary_name));
-        }
-        if self.workspace_in_progress.contains(binary_name) {
-            return Some(loader.store.intern_class_id(binary_name));
-        }
-
         let file = def_file(self.owner);
         let project = self.db.file_project(file);
         let workspace = self.db.workspace_def_map(project);
@@ -4339,6 +4332,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                 }
             }
+        }
+
+        if self.workspace_loaded.contains(binary_name) {
+            return Some(loader.store.intern_class_id(binary_name));
+        }
+        if self.workspace_in_progress.contains(binary_name) {
+            return Some(loader.store.intern_class_id(binary_name));
         }
 
         let kind = match item {
@@ -10342,12 +10342,72 @@ fn define_workspace_source_types<'idx>(
 ) -> SourceTypes {
     let files = db.project_files(project);
 
+    fn jpms_workspace_type_accessible(
+        graph: &nova_modules::ModuleGraph,
+        workspace: &nova_resolve::WorkspaceDefMap,
+        from: &ModuleName,
+        item: nova_hir::ids::ItemId,
+        binary_name: &str,
+    ) -> bool {
+        let to = workspace
+            .module_for_item(item)
+            .cloned()
+            .unwrap_or_else(ModuleName::unnamed);
+        if !graph.can_read(from, &to) {
+            return false;
+        }
+
+        let package = binary_name
+            .rsplit_once('.')
+            .map(|(pkg, _)| pkg)
+            .unwrap_or("");
+        match graph.get(&to) {
+            Some(info) => info.exports_package_to(package, from),
+            // Unknown modules default to accessible so partial graphs don't cascade into
+            // false-negative resolution failures (mirror `JpmsProjectIndex`).
+            None => true,
+        }
+    }
+
+    let workspace = db.workspace_def_map(project);
+
     // First pass: intern ids for every workspace type in deterministic order so cross-file
     // references can resolve to `Type::Class` during member signature resolution.
-    let workspace = db.workspace_def_map(project);
-    for (idx, name) in workspace.iter_type_names().enumerate() {
-        cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
-        loader.store.intern_class_id(name.as_str());
+    //
+    // In JPMS mode we still intern ids broadly for stability, but we *do not* define member-bearing
+    // `ClassDef`s for unreadable/unexported types below.
+    let jpms_env = db.jpms_compilation_env(project);
+    let (from_module, graph) = jpms_env
+        .as_deref()
+        .map(|env| {
+            let cfg = db.project_config(project);
+            let file_rel = db.file_rel_path(from_file);
+            let from = module_for_file(&cfg, file_rel.as_str());
+            (from, &env.env.graph)
+        })
+        .unzip();
+
+    let mut accessible_files: Option<HashSet<FileId>> = None;
+    if let (Some(from), Some(graph)) = (from_module.as_ref(), graph.as_ref()) {
+        let mut set = HashSet::new();
+        set.insert(from_file);
+        for (idx, name) in workspace.iter_type_names().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+            let binary = name.as_str();
+            loader.store.intern_class_id(binary);
+            let Some(item) = workspace.item_by_type_name(name) else {
+                continue;
+            };
+            if jpms_workspace_type_accessible(graph, &workspace, from, item, binary) {
+                set.insert(item.file());
+            }
+        }
+        accessible_files = Some(set);
+    } else {
+        for (idx, name) in workspace.iter_type_names().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+            loader.store.intern_class_id(name.as_str());
+        }
     }
 
     // Second pass: define skeleton class defs + collect member typing/ownership info.
@@ -10355,40 +10415,21 @@ fn define_workspace_source_types<'idx>(
     // In JPMS mode, only expose members for workspace types that are accessible from the module
     // owning `from_file`. This prevents member resolution from "rescuing" otherwise
     // `unresolved-type` references to unreadable/unexported workspace modules.
-    let jpms_env = db.jpms_compilation_env(project);
-    let jpms_ctx = jpms_env.as_deref().map(|env| {
-        let cfg = db.project_config(project);
-        let file_rel = db.file_rel_path(from_file);
-        let from = module_for_file(&cfg, file_rel.as_str());
-        (cfg, from, &env.env.graph)
-    });
-
     let mut out = SourceTypes::default();
     for (idx, file) in files.iter().copied().enumerate() {
         cancel::checkpoint_cancelled_every(db, idx as u32, 32);
-
-        if let Some((cfg, from, graph)) = jpms_ctx.as_ref() {
-            let file_rel = db.file_rel_path(file);
-            let to = module_for_file(cfg, file_rel.as_str());
-            if !graph.can_read(from, &to) {
+        if let Some(allowed) = accessible_files.as_ref() {
+            // In JPMS mode, only materialize member-bearing `ClassDef`s for workspace source types
+            // that are actually accessible from the current module. Unreadable/unexported types
+            // remain as inert placeholders created by `intern_class_id`, preventing member lookup
+            // from "rescuing" unresolved types.
+            if !allowed.contains(&file) {
                 continue;
             }
-
-            let tree = db.hir_item_tree(file);
-            let package = tree.package.as_ref().map(|p| p.name.as_str()).unwrap_or("");
-            if let Some(info) = graph.get(&to) {
-                if !info.exports_package_to(package, from) {
-                    continue;
-                }
-            }
-
-            let scopes = db.scope_graph(file);
-            out.extend(define_source_types(resolver, &scopes, &tree, loader));
-        } else {
-            let tree = db.hir_item_tree(file);
-            let scopes = db.scope_graph(file);
-            out.extend(define_source_types(resolver, &scopes, &tree, loader));
         }
+        let tree = db.hir_item_tree(file);
+        let scopes = db.scope_graph(file);
+        out.extend(define_source_types(resolver, &scopes, &tree, loader));
     }
 
     out
@@ -11534,6 +11575,7 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Expr { range, .. }
         | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
+        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -11789,6 +11831,11 @@ fn find_enclosing_target_typed_expr_in_expr(
                     target_range,
                     best,
                 );
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
             }
         }
         HirExpr::Unary { expr, .. } => {
