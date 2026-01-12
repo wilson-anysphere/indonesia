@@ -465,6 +465,52 @@ fn extract_variable_replace_all_does_not_cross_anonymous_class_boundary() {
 }
 
 #[test]
+fn extract_variable_replace_all_does_not_replace_occurrences_outside_switch_block() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        System.out.println(/*select*/1 + 2/*end*/);
+        break;
+    }
+    int y = 1 + 2;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        var sum = 1 + 2;
+        System.out.println(sum);
+        break;
+    }
+    int y = 1 + 2;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_instanceof_pattern_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {

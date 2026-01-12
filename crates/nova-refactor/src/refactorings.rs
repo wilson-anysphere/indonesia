@@ -2333,12 +2333,23 @@ fn find_replace_all_occurrences_same_execution_context(
         .ancestors()
         .find_map(ast::ClassBody::cast);
 
-    // Restrict to the closest enclosing block to avoid replacing occurrences in other methods.
+    // Restrict to the closest enclosing statement-list scope to avoid replacing occurrences where
+    // the extracted local would not be visible.
+    //
+    // Most statements live in a `{ ... }` block, but `switch { ... }` bodies also define a scope
+    // for locals declared inside case groups.
     let search_root = insertion_stmt
         .syntax()
         .ancestors()
-        .find_map(ast::Block::cast)
-        .map(|b| b.syntax().clone())
+        .find_map(|node| {
+            if let Some(block) = ast::Block::cast(node.clone()) {
+                Some(block.syntax().clone())
+            } else if let Some(switch_block) = ast::SwitchBlock::cast(node) {
+                Some(switch_block.syntax().clone())
+            } else {
+                None
+            }
+        })
         .unwrap_or(root);
 
     let min_offset = syntax_range(insertion_stmt.syntax()).start;
