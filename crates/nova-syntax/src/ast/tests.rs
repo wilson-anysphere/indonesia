@@ -2015,3 +2015,100 @@ fn string_template_expression_accessors_nested_template_in_interpolation() {
         .expect("inner interpolation expression");
     assert_eq!(inner_interp_expr.syntax().text().to_string(), "name");
 }
+
+#[test]
+fn string_template_expression_accessors_field_access_processor() {
+    let src = r#"
+        class Foo {
+          String STR;
+          void m(String name) {
+            String s = this.STR."Hello \{name}!";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    let access = match processor {
+        Expression::FieldAccessExpression(access) => access,
+        other => panic!("expected processor FieldAccessExpression, got {other:?}"),
+    };
+    assert_eq!(access.name_token().unwrap().text(), "STR");
+
+    let receiver = access.expression().expect("expected field access receiver expression");
+    match receiver {
+        Expression::ThisExpression(_) => {}
+        other => panic!("expected receiver ThisExpression, got {other:?}"),
+    }
+
+    let template = template_expr.template().expect("expected string template");
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Hello ", "!"]);
+    let interpolation_expr = template
+        .parts()
+        .next()
+        .expect("expected interpolation")
+        .expression()
+        .expect("expected interpolation expression");
+    assert_eq!(interpolation_expr.syntax().text().to_string(), "name");
+}
+
+#[test]
+fn string_template_expression_accessors_no_interpolations() {
+    let src = r#"
+        class Foo {
+          void m() {
+            String s = STR."Hello";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    assert_eq!(processor.syntax().text().to_string(), "STR");
+
+    let template = template_expr.template().expect("expected string template");
+    let template_children: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .map(|el| el.kind())
+        .collect();
+    assert_eq!(
+        template_children,
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateEnd,
+        ]
+    );
+
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Hello"]);
+    assert_eq!(template.parts().count(), 0);
+}
