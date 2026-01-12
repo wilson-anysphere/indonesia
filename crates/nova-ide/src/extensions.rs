@@ -895,13 +895,7 @@ where
                 selection.start,
             ));
 
-            actions.extend(type_mismatch_quick_fixes(
-                self.db.as_ref().as_dyn_nova_db(),
-                file,
-                source,
-                &uri,
-                span,
-            ));
+            actions.extend(type_mismatch_quick_fixes(source, &uri, span, &diagnostics));
         }
 
         let extension_actions = self
@@ -1077,12 +1071,11 @@ where
 }
 
 fn type_mismatch_quick_fixes(
-    db: &dyn nova_db::Database,
-    file: nova_ext::FileId,
     source: &str,
     uri: &lsp_types::Uri,
     cancel: &CancellationToken,
     selection: Span,
+    diagnostics: &[nova_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn spans_overlap(a: Span, b: Span) -> bool {
         a.start < b.end && b.start < a.end
@@ -1110,14 +1103,9 @@ fn type_mismatch_quick_fixes(
 
     let mut actions = Vec::new();
 
-    if cancel.is_cancelled() {
-        return actions;
-    }
-
-    let diagnostics = crate::code_intelligence::core_file_diagnostics(db, file, cancel);
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
-        if diag.code != "type-mismatch" {
+        if diag.code.as_ref() != "type-mismatch" {
             continue;
         }
         let Some(diag_span) = diag.span else {
