@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -238,6 +238,20 @@ impl WorkspaceIndex {
     }
 
     fn resolve_method_definition(&self, ty_name: &str, method_name: &str) -> Option<Definition> {
+        let mut visited = BTreeSet::new();
+        self.resolve_method_definition_inner(ty_name, method_name, &mut visited)
+    }
+
+    fn resolve_method_definition_inner(
+        &self,
+        ty_name: &str,
+        method_name: &str,
+        visited: &mut BTreeSet<String>,
+    ) -> Option<Definition> {
+        if !visited.insert(ty_name.to_string()) {
+            return None;
+        }
+
         let type_info = self.type_info(ty_name)?;
         if let Some(method) = type_info.def.methods.iter().find(|m| m.name == method_name) {
             return Some(Definition {
@@ -251,11 +265,39 @@ impl WorkspaceIndex {
             });
         }
 
-        let super_name = type_info.def.super_class.as_deref()?;
-        self.resolve_method_definition(super_name, method_name)
+        // First walk the superclass chain (including interface inheritance via `extends`).
+        if let Some(super_name) = type_info.def.super_class.as_deref() {
+            if let Some(def) = self.resolve_method_definition_inner(super_name, method_name, visited) {
+                return Some(def);
+            }
+        }
+
+        // If no method is found on the class/superclass chain, fall back to interfaces
+        // (including default methods).
+        for iface in &type_info.def.interfaces {
+            if let Some(def) = self.resolve_method_definition_inner(iface, method_name, visited) {
+                return Some(def);
+            }
+        }
+
+        None
     }
 
     fn resolve_field_definition(&self, ty_name: &str, field_name: &str) -> Option<Definition> {
+        let mut visited = BTreeSet::new();
+        self.resolve_field_definition_inner(ty_name, field_name, &mut visited)
+    }
+
+    fn resolve_field_definition_inner(
+        &self,
+        ty_name: &str,
+        field_name: &str,
+        visited: &mut BTreeSet<String>,
+    ) -> Option<Definition> {
+        if !visited.insert(ty_name.to_string()) {
+            return None;
+        }
+
         let type_info = self.type_info(ty_name)?;
         if let Some(field) = type_info.def.fields.iter().find(|f| f.name == field_name) {
             return Some(Definition {
@@ -269,8 +311,21 @@ impl WorkspaceIndex {
             });
         }
 
-        let super_name = type_info.def.super_class.as_deref()?;
-        self.resolve_field_definition(super_name, field_name)
+        // Walk superclass chain first.
+        if let Some(super_name) = type_info.def.super_class.as_deref() {
+            if let Some(def) = self.resolve_field_definition_inner(super_name, field_name, visited) {
+                return Some(def);
+            }
+        }
+
+        // Then check implemented interfaces (interface constants).
+        for iface in &type_info.def.interfaces {
+            if let Some(def) = self.resolve_field_definition_inner(iface, field_name, visited) {
+                return Some(def);
+            }
+        }
+
+        None
     }
 
     fn resolve_type_definition(&self, ty_name: &str) -> Option<Definition> {
@@ -445,9 +500,18 @@ impl Resolver {
                 })
             }
             OccurrenceKind::LocalCall => {
-                let def =
+                let receiver_ty =
                     self.index
-                        .method_in_enclosing_type(file, parsed, ident_span.start, &ident)?;
+                        .resolve_receiver_type(parsed, ident_span.start, "this")?;
+                let def = self
+                    .index
+                    .resolve_method_definition(&receiver_ty, &ident)
+                    // If we can't resolve via the workspace index, fall back to the old behavior
+                    // (current type only).
+                    .or_else(|| {
+                        self.index
+                            .method_in_enclosing_type(file, parsed, ident_span.start, &ident)
+                    })?;
                 Some(ResolvedSymbol {
                     name: ident,
                     kind: ResolvedKind::Method,
