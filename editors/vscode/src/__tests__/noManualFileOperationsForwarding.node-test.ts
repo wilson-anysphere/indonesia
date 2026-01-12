@@ -156,6 +156,11 @@ function resolveNotificationMethod(
   //   client.sendNotification(DidRenameFilesNotification.type.method, ...)
   if (ts.isPropertyAccessExpression(expr)) {
     if (expr.name.text === 'method') {
+      const localName = lastPropertyName(expr.expression);
+      const importedName = localName ? (imports.get(localName) ?? localName) : undefined;
+      if (importedName && importedName in FILE_OPERATION_NOTIFICATION_TYPES) {
+        return FILE_OPERATION_NOTIFICATION_TYPES[importedName];
+      }
       return resolveNotificationMethod(expr.expression, env, imports);
     }
 
