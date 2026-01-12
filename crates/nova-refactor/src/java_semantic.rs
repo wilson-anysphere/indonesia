@@ -12,7 +12,7 @@ use nova_resolve::{
     BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
     ScopeKind, StaticMemberResolution, TypeResolution, WorkspaceDefMap,
 };
-use nova_syntax::AstNode;
+use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
@@ -486,6 +486,20 @@ impl RefactorJavaDatabase {
                     &mut spans,
                 );
             }
+
+            // Syntax-only references that are not lowered into `hir::Body`.
+            let text = files.get(file).map(|s| s.as_ref()).unwrap_or_default();
+            record_syntax_only_references(
+                file,
+                text,
+                tree.as_ref(),
+                scope_result,
+                &resolver,
+                &workspace_def_map,
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
         }
 
         spans.sort_by(|(file_a, range_a, sym_a), (file_b, range_b, sym_b)| {
@@ -1700,4 +1714,754 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
     }
 
     walk_stmt(body, body.root, &mut f);
+}
+
+fn item_body_range(tree: &nova_hir::item_tree::ItemTree, item: ItemId) -> Option<TextRange> {
+    let range = match item {
+        ItemId::Class(id) => tree.class(id).body_range,
+        ItemId::Interface(id) => tree.interface(id).body_range,
+        ItemId::Enum(id) => tree.enum_(id).body_range,
+        ItemId::Record(id) => tree.record(id).body_range,
+        ItemId::Annotation(id) => tree.annotation(id).body_range,
+    };
+    Some(TextRange::new(range.start, range.end))
+}
+
+fn syntax_token_range(token: &nova_syntax::SyntaxToken) -> TextRange {
+    let range = token.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
+}
+
+fn collect_ident_segments(node: &nova_syntax::SyntaxNode) -> Vec<(String, TextRange)> {
+    node.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| tok.kind().is_identifier_like())
+        .map(|tok| (tok.text().to_string(), syntax_token_range(&tok)))
+        .collect()
+}
+
+fn resolution_to_key(res: Resolution, accept_methods: bool) -> Option<ResolutionKey> {
+    match res {
+        Resolution::Field(field) => Some(ResolutionKey::Field(field)),
+        Resolution::Type(TypeResolution::Source(item)) => Some(ResolutionKey::Type(item)),
+        Resolution::StaticMember(StaticMemberResolution::SourceField(field)) => {
+            Some(ResolutionKey::Field(field))
+        }
+        Resolution::Methods(methods) if accept_methods => {
+            methods.first().copied().map(ResolutionKey::Method)
+        }
+        Resolution::StaticMember(StaticMemberResolution::SourceMethod(method))
+            if accept_methods =>
+        {
+            Some(ResolutionKey::Method(method))
+        }
+        _ => None,
+    }
+}
+
+fn record_reference(
+    file: &FileId,
+    range: TextRange,
+    key: ResolutionKey,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let Some(&symbol) = resolution_to_symbol.get(&key) else {
+        return;
+    };
+    references[symbol.as_usize()].push(Reference {
+        file: file.clone(),
+        range,
+    });
+    spans.push((file.clone(), range, symbol));
+}
+
+fn resolve_member_in_type(
+    workspace: &WorkspaceDefMap,
+    owner: ItemId,
+    member: &str,
+    accept_methods: bool,
+) -> Option<ResolutionKey> {
+    let name = Name::from(member);
+    let ty = workspace.type_def(owner)?;
+    if let Some(field) = ty.fields.get(&name) {
+        return Some(ResolutionKey::Field(field.id));
+    }
+    if accept_methods {
+        if let Some(methods) = ty.methods.get(&name) {
+            return methods.first().map(|method| ResolutionKey::Method(method.id));
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameExprContext {
+    Value,
+    Type,
+    MethodCallee,
+}
+
+fn name_expr_context(expr: &nova_syntax::SyntaxNode) -> NameExprContext {
+    let Some(parent) = expr.parent() else {
+        return NameExprContext::Value;
+    };
+    if ast::MethodCallExpression::cast(parent.clone()).is_some() {
+        return NameExprContext::MethodCallee;
+    }
+    if ast::ClassLiteralExpression::cast(parent).is_some() {
+        return NameExprContext::Type;
+    }
+    NameExprContext::Value
+}
+
+fn resolve_type_from_segments(
+    resolver: &Resolver<'_>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope: nova_resolve::ScopeId,
+    segments: &[(String, TextRange)],
+) -> Option<TypeResolution> {
+    let dotted = segments
+        .iter()
+        .map(|(s, _)| s.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
+    let qn = QualifiedName::from_dotted(&dotted);
+    resolver.resolve_qualified_type_resolution_in_scope(scopes, scope, &qn)
+}
+
+fn process_name_expression(
+    file: &FileId,
+    scope: nova_resolve::ScopeId,
+    scopes: &nova_resolve::ScopeGraph,
+    resolver: &Resolver<'_>,
+    workspace: &WorkspaceDefMap,
+    name_expr: ast::NameExpression,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let segments = collect_ident_segments(name_expr.syntax());
+    let Some((last_name, last_range)) = segments.last().cloned() else {
+        return;
+    };
+
+    match name_expr_context(name_expr.syntax()) {
+        NameExprContext::Type => {
+            let Some(TypeResolution::Source(item)) =
+                resolve_type_from_segments(resolver, scopes, scope, &segments)
+            else {
+                return;
+            };
+            record_reference(
+                file,
+                last_range,
+                ResolutionKey::Type(item),
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        NameExprContext::MethodCallee => {
+            // `foo()` or `Type.foo()`.
+            if segments.len() == 1 {
+                let Some(resolved) = resolver.resolve_method_name(
+                    scopes,
+                    scope,
+                    &Name::from(last_name.as_str()),
+                ) else {
+                    return;
+                };
+                let method = match resolved {
+                    Resolution::Methods(methods) => methods.first().copied(),
+                    Resolution::StaticMember(StaticMemberResolution::SourceMethod(method)) => {
+                        Some(method)
+                    }
+                    _ => None,
+                };
+                let Some(method) = method else {
+                    return;
+                };
+                record_reference(
+                    file,
+                    last_range,
+                    ResolutionKey::Method(method),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                return;
+            }
+
+            let owner_segments = &segments[..segments.len() - 1];
+            let Some(TypeResolution::Source(owner)) =
+                resolve_type_from_segments(resolver, scopes, scope, owner_segments)
+            else {
+                return;
+            };
+
+            if let Some(owner_last_range) = owner_segments.last().map(|(_, r)| *r) {
+                record_reference(
+                    file,
+                    owner_last_range,
+                    ResolutionKey::Type(owner),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+
+            let Some(key) = resolve_member_in_type(workspace, owner, &last_name, true) else {
+                return;
+            };
+            if matches!(key, ResolutionKey::Method(_)) {
+                record_reference(
+                    file,
+                    last_range,
+                    key,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        NameExprContext::Value => {
+            if segments.len() == 1 {
+                let Some(res) = resolver.resolve_name(scopes, scope, &Name::from(last_name)) else {
+                    return;
+                };
+                let Some(key) = resolution_to_key(res, /*accept_methods*/ false) else {
+                    return;
+                };
+                record_reference(
+                    file,
+                    last_range,
+                    key,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                return;
+            }
+
+            // Prefer type resolution (e.g. `pkg.Foo`) before treating as `Type.FIELD`.
+            if let Some(TypeResolution::Source(item)) =
+                resolve_type_from_segments(resolver, scopes, scope, &segments)
+            {
+                record_reference(
+                    file,
+                    last_range,
+                    ResolutionKey::Type(item),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                return;
+            }
+
+            let owner_segments = &segments[..segments.len() - 1];
+            let Some(TypeResolution::Source(owner)) =
+                resolve_type_from_segments(resolver, scopes, scope, owner_segments)
+            else {
+                return;
+            };
+
+            if let Some(owner_last_range) = owner_segments.last().map(|(_, r)| *r) {
+                record_reference(
+                    file,
+                    owner_last_range,
+                    ResolutionKey::Type(owner),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+
+            let Some(key) = resolve_member_in_type(workspace, owner, &last_name, false) else {
+                return;
+            };
+            record_reference(
+                file,
+                last_range,
+                key,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+}
+
+fn resolve_receiver_type(
+    resolver: &Resolver<'_>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope: nova_resolve::ScopeId,
+    receiver: ast::Expression,
+) -> Option<TypeResolution> {
+    match receiver {
+        ast::Expression::NameExpression(ne) => {
+            let segments = collect_ident_segments(ne.syntax());
+            resolve_type_from_segments(resolver, scopes, scope, &segments)
+        }
+        _ => None,
+    }
+}
+
+fn process_field_access_expression(
+    file: &FileId,
+    scope: nova_resolve::ScopeId,
+    scopes: &nova_resolve::ScopeGraph,
+    resolver: &Resolver<'_>,
+    workspace: &WorkspaceDefMap,
+    field_access: ast::FieldAccessExpression,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let Some(name_tok) = field_access.name_token() else {
+        return;
+    };
+    let name = name_tok.text().to_string();
+    let name_range = syntax_token_range(&name_tok);
+
+    let is_callee = field_access
+        .syntax()
+        .parent()
+        .and_then(ast::MethodCallExpression::cast)
+        .is_some();
+
+    if let Some(receiver) = field_access.expression() {
+        if let Some(TypeResolution::Source(owner)) =
+            resolve_receiver_type(resolver, scopes, scope, receiver)
+        {
+            if let Some(key) = resolve_member_in_type(workspace, owner, &name, is_callee) {
+                // In callee position (`Type.foo()`), only record the method, not a field.
+                if !is_callee || matches!(key, ResolutionKey::Method(_)) {
+                    record_reference(
+                        file,
+                        name_range,
+                        key,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+                return;
+            }
+        }
+    }
+
+    // Fallback: attempt unqualified resolution for `this.foo` / `super.foo`-like expressions.
+    let Some(res) = resolver.resolve_name(scopes, scope, &Name::from(name)) else {
+        return;
+    };
+    let Some(key) = resolution_to_key(res, is_callee) else {
+        return;
+    };
+    if !is_callee || matches!(key, ResolutionKey::Method(_)) {
+        record_reference(
+            file,
+            name_range,
+            key,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn record_expression_references(
+    file: &FileId,
+    expr: ast::Expression,
+    scope: nova_resolve::ScopeId,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    workspace: &WorkspaceDefMap,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    // Process root.
+    match expr.clone() {
+        ast::Expression::NameExpression(ne) => process_name_expression(
+            file,
+            scope,
+            &scope_result.scopes,
+            resolver,
+            workspace,
+            ne,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        ast::Expression::FieldAccessExpression(fa) => process_field_access_expression(
+            file,
+            scope,
+            &scope_result.scopes,
+            resolver,
+            workspace,
+            fa,
+            resolution_to_symbol,
+            references,
+            spans,
+        ),
+        _ => {}
+    }
+
+    // Process descendants.
+    for node in expr.syntax().descendants() {
+        let Some(expr) = ast::Expression::cast(node) else {
+            continue;
+        };
+        match expr {
+            ast::Expression::NameExpression(ne) => process_name_expression(
+                file,
+                scope,
+                &scope_result.scopes,
+                resolver,
+                workspace,
+                ne,
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+            ast::Expression::FieldAccessExpression(fa) => process_field_access_expression(
+                file,
+                scope,
+                &scope_result.scopes,
+                resolver,
+                workspace,
+                fa,
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+            ast::Expression::MethodReferenceExpression(mr) => {
+                let Some(name_tok) = mr.name_token() else {
+                    continue;
+                };
+                let name = name_tok.text().to_string();
+                let name_range = syntax_token_range(&name_tok);
+                let Some(receiver) = mr.expression() else {
+                    continue;
+                };
+                let Some(TypeResolution::Source(owner)) =
+                    resolve_receiver_type(resolver, &scope_result.scopes, scope, receiver)
+                else {
+                    continue;
+                };
+                let Some(key) = resolve_member_in_type(workspace, owner, &name, true) else {
+                    continue;
+                };
+                if matches!(key, ResolutionKey::Method(_)) {
+                    record_reference(
+                        file,
+                        name_range,
+                        key,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn record_syntax_only_references(
+    file: &FileId,
+    text: &str,
+    tree: &nova_hir::item_tree::ItemTree,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    workspace: &WorkspaceDefMap,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let parse = nova_syntax::parse_java(text);
+    let Some(unit) = ast::CompilationUnit::cast(parse.syntax()) else {
+        return;
+    };
+
+    // Map type body ranges to their class scopes so we can pick an appropriate resolution scope
+    // for annotations and enum constant arguments.
+    let mut type_scopes: Vec<(TextRange, nova_resolve::ScopeId)> = Vec::new();
+    for (&item, &class_scope) in &scope_result.class_scopes {
+        if let Some(body_range) = item_body_range(tree, item) {
+            type_scopes.push((body_range, class_scope));
+        }
+    }
+
+    // Static/type import references.
+    for import in unit.imports() {
+        if import.is_wildcard() {
+            continue;
+        }
+        let Some(name) = import.name() else {
+            continue;
+        };
+
+        let segments = collect_ident_segments(name.syntax());
+        if segments.is_empty() {
+            continue;
+        }
+
+        if import.is_static() {
+            if segments.len() < 2 {
+                continue;
+            }
+            let (owner_segments, member) = segments.split_at(segments.len() - 1);
+            let member_name = member[0].0.as_str();
+            let member_range = member[0].1;
+
+            let Some(TypeResolution::Source(owner)) = resolve_type_from_segments(
+                resolver,
+                &scope_result.scopes,
+                scope_result.file_scope,
+                owner_segments,
+            ) else {
+                continue;
+            };
+
+            if let Some(key) = resolve_member_in_type(workspace, owner, member_name, true) {
+                record_reference(
+                    file,
+                    member_range,
+                    key,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        } else {
+            let Some(TypeResolution::Source(item)) = resolve_type_from_segments(
+                resolver,
+                &scope_result.scopes,
+                scope_result.file_scope,
+                &segments,
+            ) else {
+                continue;
+            };
+            let Some((_, last_range)) = segments.last() else {
+                continue;
+            };
+            record_reference(
+                file,
+                *last_range,
+                ResolutionKey::Type(item),
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+
+    // Walk all annotation argument expressions (including nested annotations).
+    let mut seen_annotations: HashSet<(usize, usize)> = HashSet::new();
+
+    fn visit_value(
+        file: &FileId,
+        value: ast::AnnotationElementValue,
+        scope: nova_resolve::ScopeId,
+        scope_result: &ScopeBuildResult,
+        resolver: &Resolver<'_>,
+        workspace: &WorkspaceDefMap,
+        resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+        seen: &mut HashSet<(usize, usize)>,
+    ) {
+        if let Some(expr) = value.expression() {
+            record_expression_references(
+                file,
+                expr,
+                scope,
+                scope_result,
+                resolver,
+                workspace,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        if let Some(nested) = value.annotation() {
+            visit_annotation(
+                file,
+                nested,
+                scope,
+                scope_result,
+                resolver,
+                workspace,
+                resolution_to_symbol,
+                references,
+                spans,
+                seen,
+            );
+        }
+        if let Some(array) = value.array_initializer() {
+            for v in array.values() {
+                visit_value(
+                    file,
+                    v,
+                    scope,
+                    scope_result,
+                    resolver,
+                    workspace,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                    seen,
+                );
+            }
+        }
+    }
+
+    fn visit_annotation(
+        file: &FileId,
+        annotation: ast::Annotation,
+        scope: nova_resolve::ScopeId,
+        scope_result: &ScopeBuildResult,
+        resolver: &Resolver<'_>,
+        workspace: &WorkspaceDefMap,
+        resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+        seen: &mut HashSet<(usize, usize)>,
+    ) {
+        let range = annotation.syntax().text_range();
+        let start = u32::from(range.start()) as usize;
+        let end = u32::from(range.end()) as usize;
+        if !seen.insert((start, end)) {
+            return;
+        }
+
+        let Some(args) = annotation.arguments() else {
+            return;
+        };
+        if let Some(value) = args.value() {
+            visit_value(
+                file,
+                value,
+                scope,
+                scope_result,
+                resolver,
+                workspace,
+                resolution_to_symbol,
+                references,
+                spans,
+                seen,
+            );
+        }
+        for pair in args.pairs() {
+            let Some(value) = pair.value() else {
+                continue;
+            };
+            visit_value(
+                file,
+                value,
+                scope,
+                scope_result,
+                resolver,
+                workspace,
+                resolution_to_symbol,
+                references,
+                spans,
+                seen,
+            );
+        }
+    }
+
+    for node in unit.syntax().descendants() {
+        let Some(annotation) = ast::Annotation::cast(node) else {
+            continue;
+        };
+
+        let anno_range = annotation.syntax().text_range();
+        let start = u32::from(anno_range.start()) as usize;
+
+        // Package-level annotations use file/import scope.
+        let mut scope = scope_result.file_scope;
+        if annotation
+            .syntax()
+            .ancestors()
+            .any(|n| n.kind() == nova_syntax::SyntaxKind::PackageDeclaration)
+        {
+            scope = scope_result.file_scope;
+        } else {
+            // Member/type-use annotations: use the innermost enclosing type body scope if present.
+            let mut best: Option<(usize, nova_resolve::ScopeId)> = None;
+            for (body_range, class_scope) in &type_scopes {
+                if body_range.start <= start && start < body_range.end {
+                    let len = body_range.len();
+                    if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
+                        best = Some((len, *class_scope));
+                    }
+                }
+            }
+            if let Some((_, class_scope)) = best {
+                scope = class_scope;
+            }
+        }
+
+        visit_annotation(
+            file,
+            annotation,
+            scope,
+            scope_result,
+            resolver,
+            workspace,
+            resolution_to_symbol,
+            references,
+            spans,
+            &mut seen_annotations,
+        );
+    }
+
+    // Enum constant argument expressions.
+    for node in unit.syntax().descendants() {
+        let Some(constant) = ast::EnumConstant::cast(node) else {
+            continue;
+        };
+
+        let Some(args) = constant.arguments() else {
+            continue;
+        };
+
+        let range = constant.syntax().text_range();
+        let start = u32::from(range.start()) as usize;
+
+        let mut scope = scope_result.file_scope;
+        let mut best: Option<(usize, nova_resolve::ScopeId)> = None;
+        for (body_range, class_scope) in &type_scopes {
+            if body_range.start <= start && start < body_range.end {
+                let len = body_range.len();
+                if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
+                    best = Some((len, *class_scope));
+                }
+            }
+        }
+        if let Some((_, class_scope)) = best {
+            scope = class_scope;
+        }
+
+        for expr in args.arguments() {
+            record_expression_references(
+                file,
+                expr,
+                scope,
+                scope_result,
+                resolver,
+                workspace,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
 }

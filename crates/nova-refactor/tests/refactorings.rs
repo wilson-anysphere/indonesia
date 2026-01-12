@@ -222,7 +222,7 @@ fn extract_variable_replaces_whole_expression_statement() {
   static class Foo {}
 
   void m() {
-    Test.Foo result = new Foo();
+    Foo result = new Foo();
   }
 }
 "#;
@@ -2492,7 +2492,7 @@ fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cl
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
 
     let expected = r#"class C {
-  void m(int x) {
+      void m(int x) {
     switch (x) {
       case 1:
         System.out.println((1 + 2));
