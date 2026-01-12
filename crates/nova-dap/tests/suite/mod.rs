@@ -1,9 +1,8 @@
 // Consolidated integration test suite.
 //
-// This module is compiled by `tests/real_jvm.rs` so
-// `bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm`
-// builds a single integration test binary (see AGENTS.md harness pattern).
-
+// This module is compiled by `tests/tests.rs` so `cargo test -p nova-dap --tests`
+// builds a single integration test binary (see repo guidance about using one
+// integration test harness per crate).
 mod cancel;
 mod config_stdio;
 mod configuration_done_before_launch;
@@ -20,6 +19,7 @@ mod jdwp_client;
 mod logpoints_hitcounts;
 mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
+mod real_jvm;
 mod source_mapping;
 mod stream_debug;
 mod wire_stream_debug;
