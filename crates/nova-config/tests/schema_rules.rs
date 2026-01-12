@@ -208,3 +208,41 @@ fn json_schema_requires_non_empty_api_key_when_set() {
         Some(1)
     );
 }
+
+#[test]
+fn json_schema_requires_non_empty_extension_patterns() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/ExtensionsConfig/properties/allow/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/ExtensionsConfig/properties/deny/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+}
+
+#[test]
+fn json_schema_requires_non_empty_ai_privacy_patterns() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/AiPrivacyConfig/properties/excluded_paths/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/AiPrivacyConfig/properties/redact_patterns/items/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+}

@@ -399,6 +399,14 @@ fn validate_ai_privacy_patterns(config: &NovaConfig, out: &mut ValidationDiagnos
     }
 
     for (idx, pattern) in config.ai.privacy.redact_patterns.iter().enumerate() {
+        if pattern.trim().is_empty() {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: format!("ai.privacy.redact_patterns[{idx}]"),
+                message: "must be non-empty".to_string(),
+            });
+            continue;
+        }
+
         if let Err(err) = regex::Regex::new(pattern) {
             out.errors.push(ConfigValidationError::InvalidValue {
                 toml_path: format!("ai.privacy.redact_patterns[{idx}]"),

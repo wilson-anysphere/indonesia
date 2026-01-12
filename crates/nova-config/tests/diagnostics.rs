@@ -252,6 +252,28 @@ redact_patterns = ["("]
 }
 
 #[test]
+fn validates_ai_privacy_redact_patterns_are_non_empty() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+redact_patterns = [""]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "ai.privacy.redact_patterns[0]".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn warns_when_extensions_allow_is_empty() {
     let text = r#"
 [extensions]

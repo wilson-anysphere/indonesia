@@ -744,7 +744,8 @@ expression: schema
           "default": [],
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "local_only": {
@@ -765,7 +766,8 @@ expression: schema
           "default": [],
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "redact_sensitive_strings": {
@@ -979,7 +981,8 @@ expression: schema
             "null"
           ],
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "deny": {
@@ -987,7 +990,8 @@ expression: schema
           "default": [],
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "enabled": {

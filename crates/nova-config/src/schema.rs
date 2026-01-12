@@ -325,6 +325,10 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     set_min_length(schema, "AiProviderConfig", "azure_deployment", 1);
     set_min_length(schema, "AiProviderConfig", "azure_api_version", 1);
     set_min_length(schema, "AiConfig", "api_key", 1);
+    set_array_item_min_length(schema, "AiPrivacyConfig", "excluded_paths", 1);
+    set_array_item_min_length(schema, "AiPrivacyConfig", "redact_patterns", 1);
+    set_array_item_min_length(schema, "ExtensionsConfig", "allow", 1);
+    set_array_item_min_length(schema, "ExtensionsConfig", "deny", 1);
     set_property_write_only(schema, "AiConfig", "api_key", true);
 }
 
@@ -463,6 +467,51 @@ fn set_min_length(
     };
 
     prop_obj.string().min_length = Some(min_length);
+}
+
+fn set_array_item_min_length(
+    schema: &mut RootSchema,
+    definition_name: &str,
+    property_name: &str,
+    min_length: u32,
+) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    let Some(prop_schema) = object_validation.properties.get_mut(property_name) else {
+        return;
+    };
+
+    let Schema::Object(prop_obj) = prop_schema else {
+        return;
+    };
+
+    let Some(items) = prop_obj.array().items.as_mut() else {
+        return;
+    };
+
+    match items {
+        schemars::schema::SingleOrVec::Single(item_schema) => {
+            set_schema_min_length(item_schema, min_length);
+        }
+        schemars::schema::SingleOrVec::Vec(item_schemas) => {
+            for item_schema in item_schemas.iter_mut() {
+                set_schema_min_length(item_schema, min_length);
+            }
+        }
+    }
+}
+
+fn set_schema_min_length(schema: &mut Schema, min_length: u32) {
+    if let Schema::Object(obj) = schema {
+        obj.string().min_length = Some(min_length);
+    }
 }
 
 fn set_property_write_only(
