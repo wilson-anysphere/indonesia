@@ -149,7 +149,11 @@ fn validate_extensions(
     }
 }
 
-fn validate_ai(config: &NovaConfig, ctx: ConfigValidationContext<'_>, out: &mut ValidationDiagnostics) {
+fn validate_ai(
+    config: &NovaConfig,
+    ctx: ConfigValidationContext<'_>,
+    out: &mut ValidationDiagnostics,
+) {
     if config.ai.audit_log.enabled && !config.ai.enabled {
         out.warnings.push(ConfigWarning::InvalidValue {
             toml_path: "ai.audit_log.enabled".to_string(),
