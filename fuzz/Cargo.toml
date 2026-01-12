@@ -34,6 +34,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_range_format"
+path = "fuzz_targets/fuzz_range_format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_on_type_format"
+path = "fuzz_targets/fuzz_on_type_format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_syntax_parse"
 path = "fuzz_targets/fuzz_syntax_parse.rs"
 test = false
