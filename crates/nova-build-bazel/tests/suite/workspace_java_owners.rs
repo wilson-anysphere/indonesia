@@ -1233,3 +1233,25 @@ fn bazelignore_is_reloaded_after_invalidate_changed_files() {
         .unwrap();
     assert_eq!(label.as_deref(), Some("//ignored:Foo.java"));
 }
+
+#[test]
+#[cfg(unix)]
+fn bazelignore_applies_to_canonical_paths_when_root_is_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let real = tempdir().unwrap();
+    std::fs::write(real.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(real.path().join(".bazelignore"), "ignored\n").unwrap();
+    write_file(&real.path().join("ignored/BUILD"), "# ignored package\n");
+    create_file(&real.path().join("ignored/Foo.java"));
+
+    let link_parent = tempdir().unwrap();
+    let link_root = link_parent.path().join("ws");
+    symlink(real.path(), &link_root).unwrap();
+
+    let workspace = BazelWorkspace::new(link_root, NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(&real.path().join("ignored/Foo.java"))
+        .unwrap();
+    assert_eq!(label, None);
+}
