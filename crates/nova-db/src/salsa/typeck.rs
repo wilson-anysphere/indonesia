@@ -2782,11 +2782,58 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
 
 fn extend_type_ref_diagnostics(
     out: &mut Vec<Diagnostic>,
-    _file_tokens: &[Token],
-    _file_text: &str,
+    file_tokens: &[Token],
+    file_text: &str,
     diags: Vec<Diagnostic>,
 ) {
-    out.extend(diags);
+    // NOTE: Type-use annotations are currently ignored by Nova's type checker. The type-ref
+    // parser is resilient to annotations (and can optionally diagnose them when anchored), but we
+    // intentionally suppress diagnostics for annotation *type names* in type-use positions when
+    // reporting type-check diagnostics.
+    //
+    // Example: `List<@Missing String>` should not surface an `unresolved-type` diagnostic for the
+    // annotation name `Missing` in `db.type_diagnostics`.
+    if diags.is_empty() {
+        return;
+    }
+
+    out.extend(diags.into_iter().filter(|d| {
+        let Some(span) = d.span else {
+            return true;
+        };
+        if span.start == 0
+            || span.start > file_text.len()
+            || !file_text.is_char_boundary(span.start)
+        {
+            return true;
+        }
+
+        let start: u32 = match span.start.try_into() {
+            Ok(v) => v,
+            Err(_) => return true,
+        };
+
+        // Find the token that contains the diagnostic span start.
+        let mut idx = file_tokens.partition_point(|tok| tok.range.end <= start);
+        if idx >= file_tokens.len() {
+            return true;
+        }
+        if file_tokens[idx].range.start > start && idx > 0 {
+            idx -= 1;
+        }
+
+        // Walk backwards over trivia to find the previous token and confirm it is `@`.
+        while idx > 0 {
+            idx -= 1;
+            let prev = &file_tokens[idx];
+            if prev.kind.is_trivia() {
+                continue;
+            }
+            return prev.kind != SyntaxKind::At;
+        }
+
+        true
+    }));
 }
 
 fn collect_annotation_use_diagnostics<'idx>(
