@@ -63,7 +63,7 @@ interface MicronautBeansResponse {
 interface WebEndpointPickItem extends vscode.QuickPickItem {
   novaKind: 'web-endpoints';
   projectRoot: string;
-  file: string;
+  file: string | null | undefined;
   line: number; // 1-based
 }
 
@@ -214,24 +214,24 @@ async function fetchItemsForKind(
         }
 
         const ep = endpoint as Partial<WebEndpoint>;
-        const methods = Array.isArray(ep.methods) ? ep.methods.filter((m): m is string => typeof m === 'string') : [];
-        const methodsOrFallback = methods.length > 0 ? methods : [''];
+        const methods = Array.isArray(ep.methods)
+          ? ep.methods.filter((m): m is string => typeof m === 'string' && m.length > 0)
+          : [];
+        const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
         const endpointPath = typeof ep.path === 'string' ? ep.path : '';
-        const file = typeof ep.file === 'string' ? ep.file : '';
+        const file = typeof ep.file === 'string' && ep.file.length > 0 ? ep.file : ep.file ?? undefined;
         const line = typeof ep.line === 'number' ? ep.line : 1;
 
-        for (const method of methodsOrFallback) {
-          const label = `${method ? `${method} ` : ''}${endpointPath}`.trim();
-          const description = file && typeof line === 'number' ? `${file}:${line}` : undefined;
-          items.push({
-            novaKind: kind,
-            projectRoot,
-            file,
-            line,
-            label: label || '(unknown endpoint)',
-            description,
-          });
-        }
+        const label = `${methodLabel} ${endpointPath}`.trim();
+        const description = typeof file === 'string' && typeof line === 'number' ? `${file}:${line}` : undefined;
+        items.push({
+          novaKind: kind,
+          projectRoot,
+          file,
+          line,
+          label: label || '(unknown endpoint)',
+          description,
+        });
       }
       return items;
     }
