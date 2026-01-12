@@ -1504,12 +1504,14 @@ impl AptManager {
                 (BuildSystem::Maven, ModuleBuildAction::Maven { module, goal }) => {
                     build.build_maven_goal(&self.project.workspace_root, module.as_deref(), *goal)
                 }
-                (BuildSystem::Gradle, ModuleBuildAction::Gradle { project_path, task }) => build
-                    .build_gradle_task(
-                        &self.project.workspace_root,
-                        project_path.as_deref(),
-                        *task,
-                    ),
+                (
+                    BuildSystem::Gradle,
+                    ModuleBuildAction::Gradle {
+                        project_root,
+                        project_path,
+                        task,
+                    },
+                ) => build.build_gradle_task(project_root, project_path.as_deref(), *task),
                 _ => Ok(BuildResult::default()),
             };
 
@@ -1676,8 +1678,14 @@ impl AptManager {
                 (BuildSystem::Maven, ModuleBuildAction::Maven { module, goal }) => {
                     build.build_maven(&self.project.workspace_root, module.as_deref(), goal)?
                 }
-                (BuildSystem::Gradle, ModuleBuildAction::Gradle { project_path, task }) => build
-                    .build_gradle(&self.project.workspace_root, project_path.as_deref(), task)?,
+                (
+                    BuildSystem::Gradle,
+                    ModuleBuildAction::Gradle {
+                        project_root,
+                        project_path,
+                        task,
+                    },
+                ) => build.build_gradle(&project_root, project_path.as_deref(), task)?,
                 _ => BuildResult {
                     diagnostics: Vec::new(),
                     ..Default::default()
@@ -1722,6 +1730,11 @@ enum ModuleBuildAction {
         goal: MavenBuildGoal,
     },
     Gradle {
+        /// Gradle build root on disk.
+        ///
+        /// Normally this is the workspace root, but for composite builds (`includeBuild`) we may
+        /// need to invoke Gradle in the included build's root directory.
+        project_root: PathBuf,
         project_path: Option<String>,
         task: GradleBuildTask,
     },
@@ -1733,6 +1746,12 @@ struct GradleProjectPaths {
     by_path: HashMap<String, PathBuf>,
     /// Map from module root directory -> Gradle project path (`:app`).
     by_root: HashMap<PathBuf, String>,
+}
+
+#[derive(Debug, Clone)]
+struct GradleInvocation {
+    project_root: PathBuf,
+    project_path: Option<String>,
 }
 
 impl AptManager {
@@ -1761,6 +1780,51 @@ impl AptManager {
                 .insert(module.root.clone(), project_path.clone());
         }
         Some(out)
+    }
+
+    fn gradle_invocation_for_module_root(
+        &self,
+        module_root: &Path,
+        gradle_projects: Option<&GradleProjectPaths>,
+    ) -> Option<GradleInvocation> {
+        if self.project.build_system != BuildSystem::Gradle {
+            return None;
+        }
+
+        let workspace_root = self.project.workspace_root.as_path();
+
+        let mut project_path = gradle_projects
+            .and_then(|projects| projects.by_root.get(module_root))
+            .cloned();
+
+        if project_path.is_none() {
+            project_path = module_root
+                .strip_prefix(workspace_root)
+                .ok()
+                .and_then(rel_to_gradle_project_path);
+        }
+
+        let project_path = project_path.as_deref().unwrap_or(":");
+
+        // Resolve Gradle composite builds (`includeBuild(...)`). These are separate Gradle builds,
+        // so we need to invoke Gradle from the included build's root directory.
+        if let Some(root_path) = included_build_root_project_path(project_path) {
+            let projects = gradle_projects?;
+            let project_root = projects.by_path.get(root_path)?.clone();
+            let nested = project_path.strip_prefix(root_path).unwrap_or("");
+            let nested = normalize_gradle_project_path(nested).map(|p| p.into_owned());
+
+            return Some(GradleInvocation {
+                project_root,
+                project_path: nested,
+            });
+        }
+
+        let normalized = normalize_gradle_project_path(project_path).map(|p| p.into_owned());
+        Some(GradleInvocation {
+            project_root: workspace_root.to_path_buf(),
+            project_path: normalized,
+        })
     }
 
     fn generated_roots_for_module(&self, module: &Module) -> Vec<SourceRoot> {
@@ -1865,31 +1929,40 @@ impl AptManager {
                 }
             }
             BuildSystem::Gradle => {
-                for module in &mut self.project.modules {
-                    let mut project_path = gradle_projects
-                        .and_then(|projects| projects.by_root.get(module.root.as_path()))
-                        .map(|p| p.as_str())
-                        .filter(|p| *p != ":");
+                // Compute invocations up-front so we can mutate `self.project.modules` afterwards
+                // without borrowing conflicts.
+                let invocations: Vec<_> = self
+                    .project
+                    .modules
+                    .iter()
+                    .map(|module| {
+                        self.gradle_invocation_for_module_root(
+                            module.root.as_path(),
+                            gradle_projects,
+                        )
+                    })
+                    .collect();
 
-                    let fallback;
-                    if project_path.is_none() {
-                        fallback = module
-                            .root
-                            .strip_prefix(&workspace_root)
-                            .ok()
-                            .and_then(rel_to_gradle_project_path);
-                        project_path = fallback.as_deref();
-                    }
+                for (module, invocation) in self.project.modules.iter_mut().zip(invocations) {
+                    let Some(invocation) = invocation else {
+                        continue;
+                    };
 
-                    // If we can't map this module to a Gradle project path (e.g. a composite build
-                    // module outside the workspace root) avoid accidentally querying the root
-                    // project, which would produce misleading configuration.
-                    if project_path.is_none() && module.root != workspace_root {
+                    // If we can't map this module to a Gradle project path (e.g. `includeFlat` or
+                    // projectDir overrides that place modules outside the workspace root) avoid
+                    // accidentally querying the root project, which would produce misleading
+                    // configuration.
+                    if invocation.project_root == workspace_root
+                        && invocation.project_path.is_none()
+                        && module.root != workspace_root
+                    {
                         continue;
                     }
 
-                    module.annotation_processing =
-                        build.annotation_processing_gradle(&workspace_root, project_path)?;
+                    module.annotation_processing = build.annotation_processing_gradle(
+                        &invocation.project_root,
+                        invocation.project_path.as_deref(),
+                    )?;
                 }
             }
             _ => {}
@@ -2017,34 +2090,35 @@ impl AptManager {
                 }
             }
             BuildSystem::Gradle => {
-                let mut project_path = gradle_projects
-                    .and_then(|projects| projects.by_root.get(module.root.as_path()))
-                    .cloned()
-                    .filter(|p| p != ":");
-                if project_path.is_none() {
-                    project_path = module
-                        .root
-                        .strip_prefix(&self.project.workspace_root)
-                        .ok()
-                        .and_then(|rel| rel_to_gradle_project_path(rel));
+                let Some(invocation) =
+                    self.gradle_invocation_for_module_root(module.root.as_path(), gradle_projects)
+                else {
+                    return Ok(None);
+                };
+
+                // If we can't map this module to a concrete Gradle project path, avoid running the
+                // root build as a fallback for non-root modules (it would produce confusing
+                // results without actually generating sources for the intended module).
+                if invocation.project_root == self.project.workspace_root
+                    && invocation.project_path.is_none()
+                    && module.root != self.project.workspace_root
+                {
+                    return Ok(None);
                 }
-                if test_stale {
-                    (
-                        SourceRootKind::Test,
-                        ModuleBuildAction::Gradle {
-                            project_path,
-                            task: GradleBuildTask::CompileTestJava,
-                        },
-                    )
+
+                let (kind, task) = if test_stale {
+                    (SourceRootKind::Test, GradleBuildTask::CompileTestJava)
                 } else {
-                    (
-                        SourceRootKind::Main,
-                        ModuleBuildAction::Gradle {
-                            project_path,
-                            task: GradleBuildTask::CompileJava,
-                        },
-                    )
-                }
+                    (SourceRootKind::Main, GradleBuildTask::CompileJava)
+                };
+                (
+                    kind,
+                    ModuleBuildAction::Gradle {
+                        project_root: invocation.project_root,
+                        project_path: invocation.project_path,
+                        task,
+                    },
+                )
             }
             BuildSystem::Bazel => return Ok(None),
             BuildSystem::Simple => return Ok(None),
@@ -2084,6 +2158,21 @@ fn rel_to_gradle_project_path(rel: &Path) -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+fn included_build_root_project_path(project_path: &str) -> Option<&str> {
+    if !project_path.starts_with(":__includedBuild_") {
+        return None;
+    }
+
+    // Included build project paths are synthesized as:
+    // - `:__includedBuild_<name>` for the included build root, and
+    // - `:__includedBuild_<name>:subproject` for included build subprojects.
+    let rest = project_path.strip_prefix(':').unwrap_or(project_path);
+    match rest.find(':') {
+        Some(idx) => Some(&project_path[..idx + 1]),
+        None => Some(project_path),
     }
 }
 
@@ -2274,7 +2363,12 @@ public class GeneratedHello {
             .expect("expected a build plan due to missing generated roots");
 
         match plan.action {
-            super::ModuleBuildAction::Gradle { project_path, task } => {
+            super::ModuleBuildAction::Gradle {
+                project_root,
+                project_path,
+                task,
+            } => {
+                assert_eq!(project_root, apt.project().workspace_root);
                 assert_eq!(project_path.as_deref(), Some(":app"));
                 assert_eq!(task, nova_build::GradleBuildTask::CompileJava);
             }
@@ -2328,8 +2422,75 @@ public class GeneratedHello {
             .expect("expected a build plan due to missing generated roots");
 
         match plan.action {
-            super::ModuleBuildAction::Gradle { project_path, task } => {
+            super::ModuleBuildAction::Gradle {
+                project_root,
+                project_path,
+                task,
+            } => {
+                assert_eq!(project_root, apt.project().workspace_root);
                 assert_eq!(project_path.as_deref(), Some(":app"));
+                assert_eq!(task, nova_build::GradleBuildTask::CompileJava);
+            }
+            other => panic!("expected Gradle build action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradle_project_path_mapping_invokes_included_builds_from_their_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path();
+        std::fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeBuild 'build-logic'\n",
+        )
+        .unwrap();
+
+        let build_logic_root = workspace_root.join("build-logic");
+        std::fs::create_dir_all(&build_logic_root).unwrap();
+        std::fs::write(
+            build_logic_root.join("settings.gradle"),
+            "include ':conventions'\n",
+        )
+        .unwrap();
+
+        let conventions_root = build_logic_root.join("conventions");
+        write_java_source(&conventions_root.join("src/main/java"), "Conventions.java");
+
+        let config = NovaConfig::default();
+        let mut options = LoadOptions::default();
+        options.nova_config = config.clone();
+        let project = load_project_with_options(workspace_root, &options).unwrap();
+        assert_eq!(project.build_system, BuildSystem::Gradle);
+
+        let apt = crate::AptManager::new(project, config);
+        let gradle_projects = apt
+            .gradle_project_paths()
+            .expect("workspace model should load");
+
+        let conventions_root = conventions_root.canonicalize().unwrap();
+        let build_logic_root = build_logic_root.canonicalize().unwrap();
+        let module = apt
+            .project()
+            .modules
+            .iter()
+            .find(|m| m.root == conventions_root)
+            .expect("expected included build subproject module to be present");
+
+        let mut mtime_provider = super::FsMtimeProvider;
+        let mut freshness = super::FreshnessCalculator::new(apt.project(), &mut mtime_provider);
+        let plan = apt
+            .plan_module_annotation_processing(module, Some(&gradle_projects), &mut freshness)
+            .unwrap()
+            .expect("expected a build plan due to missing generated roots");
+
+        match plan.action {
+            super::ModuleBuildAction::Gradle {
+                project_root,
+                project_path,
+                task,
+            } => {
+                assert_eq!(project_root, build_logic_root);
+                assert_eq!(project_path.as_deref(), Some(":conventions"));
                 assert_eq!(task, nova_build::GradleBuildTask::CompileJava);
             }
             other => panic!("expected Gradle build action, got {other:?}"),
