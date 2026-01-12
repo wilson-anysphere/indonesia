@@ -278,6 +278,7 @@ impl Drop for WatcherHandle {
 
 const RAW_WATCH_QUEUE_CAPACITY: usize = 4096;
 const BATCH_QUEUE_CAPACITY: usize = 256;
+const WATCH_COMMAND_QUEUE_CAPACITY: usize = 1;
 const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -616,7 +617,7 @@ impl WorkspaceEngine {
         let (batch_tx, batch_rx) = channel::bounded::<WatcherMessage>(BATCH_QUEUE_CAPACITY);
 
         let (watcher_stop_tx, watcher_stop_rx) = channel::bounded::<()>(0);
-        let (command_tx, command_rx) = channel::unbounded::<WatchCommand>();
+        let (command_tx, command_rx) = channel::bounded::<WatchCommand>(WATCH_COMMAND_QUEUE_CAPACITY);
 
         {
             *self
@@ -2192,7 +2193,10 @@ fn reload_project_and_sync(
             if root.starts_with(workspace_root) {
                 continue;
             }
-            let _ = tx.send(WatchCommand::Watch(root.clone()));
+            // Never block the calling thread (this can run inside debounced background tasks).
+            // If the queue is full, a watch update is already pending and will pick up the latest
+            // `watch_config` state when it runs.
+            let _ = tx.try_send(WatchCommand::Watch(root.clone()));
         }
     }
 
