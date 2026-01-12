@@ -1,0 +1,3 @@
+rootProject.name = 'gradle-includeflat-root'
+includeFlat 'app'
+

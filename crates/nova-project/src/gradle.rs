@@ -955,7 +955,10 @@ impl GradleModuleRef {
 fn parse_gradle_settings_projects(contents: &str) -> Vec<GradleModuleRef> {
     let contents = strip_gradle_comments(contents);
 
-    let included = parse_gradle_settings_included_projects(&contents);
+    let mut included = parse_gradle_settings_included_projects(&contents);
+    let include_flat_dirs = parse_gradle_settings_include_flat_project_dirs(&contents);
+    included.extend(include_flat_dirs.keys().cloned());
+
     if included.is_empty() {
         return vec![GradleModuleRef::root()];
     }
@@ -971,6 +974,7 @@ fn parse_gradle_settings_projects(contents: &str) -> Vec<GradleModuleRef> {
             let dir_rel = overrides
                 .get(&project_path)
                 .cloned()
+                .or_else(|| include_flat_dirs.get(&project_path).cloned())
                 .unwrap_or_else(|| heuristic_dir_rel_for_project_path(&project_path));
 
             GradleModuleRef {
@@ -1170,6 +1174,53 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
     }
 
     projects
+}
+
+fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<String, String> {
+    static INCLUDE_FLAT_RE: OnceLock<Regex> = OnceLock::new();
+    let re =
+        INCLUDE_FLAT_RE.get_or_init(|| Regex::new(r"\bincludeFlat\b").expect("valid regex"));
+
+    let mut out = BTreeMap::new();
+
+    for m in re.find_iter(contents) {
+        let mut idx = m.end();
+        let bytes = contents.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            continue;
+        }
+
+        let args = if bytes[idx] == b'(' {
+            extract_balanced_parens(contents, idx)
+                .map(|(args, _end)| args)
+                .unwrap_or_default()
+        } else {
+            extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
+        };
+
+        for raw in extract_quoted_strings(&args) {
+            let project_path = normalize_project_path(&raw);
+            let name = raw
+                .trim()
+                .trim_start_matches(':')
+                .replace(':', "/")
+                .replace('\\', "/");
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let dir_rel = format!("../{name}");
+            let Some(dir_rel) = normalize_dir_rel(&dir_rel) else {
+                continue;
+            };
+            out.insert(project_path, dir_rel);
+        }
+    }
+
+    out
 }
 
 fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(String, usize)> {
