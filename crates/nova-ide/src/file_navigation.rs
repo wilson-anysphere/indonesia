@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
+#[cfg(any(test, debug_assertions))]
+use std::cell::Cell;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -115,6 +117,14 @@ struct FileNavigationIndex {
 static FILE_NAVIGATION_INDEX_BUILD_COUNT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+// `file_navigation_index_build_count_for_tests` is used by integration tests that run in parallel.
+// Maintain a thread-local counter so tests can observe build counts without interference from other
+// concurrently executing tests.
+#[cfg(any(test, debug_assertions))]
+thread_local! {
+    static FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL: Cell<usize> = Cell::new(0);
+}
+
 impl FileNavigationIndex {
     #[allow(dead_code)]
     fn new(db: &dyn Database) -> Self {
@@ -123,7 +133,10 @@ impl FileNavigationIndex {
 
     fn new_for_file_ids(db: &dyn Database, mut file_ids: Vec<FileId>) -> Self {
         #[cfg(any(test, debug_assertions))]
-        FILE_NAVIGATION_INDEX_BUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            FILE_NAVIGATION_INDEX_BUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL.with(|count| count.set(count.get() + 1));
+        }
 
         file_ids.sort_by_key(|id| id.to_raw());
 
@@ -201,7 +214,7 @@ impl FileNavigationIndex {
 
 #[cfg(any(test, debug_assertions))]
 pub fn file_navigation_index_build_count_for_tests() -> usize {
-    FILE_NAVIGATION_INDEX_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL.with(|count| count.get())
 }
 
 #[derive(Debug, Clone)]
