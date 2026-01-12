@@ -4983,6 +4983,42 @@ mod tests {
     }
 
     #[test]
+    fn workspace_load_options_include_build_integration_config_from_nova_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        fs::write(
+            root.join("nova.toml"),
+            r#"
+[build]
+enabled = true
+timeout_ms = 1234
+
+[build.maven]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let state = engine
+            .project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        let build = &state.load_options.nova_config.build;
+        assert!(build.enabled);
+        assert_eq!(build.timeout_ms, 1234);
+        assert!(!build.maven.enabled);
+        assert!(build.gradle.enabled);
+        assert!(!build.maven_enabled());
+        assert!(build.gradle_enabled());
+    }
+
+    #[test]
     fn project_reload_resolves_relative_jdk_home_to_workspace_root() {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
