@@ -122,18 +122,37 @@ fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) ->
         "java.lang",
     ];
 
+    // Some very common nested types are referred to by their simple inner name (e.g. `Entry`)
+    // and can be imported directly (`import java.util.Map.Entry;`). Those types are stored in
+    // indices under their binary `$` names (`Map$Entry`), so we probe a small, fixed set of
+    // common outers to retain the previous "nested type" coverage without enumerating the
+    // entire JDK.
+    const JAVA_UTIL_NESTED_OUTERS: &[&str] = &["Map"];
+    const JAVA_LANG_NESTED_OUTERS: &[&str] = &["Thread"];
+
     let name = Name::from(needle);
 
     let mut out = Vec::new();
-    for pkg in COMMON_PACKAGES {
-        let pkg = PackageName::from_dotted(pkg);
-        let Some(ty) = index.resolve_type_in_package(&pkg, &name) else {
-            continue;
+    for pkg_str in COMMON_PACKAGES {
+        let pkg = PackageName::from_dotted(pkg_str);
+        if let Some(ty) = index.resolve_type_in_package(&pkg, &name) {
+            // JDK indices use binary names for nested types (`Outer$Inner`). Java imports use source
+            // names (`Outer.Inner`), so replace `$` with `.` as a best-effort.
+            out.push(ty.as_str().replace('$', "."));
+        }
+
+        let nested_outers: &[&str] = match *pkg_str {
+            "java.util" => JAVA_UTIL_NESTED_OUTERS,
+            "java.lang" => JAVA_LANG_NESTED_OUTERS,
+            _ => &[],
         };
 
-        // JDK indices use binary names for nested types (`Outer$Inner`). Java imports use source
-        // names (`Outer.Inner`), so replace `$` with `.` as a best-effort.
-        out.push(ty.as_str().replace('$', "."));
+        for outer in nested_outers {
+            let nested = Name::from(format!("{outer}${needle}"));
+            if let Some(ty) = index.resolve_type_in_package(&pkg, &nested) {
+                out.push(ty.as_str().replace('$', "."));
+            }
+        }
     }
 
     out.sort();
@@ -456,5 +475,14 @@ mod tests {
         let jdk = JdkIndex::new();
         let candidates = import_candidates_with_index("List", &jdk);
         assert_eq!(candidates, vec!["java.util.List".to_string()]);
+    }
+
+    #[test]
+    fn import_candidates_entry_includes_java_util_map_entry() {
+        // `Map.Entry` is a common nested type referenced by its inner name. Ensure we can still
+        // suggest it without scanning the full JDK.
+        let jdk = JdkIndex::new();
+        let candidates = import_candidates_with_index("Entry", &jdk);
+        assert_eq!(candidates, vec!["java.util.Map.Entry".to_string()]);
     }
 }
