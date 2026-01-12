@@ -1025,10 +1025,37 @@ impl EffectivePom {
             // Imported BOM-managed deps should be resolved in the BOM's property context.
             for (k, v) in &bom_effective.dependency_management {
                 let mut managed = v.clone();
+                managed.group_id = resolve_placeholders(&managed.group_id, &bom_effective.properties);
+                managed.artifact_id =
+                    resolve_placeholders(&managed.artifact_id, &bom_effective.properties);
                 managed.version = managed
                     .version
                     .as_deref()
                     .map(|v| resolve_placeholders(v, &bom_effective.properties));
+                managed.scope = managed
+                    .scope
+                    .as_deref()
+                    .map(|v| resolve_placeholders(v, &bom_effective.properties));
+                managed.classifier = managed
+                    .classifier
+                    .as_deref()
+                    .map(|v| resolve_placeholders(v, &bom_effective.properties));
+                managed.type_ = managed
+                    .type_
+                    .as_deref()
+                    .map(|v| resolve_placeholders(v, &bom_effective.properties));
+                managed.exclusions = managed
+                    .exclusions
+                    .iter()
+                    .map(|(group_id, artifact_id)| {
+                        (
+                            resolve_placeholders(group_id, &bom_effective.properties),
+                            resolve_placeholders(artifact_id, &bom_effective.properties),
+                        )
+                    })
+                    .filter(|(group_id, artifact_id)| !group_id.is_empty() && !artifact_id.is_empty())
+                    .collect();
+                normalize_exclusions(&mut managed.exclusions);
                 dependency_management.insert(k.clone(), managed);
             }
         }

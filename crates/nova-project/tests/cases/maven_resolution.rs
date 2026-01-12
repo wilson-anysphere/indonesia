@@ -529,6 +529,145 @@ fn resolves_dependency_management_exclusions() {
 }
 
 #[test]
+fn resolves_bom_exclusion_placeholders() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let workspace_root = temp.path().join("workspace");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&workspace_root).expect("create workspace dir");
+    fs::create_dir_all(&repo).expect("create repo dir");
+
+    write_file(
+        &workspace_root.join("pom.xml"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>workspace</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    // dep-a imports a BOM and depends on dep-b. dep-b's exclusions come from the BOM.
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-a", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-a</artifactId>
+  <version>1.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>bom</artifactId>
+        <version>1.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-b</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    // BOM manages dep-b with an exclusion that uses BOM-local properties.
+    write_file(
+        &repo_pom_path(&repo, "com.example", "bom", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>bom</artifactId>
+  <version>1.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <excluded.group>com.example</excluded.group>
+    <excluded.artifact>dep-d</excluded.artifact>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>dep-b</artifactId>
+        <version>1.0</version>
+        <exclusions>
+          <exclusion>
+            <groupId>${excluded.group}</groupId>
+            <artifactId>${excluded.artifact}</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+"#,
+    );
+
+    // dep-b -> dep-d, but dep-d should be excluded due to BOM-managed dep-b exclusions.
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-b", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-b</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-d</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-d", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-d</artifactId>
+  <version>1.0</version>
+</project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(repo.clone()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&workspace_root, &options).expect("load project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone()))
+        .collect();
+    assert!(deps.contains(&("com.example".to_string(), "dep-a".to_string())));
+    assert!(deps.contains(&("com.example".to_string(), "dep-b".to_string())));
+    assert!(!deps.contains(&("com.example".to_string(), "dep-d".to_string())));
+}
+
+#[test]
 fn resolves_dependency_management_optional_override() {
     let temp = tempfile::tempdir().expect("temp dir");
     let workspace_root = temp.path().join("workspace");
