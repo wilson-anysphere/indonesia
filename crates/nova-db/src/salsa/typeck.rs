@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -616,6 +616,8 @@ struct BodyChecker<'a, 'idx> {
     expr_info: Vec<Option<ExprInfo>>,
     call_resolutions: Vec<Option<ResolvedMethod>>,
     diagnostics: Vec<Diagnostic>,
+    workspace_in_progress: HashSet<String>,
+    workspace_loaded: HashSet<String>,
     steps: u32,
 }
 
@@ -658,6 +660,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             expr_info,
             call_resolutions,
             diagnostics: Vec::new(),
+            workspace_in_progress: HashSet::new(),
+            workspace_loaded: HashSet::new(),
             steps: 0,
         }
     }
@@ -672,8 +676,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         loader: &mut ExternalTypeLoader<'_>,
         binary_name: &str,
     ) -> Option<ClassId> {
-        if let Some(id) = loader.store.lookup_class(binary_name) {
-            return Some(id);
+        if self.workspace_loaded.contains(binary_name) {
+            return Some(loader.store.intern_class_id(binary_name));
+        }
+        if self.workspace_in_progress.contains(binary_name) {
+            return Some(loader.store.intern_class_id(binary_name));
         }
 
         let file = def_file(self.owner);
@@ -681,13 +688,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let workspace = self.db.workspace_def_map(project);
         let item = workspace.item_by_type_name(&TypeName::new(binary_name.to_string()))?;
 
-        let item_file = item.file();
-        let tree = self.db.hir_item_tree(item_file);
-        let scopes = self.db.scope_graph(item_file);
-
         // Reserve the id early so self-referential members (e.g. `A next;`) can resolve to a stable
         // `Type::Class` instead of forcing `Type::Named`.
         let class_id = loader.store.intern_class_id(binary_name);
+        self.workspace_in_progress.insert(binary_name.to_string());
+
+        let item_file = item.file();
+        let tree = self.db.hir_item_tree(item_file);
+        let scopes = self.db.scope_graph(item_file);
 
         let kind = match item {
             nova_hir::ids::ItemId::Interface(_) => ClassKind::Interface,
@@ -778,6 +786,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             continue;
                         };
 
+                        let is_varargs = method
+                            .params
+                            .last()
+                            .is_some_and(|param| param.ty.trim().contains("..."));
+
                         let scope = scopes
                             .method_scopes
                             .get(&mid)
@@ -834,7 +847,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             params,
                             return_type,
                             is_static,
-                            is_varargs: false,
+                            is_varargs,
                             is_abstract: method.body.is_none(),
                         });
                     }
@@ -857,6 +870,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             },
         );
 
+        self.workspace_in_progress.remove(binary_name);
+        self.workspace_loaded.insert(binary_name.to_string());
+
         Some(class_id)
     }
 
@@ -866,6 +882,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) else {
                     return;
                 };
+                let _ = self.ensure_workspace_class(loader, &name);
                 let _ = loader.ensure_class(&name);
             }
             Type::Named(name) => {

@@ -450,6 +450,45 @@ fn cross_file_method_call_resolves_on_workspace_class() {
 }
 
 #[test]
+fn cross_file_instance_method_call_resolves_on_workspace_class() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/A.java",
+        "package p; class A { void foo() {} }",
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/p/B.java",
+        "package p; class B { void test() { new A().foo(); } }",
+    );
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected cross-file workspace method call to resolve, got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_signature_type_resolves_in_same_package() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
