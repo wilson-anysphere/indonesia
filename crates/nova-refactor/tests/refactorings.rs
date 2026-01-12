@@ -764,6 +764,39 @@ class C {
 }
 
 #[test]
+fn extract_variable_rejects_expression_bodied_lambda_nested_expression() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    Runnable r = () -> System.out.println(/*start*/1 + 2/*end*/);
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from expression-bodied lambda body"
+        ),
+        "expected expression-bodied lambda rejection, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_allows_block_bodied_lambda() {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
