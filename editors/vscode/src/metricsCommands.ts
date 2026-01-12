@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 const SHOW_METRICS_COMMAND = 'nova.showRequestMetrics';
 const RESET_METRICS_COMMAND = 'nova.resetRequestMetrics';

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { NOVA_DEBUG_TYPE } from './debugAdapter';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 interface NovaLspDebugConfiguration {
   name: string;

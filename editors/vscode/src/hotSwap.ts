@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 interface HotSwapFileResult {
   file: string;

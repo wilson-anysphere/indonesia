@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { uriFromFileLike } from './frameworkDashboard';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 

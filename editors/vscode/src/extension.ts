@@ -1929,7 +1929,11 @@ function createMethodNotFoundError(method: string): Error & { code: number } {
   return err;
 }
 
-async function sendNovaRequest<R>(method: string, params?: unknown, opts: SendNovaRequestOptions = {}): Promise<R> {
+async function sendNovaRequest<R>(
+  method: string,
+  params?: unknown,
+  opts: SendNovaRequestOptions = {},
+): Promise<R | undefined> {
   const c = await requireClient();
   if (method.startsWith('nova/')) {
     const supported = isNovaRequestSupported(method);
@@ -1938,7 +1942,7 @@ async function sendNovaRequest<R>(method: string, params?: unknown, opts: SendNo
         throw createMethodNotFoundError(method);
       } else {
         void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
-        return undefined as unknown as R;
+        return undefined;
       }
     }
   }
@@ -1955,7 +1959,7 @@ async function sendNovaRequest<R>(method: string, params?: unknown, opts: SendNo
         throw err;
       } else {
         void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
-        return undefined as unknown as R;
+        return undefined;
       }
     }
     if (isSafeModeError(err)) {

@@ -5,7 +5,7 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import { NOVA_DEBUG_TYPE } from './debugAdapter';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 type BuildTool = 'auto' | 'maven' | 'gradle';
 
