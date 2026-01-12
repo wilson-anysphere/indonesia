@@ -710,16 +710,21 @@ expression: schema
       ]
     },
     "build": {
-      "description": "Optional integration with external build tools (Maven/Gradle).",
+      "description": "Controls build tool (Maven/Gradle) invocation for workspace metadata extraction.",
       "default": {
-        "enabled": false,
+        "enabled": null,
         "gradle": {
-          "enabled": true
+          "enabled": null,
+          "mode": null,
+          "timeout_ms": null
         },
         "maven": {
-          "enabled": true
+          "enabled": null,
+          "mode": null,
+          "timeout_ms": null
         },
-        "timeout_ms": 30000
+        "mode": "auto",
+        "timeout_ms": 120000
       },
       "allOf": [
         {
@@ -1261,35 +1266,51 @@ expression: schema
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Whether Nova is allowed to invoke build tools during workspace load/reload.\n\nDefaults to `false` for safety/performance.",
-          "default": false,
-          "type": "boolean"
+          "description": "Deprecated legacy toggle for build tool integration.\n\nWhen set: - `true` is treated as `mode = \"on\"` - `false` is treated as `mode = \"off\"`\n\nPrefer `mode` for full control including the cache-only default (`auto`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "gradle": {
-          "description": "Per-tool toggle for Gradle integration.",
+          "description": "Optional Gradle-specific overrides.",
           "default": {
-            "enabled": true
+            "enabled": null,
+            "mode": null,
+            "timeout_ms": null
           },
           "allOf": [
             {
-              "$ref": "#/definitions/BuildToolConfig"
+              "$ref": "#/definitions/BuildIntegrationToolConfig"
             }
           ]
         },
         "maven": {
-          "description": "Per-tool toggle for Maven integration.",
+          "description": "Optional Maven-specific overrides.",
           "default": {
-            "enabled": true
+            "enabled": null,
+            "mode": null,
+            "timeout_ms": null
           },
           "allOf": [
             {
-              "$ref": "#/definitions/BuildToolConfig"
+              "$ref": "#/definitions/BuildIntegrationToolConfig"
+            }
+          ]
+        },
+        "mode": {
+          "description": "Default build integration behavior for Maven/Gradle.",
+          "default": "auto",
+          "allOf": [
+            {
+              "$ref": "#/definitions/BuildIntegrationMode"
             }
           ]
         },
         "timeout_ms": {
-          "description": "Timeout for build tool invocations during workspace load/reload (in milliseconds).\n\nNote: a value of `0` is treated as `1` millisecond at runtime.",
-          "default": 30000,
+          "description": "Timeout applied to build-tool metadata extraction commands (in milliseconds).",
+          "default": 120000,
           "type": "integer",
           "format": "uint64",
           "minimum": 1.0
@@ -1297,14 +1318,64 @@ expression: schema
       },
       "additionalProperties": false
     },
-    "BuildToolConfig": {
-      "description": "Configuration for optional integration with external build tools (Maven/Gradle).\n\nWhen enabled, Nova may invoke external build tool processes during workspace load/reload to compute accurate classpaths and source roots. This is disabled by default because it can be slow, spawn subprocesses, and may be undesirable in some environments.",
+    "BuildIntegrationMode": {
+      "description": "Controls whether Nova will invoke external build tools (Maven/Gradle) to extract build metadata (compile classpaths, source roots, language level, etc).",
+      "oneOf": [
+        {
+          "description": "Never invoke external build tools. Nova relies on heuristic project loading (`nova-project`) and any user-specified overrides.",
+          "type": "string",
+          "enum": [
+            "off"
+          ]
+        },
+        {
+          "description": "Use cached build metadata if available, but do not invoke build tools on cache misses.\n\nThis is the default to avoid surprising slow startup costs or build tool downloads.",
+          "type": "string",
+          "enum": [
+            "auto"
+          ]
+        },
+        {
+          "description": "Invoke build tools on workspace load (and build file changes) to obtain accurate metadata.",
+          "type": "string",
+          "enum": [
+            "on"
+          ]
+        }
+      ]
+    },
+    "BuildIntegrationToolConfig": {
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Whether this specific build tool is allowed to run (when `build.enabled = true`).",
-          "default": true,
-          "type": "boolean"
+          "description": "Deprecated legacy toggle for this specific build tool.\n\nWhen set to `false`, this tool is treated as `mode = \"off\"` regardless of global mode.\n\nPrefer `mode` for full control.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "Optional override for this build tool. When unset, `build.mode` is used.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BuildIntegrationMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout_ms": {
+          "description": "Optional timeout override for this build tool (in milliseconds).\n\nWhen unset, `build.timeout_ms` is used.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
         }
       },
       "additionalProperties": false

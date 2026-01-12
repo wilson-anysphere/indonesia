@@ -11,7 +11,8 @@ pub struct LoadOptions {
     /// Additional classpath entries (directories or jars) to include.
     ///
     /// This is primarily intended for Gradle projects where dependency resolution
-    /// is best-effort (Nova does not invoke Gradle).
+    /// is best-effort. Nova's *heuristic* project loader does not invoke Gradle; build-tool
+    /// integration is provided separately (via `nova-build` and workspace hosts that opt in).
     pub classpath_overrides: Vec<PathBuf>,
 
     /// Override Maven local repository (`~/.m2/repository`) location.

@@ -77,72 +77,131 @@ pub struct JdkConfig {
     pub toolchains: Vec<JdkToolchainConfig>,
 }
 
-/// Configuration for optional integration with external build tools (Maven/Gradle).
-///
-/// When enabled, Nova may invoke external build tool processes during workspace load/reload to
-/// compute accurate classpaths and source roots. This is disabled by default because it can be
-/// slow, spawn subprocesses, and may be undesirable in some environments.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// Controls whether Nova will invoke external build tools (Maven/Gradle) to extract build metadata
+/// (compile classpaths, source roots, language level, etc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildIntegrationMode {
+    /// Never invoke external build tools. Nova relies on heuristic project loading (`nova-project`)
+    /// and any user-specified overrides.
+    Off,
+    /// Use cached build metadata if available, but do not invoke build tools on cache misses.
+    ///
+    /// This is the default to avoid surprising slow startup costs or build tool downloads.
+    Auto,
+    /// Invoke build tools on workspace load (and build file changes) to obtain accurate metadata.
+    On,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[schemars(deny_unknown_fields)]
-pub struct BuildToolConfig {
-    /// Whether this specific build tool is allowed to run (when `build.enabled = true`).
-    #[serde(default = "default_build_tool_enabled")]
-    pub enabled: bool,
-}
+pub struct BuildIntegrationToolConfig {
+    /// Deprecated legacy toggle for this specific build tool.
+    ///
+    /// When set to `false`, this tool is treated as `mode = "off"` regardless of global mode.
+    ///
+    /// Prefer `mode` for full control.
+    #[serde(default)]
+    pub enabled: Option<bool>,
 
-fn default_build_tool_enabled() -> bool {
-    true
-}
+    /// Optional override for this build tool. When unset, `build.mode` is used.
+    #[serde(default)]
+    pub mode: Option<BuildIntegrationMode>,
 
-impl Default for BuildToolConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_build_tool_enabled(),
-        }
-    }
+    /// Optional timeout override for this build tool (in milliseconds).
+    ///
+    /// When unset, `build.timeout_ms` is used.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct BuildIntegrationConfig {
-    /// Whether Nova is allowed to invoke build tools during workspace load/reload.
+    /// Deprecated legacy toggle for build tool integration.
     ///
-    /// Defaults to `false` for safety/performance.
+    /// When set:
+    /// - `true` is treated as `mode = "on"`
+    /// - `false` is treated as `mode = "off"`
+    ///
+    /// Prefer `mode` for full control including the cache-only default (`auto`).
     #[serde(default)]
-    pub enabled: bool,
+    pub enabled: Option<bool>,
 
-    /// Timeout for build tool invocations during workspace load/reload (in milliseconds).
-    ///
-    /// Note: a value of `0` is treated as `1` millisecond at runtime.
-    #[serde(default = "default_build_timeout_ms")]
+    /// Default build integration behavior for Maven/Gradle.
+    #[serde(default = "BuildIntegrationConfig::default_mode")]
+    pub mode: BuildIntegrationMode,
+
+    /// Timeout applied to build-tool metadata extraction commands (in milliseconds).
+    #[serde(default = "BuildIntegrationConfig::default_timeout_ms")]
     #[schemars(range(min = 1))]
     pub timeout_ms: u64,
 
-    /// Per-tool toggle for Maven integration.
+    /// Optional Maven-specific overrides.
     #[serde(default)]
-    pub maven: BuildToolConfig,
+    pub maven: BuildIntegrationToolConfig,
 
-    /// Per-tool toggle for Gradle integration.
+    /// Optional Gradle-specific overrides.
     #[serde(default)]
-    pub gradle: BuildToolConfig,
+    pub gradle: BuildIntegrationToolConfig,
 }
 
-fn default_build_timeout_ms() -> u64 {
-    30_000
+impl BuildIntegrationConfig {
+    fn default_mode() -> BuildIntegrationMode {
+        BuildIntegrationMode::Auto
+    }
+
+    fn default_timeout_ms() -> u64 {
+        // Metadata extraction should be bounded during workspace load. Callers can increase this
+        // if their build tool needs longer.
+        120_000
+    }
+
+    pub fn maven_mode(&self) -> BuildIntegrationMode {
+        if self.maven.enabled == Some(false) {
+            return BuildIntegrationMode::Off;
+        }
+        self.maven.mode.unwrap_or(self.base_mode())
+    }
+
+    pub fn gradle_mode(&self) -> BuildIntegrationMode {
+        if self.gradle.enabled == Some(false) {
+            return BuildIntegrationMode::Off;
+        }
+        self.gradle.mode.unwrap_or(self.base_mode())
+    }
+
+    pub fn maven_timeout(&self) -> Duration {
+        Duration::from_millis(self.maven.timeout_ms.unwrap_or(self.timeout_ms).max(1))
+    }
+
+    pub fn gradle_timeout(&self) -> Duration {
+        Duration::from_millis(self.gradle.timeout_ms.unwrap_or(self.timeout_ms).max(1))
+    }
 }
 
 impl Default for BuildIntegrationConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            timeout_ms: default_build_timeout_ms(),
-            maven: BuildToolConfig::default(),
-            gradle: BuildToolConfig::default(),
+            enabled: None,
+            mode: Self::default_mode(),
+            timeout_ms: Self::default_timeout_ms(),
+            maven: BuildIntegrationToolConfig::default(),
+            gradle: BuildIntegrationToolConfig::default(),
         }
     }
 }
 
 impl BuildIntegrationConfig {
+    fn base_mode(&self) -> BuildIntegrationMode {
+        match self.enabled {
+            Some(true) => BuildIntegrationMode::On,
+            Some(false) => BuildIntegrationMode::Off,
+            None => self.mode,
+        }
+    }
+
     /// Effective timeout for build tool invocations.
     ///
     /// This uses `max(1)` so even misconfigured values remain time-bounded.
@@ -150,15 +209,16 @@ impl BuildIntegrationConfig {
         Duration::from_millis(self.timeout_ms.max(1))
     }
 
+    /// Returns `true` if Maven integration is enabled in `mode = "on"`.
     pub fn maven_enabled(&self) -> bool {
-        self.enabled && self.maven.enabled
+        self.maven_mode() == BuildIntegrationMode::On
     }
 
+    /// Returns `true` if Gradle integration is enabled in `mode = "on"`.
     pub fn gradle_enabled(&self) -> bool {
-        self.enabled && self.gradle.enabled
+        self.gradle_mode() == BuildIntegrationMode::On
     }
 }
-
 fn default_generated_sources_enabled() -> bool {
     true
 }
@@ -457,8 +517,8 @@ pub struct NovaConfig {
     #[serde(default)]
     pub jdk: JdkConfig,
 
-    /// Optional integration with external build tools (Maven/Gradle).
-    #[serde(default)]
+    /// Controls build tool (Maven/Gradle) invocation for workspace metadata extraction.
+    #[serde(default, alias = "build_integration")]
     pub build: BuildIntegrationConfig,
 
     /// Workspace extensions (WASM bundles) configuration.
@@ -1935,13 +1995,44 @@ mod tests {
     #[test]
     fn toml_without_build_table_uses_defaults() {
         let config: NovaConfig = toml::from_str("").expect("config should parse");
+        assert_eq!(config.build, BuildIntegrationConfig::default());
+    }
 
-        assert!(!config.build.enabled);
+    #[test]
+    fn toml_build_table_parses_mode_and_timeouts() {
+        let text = r#"
+[build]
+mode = "on"
+timeout_ms = 30000
+
+[build.gradle]
+mode = "off"
+timeout_ms = 10000
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        assert_eq!(config.build.mode, BuildIntegrationMode::On);
         assert_eq!(config.build.timeout_ms, 30_000);
-        assert!(config.build.maven.enabled);
-        assert!(config.build.gradle.enabled);
-        assert!(!config.build.maven_enabled());
-        assert!(!config.build.gradle_enabled());
+        assert_eq!(config.build.maven.mode, None);
+        assert_eq!(config.build.maven.timeout_ms, None);
+        assert_eq!(config.build.gradle.mode, Some(BuildIntegrationMode::Off));
+        assert_eq!(config.build.gradle.timeout_ms, Some(10_000));
+
+        assert_eq!(config.build.maven_mode(), BuildIntegrationMode::On);
+        assert_eq!(config.build.gradle_mode(), BuildIntegrationMode::Off);
+        assert_eq!(config.build.maven_timeout(), Duration::from_millis(30_000));
+        assert_eq!(config.build.gradle_timeout(), Duration::from_millis(10_000));
+    }
+
+    #[test]
+    fn toml_build_integration_table_is_accepted_as_alias() {
+        let text = r#"
+[build_integration]
+mode = "off"
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        assert_eq!(config.build.mode, BuildIntegrationMode::Off);
     }
 
     #[test]
@@ -1953,12 +2044,10 @@ timeout_ms = 12345
 "#;
 
         let config: NovaConfig = toml::from_str(text).expect("config should parse");
-        assert!(config.build.enabled);
+        assert_eq!(config.build.enabled, Some(true));
         assert_eq!(config.build.timeout_ms, 12_345);
-        assert!(config.build.maven.enabled);
-        assert!(config.build.gradle.enabled);
-        assert!(config.build.maven_enabled());
-        assert!(config.build.gradle_enabled());
+        assert_eq!(config.build.maven_mode(), BuildIntegrationMode::On);
+        assert_eq!(config.build.gradle_mode(), BuildIntegrationMode::On);
 
         let round_trip = toml::to_string(&config).expect("serialize");
         let decoded: NovaConfig = toml::from_str(&round_trip).expect("deserialize");
@@ -1980,12 +2069,12 @@ enabled = true
 "#;
 
         let config: NovaConfig = toml::from_str(text).expect("config should parse");
-        assert!(config.build.enabled);
+        assert_eq!(config.build.enabled, Some(true));
         assert_eq!(config.build.timeout_ms, 1_000);
-        assert!(!config.build.maven.enabled);
-        assert!(config.build.gradle.enabled);
-        assert!(!config.build.maven_enabled());
-        assert!(config.build.gradle_enabled());
+        assert_eq!(config.build.maven.enabled, Some(false));
+        assert_eq!(config.build.gradle.enabled, Some(true));
+        assert_eq!(config.build.maven_mode(), BuildIntegrationMode::Off);
+        assert_eq!(config.build.gradle_mode(), BuildIntegrationMode::On);
     }
 
     #[test]
@@ -2026,9 +2115,9 @@ enabled = false
 "#;
 
         let config: NovaConfig = toml::from_str(text).expect("config should parse");
-        assert!(config.build.enabled);
-        assert!(!config.build.maven.enabled);
-        assert!(!config.build.gradle.enabled);
+        assert_eq!(config.build.enabled, Some(true));
+        assert_eq!(config.build.maven.enabled, Some(false));
+        assert_eq!(config.build.gradle.enabled, Some(false));
 
         let diagnostics = config.validate();
         assert!(diagnostics.errors.is_empty());

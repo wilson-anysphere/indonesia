@@ -9,8 +9,9 @@ use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender};
 use crossbeam_channel as channel;
 use lsp_types::Position;
+use nova_build::{BuildCache, BuildFileFingerprint, BuildManager, BuildSystemKind, CommandRunner};
 use nova_cache::{normalize_rel_path, Fingerprint};
-use nova_config::EffectiveConfig;
+use nova_config::{BuildIntegrationMode, EffectiveConfig};
 use nova_core::{TextEdit, TextRange, TextSize};
 use nova_db::persistence::PersistenceConfig;
 use nova_db::{salsa, Database, NovaIndexing, NovaInputs, NovaSyntax, ProjectId, SourceRootId};
@@ -34,8 +35,6 @@ use nova_vfs::{
     LocalFs, NotifyFileWatcher, OpenDocuments, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 use walkdir::WalkDir;
-
-use nova_build::{BuildManager, CommandRunner};
 
 use crate::snapshot::WorkspaceDbView;
 use crate::watch::{categorize_event, ChangeCategory, WatchConfig};
@@ -144,9 +143,12 @@ pub(crate) struct WorkspaceEngineConfig {
     pub memory: MemoryManager,
     /// Optional command runner override for build tool integration (Maven/Gradle).
     ///
-    /// When unset, Nova uses a default runner that executes external commands. In
-    /// `cfg(test)` builds we default to a runner that returns `NotFound` to avoid
-    /// invoking real build tools during unit tests.
+    /// Intended for tests; production callers should generally leave this unset so the workspace
+    /// can apply config-driven timeouts.
+    ///
+    /// When unset, Nova uses a default runner that executes external commands. In `cfg(test)` builds
+    /// we default to a runner that returns `NotFound` to avoid invoking real build tools during unit
+    /// tests.
     pub build_runner: Option<Arc<dyn CommandRunner>>,
 }
 
@@ -562,10 +564,8 @@ pub(crate) struct WorkspaceEngine {
     closed_file_texts: Arc<ClosedFileTextStore>,
     indexes: Arc<Mutex<ProjectIndexes>>,
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
-
     build_runner: Arc<dyn CommandRunner>,
     build_runner_is_default: bool,
-
     config: RwLock<EffectiveConfig>,
     scheduler: Scheduler,
     memory: MemoryManager,
@@ -2938,6 +2938,16 @@ fn build_cache_dir(workspace_root: &Path, query_db: &salsa::Database) -> PathBuf
     workspace_root.join(".nova").join("build-cache")
 }
 
+fn is_nova_config_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    if matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml") {
+        return true;
+    }
+    name == "config.toml" && path.ends_with(Path::new(".nova/config.toml"))
+}
+
 fn is_build_tool_input_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -3035,7 +3045,7 @@ fn should_refresh_build_config(workspace_root: &Path, changed_files: &[PathBuf])
             // output directories). Use paths relative to the workspace root so absolute parent
             // directories (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
             let rel = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
-            is_build_tool_input_file(rel)
+            is_build_tool_input_file(rel) || is_nova_config_file(rel)
         })
 }
 
@@ -3203,6 +3213,32 @@ fn reuse_previous_build_config_fields(
     loaded
 }
 
+fn cached_java_compile_config(
+    workspace_root: &Path,
+    kind: BuildSystemKind,
+    cache_root: &Path,
+) -> Option<nova_build::JavaCompileConfig> {
+    let files = match kind {
+        BuildSystemKind::Maven => nova_build::collect_maven_build_files(workspace_root).ok()?,
+        BuildSystemKind::Gradle => nova_build::collect_gradle_build_files(workspace_root).ok()?,
+    };
+    let fingerprint = BuildFileFingerprint::from_files(workspace_root, files).ok()?;
+    let cache = BuildCache::new(cache_root);
+    let module = cache
+        .get_module(workspace_root, kind, &fingerprint, "<root>")
+        .ok()
+        .flatten()?;
+
+    module
+        .java_compile_config
+        .or_else(|| {
+            module.classpath.map(|classpath| nova_build::JavaCompileConfig {
+                compile_classpath: classpath,
+                ..nova_build::JavaCompileConfig::default()
+            })
+        })
+}
+
 fn reload_project_and_sync(
     workspace_root: &Path,
     changed_files: &[PathBuf],
@@ -3267,81 +3303,100 @@ fn reload_project_and_sync(
             }
         };
 
-    if matches!(
-        loaded.build_system,
-        BuildSystem::Maven | BuildSystem::Gradle
-    ) {
-        // Build tool integration (Maven/Gradle) is gated behind `nova.toml` because it can spawn
-        // external processes and be slow/unwanted in some environments.
-        let build_integration_enabled = match loaded.build_system {
-            BuildSystem::Maven => options.nova_config.build.maven_enabled(),
-            BuildSystem::Gradle => options.nova_config.build.gradle_enabled(),
-            _ => false,
+    if matches!(loaded.build_system, BuildSystem::Maven | BuildSystem::Gradle) {
+        let build_integration_cfg = &options.nova_config.build;
+        let (mode, timeout, kind) = match loaded.build_system {
+            BuildSystem::Maven => (
+                build_integration_cfg.maven_mode(),
+                build_integration_cfg.maven_timeout(),
+                BuildSystemKind::Maven,
+            ),
+            BuildSystem::Gradle => (
+                build_integration_cfg.gradle_mode(),
+                build_integration_cfg.gradle_timeout(),
+                BuildSystemKind::Gradle,
+            ),
+            _ => unreachable!("build integration only applies to Maven/Gradle"),
         };
 
-        if build_integration_enabled {
-            let refresh_build = should_refresh_build_config(workspace_root, changed_files);
-            // `.nova/queries/gradle.json` is a build-tool-produced Gradle snapshot that can update
-            // resolved classpaths/source roots without modifying build scripts. When it changes we
-            // want to re-load the project config (so `nova-project` can consume the snapshot), but we
-            // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
-            let gradle_snapshot_changed = changed_files
-                .iter()
-                .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
+        let refresh_build = should_refresh_build_config(workspace_root, changed_files);
+        // `.nova/queries/gradle.json` is a build-tool-produced Gradle snapshot that can update
+        // resolved classpaths/source roots without modifying build scripts. When it changes we
+        // want to re-load the project config (so `nova-project` can consume the snapshot), but we
+        // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
+        let gradle_snapshot_changed = changed_files
+            .iter()
+            .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
 
-            if refresh_build {
-                let cache_dir = build_cache_dir(workspace_root, query_db);
-                // When using the default build runner, respect the user-configured build
-                // integration timeout. Custom runners are expected to implement their own
-                // timeout semantics.
-                let runner = if build_runner_is_default {
-                    #[cfg(not(test))]
+        if refresh_build {
+            match mode {
+                BuildIntegrationMode::Off => {}
+                BuildIntegrationMode::Auto => {
+                    let cache_dir = build_cache_dir(workspace_root, query_db);
+                    if let Some(cfg) =
+                        cached_java_compile_config(workspace_root, kind, &cache_dir)
                     {
-                        Arc::new(nova_build::DefaultCommandRunner {
-                            timeout: Some(options.nova_config.build.timeout()),
-                            cancellation: None,
-                        })
-                    }
-                    #[cfg(test)]
-                    {
-                        Arc::clone(build_runner)
-                    }
-                } else {
-                    Arc::clone(build_runner)
-                };
-
-                let build = BuildManager::with_runner(cache_dir, runner);
-
-                let compile_config = match loaded.build_system {
-                    BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
-                    BuildSystem::Gradle => build.java_compile_config_gradle(workspace_root, None),
-                    _ => unreachable!("build config refresh only applies to Maven/Gradle"),
-                };
-
-                match compile_config {
-                    Ok(cfg) => {
-                        // Preserve generated roots and other workspace metadata discovered by
-                        // `nova-project` while replacing classpath/module-path/source roots with the
-                        // build-tool-derived configuration.
                         let base = loaded.clone();
                         loaded = apply_java_compile_config_to_project_config(loaded, &cfg, &base);
                     }
-                    Err(err) => {
-                        publish_to_subscribers(
-                            subscribers,
-                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                                "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
-                            ))),
-                        );
+                }
+                BuildIntegrationMode::On => {
+                    let cache_dir = build_cache_dir(workspace_root, query_db);
+                    // When using the default build runner, respect the configured build
+                    // integration timeout. Custom runners are expected to implement their own
+                    // timeout semantics.
+                    let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
+                        #[cfg(not(test))]
+                        {
+                            Arc::new(nova_build::DefaultCommandRunner {
+                                timeout: Some(timeout),
+                                cancellation: None,
+                            })
+                        }
+                        #[cfg(test)]
+                        {
+                            Arc::clone(build_runner)
+                        }
+                    } else {
+                        Arc::clone(build_runner)
+                    };
+                    let build = BuildManager::with_runner(cache_dir, runner);
+
+                    let compile_config = match loaded.build_system {
+                        BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
+                        BuildSystem::Gradle => {
+                            build.java_compile_config_gradle(workspace_root, None)
+                        }
+                        _ => unreachable!("build config refresh only applies to Maven/Gradle"),
+                    };
+
+                    match compile_config {
+                        Ok(cfg) => {
+                            // Preserve generated roots and other workspace metadata discovered by
+                            // `nova-project` while replacing classpath/module-path/source roots with the
+                            // build-tool-derived configuration.
+                            let base = loaded.clone();
+                            loaded =
+                                apply_java_compile_config_to_project_config(loaded, &cfg, &base);
+                        }
+                        Err(err) => {
+                            publish_to_subscribers(
+                                subscribers,
+                                WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                    "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
+                                ))),
+                            );
+                        }
                     }
                 }
-            } else if !gradle_snapshot_changed
-                && previous_config.build_system == loaded.build_system
-                && previous_config.workspace_root == loaded.workspace_root
-                && !previous_config.workspace_root.as_os_str().is_empty()
-            {
-                loaded = reuse_previous_build_config_fields(loaded, previous_config.as_ref());
             }
+        } else if mode != BuildIntegrationMode::Off
+            && !gradle_snapshot_changed
+            && previous_config.build_system == loaded.build_system
+            && previous_config.workspace_root == loaded.workspace_root
+            && !previous_config.workspace_root.as_os_str().is_empty()
+        {
+            loaded = reuse_previous_build_config_fields(loaded, previous_config.as_ref());
         }
     }
 
@@ -3855,6 +3910,20 @@ mod tests {
         );
     }
 
+    #[derive(Debug)]
+    struct PanicCommandRunner;
+
+    impl CommandRunner for PanicCommandRunner {
+        fn run(
+            &self,
+            _cwd: &std::path::Path,
+            _program: &std::path::Path,
+            _args: &[String],
+        ) -> std::io::Result<nova_build::CommandOutput> {
+            panic!("build command runner invoked unexpectedly");
+        }
+    }
+
     async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
         let mut saw_started = false;
         let mut saw_progress = false;
@@ -3944,6 +4013,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_integration_off_does_not_invoke_build_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::create_dir_all(root.join("src/main/java")).unwrap();
+        std::fs::write(
+            root.join("src/main/java/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>g</groupId><artifactId>a</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("nova.toml"),
+            r#"
+[build_integration]
+mode = "off"
+"#,
+        )
+        .unwrap();
+
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: root.to_path_buf(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+            build_runner: Some(Arc::new(PanicCommandRunner)),
+        });
+
+        engine.set_workspace_root(root).unwrap();
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn trigger_indexing_persists_project_index_shards_to_disk() {
         let dir = tempfile::tempdir().unwrap();
@@ -5905,6 +6012,7 @@ mod tests {
             br#"<project><modelVersion>4.0.0</modelVersion></project>"#,
         )
         .unwrap();
+        fs::write(root.join("nova.toml"), "[build]\nmode = \"on\"\n").unwrap();
 
         let main_dir = root.join("src/main/java/com/example");
         fs::create_dir_all(&main_dir).unwrap();
@@ -6023,6 +6131,7 @@ mod tests {
 
         fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
         fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+        fs::write(root.join("nova.toml"), "[build]\nmode = \"on\"\n").unwrap();
 
         let main_dir = root.join("src/main/java/com/example");
         fs::create_dir_all(&main_dir).unwrap();
@@ -6142,6 +6251,7 @@ mod tests {
 
         fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
         fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+        fs::write(root.join("nova.toml"), "[build]\nmode = \"on\"\n").unwrap();
 
         let main_dir = root.join("src/main/java/com/example");
         fs::create_dir_all(&main_dir).unwrap();
@@ -6481,10 +6591,10 @@ enabled = false
                 .lock()
                 .expect("workspace project state mutex poisoned");
             let build = &state.load_options.nova_config.build;
-            assert!(build.enabled);
+            assert_eq!(build.enabled, Some(true));
             assert_eq!(build.timeout_ms, 1234);
-            assert!(!build.maven.enabled);
-            assert!(build.gradle.enabled);
+            assert_eq!(build.maven.enabled, Some(false));
+            assert_eq!(build.gradle.enabled, None);
             assert!(!build.maven_enabled());
             assert!(build.gradle_enabled());
         });

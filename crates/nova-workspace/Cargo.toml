@@ -31,6 +31,7 @@ rowan = "0.15.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["time"] }
+tracing = { workspace = true }
 walkdir = "2"
 lsp-types = "0.97"
 

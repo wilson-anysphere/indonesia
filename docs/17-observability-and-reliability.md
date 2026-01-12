@@ -156,35 +156,51 @@ Notes:
 
 ### Build tool integration (`NovaConfig.build`)
 
-Nova can optionally invoke external build tools (Maven/Gradle) during workspace load/reload to
-compute more accurate classpaths and source roots. This is intentionally **opt-in** because build
-tools can be slow and may spawn subprocesses or touch dependency caches.
+Nova can optionally invoke external build tools (**Maven** / **Gradle**) to extract build metadata
+needed for accurate analysis (compile classpaths, source roots, language level, etc).
 
-Configuration lives under the `[build]` table in `nova.toml`:
+Because build tool invocation can be expensive (and in some environments undesirable), this behavior
+is controlled via the `[build]` table in `nova.toml` (the legacy alias `[build_integration]` is also
+accepted).
 
-- `build.enabled` (`bool`, default: `false`): allow build-tool invocation during load/reload.
-- `build.timeout_ms` (`integer`, default: `30000`): timeout for build-tool invocation (bounds the
-  work; values must be >= 1 when enabled).
+Config keys:
 
-Optional per-tool toggles (only apply when `build.enabled = true`):
+- `build.mode` (`"off" | "auto" | "on"`, default: `"auto"`)
+  - `"off"`: never invoke Maven/Gradle and ignore any cached build metadata; Nova uses heuristic
+    project loading (`nova-project`) only.
+  - `"auto"`: use cached build metadata if present, but **do not** invoke build tools on cache
+    misses. This is intended to be a safe default.
+  - `"on"`: invoke the build tool to extract metadata on workspace load and when build/config files
+    change (e.g. `pom.xml`, `build.gradle`, `settings.gradle`, `nova.toml`).
+- `build.timeout_ms` (`integer`, default: `120000`): timeout for metadata extraction command
+  invocations (milliseconds).
+- Optional per-tool overrides:
+  - `[build.maven]` / `[build.gradle]`
+    - `mode` (`"off" | "auto" | "on"`, optional)
+    - `timeout_ms` (`integer`, optional)
+    - `enabled` (`bool`, optional, legacy): `false` forces `mode = "off"` for that tool; prefer
+      `mode`.
+- Legacy compatibility:
+  - `build.enabled` (`bool`, optional): `true` is treated as `mode = "on"`, `false` as
+    `mode = "off"` (overrides `build.mode`).
 
-- `build.maven.enabled` (`bool`, default: `true`)
-- `build.gradle.enabled` (`bool`, default: `true`)
-
-Example:
+Example (enable build integration, but keep Gradle off):
 
 ```toml
 [build]
-enabled = true
-timeout_ms = 30000
-
-[build.maven]
-enabled = true
+mode = "on"
+timeout_ms = 120000
 
 [build.gradle]
-enabled = true
+mode = "off"
 ```
 
+Notes:
+
+- `"auto"` allows Nova to reuse metadata produced by explicit build-tool requests (for example via
+  custom `nova/*` endpoints) without paying the startup cost of invoking build tools automatically.
+- Timeouts apply to Nova’s **metadata extraction** invocations. Full builds (triggered explicitly
+  via `nova-build` orchestration) may use different timeouts.
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be

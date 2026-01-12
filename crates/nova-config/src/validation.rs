@@ -39,7 +39,7 @@ impl NovaConfig {
         let mut out = ValidationDiagnostics::default();
 
         validate_ai(self, ctx, &mut out);
-        validate_build(self, &mut out);
+        validate_build_integration(self, &mut out);
         validate_extensions(self, ctx, &mut out);
         validate_generated_sources(self, &mut out);
         validate_jdk(self, ctx, &mut out);
@@ -49,21 +49,49 @@ impl NovaConfig {
     }
 }
 
-fn validate_build(config: &NovaConfig, out: &mut ValidationDiagnostics) {
-    if !config.build.enabled {
-        return;
+fn validate_build_integration(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    let cfg = &config.build;
+    let maven_on = matches!(cfg.maven_mode(), crate::BuildIntegrationMode::On);
+    let gradle_on = matches!(cfg.gradle_mode(), crate::BuildIntegrationMode::On);
+
+    let mut needs_global_timeout_warning = false;
+
+    if maven_on {
+        if matches!(cfg.maven.timeout_ms, Some(0)) {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "build.maven.timeout_ms".to_string(),
+                message: "must be >= 1 (0 is treated as 1)".to_string(),
+            });
+        } else if cfg.maven.timeout_ms.is_none() && cfg.timeout_ms == 0 {
+            needs_global_timeout_warning = true;
+        }
     }
 
-    if config.build.timeout_ms == 0 {
+    if gradle_on {
+        if matches!(cfg.gradle.timeout_ms, Some(0)) {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "build.gradle.timeout_ms".to_string(),
+                message: "must be >= 1 (0 is treated as 1)".to_string(),
+            });
+        } else if cfg.gradle.timeout_ms.is_none() && cfg.timeout_ms == 0 {
+            needs_global_timeout_warning = true;
+        }
+    }
+
+    if needs_global_timeout_warning {
         out.warnings.push(ConfigWarning::InvalidValue {
             toml_path: "build.timeout_ms".to_string(),
             message: "must be >= 1 when build.enabled is true (0 is treated as 1)".to_string(),
         });
     }
 
-    if !config.build.maven.enabled && !config.build.gradle.enabled {
+    if matches!(cfg.base_mode(), crate::BuildIntegrationMode::On) && !maven_on && !gradle_on {
         out.warnings.push(ConfigWarning::InvalidValue {
-            toml_path: "build.enabled".to_string(),
+            toml_path: if matches!(cfg.enabled, Some(true)) {
+                "build.enabled".to_string()
+            } else {
+                "build.mode".to_string()
+            },
             message: "build.enabled=true but all build tools are disabled; enable build.maven.enabled and/or build.gradle.enabled"
                 .to_string(),
         });

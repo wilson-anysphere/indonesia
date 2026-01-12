@@ -88,7 +88,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Background build state/diagnostics are surfaced via custom `nova/*` endpoints and are not yet wired into Nova’s main workspace/Salsa diagnostics pipeline or standard LSP progress notifications.
-  - Build tool invocation is still opt-in (explicit `nova/*` requests) rather than a continuously running, editor-driven build/compile service.
+  - Build tool invocation is opt-in by default: workspace hosts can enable automatic Maven/Gradle metadata extraction on load via `NovaConfig.build` (`[build]` in `nova.toml`, with legacy alias `[build_integration]`). The default mode (`auto`) uses cached metadata only and does not invoke build tools on startup.
 
 ### `nova-build-bazel`
 - **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching, optional BSP-backed build/diagnostics orchestration when enabled).

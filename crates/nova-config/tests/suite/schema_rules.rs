@@ -283,11 +283,11 @@ fn json_schema_includes_build_integration_config() {
         "BuildIntegrationConfig should include gradle subtable"
     );
 
-    assert_eq!(
+    assert!(
         value
-            .pointer("/definitions/BuildToolConfig/properties/enabled/default")
-            .and_then(|v| v.as_bool()),
-        Some(true)
+            .pointer("/definitions/BuildIntegrationToolConfig/properties/mode")
+            .is_some(),
+        "BuildIntegrationToolConfig should include mode override"
     );
 }
 

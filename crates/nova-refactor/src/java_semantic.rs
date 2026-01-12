@@ -5726,6 +5726,14 @@ fn collect_switch_contexts(
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
             }
+            hir::Stmt::Assert {
+                condition, message, ..
+            } => {
+                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                if let Some(message) = message {
+                    walk_expr(body, *message, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Stmt::Throw { expr, .. } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
             }
@@ -7366,6 +7374,30 @@ fn record_lightweight_expr(
                 file,
                 text,
                 &access.index,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+        Expr::Cast(cast) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(cast.ty.range.start, cast.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &cast.expr,
                 type_scopes,
                 scope_result,
                 resolver,
