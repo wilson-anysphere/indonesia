@@ -165,3 +165,118 @@ class C {
         "resolve_method_call should not force whole-body typeck"
     );
 }
+
+#[test]
+fn resolve_method_call_resolves_constructor_calls() {
+    let src = r#"
+class C {
+    C(int x) {}
+}
+
+class D {
+    void m() {
+        new C(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Locate the `new C(1)` expression id inside `D.m`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected D.m method");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let new_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected expression statement"),
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    db.clear_query_stats();
+
+    let resolved = db.resolve_method_call(
+        file,
+        FileExprId {
+            owner: DefWithBodyId::Method(m_id),
+            expr: new_expr,
+        },
+    );
+
+    let resolved = resolved.expect("expected constructor call to resolve");
+    assert_eq!(resolved.name, "<init>");
+    assert_eq!(
+        executions(&db, "typeck_body"),
+        0,
+        "resolve_method_call should not force whole-body typeck for constructors"
+    );
+}
+
+#[test]
+fn resolve_method_call_returns_none_on_ambiguous_constructor_calls() {
+    let src = r#"
+class C {
+    C(String x) {}
+    C(Integer x) {}
+}
+
+class D {
+    void m() {
+        new C(null);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Locate the `new C(null)` expression id inside `D.m`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected D.m method");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let new_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected expression statement"),
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    db.clear_query_stats();
+
+    let resolved = db.resolve_method_call(
+        file,
+        FileExprId {
+            owner: DefWithBodyId::Method(m_id),
+            expr: new_expr,
+        },
+    );
+
+    assert!(
+        resolved.is_none(),
+        "ambiguous constructor call should resolve to None for IDE helpers"
+    );
+    assert_eq!(
+        executions(&db, "typeck_body"),
+        0,
+        "resolve_method_call should not force whole-body typeck for constructors"
+    );
+}

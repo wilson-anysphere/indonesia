@@ -817,9 +817,15 @@ fn resolve_method_call_demand(
     }
 
     // Only resolve actual call-site expressions.
-    let HirExpr::Call { .. } = &body.exprs[call_site.expr] else {
+    //
+    // `call_resolutions` is used for both method calls and constructor calls (from `new`
+    // expressions), so allow both HIR variants here.
+    if !matches!(
+        &body.exprs[call_site.expr],
+        HirExpr::Call { .. } | HirExpr::New { .. }
+    ) {
         return None;
-    };
+    }
 
     let expr_scopes = db.expr_scopes(owner);
 
@@ -1259,11 +1265,10 @@ fn resolve_method_call_demand(
     // want to be resilient and avoid presenting an arbitrary choice, so ambiguous calls resolve to
     // `None`.
     let call_span = body.exprs[call_site.expr].range();
-    if checker
-        .diagnostics
-        .iter()
-        .any(|d| d.code.as_ref() == "ambiguous-call" && d.span == Some(call_span))
-    {
+    if checker.diagnostics.iter().any(|d| {
+        (d.code.as_ref() == "ambiguous-call" || d.code.as_ref() == "ambiguous-constructor")
+            && d.span == Some(call_span)
+    }) {
         db.record_query_stat("resolve_method_call_demand", start.elapsed());
         return None;
     }
