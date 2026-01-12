@@ -115,7 +115,11 @@ impl SymbolEntry {
         // `workspace/symbol` commonly sets `qualified_name == name`. Store this as
         // a per-entry flag so candidate scoring doesn't need to compare strings
         // on every query.
-        let qualified_name_differs = symbol.qualified_name != symbol.name;
+        //
+        // Also treat `qualified_name == ""` as "same as name" for consistency with the
+        // `Symbol` JSON deserializer (which defaults missing/empty qualified names to `name`).
+        let qualified_name_differs =
+            !symbol.qualified_name.is_empty() && symbol.qualified_name != symbol.name;
         if !qualified_name_differs {
             // Drop the duplicate allocation to reduce memory footprint for the common
             // `qualified_name == name` case. Callers often construct `qualified_name`
@@ -1008,9 +1012,17 @@ impl WorkspaceSymbolSearcher {
                 let mut search_symbols = Vec::with_capacity(symbol_count);
                 for (name, entries) in &symbols.symbols {
                     for entry in entries {
+                        let qualified_name = if entry.qualified_name == *name {
+                            // Avoid cloning `qualified_name` for the common case where it is
+                            // identical to `name`. `SymbolEntry::new` treats `""` as
+                            // "same as name" and reconstructs the field in returned results.
+                            String::new()
+                        } else {
+                            entry.qualified_name.clone()
+                        };
                         search_symbols.push(Symbol {
                             name: name.clone(),
-                            qualified_name: entry.qualified_name.clone(),
+                            qualified_name,
                             kind: entry.kind,
                             container_name: entry.container_name.clone(),
                             location: entry.location.clone(),
@@ -1208,7 +1220,12 @@ mod tests {
     fn baseline_best_score(query: &str, symbol: &Symbol) -> Option<MatchScore> {
         let mut matcher = FuzzyMatcher::new(query);
         let mut best = matcher.score(&symbol.name);
-        let qual = matcher.score(&symbol.qualified_name);
+        let qualified_name = if symbol.qualified_name.is_empty() {
+            symbol.name.as_str()
+        } else {
+            symbol.qualified_name.as_str()
+        };
+        let qual = matcher.score(qualified_name);
         if let (Some(a), Some(b)) = (best, qual) {
             if b.rank_key() > a.rank_key() {
                 best = Some(b);
@@ -1230,6 +1247,20 @@ mod tests {
 
         // Baseline: always score both fields and pick the best. When the
         // strings are equal, this should match the optimized path.
+        assert_eq!(Some(results[0].score), baseline_best_score("fb", &symbol));
+    }
+
+    #[test]
+    fn empty_qualified_name_is_treated_as_name() {
+        // Some callers may omit `qualified_name` (or set it to ""), matching the
+        // `Symbol` deserializer behavior.
+        let symbol = sym("FooBar", "");
+        let index = SymbolSearchIndex::build(vec![symbol.clone()]);
+
+        let results = index.search("fb", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.qualified_name, "FooBar");
+
         assert_eq!(Some(results[0].score), baseline_best_score("fb", &symbol));
     }
 

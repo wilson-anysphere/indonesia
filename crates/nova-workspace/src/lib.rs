@@ -1327,9 +1327,17 @@ fn fuzzy_rank_workspace_symbols_sharded(
         for shard in shards {
             for (name, syms) in &shard.symbols.symbols {
                 for sym in syms {
+                    let qualified_name = if sym.qualified_name == *name {
+                        // Avoid cloning a duplicate qualified name for the common
+                        // `qualified_name == name` case. `nova-index` treats `""` as
+                        // "same as name" during symbol search index build.
+                        String::new()
+                    } else {
+                        sym.qualified_name.clone()
+                    };
                     search_symbols.push(SearchSymbol {
                         name: name.clone(),
-                        qualified_name: sym.qualified_name.clone(),
+                        qualified_name,
                         kind: sym.kind.clone(),
                         container_name: sym.container_name.clone(),
                         location: sym.location.clone(),
