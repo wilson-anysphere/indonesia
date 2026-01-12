@@ -130,8 +130,8 @@ impl QuarkusAnalyzer {
         project: ProjectId,
         current_file: FileId,
     ) -> Option<Arc<CachedProjectAnalysis>> {
-        let collected = collect_project_java_sources(db, project, current_file)?;
-        let fingerprint = fingerprint_sources(&collected);
+        let java_files = collect_project_java_files(db, project, current_file)?;
+        let fingerprint = fingerprint_project_sources(db, &java_files);
 
         if let Some(existing) = self
             .cache
@@ -145,12 +145,13 @@ impl QuarkusAnalyzer {
             }
         }
 
-        let java_sources: Vec<String> = collected.iter().map(|(_, src)| src.clone()).collect();
-        let file_to_source_idx: HashMap<FileId, usize> = collected
-            .iter()
-            .enumerate()
-            .map(|(idx, (file, _))| (*file, idx))
-            .collect();
+        let mut java_sources = Vec::with_capacity(java_files.len());
+        let mut file_to_source_idx = HashMap::with_capacity(java_files.len());
+        for (idx, file) in java_files.iter().copied().enumerate() {
+            let text = db.file_text(file)?;
+            java_sources.push(text.to_string());
+            file_to_source_idx.insert(file, idx);
+        }
         let refs: Vec<&str> = java_sources.iter().map(|s| s.as_str()).collect();
         let analysis = analyze_java_sources_with_spans(&refs);
 
@@ -181,25 +182,23 @@ fn is_java_file(db: &dyn Database, file: FileId) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
 }
 
-fn collect_project_java_sources(
+fn collect_project_java_files(
     db: &dyn Database,
     project: ProjectId,
     current_file: FileId,
-) -> Option<Vec<(FileId, String)>> {
+) -> Option<Vec<FileId>> {
     let all_files = db.all_files(project);
 
     // If the database doesn't support project-wide enumeration, fall back to the current file.
     if all_files.is_empty() {
-        return db
-            .file_text(current_file)
-            .map(|text| vec![(current_file, text.to_string())]);
+        return db.file_text(current_file).map(|_| vec![current_file]);
     }
 
     let mut files = all_files;
     files.sort();
     files.dedup();
 
-    let mut java_files = Vec::new();
+    let mut java_files = Vec::<FileId>::new();
     let mut had_paths = false;
     let mut missing_paths = false;
 
@@ -224,29 +223,30 @@ fn collect_project_java_sources(
             }
         }
 
-        let Some(text) = db.file_text(file) else {
+        if db.file_text(file).is_none() {
             continue;
         };
-        java_files.push((file, text.to_string()));
+        java_files.push(file);
     }
 
     if java_files.is_empty() || (!had_paths && missing_paths) {
         // If we couldn't collect sources due to missing metadata, fall back to current file only.
-        return db
-            .file_text(current_file)
-            .map(|text| vec![(current_file, text.to_string())]);
+        return db.file_text(current_file).map(|_| vec![current_file]);
     }
 
     Some(java_files)
 }
 
-fn fingerprint_sources(files: &[(FileId, String)]) -> u64 {
+fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
 
     let mut hasher = DefaultHasher::new();
     files.len().hash(&mut hasher);
-    for (file, src) in files {
+    for file in files {
         file.to_raw().hash(&mut hasher);
+        let Some(src) = db.file_text(*file) else {
+            continue;
+        };
         src.len().hash(&mut hasher);
 
         // Hash a small prefix/suffix for change detection without scanning entire sources.
