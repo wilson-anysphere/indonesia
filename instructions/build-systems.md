@@ -11,7 +11,8 @@ This workstream owns build system integration - understanding Maven, Gradle, and
 
 | Crate | Purpose |
 |-------|---------|
-| `nova-build` | Common build model abstraction |
+| `nova-build-model` | Common build model + project model types (`ProjectModel`, classpath buckets, module/source-root metadata) + build-system backend trait (`BuildSystemBackend`) |
+| `nova-build` | Maven/Gradle build tool integration (classpath + build diagnostics + optional background build orchestration) |
 | `nova-build-bazel` | Bazel workspace support |
 | `nova-project` | Project discovery, source roots, dependencies |
 | `nova-classpath` | Classpath resolution from build files |
@@ -49,17 +50,17 @@ This workstream owns build system integration - understanding Maven, Gradle, and
 ```
 
 ### Build System Abstraction
-
+ 
 ```rust
-pub trait BuildSystem: Send + Sync {
+pub trait BuildSystemBackend: Send + Sync {
     /// Detect if this build system is used
     fn detect(&self, root: &Path) -> bool;
     
     /// Parse project structure
-    fn parse_project(&self, root: &Path) -> Result<ProjectModel, BuildError>;
+    fn parse_project(&self, root: &Path) -> Result<ProjectModel, BuildSystemError>;
     
     /// Resolve dependencies to classpath
-    fn resolve_classpath(&self, project: &ProjectModel) -> Result<Classpath, BuildError>;
+    fn resolve_classpath(&self, project: &ProjectModel) -> Result<Classpath, BuildSystemError>;
     
     /// Watch for build file changes
     fn watch_files(&self) -> Vec<PathPattern>;

@@ -12,6 +12,7 @@ mod config_stdio;
 mod configuration_done_before_launch;
 mod configuration_done_resumes_command_launch;
 mod dap_conformance;
+mod dap_restart;
 mod dap_disconnect_terminate_attach;
 mod dap_exited_event;
 mod dap_java_launch;
