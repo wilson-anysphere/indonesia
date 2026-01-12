@@ -1058,16 +1058,60 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ..
             } => {
                 let data = &self.body.locals[*local];
+
+                let iterable_ty = self.infer_expr(loader, *iterable).ty;
+                let element_ty = match &iterable_ty {
+                    Type::Array(elem) => elem.as_ref().clone(),
+                    _ => Type::Unknown,
+                };
+
+                // Emit an error if the iterable expression is not something we can iterate.
+                // For now we only support arrays (and treat everything else as non-iterable).
+                if !iterable_ty.is_errorish() && !matches!(iterable_ty, Type::Array(_)) {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    let found = format_type(env_ro, &iterable_ty);
+                    self.diagnostics.push(Diagnostic::error(
+                        "foreach-not-iterable",
+                        format!("foreach expression is not iterable: found {found}"),
+                        Some(self.body.exprs[*iterable].range()),
+                    ));
+                }
+
                 if data.ty_text.trim() != "var" {
                     let decl_ty = self.resolve_source_type(
                         loader,
                         data.ty_text.as_str(),
                         Some(data.ty_range),
                     );
-                    self.local_types[local.idx()] = decl_ty;
+                    self.local_types[local.idx()] = decl_ty.clone();
+
+                    if decl_ty.is_errorish() || element_ty.is_errorish() {
+                        self.check_stmt(loader, *body, expected_return);
+                        return;
+                    }
+
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if assignment_conversion(env_ro, &element_ty, &decl_ty).is_none() {
+                        let expected = format_type(env_ro, &decl_ty);
+                        let found = format_type(env_ro, &element_ty);
+                        self.diagnostics.push(Diagnostic::error(
+                            "type-mismatch",
+                            format!("type mismatch: expected {expected}, found {found}"),
+                            Some(data.ty_range),
+                        ));
+                    }
+                } else if self.var_inference_enabled() {
+                    if element_ty.is_errorish() {
+                        self.diagnostics.push(Diagnostic::error(
+                            "cannot-infer-foreach-var",
+                            "cannot infer foreach loop variable type from iterable expression",
+                            Some(data.ty_range),
+                        ));
+                    } else {
+                        self.local_types[local.idx()] = element_ty;
+                    }
                 }
 
-                let _ = self.infer_expr(loader, *iterable);
                 self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::Switch { selector, body, .. } => {
@@ -2024,6 +2068,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             DefWithBodyId::Constructor(_) => false,
             DefWithBodyId::Initializer(i) => self.tree.initializer(i).is_static,
         }
+    }
+
+    fn var_inference_enabled(&self) -> bool {
+        // `var` local variable type inference was added in Java 10 (JEP 286),
+        // including support in enhanced-for loops.
+        let file = def_file(self.owner);
+        self.db.java_language_level(file).major >= 10
     }
 
     fn enclosing_class_type(&self, loader: &mut ExternalTypeLoader<'_>) -> Option<Type> {

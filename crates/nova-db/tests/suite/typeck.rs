@@ -138,6 +138,38 @@ class C {
 }
 
 #[test]
+fn foreach_explicit_type_accepts_array_element() {
+    let src = r#"
+class C { void m(String[] arr){ for (String s : arr) { s.length(); } } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "foreach-not-iterable"
+                && d.code.as_ref() != "unresolved-method"
+        }),
+        "expected foreach over array to type-check without foreach/type mismatch errors, got {diags:?}"
+    );
+}
+
+#[test]
+fn foreach_explicit_type_rejects_incompatible_element() {
+    let src = r#"
+class C { void m(String[] arr){ for (int x : arr) {} } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected foreach to report a type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn reports_condition_not_boolean_for_if() {
     let src = r#"
 class C {
