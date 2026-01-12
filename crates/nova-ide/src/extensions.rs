@@ -6,9 +6,8 @@ use nova_ext::{
     ProjectId, Span, Symbol,
 };
 use nova_framework::{
-    AnalyzerRegistry,
-    CompletionContext as FrameworkCompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
-    Symbol as FrameworkSymbol,
+    AnalyzerRegistry, CompletionContext as FrameworkCompletionContext,
+    Database as FrameworkDatabase, FrameworkAnalyzer, Symbol as FrameworkSymbol,
 };
 use nova_refactor::{
     organize_imports, workspace_edit_to_lsp, FileId as RefactorFileId, OrganizeImportsParams,
@@ -444,8 +443,11 @@ where
             file: params.file,
             offset: params.offset,
         };
-        self.registry
-            .framework_completions_with_cancel(fw_db.as_ref(), &completion_ctx, &ctx.cancel)
+        self.registry.framework_completions_with_cancel(
+            fw_db.as_ref(),
+            &completion_ctx,
+            &ctx.cancel,
+        )
     }
 }
 
@@ -575,8 +577,11 @@ impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
             file: params.file,
             offset: params.offset,
         };
-        self.registry
-            .framework_completions_with_cancel(fw_db.as_ref(), &completion_ctx, &ctx.cancel)
+        self.registry.framework_completions_with_cancel(
+            fw_db.as_ref(),
+            &completion_ctx,
+            &ctx.cancel,
+        )
     }
 }
 
@@ -811,7 +816,9 @@ where
         );
         let text = self.db.file_content(file);
         let text_index = TextIndex::new(text);
-        let offset = text_index.position_to_offset(position).unwrap_or(text.len());
+        let offset = text_index
+            .position_to_offset(position)
+            .unwrap_or(text.len());
 
         let extension_items = self
             .completions(cancel, file, offset)
@@ -860,16 +867,15 @@ where
             if source.contains("import") {
                 let file = RefactorFileId::new(uri.to_string());
                 let db = TextDatabase::new([(file.clone(), source.to_string())]);
-                if let Ok(edit) = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+                if let Ok(edit) =
+                    organize_imports(&db, OrganizeImportsParams { file: file.clone() })
                 {
                     if !edit.is_empty() {
                         if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
                             actions.push(lsp_types::CodeActionOrCommand::CodeAction(
                                 lsp_types::CodeAction {
                                     title: "Organize imports".to_string(),
-                                    kind: Some(
-                                        lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
-                                    ),
+                                    kind: Some(lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
                                     edit: Some(lsp_edit),
                                     ..lsp_types::CodeAction::default()
                                 },
@@ -927,7 +933,9 @@ where
         let text = self.db.file_content(file);
         let text_index = TextIndex::new(text);
         let start_offset = text_index.position_to_offset(range.start).unwrap_or(0);
-        let end_offset = text_index.position_to_offset(range.end).unwrap_or(text.len());
+        let end_offset = text_index
+            .position_to_offset(range.end)
+            .unwrap_or(text.len());
 
         let mut hints =
             crate::code_intelligence::inlay_hints(self.db.as_ref().as_dyn_nova_db(), file, range);
@@ -1184,8 +1192,8 @@ mod tests {
         let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
         let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
 
-        let analyzer = FrameworkAnalyzerAdapter::new("framework.cancel", CancellationAwareAnalyzer)
-            .into_arc();
+        let analyzer =
+            FrameworkAnalyzerAdapter::new("framework.cancel", CancellationAwareAnalyzer).into_arc();
         ide.registry_mut()
             .register_diagnostic_provider(analyzer)
             .unwrap();
