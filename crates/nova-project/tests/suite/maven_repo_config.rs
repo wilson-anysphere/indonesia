@@ -177,3 +177,73 @@ fn loads_maven_repo_from_mvn_maven_config_with_space_separated_repo_local_arg() 
     );
     assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
 }
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_with_single_quoted_path_containing_spaces() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_dir = tempdir().unwrap();
+    let repo_path = repo_dir.path().join("my maven repo");
+    fs::create_dir_all(&repo_path).unwrap();
+    touch_guava_jar(&repo_path);
+
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        format!("-Dmaven.repo.local='{}'", repo_path.display()),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(workspace_root, &LoadOptions::default())
+        .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
+}
+
+#[test]
+fn loads_maven_repo_from_mvn_maven_config_with_space_separated_single_quoted_repo_local_arg() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_dir = tempdir().unwrap();
+    let repo_path = repo_dir.path().join("repo local");
+    fs::create_dir_all(&repo_path).unwrap();
+    touch_guava_jar(&repo_path);
+
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        format!("-Dmaven.repo.local '{}'", repo_path.display()),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(workspace_root, &LoadOptions::default())
+        .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
+}
