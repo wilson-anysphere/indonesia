@@ -37,3 +37,66 @@ pub trait SourceDatabase {
         None
     }
 }
+
+impl<T> SourceDatabase for &T
+where
+    T: SourceDatabase + ?Sized,
+{
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        (**self).file_content(file_id)
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        (**self).file_path(file_id)
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        (**self).all_file_ids()
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        (**self).file_id(path)
+    }
+}
+
+impl<T> SourceDatabase for &mut T
+where
+    T: SourceDatabase + ?Sized,
+{
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        (**self).file_content(file_id)
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        (**self).file_path(file_id)
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        (**self).all_file_ids()
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        (**self).file_id(path)
+    }
+}
+
+impl<T> SourceDatabase for Arc<T>
+where
+    T: SourceDatabase + ?Sized,
+{
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        (**self).file_content(file_id)
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        (**self).file_path(file_id)
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        (**self).all_file_ids()
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        (**self).file_id(path)
+    }
+}
