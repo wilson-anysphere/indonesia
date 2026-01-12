@@ -7631,7 +7631,7 @@ class D { void m(){ new C(1); } }
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "unresolved-constructor"),
+            .any(|d| d.code.as_ref() == "unresolved-constructor" && d.message.contains("accessible")),
         "expected private constructor call to be rejected; got {diags:?}"
     );
 }
@@ -8286,6 +8286,36 @@ class C { void m(){ List<String> xs = new ArrayList<>(); } }
 "#;
 
     let (db, file) = setup_db(src);
+    let offset = src
+        .find("new ArrayList")
+        .expect("snippet should contain new ArrayList")
+        + "new ".len()
+        + "Array".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "ArrayList<String>");
+}
+
+#[test]
+fn diamond_inference_uses_target_type_from_assignment() {
+    let src = r#"
+import java.util.*;
+class C {
+    void m() {
+        List<String> xs;
+        xs = new ArrayList<>();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+
     let offset = src
         .find("new ArrayList")
         .expect("snippet should contain new ArrayList")

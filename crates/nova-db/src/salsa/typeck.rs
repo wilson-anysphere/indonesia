@@ -7037,7 +7037,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     fn unresolved_constructor_diag(
         &self,
         env: &dyn TypeEnv,
-        _class: nova_types::ClassId,
+        class: nova_types::ClassId,
         not_found: &MethodNotFound,
         span: Span,
     ) -> Diagnostic {
@@ -7056,6 +7056,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let mut message = format!("unresolved constructor `{ctor_name}` with arguments {args}");
 
         if not_found.candidates.is_empty() {
+            // `resolve_constructor_call` filters out inaccessible constructors. If we have
+            // constructor metadata for the class and *all* constructors are marked inaccessible,
+            // emit a clearer message than a generic "unresolved constructor".
+            if let Some(def) = env.class(class) {
+                if !def.constructors.is_empty() && def.constructors.iter().all(|c| !c.is_accessible)
+                {
+                    message =
+                        format!("no accessible constructor `{ctor_name}` with arguments {args}");
+                }
+            }
             return Diagnostic::error("unresolved-constructor", message, Some(span));
         }
 
