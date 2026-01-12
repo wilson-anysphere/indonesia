@@ -1817,6 +1817,106 @@ fn signature_type_diagnostics(
     let object_ty = Type::class(loader.store.well_known().object, vec![]);
 
     let mut out = Vec::new();
+
+    // JPMS module directives (`uses`/`provides`) can contain type names, but they are outside of any
+    // class/method body so `typeck_body` will not visit them. Resolve them here so missing service
+    // types still surface as anchored `unresolved-type` diagnostics.
+    if let Some(module) = tree.module.as_ref() {
+        let find_name_span =
+            |outer: Span, needle: &str, start_at: usize| -> Option<(Span, usize)> {
+                if needle.is_empty() {
+                    return None;
+                }
+                let start = outer.start.min(file_text.len());
+                let end = outer.end.min(file_text.len());
+                if start >= end {
+                    return None;
+                }
+                let slice = &file_text[start..end];
+                if start_at >= slice.len() {
+                    return None;
+                }
+                let idx = slice[start_at..].find(needle)?;
+                let rel_start = start_at.saturating_add(idx);
+                let abs_start = start.saturating_add(rel_start);
+                let abs_end = abs_start.saturating_add(needle.len());
+                if abs_end > file_text.len() {
+                    return None;
+                }
+                Some((
+                    Span::new(abs_start, abs_end),
+                    rel_start.saturating_add(needle.len()),
+                ))
+            };
+
+        let empty_vars: HashMap<String, TypeVarId> = HashMap::new();
+        for directive in &module.directives {
+            match directive {
+                nova_hir::item_tree::ModuleDirective::Uses { service, range } => {
+                    let base_span = find_name_span(*range, service, 0)
+                        .map(|(span, _)| span)
+                        .or(Some(*range));
+                    let resolved = resolve_type_ref_text(
+                        &resolver,
+                        &scopes.scopes,
+                        scopes.file_scope,
+                        &mut loader,
+                        &empty_vars,
+                        service,
+                        base_span,
+                    );
+                    out.extend(resolved.diagnostics);
+                }
+                nova_hir::item_tree::ModuleDirective::Provides {
+                    service,
+                    implementations,
+                    range,
+                } => {
+                    let mut cursor = 0usize;
+
+                    let service_span = find_name_span(*range, service, cursor)
+                        .or_else(|| find_name_span(*range, service, 0))
+                        .map(|(span, next)| {
+                            cursor = next;
+                            span
+                        })
+                        .or(Some(*range));
+                    let resolved = resolve_type_ref_text(
+                        &resolver,
+                        &scopes.scopes,
+                        scopes.file_scope,
+                        &mut loader,
+                        &empty_vars,
+                        service,
+                        service_span,
+                    );
+                    out.extend(resolved.diagnostics);
+
+                    for impl_name in implementations {
+                        let impl_span = find_name_span(*range, impl_name, cursor)
+                            .or_else(|| find_name_span(*range, impl_name, 0))
+                            .map(|(span, next)| {
+                                cursor = next;
+                                span
+                            })
+                            .or(Some(*range));
+                        let resolved = resolve_type_ref_text(
+                            &resolver,
+                            &scopes.scopes,
+                            scopes.file_scope,
+                            &mut loader,
+                            &empty_vars,
+                            impl_name,
+                            impl_span,
+                        );
+                        out.extend(resolved.diagnostics);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     let mut steps: u32 = 0;
     for item in &tree.items {
         cancel::checkpoint_cancelled_every(db, steps, 32);
