@@ -270,7 +270,24 @@ pub fn extract_variable_code_actions(
                     replace_all: false,
                 },
             ) {
-                Ok(_) => return Some(name),
+                Ok(edit) => {
+                    // The `TextDatabase` backend used by LSP code actions does not have full
+                    // type-checking information available. When parser-only type inference falls
+                    // back to `Object`, the explicit-type variant isn't meaningful (it would just
+                    // emit `Object extracted = <expr>;`), so suppress it.
+                    if !use_var {
+                        let needle = format!("Object {name} =");
+                        if edit
+                            .text_edits
+                            .iter()
+                            .any(|edit| edit.replacement.trim_start().starts_with(&needle))
+                        {
+                            return None;
+                        }
+                    }
+
+                    return Some(name);
+                }
                 Err(SemanticRefactorError::InvalidIdentifier { .. }) => continue,
                 Err(SemanticRefactorError::Conflicts(conflicts))
                     if conflicts_resolvable_by_renaming(&conflicts, &name) =>

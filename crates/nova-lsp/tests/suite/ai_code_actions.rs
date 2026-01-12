@@ -2012,7 +2012,6 @@ excluded_paths = ["secret/**"]
                 == Some(nova_ide::COMMAND_EXPLAIN_ERROR)
         })
         .expect("expected explain-error action to remain available");
-
     // Ensure we don't include a code snippet for excluded files.
     let explain_args = explain
         .get("command")
@@ -2026,18 +2025,21 @@ excluded_paths = ["secret/**"]
         "expected explainError args.code to be omitted/null for excluded paths, got: {explain_args:?}"
     );
 
-    assert!(
-        !actions.iter().any(
-            |a| a.get("title").and_then(|t| t.as_str()) == Some("Generate method body with AI")
-        ),
-        "generate-method-body action should be hidden for excluded paths"
-    );
-    assert!(
-        !actions
-            .iter()
-            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
-        "generate-tests action should be hidden for excluded paths"
-    );
+    let code_edit_commands = [
+        nova_ide::COMMAND_GENERATE_METHOD_BODY,
+        nova_ide::COMMAND_GENERATE_TESTS,
+    ];
+    for cmd in code_edit_commands {
+        assert!(
+            actions.iter().all(|a| {
+                a.get("command")
+                    .and_then(|c| c.get("command"))
+                    .and_then(|v| v.as_str())
+                    != Some(cmd)
+            }),
+            "expected AI code edit action {cmd:?} to be suppressed, got: {actions:?}"
+        );
+    }
 
     // shutdown + exit
     write_jsonrpc_message(

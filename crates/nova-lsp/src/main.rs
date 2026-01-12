@@ -2410,12 +2410,16 @@ impl ServerState {
 }
 
 fn is_ai_excluded_path(state: &ServerState, path: &Path) -> bool {
-    // If AI isn't configured, the server should not be able to send anything to an LLM anyway, so
-    // treat the path as allowed.
-    state
-        .ai
-        .as_ref()
-        .is_some_and(|ai| ai.is_excluded_path(path))
+    if !state.ai_config.enabled {
+        return false;
+    }
+
+    // Prefer the precompiled matcher so we can enforce `ai.privacy.excluded_paths` even before an
+    // LLM provider is fully initialized. If the privacy config is invalid, fail closed.
+    match state.ai_privacy_excluded_matcher.as_ref() {
+        Ok(matcher) => matcher.is_match(path),
+        Err(_) => true,
+    }
 }
 
 fn handle_request(

@@ -199,4 +199,7 @@ class A {
             .collect::<Vec<_>>(),
         vec!["from-a", "from-b"],
     );
+    assert!(out.len() >= 2, "expected extension diagnostics to be present");
+    assert_eq!(out[out.len() - 2].message, "from-a");
+    assert_eq!(out[out.len() - 1].message, "from-b");
 }
