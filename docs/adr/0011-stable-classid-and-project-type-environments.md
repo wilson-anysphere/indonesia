@@ -87,6 +87,8 @@ Concrete shape:
   (implemented today as
   [`crates/nova-db/src/salsa/typeck.rs:project_base_type_store_for_module`](../../crates/nova-db/src/salsa/typeck.rs)),
   that:
+  - (**Implementation note:** in the current repo these queries return `ArcEq<TypeStore>` rather than
+    a plain `Arc<TypeStore>`; `ArcEq` compares by pointer identity to keep Salsa `Eq` checks cheap.)
   - seeds well-known JDK types (today: `TypeStore::with_minimal_jdk()`),
   - **pre-interns** class ids for a deterministic set of binary names:
     - workspace/source types (from `def_map` / `workspace_def_map`),
