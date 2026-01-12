@@ -529,7 +529,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         },
         "audit_log": {
           "description": "Optional audit log configuration for AI prompts/model output.",
@@ -804,7 +805,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         },
         "concurrency": {
           "description": "Maximum number of concurrent requests Nova will make to the backend.\n\nIf unset, defaults to: - `1` for [`AiProviderKind::InProcessLlama`] - `4` for HTTP providers",

@@ -322,7 +322,9 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     // Minor semantic constraints that are easier to express by post-processing the generated schema.
     set_min_items(schema, "GeneratedSourcesConfig", "override_roots", 1);
     set_min_length(schema, "AiProviderConfig", "model", 1);
+    set_min_length(schema, "AiProviderConfig", "azure_deployment", 1);
     set_min_length(schema, "AiProviderConfig", "azure_api_version", 1);
+    set_min_length(schema, "AiConfig", "api_key", 1);
     set_property_write_only(schema, "AiConfig", "api_key", true);
 }
 
