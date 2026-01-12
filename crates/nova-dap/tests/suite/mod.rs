@@ -8,6 +8,7 @@
 mod attach_hostname;
 mod cancel;
 mod breakpoint_locations;
+mod breakpoint_events;
 mod config_stdio;
 mod configuration_done_before_launch;
 mod configuration_done_resumes_command_launch;

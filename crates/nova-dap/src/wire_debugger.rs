@@ -272,9 +272,24 @@ pub struct Debugger {
     internal_eval_threads: Arc<StdMutex<HashSet<ThreadId>>>,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
     requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
+    /// Tracks source breakpoints that were returned as unverified because the class was not yet
+    /// loaded.
+    ///
+    /// When we later observe a JDWP `ClassPrepare` for the corresponding class, we attempt to
+    /// install the pending breakpoints. Successful installs are surfaced to the DAP client via
+    /// `breakpoint` events (see [`Debugger::take_breakpoint_updates`]).
+    pending_breakpoints: HashMap<String, HashSet<i32>>,
     function_breakpoints: Vec<BreakpointEntry>,
     requested_function_breakpoints: Vec<FunctionBreakpointSpec>,
+    /// Tracks function breakpoints that were returned as unverified because the class was not yet
+    /// loaded.
+    pending_function_breakpoints: HashSet<String>,
     breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
+    /// Pending DAP breakpoint updates emitted after deferred installation (class prepare).
+    ///
+    /// Drained by the wire DAP server event loop after [`Debugger::handle_vm_event`] to emit
+    /// DAP `breakpoint` events so clients can update the breakpoint UI from unverified → verified.
+    breakpoint_updates: Vec<Value>,
     class_prepare_request: Option<i32>,
     exception_requests: Vec<i32>,
     watchpoint_requests: Vec<(u8, i32)>,
@@ -364,9 +379,12 @@ impl Debugger {
             internal_eval_threads: Arc::new(StdMutex::new(HashSet::new())),
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
+            pending_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
             requested_function_breakpoints: Vec::new(),
+            pending_function_breakpoints: HashSet::new(),
             breakpoint_metadata: HashMap::new(),
+            breakpoint_updates: Vec::new(),
             class_prepare_request: None,
             exception_requests: Vec::new(),
             watchpoint_requests: Vec::new(),
@@ -482,6 +500,12 @@ impl Debugger {
         self.breakpoint_metadata
             .get(&request_id)
             .is_some_and(|meta| meta.log_message.is_some())
+    }
+
+    /// Drain any pending "breakpoint became verified" updates recorded during class-prepare
+    /// handling.
+    pub(crate) fn take_breakpoint_updates(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.breakpoint_updates)
     }
 
     fn invalidate_handles(&mut self) {
@@ -1099,6 +1123,10 @@ impl Debugger {
         };
         let file = file_key.clone();
 
+        // Clear any pending markers from prior `setBreakpoints` calls; if we still can't resolve
+        // classes after this call we'll re-populate it below.
+        self.pending_breakpoints.remove(&file);
+
         struct BreakpointRequest {
             requested_line: i32,
             spec: BreakpointSpec,
@@ -1191,6 +1219,13 @@ impl Debugger {
         }
 
         if class_candidates.is_empty() {
+            if !requests.is_empty() {
+                let pending_lines: HashSet<i32> =
+                    requests.iter().map(|req| req.spec.line).collect();
+                if !pending_lines.is_empty() {
+                    self.pending_breakpoints.insert(file.clone(), pending_lines);
+                }
+            }
             for req in requests {
                 results.push(
                     json!({"verified": false, "line": req.spec.line, "message": "class not loaded yet"}),
@@ -1318,6 +1353,9 @@ impl Debugger {
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
 
+        // Reset pending markers for this setFunctionBreakpoints call.
+        self.pending_function_breakpoints.clear();
+
         // Clear existing function breakpoints.
         let existing = std::mem::take(&mut self.function_breakpoints);
         for bp in existing {
@@ -1373,6 +1411,7 @@ impl Debugger {
             let classes =
                 cancellable_jdwp(cancel, self.jdwp.classes_by_signature(&signature)).await?;
             if classes.is_empty() {
+                self.pending_function_breakpoints.insert(spec_name.clone());
                 results.push(json!({
                     "verified": false,
                     "message": "class not loaded yet"
@@ -4259,6 +4298,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
 
         if let Some(bps) = self.requested_breakpoints.get(&file).cloned() {
             let mut entries = Vec::new();
+            let mut updated_lines: HashSet<i32> = HashSet::new();
             for bp in bps {
                 let spec_line = bp.line;
                 let condition = normalize_breakpoint_string(bp.condition);
@@ -4291,6 +4331,11 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         .event_request_set(2, suspend_policy, modifiers)
                         .await
                     {
+                        let was_pending = self
+                            .pending_breakpoints
+                            .get(&file)
+                            .is_some_and(|lines| lines.contains(&spec_line));
+
                         entries.push(BreakpointEntry { request_id });
                         self.breakpoint_metadata.insert(
                             request_id,
@@ -4301,6 +4346,25 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                                 hit_count: 0,
                             },
                         );
+
+                        if was_pending {
+                            // Deduplicate by resolved location line for this class-prepare event.
+                            if updated_lines.insert(resolved.line) {
+                                let mut bp = serde_json::Map::new();
+                                bp.insert("verified".to_string(), json!(true));
+                                bp.insert("line".to_string(), json!(resolved.line));
+                                bp.insert("id".to_string(), json!(request_id));
+                                bp.insert("source".to_string(), json!({ "path": file.clone() }));
+                                self.breakpoint_updates.push(Value::Object(bp));
+                            }
+
+                            if let Some(lines) = self.pending_breakpoints.get_mut(&file) {
+                                lines.remove(&spec_line);
+                                if lines.is_empty() {
+                                    self.pending_breakpoints.remove(&file);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -4324,6 +4388,19 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             return Ok(());
         }
 
+        let source_file = match self.source_file(cancel, class.type_id).await {
+            Ok(file) => file,
+            Err(_) => String::new(),
+        };
+        let file = match self
+            .resolve_source_path(cancel, class.type_id, &source_file)
+            .await
+        {
+            Ok(Some(path)) => path.to_string_lossy().to_string(),
+            Ok(None) => source_file.clone(),
+            Err(_) => source_file.clone(),
+        };
+
         let breakpoints = self.requested_function_breakpoints.clone();
         let mut entries = Vec::new();
 
@@ -4338,6 +4415,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 continue;
             }
 
+            let is_pending = self.pending_function_breakpoints.contains(&spec_name);
             let condition = normalize_breakpoint_string(bp.condition);
             let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
             let log_message = normalize_breakpoint_string(bp.log_message);
@@ -4371,6 +4449,10 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 }
             };
 
+            let mut pending_first_request_id: Option<i32> = None;
+            let mut pending_first_line: Option<i32> = None;
+            let mut installed_any = false;
+
             for method in methods.iter().filter(|m| m.name == method_name) {
                 check_cancel(cancel)?;
 
@@ -4387,6 +4469,14 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     .insert((class.type_id, method.method_id), table.clone());
 
                 let index = table.start;
+                let line = table
+                    .lines
+                    .iter()
+                    .filter(|entry| entry.code_index <= index)
+                    .map(|entry| entry.line)
+                    .last()
+                    .or_else(|| table.lines.first().map(|entry| entry.line))
+                    .unwrap_or(1);
 
                 let location = Location {
                     type_tag: class.ref_type_tag,
@@ -4405,6 +4495,9 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     .event_request_set(2, suspend_policy, modifiers)
                     .await
                 {
+                    installed_any = true;
+                    pending_first_request_id.get_or_insert(request_id);
+                    pending_first_line.get_or_insert(line);
                     entries.push(BreakpointEntry { request_id });
                     self.breakpoint_metadata.insert(
                         request_id,
@@ -4416,6 +4509,22 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         },
                     );
                 }
+            }
+
+            if is_pending && installed_any {
+                let mut bp = serde_json::Map::new();
+                bp.insert("verified".to_string(), json!(true));
+                if let Some(line) = pending_first_line {
+                    bp.insert("line".to_string(), json!(line));
+                }
+                if let Some(request_id) = pending_first_request_id {
+                    bp.insert("id".to_string(), json!(request_id));
+                }
+                if !file.is_empty() {
+                    bp.insert("source".to_string(), json!({ "path": file.clone() }));
+                }
+                self.breakpoint_updates.push(Value::Object(bp));
+                self.pending_function_breakpoints.remove(&spec_name);
             }
         }
 

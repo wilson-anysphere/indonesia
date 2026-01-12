@@ -4861,6 +4861,7 @@ fn spawn_event_task(
             let mut step_value: Option<VmStoppedValue> = None;
             let mut suppress_stopped_event = false;
             let mut internal_eval_stop_event = false;
+            let mut breakpoint_updates: Vec<Value> = Vec::new();
 
             {
                 let mut guard = debugger.lock().await;
@@ -4901,6 +4902,7 @@ fn spawn_event_task(
                     }
 
                     dbg.handle_vm_event(&event).await;
+                    breakpoint_updates = dbg.take_breakpoint_updates();
 
                     if let nova_jdwp::wire::JdwpEvent::Breakpoint {
                         request_id,
@@ -4955,6 +4957,15 @@ fn spawn_event_task(
                         exception_context = Some((dbg.jdwp_client(), *exception));
                     }
                 }
+            }
+
+            for breakpoint in breakpoint_updates {
+                send_event(
+                    &tx,
+                    &seq,
+                    "breakpoint",
+                    Some(json!({ "reason": "changed", "breakpoint": breakpoint })),
+                );
             }
 
             if suppress_stopped_event {
