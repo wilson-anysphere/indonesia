@@ -82,8 +82,9 @@ const BUG_REPORT_COMMAND = 'nova.bugReport';
 const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
 
 // Capability tracking is keyed for multi-root workspaces (one client per folder). The VS Code
-// extension currently uses a single LanguageClient instance, so route all capability state
-// through a stable default key.
+// extension currently uses a single LanguageClient instance, so we keep a stable default key and
+// also mirror the same capability set onto each workspace folder URI key (until multi-client
+// support lands).
 const DEFAULT_NOVA_CAPABILITIES_KEY = 'default';
 type TestKind = 'class' | 'test';
 
