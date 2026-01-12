@@ -84,3 +84,32 @@ class C {
         "expected diagnostics to mention static context; got {diags:?}"
     );
 }
+
+#[test]
+fn reports_type_mismatch_inside_labeled_statement() {
+    let src = r#"
+class C {
+    void m() {
+        label: { int x = "no"; }
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let mismatch = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "type-mismatch")
+        .expect("expected type-mismatch diagnostic");
+
+    let span = mismatch
+        .span
+        .expect("type-mismatch diagnostic should have a span");
+    let quote = src
+        .find("\"no\"")
+        .expect("snippet should contain string literal");
+    assert!(
+        span.start <= quote && quote < span.end,
+        "expected diagnostic span to cover string literal, got {span:?}"
+    );
+}

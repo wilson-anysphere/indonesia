@@ -1445,6 +1445,14 @@ impl Lowerer {
 
     fn lower_stmt(&self, node: &SyntaxNode) -> Option<ast::Stmt> {
         match node.kind() {
+            // Labeled statements are a control-flow construct, but the lightweight AST doesn't
+            // model labels. Still lower the body so downstream semantic passes (HIR lowering,
+            // typeck, etc.) don't silently drop the statement.
+            //
+            // `label: stmt` => `stmt`
+            SyntaxKind::LabeledStatement => node
+                .children()
+                .find_map(|child| self.lower_stmt(&child)),
             SyntaxKind::LocalVariableDeclarationStatement => {
                 Some(ast::Stmt::LocalVar(self.lower_local_var_stmt(node)))
             }
@@ -2999,6 +3007,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::ReturnStatement
             | SyntaxKind::LabeledStatement
             | SyntaxKind::Block
+            | SyntaxKind::LabeledStatement
             | SyntaxKind::IfStatement
             | SyntaxKind::WhileStatement
             | SyntaxKind::DoWhileStatement
