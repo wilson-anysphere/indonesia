@@ -79,6 +79,48 @@ class C {
 }
 
 #[test]
+fn extract_method_switch_expression_arm_reads_become_parameters() {
+    // Regression test: locals referenced only inside switch expression arms must still be
+    // discovered by flow-based parameter analysis.
+    let fixture = r#"
+class C {
+    void m(int x) {
+        /*start*/System.out.println(switch (0) { case 0 -> x + 1; default -> x + 2; });/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int x) {
+        extracted(x);
+        System.out.println("done");
+    }
+
+    private void extracted(int x) {
+        System.out.println(switch (0) { case 0 -> x + 1; default -> x + 2; });
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_from_interface_default_method() {
     let fixture = r#"
 interface I {
