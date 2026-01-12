@@ -11,7 +11,6 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use futures::FutureExt;
 use nova_jdwp::wire::{JdwpClient, JdwpError, JdwpValue, ObjectId};
 use nova_scheduler::CancellationToken;
 use serde::Deserialize;
@@ -295,58 +294,94 @@ async fn handle_request(
     terminated_sent: Arc<AtomicBool>,
     exited_sent: Arc<AtomicBool>,
 ) {
+    // The request handler is the "root" for bookkeeping. If `handle_request_inner` panics we still
+    // need to (1) send an error response, and (2) remove the request from `in_flight` so follow-up
+    // `cancel` requests and shutdown bookkeeping don't leak entries.
+    //
+    // We keep the top-level guard here to capture end-to-end request latency.
+    let command_for_metrics = request.command.clone();
     let _request_metrics =
-        RequestMetricsGuard::new(&request.command, nova_metrics::MetricsRegistry::global());
+        RequestMetricsGuard::new(&command_for_metrics, nova_metrics::MetricsRegistry::global());
     let request_seq = request.seq;
+    let mut in_flight_cleanup = InFlightCleanupGuard::new(in_flight.clone(), request_seq);
 
-    let res = std::panic::AssertUnwindSafe(handle_request_inner(
-        &request,
-        &cancel,
-        &out_tx,
-        &seq,
-        &next_debugger_id,
-        &suppress_termination_debugger_id,
-        &debugger,
-        &launched_process,
-        &session,
-        &pending_config,
-        &in_flight,
-        &initialized_tx,
-        initialized_rx,
-        &server_shutdown,
-        &terminated_sent,
-        &exited_sent,
-    ))
-    .catch_unwind()
-    .await;
+    // Run the real handler in a child task so panics become a `JoinError` instead of unwinding
+    // past our cleanup/response logic.
+    let handler_request = request.clone();
+    let handler_out_tx = out_tx.clone();
+    let handler_seq = seq.clone();
+    let handler_next_debugger_id = next_debugger_id.clone();
+    let handler_suppress_termination_debugger_id = suppress_termination_debugger_id.clone();
+    let handler_debugger = debugger.clone();
+    let handler_launched_process = launched_process.clone();
+    let handler_session = session.clone();
+    let handler_pending_config = pending_config.clone();
+    let handler_in_flight = in_flight.clone();
+    let handler_initialized_tx = initialized_tx.clone();
+    let handler_server_shutdown = server_shutdown.clone();
+    let handler_terminated_sent = terminated_sent.clone();
+    let handler_exited_sent = exited_sent.clone();
+    let handler_cancel = cancel;
+    let handler = tokio::spawn(async move {
+        handle_request_inner(
+            &handler_request,
+            &handler_cancel,
+            &handler_out_tx,
+            &handler_seq,
+            &handler_next_debugger_id,
+            &handler_suppress_termination_debugger_id,
+            &handler_debugger,
+            &handler_launched_process,
+            &handler_session,
+            &handler_pending_config,
+            &handler_in_flight,
+            &handler_initialized_tx,
+            initialized_rx,
+            &handler_server_shutdown,
+            &handler_terminated_sent,
+            &handler_exited_sent,
+        )
+        .await;
+    });
 
-    if res.is_err() {
-        // `catch_unwind` prevents panics in request handlers from taking down the
-        // adapter task and leaking in-flight cancellation tokens.
-        nova_metrics::MetricsRegistry::global().record_panic(&request.command);
+    match handler.await {
+        Ok(()) => {}
+        Err(err) => {
+            if err.is_panic() {
+                // Best-effort metrics for panic visibility (the metrics guard isn't on the
+                // panicking task, so it won't see `std::thread::panicking()`).
+                nova_metrics::MetricsRegistry::global().record_panic(&command_for_metrics);
 
-        let message = {
-            #[cfg(not(test))]
-            {
-                let mut message = "Internal error (panic).".to_string();
-                // Best-effort: include a bugreport bundle to aid debugging.
-                if let Ok(Some(path)) = std::panic::catch_unwind(|| build_panic_bug_report_bundle())
+                let mut message = "internal error (panic)".to_string();
+                // In release builds, try to capture a bug report bundle to aid debugging.
+                #[cfg(all(not(test), not(debug_assertions)))]
                 {
-                    message.push_str(&format!(" Bug report: {path}"));
+                    if let Ok(Some(path)) =
+                        std::panic::catch_unwind(|| build_panic_bug_report_bundle())
+                    {
+                        message.push_str(&format!(" bug report: {path}"));
+                    }
                 }
-                message
-            }
-            #[cfg(test)]
-            {
-                "Internal error (panic).".to_string()
-            }
-        };
 
-        send_response(&out_tx, &seq, &request, false, None, Some(message));
+                send_response(&out_tx, &seq, &request, false, None, Some(message));
+            } else {
+                // Aborted tasks are rare (generally shutdown), but still respond best-effort so
+                // clients don't hang.
+                send_response(
+                    &out_tx,
+                    &seq,
+                    &request,
+                    false,
+                    None,
+                    Some("internal error".to_string()),
+                );
+            }
+        }
     }
 
     let mut guard = in_flight.lock().await;
     guard.remove(&request_seq);
+    in_flight_cleanup.disarm();
 }
 
 async fn handle_request_inner(
@@ -438,9 +473,16 @@ async fn handle_request_inner(
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
+        // Test-only escape hatch for validating panic isolation. Note that `nova-dap` is compiled
+        // *without* `cfg(test)` for `tests/` integration tests, so we enable this handler in debug
+        // builds too.
         #[cfg(test)]
-        "nova/__testPanic" => {
-            panic!("intentional panic from nova/__testPanic");
+        "nova/testPanic" => {
+            panic!("intentional panic from nova/testPanic");
+        }
+        #[cfg(all(not(test), debug_assertions))]
+        "nova/testPanic" => {
+            panic!("intentional panic from nova/testPanic");
         }
         "nova/bugReport" => {
             if cancel.is_cancelled() {
@@ -4820,7 +4862,7 @@ fn send_response(
     let _ = tx.send(serde_json::to_value(resp).unwrap_or_else(|_| json!({})));
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(debug_assertions)))]
 fn build_panic_bug_report_bundle() -> Option<String> {
     let cfg = NovaConfig::default();
     let log_buffer = nova_config::init_tracing_with_config(&cfg);
@@ -4845,6 +4887,47 @@ fn build_panic_bug_report_bundle() -> Option<String> {
         .ok()?;
 
     Some(bundle.path().display().to_string())
+}
+
+struct InFlightCleanupGuard {
+    in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
+    request_seq: i64,
+    armed: bool,
+}
+
+impl InFlightCleanupGuard {
+    fn new(in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>, request_seq: i64) -> Self {
+        Self {
+            in_flight,
+            request_seq,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InFlightCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let in_flight = self.in_flight.clone();
+        let request_seq = self.request_seq;
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+
+        // Best-effort: ensure we don't leak `in_flight` entries even if the request task itself
+        // panics. This runs in a detached task because `Drop` can't be async.
+        handle.spawn(async move {
+            let mut guard = in_flight.lock().await;
+            guard.remove(&request_seq);
+        });
+    }
 }
 
 struct RequestMetricsGuard<'a> {
@@ -5439,7 +5522,7 @@ mod tests {
         let panic_req = Request {
             seq: 2,
             message_type: "request".to_string(),
-            command: "nova/__testPanic".to_string(),
+            command: "nova/testPanic".to_string(),
             arguments: json!({}),
         };
         writer
@@ -5453,7 +5536,10 @@ mod tests {
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        assert!(message.contains("Internal error (panic)"));
+        assert!(
+            message.contains("internal error (panic)"),
+            "unexpected panic response message: {message}"
+        );
 
         // The adapter should continue serving follow-up requests.
         let metrics_req = Request {

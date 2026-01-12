@@ -26,6 +26,7 @@ mod exception_breakpoints;
 mod jdwp_client;
 mod logpoints_hitcounts;
 mod output_truncation;
+mod panic_isolation;
 mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
 mod process_event;
