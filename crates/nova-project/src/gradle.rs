@@ -245,8 +245,13 @@ pub(crate) fn load_gradle_project(
         root_java = java;
     }
     let mut workspace_java = root_java;
-    let version_catalog = load_gradle_version_catalog(root);
-    dependencies.extend(parse_gradle_root_dependencies(root));
+    let gradle_properties = load_gradle_properties(root);
+    let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
+    dependencies.extend(parse_gradle_root_dependencies(
+        root,
+        version_catalog.as_ref(),
+        &gradle_properties,
+    ));
 
     for module_ref in module_refs {
         let project_path = &module_ref.project_path;
@@ -415,6 +420,7 @@ pub(crate) fn load_gradle_project(
         dependencies.extend(parse_gradle_dependencies(
             &module_root,
             version_catalog.as_ref(),
+            &gradle_properties,
         ));
 
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
@@ -552,8 +558,13 @@ pub(crate) fn load_gradle_workspace_model(
         .gradle_user_home
         .clone()
         .or_else(default_gradle_user_home);
-    let version_catalog = load_gradle_version_catalog(root);
-    let root_dependencies = parse_gradle_root_dependencies(root);
+    let gradle_properties = load_gradle_properties(root);
+    let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
+    let root_dependencies = parse_gradle_root_dependencies(
+        root,
+        version_catalog.as_ref(),
+        &gradle_properties,
+    );
 
     let module_root_by_project_path: BTreeMap<String, PathBuf> = module_refs
         .iter()
@@ -762,7 +773,8 @@ pub(crate) fn load_gradle_workspace_model(
                 path: entry.clone(),
             });
         }
-        let mut dependencies = parse_gradle_dependencies(&module_root, version_catalog.as_ref());
+        let mut dependencies =
+            parse_gradle_dependencies(&module_root, version_catalog.as_ref(), &gradle_properties);
         dependencies.extend(root_dependencies.iter().cloned());
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
@@ -1563,26 +1575,106 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
 
 const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
-fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
-    match configuration.trim().to_ascii_lowercase().as_str() {
-        // Tests.
-        "testimplementation"
-        | "testruntimeonly"
-        | "testcompileonly"
-        | "testannotationprocessor"
-        | "kapttest" => Some("test"),
+type GradleProperties = HashMap<String, String>;
 
-        // Main compile.
-        "implementation" | "api" => Some("compile"),
+fn load_gradle_properties(workspace_root: &Path) -> GradleProperties {
+    let path = workspace_root.join("gradle.properties");
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return GradleProperties::new();
+    };
+    parse_gradle_properties_from_text(&contents)
+}
 
-        // Main runtime only.
-        "runtimeonly" => Some("runtime"),
+/// Best-effort parsing for Gradle's `gradle.properties`.
+///
+/// This intentionally does **not** implement full Java-properties escaping semantics; it only
+/// supports the common `key=value` form and ignores blank lines and comments starting with `#` or
+/// `!`.
+fn parse_gradle_properties_from_text(contents: &str) -> GradleProperties {
+    let mut out = GradleProperties::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+            continue;
+        }
 
-        // Compile-only / annotation processor dependencies.
-        "compileonly" | "annotationprocessor" | "kapt" => Some("provided"),
-
-        _ => None,
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        out.insert(key.to_string(), value.trim().to_string());
     }
+    out
+}
+
+/// Resolves a Gradle/Kotlin `$var` / `${var}` placeholder **only** when the entire string is the
+/// placeholder.
+///
+/// If the property isn't present in `gradle.properties`, this returns `None` and the caller should
+/// keep the original string intact.
+fn resolve_gradle_properties_placeholder(value: &str, gradle_properties: &GradleProperties) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let key = if let Some(rest) = value.strip_prefix("${") {
+        rest.strip_suffix('}')
+    } else {
+        value.strip_prefix('$')
+    }?;
+
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    gradle_properties.get(key).cloned()
+}
+
+/// Maps Gradle dependency configurations into a small stable set of scopes.
+///
+/// This is best-effort extraction and intentionally collapses many Gradle configurations into
+/// coarse scopes:
+/// - `implementation|api` => `compile`
+/// - `runtimeOnly` => `runtime`
+/// - `compileOnly` => `provided`
+/// - `testImplementation|testRuntimeOnly|testCompileOnly` => `test`
+/// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest` => `annotationProcessor`
+fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
+    let configuration = configuration.trim();
+    if configuration.eq_ignore_ascii_case("implementation") || configuration.eq_ignore_ascii_case("api")
+    {
+        return Some("compile");
+    }
+
+    if configuration.eq_ignore_ascii_case("runtimeOnly") {
+        return Some("runtime");
+    }
+
+    if configuration.eq_ignore_ascii_case("compileOnly") {
+        return Some("provided");
+    }
+
+    if configuration.eq_ignore_ascii_case("testImplementation")
+        || configuration.eq_ignore_ascii_case("testRuntimeOnly")
+        || configuration.eq_ignore_ascii_case("testCompileOnly")
+    {
+        return Some("test");
+    }
+
+    if configuration.eq_ignore_ascii_case("annotationProcessor")
+        || configuration.eq_ignore_ascii_case("testAnnotationProcessor")
+        || configuration.eq_ignore_ascii_case("kapt")
+        || configuration.eq_ignore_ascii_case("kaptTest")
+    {
+        return Some("annotationProcessor");
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1599,13 +1691,19 @@ struct GradleVersionCatalogLibrary {
     version: Option<String>,
 }
 
-fn load_gradle_version_catalog(workspace_root: &Path) -> Option<GradleVersionCatalog> {
+fn load_gradle_version_catalog(
+    workspace_root: &Path,
+    gradle_properties: &GradleProperties,
+) -> Option<GradleVersionCatalog> {
     let catalog_path = workspace_root.join("gradle").join("libs.versions.toml");
     let contents = std::fs::read_to_string(catalog_path).ok()?;
-    parse_gradle_version_catalog_from_toml(&contents)
+    parse_gradle_version_catalog_from_toml(&contents, gradle_properties)
 }
 
-fn parse_gradle_version_catalog_from_toml(contents: &str) -> Option<GradleVersionCatalog> {
+fn parse_gradle_version_catalog_from_toml(
+    contents: &str,
+    gradle_properties: &GradleProperties,
+) -> Option<GradleVersionCatalog> {
     let root: Value = toml::from_str(contents).ok()?;
     let root = root.as_table()?;
 
@@ -1614,14 +1712,20 @@ fn parse_gradle_version_catalog_from_toml(contents: &str) -> Option<GradleVersio
     if let Some(versions) = root.get("versions").and_then(Value::as_table) {
         for (k, v) in versions {
             if let Some(v) = v.as_str() {
-                catalog.versions.insert(k.to_string(), v.to_string());
+                let resolved =
+                    resolve_gradle_properties_placeholder(v, gradle_properties).unwrap_or_else(|| {
+                        v.trim().to_string()
+                    });
+                catalog.versions.insert(k.to_string(), resolved);
             }
         }
     }
 
     if let Some(libraries) = root.get("libraries").and_then(Value::as_table) {
         for (alias, value) in libraries {
-            if let Some(lib) = parse_gradle_version_catalog_library(value, &catalog.versions) {
+            if let Some(lib) =
+                parse_gradle_version_catalog_library(value, &catalog.versions, gradle_properties)
+            {
                 catalog.libraries.insert(alias.to_string(), lib);
             }
         }
@@ -1649,11 +1753,14 @@ fn parse_gradle_version_catalog_from_toml(contents: &str) -> Option<GradleVersio
 fn parse_gradle_version_catalog_library(
     value: &Value,
     versions: &HashMap<String, String>,
+    gradle_properties: &GradleProperties,
 ) -> Option<GradleVersionCatalogLibrary> {
     match value {
         // Not part of the requirements, but cheap to support.
         Value::String(text) => {
             let (group_id, artifact_id, version) = parse_maybe_maven_coord(text)?;
+            let version =
+                resolve_gradle_properties_placeholder(&version, gradle_properties).unwrap_or(version);
             Some(GradleVersionCatalogLibrary {
                 group_id,
                 artifact_id,
@@ -1672,7 +1779,10 @@ fn parse_gradle_version_catalog_library(
                 };
 
             let version = match table.get("version") {
-                Some(Value::String(v)) => Some(v.to_string()),
+                Some(Value::String(v)) => Some(
+                    resolve_gradle_properties_placeholder(v, gradle_properties)
+                        .unwrap_or_else(|| v.to_string()),
+                ),
                 Some(Value::Table(version_table)) => version_table
                     .get("ref")
                     .and_then(Value::as_str)
@@ -1706,6 +1816,7 @@ fn parse_maybe_maven_coord(text: &str) -> Option<(String, String, String)> {
 fn parse_gradle_dependencies(
     module_root: &Path,
     version_catalog: Option<&GradleVersionCatalog>,
+    gradle_properties: &GradleProperties,
 ) -> Vec<Dependency> {
     let candidates = ["build.gradle.kts", "build.gradle"]
         .into_iter()
@@ -1722,19 +1833,23 @@ fn parse_gradle_dependencies(
         out.extend(parse_gradle_dependencies_from_text(
             &contents,
             version_catalog,
+            gradle_properties,
         ));
     }
     out
 }
 
-fn parse_gradle_root_dependencies(root: &Path) -> Vec<Dependency> {
+fn parse_gradle_root_dependencies(
+    root: &Path,
+    version_catalog: Option<&GradleVersionCatalog>,
+    gradle_properties: &GradleProperties,
+) -> Vec<Dependency> {
     // Root build scripts in multi-project Gradle repos often declare shared dependencies via
     // `allprojects { dependencies { ... } }` or `subprojects { dependencies { ... } }`.
     //
     // Parse them separately so we still discover dependencies even when subproject build scripts
     // are minimal.
-    let version_catalog = load_gradle_version_catalog(root);
-    parse_gradle_dependencies(root, version_catalog.as_ref())
+    parse_gradle_dependencies(root, version_catalog, gradle_properties)
 }
 
 fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
@@ -1952,6 +2067,7 @@ fn parse_gradle_local_classpath_entries_from_text(
 fn parse_gradle_dependencies_from_text(
     contents: &str,
     version_catalog: Option<&GradleVersionCatalog>,
+    gradle_properties: &GradleProperties,
 ) -> Vec<Dependency> {
     // Strip comments before running dependency regexes so commented-out dependency lines don't
     // end up polluting the extracted dependency list.
@@ -1981,14 +2097,19 @@ fn parse_gradle_dependencies_from_text(
     });
 
     for caps in re_gav.captures_iter(contents) {
+        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+            continue;
+        };
+        let scope = gradle_scope_from_configuration(config).map(str::to_string);
+        let version = caps.name("version").map(|m| m.as_str().to_string());
+        let version = version.map(|v| {
+            resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v)
+        });
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
-            version: caps.name("version").map(|m| m.as_str().to_string()),
-            scope: caps
-                .name("config")
-                .and_then(|m| gradle_scope_from_configuration(m.as_str()))
-                .map(str::to_string),
+            version,
+            scope,
             classifier: None,
             type_: None,
         });
@@ -2019,14 +2140,19 @@ fn parse_gradle_dependencies_from_text(
     });
 
     for caps in re_map.captures_iter(contents) {
+        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+            continue;
+        };
+        let scope = gradle_scope_from_configuration(config).map(str::to_string);
+        let version = caps.name("version").map(|m| m.as_str().to_string());
+        let version = version.map(|v| {
+            resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v)
+        });
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
-            version: caps.name("version").map(|m| m.as_str().to_string()),
-            scope: caps
-                .name("config")
-                .and_then(|m| gradle_scope_from_configuration(m.as_str()))
-                .map(str::to_string),
+            version,
+            scope,
             classifier: None,
             type_: None,
         });
@@ -2037,6 +2163,7 @@ fn parse_gradle_dependencies_from_text(
         deps.extend(resolve_version_catalog_dependencies(
             contents,
             version_catalog,
+            gradle_properties,
         ));
     }
     sort_dedup_dependencies(&mut deps);
@@ -2046,6 +2173,7 @@ fn parse_gradle_dependencies_from_text(
 fn resolve_version_catalog_dependencies(
     contents: &str,
     version_catalog: &GradleVersionCatalog,
+    gradle_properties: &GradleProperties,
 ) -> Vec<Dependency> {
     static RE_DOT: OnceLock<Regex> = OnceLock::new();
     static RE_BRACKET: OnceLock<Regex> = OnceLock::new();
@@ -2054,7 +2182,7 @@ fn resolve_version_catalog_dependencies(
     let re_dot = RE_DOT.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
         ))
         .expect("valid regex")
     });
@@ -2078,14 +2206,19 @@ fn resolve_version_catalog_dependencies(
         let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
             continue;
         };
-        let scope = caps
-            .name("config")
-            .and_then(|m| gradle_scope_from_configuration(m.as_str()))
-            .map(str::to_string);
+        let Some(config) = caps.name("config").map(|m| m.as_str()) else {
+            continue;
+        };
+        let scope = gradle_scope_from_configuration(config).map(str::to_string);
         let mut resolved = resolve_version_catalog_reference(version_catalog, reference);
-        if let Some(scope) = scope {
-            for dep in &mut resolved {
-                dep.scope = Some(scope.clone());
+        for dep in &mut resolved {
+            dep.scope = scope.clone();
+            if let Some(v) = dep.version.as_deref() {
+                if let Some(resolved_version) =
+                    resolve_gradle_properties_placeholder(v, gradle_properties)
+                {
+                    dep.version = Some(resolved_version);
+                }
             }
         }
         deps.extend(resolved);
@@ -2378,82 +2511,62 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
             .then(a.classifier.cmp(&b.classifier))
             .then(a.type_.cmp(&b.type_))
     });
-    deps.dedup_by(|a, b| {
-        let is_same_dep = a.group_id == b.group_id
-            && a.artifact_id == b.artifact_id
-            && a.version == b.version
-            && a.classifier == b.classifier
-            && a.type_ == b.type_;
-        if !is_same_dep {
-            return false;
-        }
 
-        // `Vec::dedup_by` keeps the *second* element passed to the predicate (`b`) and removes the
-        // first (`a`). Merge scope information into `b` so we keep the most useful value.
-        b.scope = merge_maven_like_scopes(a.scope.as_deref(), b.scope.as_deref());
-        true
-    });
-}
-
-/// Merge two Maven-like scopes (`compile`, `runtime`, `provided`, `test`) by choosing the most
-/// permissive single scope that best approximates the union.
-///
-/// This is used to keep Gradle dependency lists stable and avoid duplicates when a dependency is
-/// declared in multiple configurations (e.g. `testImplementation` + `implementation`).
-fn merge_maven_like_scopes(a: Option<&str>, b: Option<&str>) -> Option<String> {
-    // Prefer known scopes, but preserve unknown values if we have nothing better.
-    let (a_known, a_unknown) = split_known_scope(a);
-    let (b_known, b_unknown) = split_known_scope(b);
-
-    if a_known.is_none() && b_known.is_none() {
-        return a_unknown
-            .or(b_unknown)
-            .map(|s| s.to_string())
-            .or_else(|| a.map(|s| s.to_string()))
-            .or_else(|| b.map(|s| s.to_string()));
-    }
-
-    let mut compile = false;
-    let mut runtime = false;
-    let mut test = false;
-    for scope in [a_known, b_known].into_iter().flatten() {
+    fn scope_precedence(scope: Option<&str>) -> u8 {
         match scope {
-            "compile" => {
-                compile = true;
-                runtime = true;
-            }
-            "runtime" => runtime = true,
-            "provided" => compile = true,
-            "test" => test = true,
-            _ => {}
+            Some("annotationProcessor") => 5,
+            Some("compile") => 4,
+            Some("runtime") => 3,
+            Some("provided") => 2,
+            Some("test") => 1,
+            Some(_) => 0,
+            None => 0,
         }
     }
 
-    let merged = if compile && runtime {
-        "compile"
-    } else if runtime {
-        "runtime"
-    } else if compile {
-        "provided"
-    } else if test {
-        "test"
-    } else {
-        // Should be unreachable when we have at least one known scope, but keep it safe.
-        return a_known
-            .or(b_known)
-            .map(|s| s.to_string())
-            .or_else(|| a_unknown.or(b_unknown).map(|s| s.to_string()));
-    };
+    fn merge_scope(existing: &mut Option<String>, incoming: Option<String>) {
+        let Some(incoming) = incoming else {
+            return;
+        };
 
-    Some(merged.to_string())
-}
+        let existing_rank = scope_precedence(existing.as_deref());
+        let incoming_rank = scope_precedence(Some(incoming.as_str()));
+        if incoming_rank > existing_rank {
+            *existing = Some(incoming);
+            return;
+        }
+        if incoming_rank < existing_rank {
+            return;
+        }
 
-fn split_known_scope(scope: Option<&str>) -> (Option<&str>, Option<&str>) {
-    match scope {
-        Some("compile" | "runtime" | "provided" | "test") => (scope, None),
-        Some(s) => (None, Some(s)),
-        None => (None, None),
+        // Deterministic tie-breaker for equal-precedence scopes: prefer `Some`, and then prefer the
+        // lexicographically smallest scope string.
+        match existing.as_deref() {
+            None => *existing = Some(incoming),
+            Some(cur) => {
+                if incoming.as_str() < cur {
+                    *existing = Some(incoming);
+                }
+            }
+        }
     }
+
+    let mut out: Vec<Dependency> = Vec::with_capacity(deps.len());
+    for dep in std::mem::take(deps) {
+        if let Some(last) = out.last_mut() {
+            if last.group_id == dep.group_id
+                && last.artifact_id == dep.artifact_id
+                && last.version == dep.version
+                && last.classifier == dep.classifier
+                && last.type_ == dep.type_
+            {
+                merge_scope(&mut last.scope, dep.scope);
+                continue;
+            }
+        }
+        out.push(dep);
+    }
+    *deps = out;
 }
 
 fn canonicalize_or_fallback(path: &Path) -> PathBuf {
@@ -2512,6 +2625,7 @@ mod tests {
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
         parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
         sort_dedup_dependencies, strip_gradle_comments,
+        GradleProperties,
     };
 
     #[test]
@@ -2564,7 +2678,8 @@ dependencies {
 }
 "#;
 
-        let mut deps = parse_gradle_dependencies_from_text(script, None);
+        let gradle_properties = GradleProperties::new();
+        let mut deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
         sort_dedup_dependencies(&mut deps);
 
         let got: BTreeSet<_> = deps
@@ -2609,7 +2724,8 @@ dependencies {
 }
 "#;
 
-        let deps = parse_gradle_dependencies_from_text(script, None);
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(script, None, &gradle_properties);
         let got: BTreeSet<_> = deps
             .into_iter()
             .map(|d| (d.group_id, d.artifact_id, d.version))
@@ -2671,18 +2787,16 @@ dependencies {
 }
 "#;
 
-        let deps = parse_gradle_dependencies_from_text(build_script, None);
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(build_script, None, &gradle_properties);
 
         let mut tuples: Vec<(String, String, Option<String>)> = Vec::new();
         let mut scopes: BTreeMap<(String, String, Option<String>), Option<String>> =
             BTreeMap::new();
         for dep in deps {
-            tuples.push((
-                dep.group_id.clone(),
-                dep.artifact_id.clone(),
-                dep.version.clone(),
-            ));
-            scopes.insert((dep.group_id, dep.artifact_id, dep.version), dep.scope);
+            let key = (dep.group_id.clone(), dep.artifact_id.clone(), dep.version.clone());
+            tuples.push(key.clone());
+            scopes.insert(key, dep.scope);
         }
         let got: BTreeSet<_> = tuples.iter().cloned().collect();
 
@@ -2714,59 +2828,35 @@ dependencies {
         assert_eq!(got, expected);
 
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
-        // we keep the most permissive Maven-like scope (union).
+        // we keep a single deterministic scope for the coordinates.
         let expected_scopes: [((String, String, Option<String>), &str); 14] = [
-            (
-                (String::from("g1"), String::from("a1"), Some("1".into())),
-                "compile",
-            ),
-            (
-                (String::from("g2"), String::from("a2"), Some("2".into())),
-                "compile",
-            ),
-            (
-                (String::from("g3"), String::from("a3"), Some("3".into())),
-                "provided",
-            ),
-            (
-                (String::from("g4"), String::from("a4"), Some("4".into())),
-                "runtime",
-            ),
-            (
-                (String::from("g5"), String::from("a5"), Some("5".into())),
-                "test",
-            ),
-            (
-                (String::from("g6"), String::from("a6"), Some("6".into())),
-                "test",
-            ),
-            (
-                (String::from("g7"), String::from("a7"), Some("7".into())),
-                "test",
-            ),
+            ((String::from("g1"), String::from("a1"), Some("1".into())), "compile"),
+            ((String::from("g2"), String::from("a2"), Some("2".into())), "compile"),
+            ((String::from("g3"), String::from("a3"), Some("3".into())), "provided"),
+            ((String::from("g4"), String::from("a4"), Some("4".into())), "runtime"),
+            ((String::from("g5"), String::from("a5"), Some("5".into())), "test"),
+            ((String::from("g6"), String::from("a6"), Some("6".into())), "test"),
+            ((String::from("g7"), String::from("a7"), Some("7".into())), "test"),
             (
                 (String::from("g8"), String::from("a8"), Some("8".into())),
-                "provided",
+                "annotationProcessor",
             ),
             (
                 (String::from("g9"), String::from("a9"), Some("9".into())),
-                "test",
+                "annotationProcessor",
             ),
             (
                 (String::from("g10"), String::from("a10"), Some("10".into())),
-                "provided",
+                "annotationProcessor",
             ),
             (
                 (String::from("g11"), String::from("a11"), Some("11".into())),
-                "test",
+                "annotationProcessor",
             ),
-            (
-                (String::from("g12"), String::from("a12"), Some("12".into())),
-                "compile",
-            ),
+            ((String::from("g12"), String::from("a12"), Some("12".into())), "compile"),
             (
                 (String::from("g13"), String::from("a13"), Some("13".into())),
-                "provided",
+                "annotationProcessor",
             ),
             (
                 (String::from("dup"), String::from("dep"), Some("1.0".into())),
