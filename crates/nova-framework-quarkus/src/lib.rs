@@ -229,7 +229,8 @@ where
 
 fn is_java_file(db: &dyn Database, file: FileId) -> bool {
     let Some(path) = db.file_path(file) else {
-        return false;
+        // Best-effort fallback when file paths are unavailable (e.g. virtual buffers).
+        return true;
     };
 
     path.extension()
