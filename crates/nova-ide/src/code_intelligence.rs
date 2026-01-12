@@ -15641,7 +15641,12 @@ fn ensure_local_class_id(types: &mut TypeStore, analysis: &Analysis, class: &Cla
     let methods = analysis
         .methods
         .iter()
-        .filter(|m| span_within(m.name_span, class.span))
+        .filter(|m| {
+            // Avoid attributing nested-type methods to outer classes.
+            span_within(m.name_span, class.body_span)
+                && enclosing_class(analysis, m.name_span.start)
+                    .is_some_and(|owner| owner.name_span == class.name_span)
+        })
         .map(|m| MethodDef {
             name: m.name.clone(),
             type_params: Vec::new(),
@@ -16313,6 +16318,7 @@ struct ClassDecl {
     name: String,
     name_span: Span,
     span: Span,
+    body_span: Span,
     extends: Option<String>,
 }
 
@@ -16418,15 +16424,18 @@ fn analyze(text: &str) -> Analysis {
 
             let mut extends: Option<String> = None;
             let mut class_span_end = name_tok.span.end;
+            let mut body_span = Span::new(name_tok.span.end, name_tok.span.end);
 
             let mut j = i + 2;
             while j < tokens.len() {
                 let tok = &tokens[j];
                 if tok.kind == TokenKind::Symbol('{') {
-                    if let Some((_end_idx, body_span)) = find_matching_brace(&tokens, j) {
-                        class_span_end = body_span.end;
+                    if let Some((_end_idx, bs)) = find_matching_brace(&tokens, j) {
+                        class_span_end = bs.end;
+                        body_span = bs;
                     } else {
                         class_span_end = tok.span.end;
+                        body_span = tok.span;
                     }
                     break;
                 }
@@ -16442,6 +16451,7 @@ fn analyze(text: &str) -> Analysis {
                 name: name_tok.text.clone(),
                 name_span: name_tok.span,
                 span: Span::new(tokens[i].span.start, class_span_end),
+                body_span,
                 extends,
             });
             i = j;
@@ -16451,19 +16461,81 @@ fn analyze(text: &str) -> Analysis {
     }
 
     // Methods (very small heuristic): (modifiers/annotations)* <ret> <name> '(' ... ')' '{' body '}'.
+    //
+    // We intentionally only parse methods that have bodies (so we can use `body_span` for scoping).
+    // This is best-effort, but we try to handle nested types by tracking the current type-body brace
+    // depth.
+    #[derive(Clone, Copy)]
+    struct TypeBodyScope {
+        body_depth: i32,
+        close_idx: usize,
+    }
+
+    let mut type_bodies = HashMap::<usize, usize>::new();
+    let mut i = 0usize;
+    while i + 1 < tokens.len() {
+        let tok = &tokens[i];
+        if tok.kind == TokenKind::Ident
+            && matches!(tok.text.as_str(), "class" | "interface" | "enum" | "record")
+        {
+            let Some(_name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident) else {
+                i += 1;
+                continue;
+            };
+            let mut j = i + 2;
+            while j < tokens.len() && tokens[j].kind != TokenKind::Symbol('{') {
+                j += 1;
+            }
+            if j < tokens.len() {
+                if let Some((close_idx, _body_span)) = find_matching_brace(&tokens, j) {
+                    type_bodies.insert(j, close_idx);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
     let mut i = 0usize;
     let mut brace_depth: i32 = 0;
+    let mut scope_stack: Vec<TypeBodyScope> = Vec::new();
     while i < tokens.len() {
         match tokens[i].kind {
-            TokenKind::Symbol('{') => brace_depth += 1,
-            TokenKind::Symbol('}') => brace_depth -= 1,
+            TokenKind::Symbol('{') => {
+                brace_depth += 1;
+                if let Some(close_idx) = type_bodies.get(&i).copied() {
+                    scope_stack.push(TypeBodyScope {
+                        body_depth: brace_depth,
+                        close_idx,
+                    });
+                }
+                i += 1;
+                continue;
+            }
+            TokenKind::Symbol('}') => {
+                if scope_stack
+                    .last()
+                    .is_some_and(|scope| scope.close_idx == i)
+                {
+                    scope_stack.pop();
+                }
+                brace_depth -= 1;
+                i += 1;
+                continue;
+            }
             _ => {}
         }
 
-        if brace_depth == 1 && i + 4 < tokens.len() {
+        let Some(scope) = scope_stack.last().copied() else {
+            i += 1;
+            continue;
+        };
+
+        if brace_depth == scope.body_depth && i + 4 < tokens.len() && i < scope.close_idx {
             // Skip modifiers/annotations/type params.
             let mut j = i;
-            while j < tokens.len() {
+            while j < tokens.len() && j < scope.close_idx {
                 match &tokens[j] {
                     Token {
                         kind: TokenKind::Ident,
@@ -16491,7 +16563,7 @@ fn analyze(text: &str) -> Analysis {
                 }
             }
 
-            if j + 2 < tokens.len() {
+            if j + 2 < scope.close_idx {
                 let ret = &tokens[j];
                 let name = &tokens[j + 1];
                 let l_paren = &tokens[j + 2];
@@ -16514,22 +16586,28 @@ fn analyze(text: &str) -> Analysis {
                         }
                     };
 
-                    if r_paren_idx + 1 < tokens.len()
+                    if r_paren_idx + 1 < scope.close_idx
                         && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{')
                     {
                         let params = parse_params(&tokens[(j + 3)..r_paren_idx]);
                         if let Some((body_end_idx, body_span)) =
                             find_matching_brace(&tokens, r_paren_idx + 1)
                         {
-                            analysis.methods.push(MethodDecl {
-                                ret_ty: ret.text.clone(),
-                                name: name.text.clone(),
-                                name_span: name.span,
-                                params,
-                                body_span,
-                            });
-                            i = body_end_idx;
-                            brace_depth = 1;
+                            // Ensure we didn't accidentally consume the type body's closing brace
+                            // (which would desync the scope stack).
+                            if body_end_idx < scope.close_idx {
+                                analysis.methods.push(MethodDecl {
+                                    ret_ty: ret.text.clone(),
+                                    name: name.text.clone(),
+                                    name_span: name.span,
+                                    params,
+                                    body_span,
+                                });
+                                let _ = close_paren;
+                                // Skip method body for performance.
+                                i = body_end_idx + 1;
+                                continue;
+                            }
                         }
                     }
                     let _ = close_paren;

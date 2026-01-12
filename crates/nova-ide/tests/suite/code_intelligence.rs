@@ -592,6 +592,28 @@ class A {
 }
 
 #[test]
+fn completion_includes_locals_in_nested_class_method() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer {
+  class Inner {
+    void m() {
+      int x = 0;
+      <|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "x"),
+        "expected completion list to include local `x` inside nested class method; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"

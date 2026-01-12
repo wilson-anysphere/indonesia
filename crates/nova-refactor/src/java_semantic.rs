@@ -5784,6 +5784,11 @@ fn collect_switch_contexts(
                     walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Expr::Unary { expr, .. }
             | hir::Expr::Instanceof { expr, .. }
             | hir::Expr::Cast { expr, .. } => {
@@ -7275,6 +7280,21 @@ fn record_lightweight_expr(
         }
         Expr::ArrayInitializer(array) => {
             for item in &array.items {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    item,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Expr::ArrayInitializer(init) => {
+            for item in &init.items {
                 record_lightweight_expr(
                     file,
                     text,
