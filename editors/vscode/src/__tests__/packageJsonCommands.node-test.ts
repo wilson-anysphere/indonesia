@@ -251,6 +251,67 @@ test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance
   assert.ok(hasUnsupportedHint);
 });
 
+test('package.json contributes Nova Project Explorer view + commands', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown; views?: unknown; menus?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  assert.ok(activationEvents.includes('onView:novaProjectExplorer'));
+
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+  const commandIds = new Set(
+    commands
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+      .filter((id): id is string => typeof id === 'string'),
+  );
+
+  const expectedCommands = ['nova.refreshProjectExplorer', 'nova.showProjectModel', 'nova.showProjectConfiguration'];
+  for (const id of expectedCommands) {
+    assert.ok(commandIds.has(id));
+    assert.ok(activationEvents.includes(`onCommand:${id}`));
+  }
+
+  const views = pkg.contributes?.views;
+  assert.ok(views && typeof views === 'object');
+  const explorerViews = (views as { explorer?: unknown }).explorer;
+  assert.ok(Array.isArray(explorerViews));
+  assert.ok((explorerViews as unknown[]).some((entry) => (entry as { id?: unknown })?.id === 'novaProjectExplorer'));
+
+  const menus = pkg.contributes?.menus;
+  assert.ok(menus && typeof menus === 'object');
+
+  const viewTitle = (menus as { 'view/title'?: unknown })['view/title'];
+  assert.ok(Array.isArray(viewTitle));
+
+  for (const id of expectedCommands) {
+    const found = (viewTitle as unknown[]).some((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return false;
+      }
+      const cmd = (entry as { command?: unknown }).command;
+      const when = (entry as { when?: unknown }).when;
+      return cmd === id && typeof when === 'string' && when.includes('view == novaProjectExplorer');
+    });
+    assert.ok(found, `missing view/title menu entry for ${id}`);
+  }
+
+  const viewItemContext = (menus as { 'view/item/context'?: unknown })['view/item/context'];
+  assert.ok(Array.isArray(viewItemContext));
+
+  const itemCommands = new Set(
+    (viewItemContext as unknown[])
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+      .filter((value): value is string => typeof value === 'string'),
+  );
+
+  assert.ok(itemCommands.has('nova.reloadProject'));
+  assert.ok(itemCommands.has('nova.buildProject'));
+});
+
 test('package.json does not contain duplicate command or activation entries', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
