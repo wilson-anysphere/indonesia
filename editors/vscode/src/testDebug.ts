@@ -31,20 +31,19 @@ interface SpawnedProcess {
 
 const NOVA_TEST_DEBUG_RUN_ID_KEY = '__novaTestDebugRunId';
 
-export interface ResolvedTestTarget {
-  item: vscode.TestItem | undefined;
-  workspaceFolder: vscode.WorkspaceFolder;
-  projectRoot: string;
-  lspId: string;
-}
+type TestDebugSessionManager = {
+  output: vscode.OutputChannel;
+  processesByRunId: Map<string, SpawnedProcess>;
+  processesByDebugSessionId: Map<string, SpawnedProcess>;
+};
 
-export function registerNovaTestDebugRunProfile(
-  context: vscode.ExtensionContext,
-  controller: vscode.TestController,
-  novaRequest: NovaRequest,
-  ensureTestsDiscovered: () => Promise<void>,
-  resolveTestTarget: (id: string) => ResolvedTestTarget | undefined,
-): void {
+let sharedSessionManager: TestDebugSessionManager | undefined;
+
+function ensureSessionManager(context: vscode.ExtensionContext): TestDebugSessionManager {
+  if (sharedSessionManager) {
+    return sharedSessionManager;
+  }
+
   const output = vscode.window.createOutputChannel('Nova Test Debug');
   context.subscriptions.push(output);
 
@@ -80,6 +79,26 @@ export function registerNovaTestDebugRunProfile(
     }),
   );
 
+  sharedSessionManager = { output, processesByRunId, processesByDebugSessionId };
+  return sharedSessionManager;
+}
+
+export interface ResolvedTestTarget {
+  item: vscode.TestItem | undefined;
+  workspaceFolder: vscode.WorkspaceFolder;
+  projectRoot: string;
+  lspId: string;
+}
+
+export function registerNovaTestDebugRunProfile(
+  context: vscode.ExtensionContext,
+  controller: vscode.TestController,
+  novaRequest: NovaRequest,
+  ensureTestsDiscovered: () => Promise<void>,
+  resolveTestTarget: (id: string) => ResolvedTestTarget | undefined,
+): void {
+  const manager = ensureSessionManager(context);
+
   context.subscriptions.push(
     controller.createRunProfile(
       'Debug',
@@ -89,16 +108,114 @@ export function registerNovaTestDebugRunProfile(
           request,
           token,
           controller,
-          output,
+          manager.output,
           novaRequest,
           ensureTestsDiscovered,
           resolveTestTarget,
-          processesByRunId,
+          manager.processesByRunId,
         );
       },
       true,
     ),
   );
+}
+
+export async function debugTestById(
+  context: vscode.ExtensionContext,
+  novaRequest: NovaRequest,
+  target: { workspaceFolder: vscode.WorkspaceFolder; projectRoot: string; testId: string },
+): Promise<void> {
+  const manager = ensureSessionManager(context);
+  const output = manager.output;
+  const processesByRunId = manager.processesByRunId;
+
+  const testId = target.testId;
+  const workspaceFolder = target.workspaceFolder;
+
+  const buildTool = await getBuildToolFromUser(workspaceFolder);
+
+  const resp = (await novaRequest('nova/test/debugConfiguration', {
+    projectRoot: target.projectRoot,
+    buildTool,
+    test: testId,
+  })) as TestDebugResponse | undefined;
+  if (!resp) {
+    return;
+  }
+
+  const defaults = getDebugDefaults();
+  const desiredHost = defaults.host;
+  let desiredPort = defaults.port;
+
+  const portFree = await isLocalPortFree(desiredHost, desiredPort);
+  if (!portFree) {
+    const choice = await vscode.window.showWarningMessage(
+      `Nova: JDWP port ${desiredHost}:${desiredPort} appears to already be in use. ` +
+        `The test JVM may fail to start, or the debugger may attach to an existing process.`,
+      'Use Different Port',
+      'Continue',
+      'Cancel',
+    );
+    if (choice === 'Use Different Port') {
+      desiredPort = await findFreeLocalPort(desiredHost);
+    } else if (choice !== 'Continue') {
+      return;
+    }
+  }
+
+  const commandConfig = normalizeTestDebugCommand(resp, desiredPort);
+
+  output.show(true);
+  output.appendLine(`\n=== ${commandConfig.name} (${resp.tool}) ===`);
+  output.appendLine(`cwd: ${commandConfig.cwd}`);
+  output.appendLine(`command: ${commandConfig.command} ${commandConfig.args.join(' ')}`);
+
+  const { child, ready } = spawnTestDebugProcess(commandConfig, output);
+  const spawned: SpawnedProcess = {
+    child,
+    dispose: async (reason) => {
+      output.appendLine(`\n[Nova] Stopping test debug process (${reason})...`);
+      await terminateProcessTree(child);
+    },
+  };
+
+  const runId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  processesByRunId.set(runId, spawned);
+
+  const portFromOutput = await ready;
+  const attachPort = portFromOutput ?? desiredPort;
+
+  if (child.exitCode !== null || child.signalCode !== null) {
+    processesByRunId.delete(runId);
+    throw new Error('Test debug process exited before the debugger could attach.');
+  }
+
+  const debugConfig: vscode.DebugConfiguration & Record<string, unknown> = {
+    type: NOVA_DEBUG_TYPE,
+    request: 'attach',
+    name: `Nova: Debug Test (${testId})`,
+    host: desiredHost,
+    port: attachPort,
+    projectRoot: target.projectRoot,
+    [NOVA_TEST_DEBUG_RUN_ID_KEY]: runId,
+  };
+
+  const debugStarted = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
+  if (!debugStarted) {
+    processesByRunId.delete(runId);
+    await spawned.dispose('debug session failed to start');
+    throw new Error('VS Code refused to start the Nova debug session. See Debug Console for details.');
+  }
+
+  // Best-effort: if the debug session fails to materialize, the termination handler won't run.
+  const startedSession = await waitForDebugSession(runId);
+  if (!startedSession) {
+    processesByRunId.delete(runId);
+    await spawned.dispose('debug session did not start');
+    throw new Error('Timed out waiting for the Nova debug session to start.');
+  }
+
+  await waitForExit(child);
 }
 
 async function debugTestsFromTestExplorer(
@@ -411,10 +528,12 @@ function fileExists(filePath: string): boolean {
   return fs.existsSync(filePath);
 }
 
+type OutputSink = { appendOutput: (text: string) => void };
+
 function spawnTestDebugProcess(
   config: TestDebugConfiguration,
   output: vscode.OutputChannel,
-  run: vscode.TestRun,
+  runOutput?: OutputSink,
 ): { child: ChildProcess; ready: Promise<number | undefined> } {
   const mergedEnv: NodeJS.ProcessEnv = { ...process.env, ...config.env };
   const child = spawn(config.command, config.args, {
@@ -425,7 +544,7 @@ function spawnTestDebugProcess(
     windowsHide: true,
   });
 
-  const ready = waitForJdwpListening(child, output, run);
+  const ready = waitForJdwpListening(child, output, runOutput);
 
   return { child, ready };
 }
@@ -455,7 +574,7 @@ function waitForDebugSession(runId: string): Promise<vscode.DebugSession | undef
 async function waitForJdwpListening(
   child: ChildProcess,
   output: vscode.OutputChannel,
-  run: vscode.TestRun,
+  runOutput?: OutputSink,
 ): Promise<number | undefined> {
   const jdwpRegex = /Listening for transport dt_socket at address:\s*(\d+)/i;
   let resolved = false;
@@ -473,7 +592,7 @@ async function waitForJdwpListening(
     const onData = (data: Buffer) => {
       const text = data.toString();
       output.append(text);
-      run.appendOutput(text);
+      runOutput?.appendOutput(text);
       buffer += text;
       if (buffer.length > 2048) {
         buffer = buffer.slice(-2048);

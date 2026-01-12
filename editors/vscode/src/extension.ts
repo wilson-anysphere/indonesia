@@ -15,6 +15,7 @@ import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaProjectExplorer } from './projectExplorer';
 import { registerNovaTestDebugRunProfile } from './testDebug';
+import { registerNovaServerCommands } from './serverCommands';
 import { toDidRenameFilesParams } from './fileOperations';
 import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
@@ -1988,89 +1989,14 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('nova.runTest', async () => {
-      const workspaces = vscode.workspace.workspaceFolders ?? [];
-      if (workspaces.length === 0) {
-        vscode.window.showErrorMessage('Nova: Open a workspace folder to run tests.');
-        return;
-      }
-
-      const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
-      const routedWorkspaceKey = routeWorkspaceFolderUri({
-        workspaceFolders: workspaces.map((workspace) => ({
-          name: workspace.name,
-          fsPath: workspace.uri.fsPath,
-          uri: workspace.uri.toString(),
-        })),
-        activeDocumentUri,
-        method: 'nova/test/run',
-        params: undefined,
-      });
-
-      const workspace =
-        (routedWorkspaceKey ? workspaces.find((w) => w.uri.toString() === routedWorkspaceKey) : undefined) ??
-        (workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder'));
-      if (!workspace) {
-        return;
-      }
-
-      const channel = getTestOutputChannel();
-      channel.show(true);
-
-      try {
-        const discover = await sendNovaRequest<DiscoverResponse | undefined>('nova/test/discover', {
-          projectRoot: workspace.uri.fsPath,
-        });
-        if (!discover) {
-          return;
-        }
-
-        const candidates = flattenTests(discover.tests).filter((t) => t.kind === 'test');
-        if (candidates.length === 0) {
-          vscode.window.showInformationMessage('Nova: No tests discovered.');
-          return;
-        }
-
-        const picked = await vscode.window.showQuickPick(
-          candidates.map((t) => ({ label: t.label, description: t.id, testId: t.id })),
-          { placeHolder: 'Select a test to run' },
-        );
-        if (!picked) {
-          return;
-        }
-
-        const resp = await sendNovaRequest<RunResponse | undefined>('nova/test/run', {
-          projectRoot: workspace.uri.fsPath,
-          buildTool: await getTestBuildTool(workspace),
-          tests: [picked.testId],
-        });
-        if (!resp) {
-          return;
-        }
-
-        channel.appendLine(`\n=== Run ${picked.testId} (${resp.tool}) ===`);
-        channel.appendLine(
-          `Summary: total=${resp.summary.total} passed=${resp.summary.passed} failed=${resp.summary.failed} skipped=${resp.summary.skipped}`,
-        );
-        if (resp.stdout) {
-          channel.appendLine('\n--- stdout ---\n' + resp.stdout);
-        }
-        if (resp.stderr) {
-          channel.appendLine('\n--- stderr ---\n' + resp.stderr);
-        }
-
-        if (resp.success) {
-          vscode.window.showInformationMessage(`Nova: Test passed (${picked.label})`);
-        } else {
-          vscode.window.showErrorMessage(`Nova: Test failed (${picked.label})`);
-        }
-      } catch (err) {
-        const message = formatError(err);
-        vscode.window.showErrorMessage(`Nova: test run failed: ${message}`);
-      }
-    }),
-  );
+  // Register local handlers for server-advertised `workspace/executeCommand` IDs.
+  // This ensures Nova code lenses (Run Test / Debug Test / Run Main / Debug Main) do something
+  // user-visible when invoked in VS Code.
+  registerNovaServerCommands(context, {
+    novaRequest: sendNovaRequest,
+    requireClient,
+    getTestOutputChannel,
+  });
 
   ensureClientStarted = ensureLanguageClientStarted;
   stopClient = stopLanguageClient;
