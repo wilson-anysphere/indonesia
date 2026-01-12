@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use nova_modules::ModuleName;
-use nova_project::load_project;
+use nova_project::{load_project_with_options, LoadOptions};
+use tempfile::tempdir;
 
 fn testdata_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12,7 +13,12 @@ fn testdata_path(rel: &str) -> PathBuf {
 #[test]
 fn parses_module_info_and_builds_workspace_graph() {
     let root = testdata_path("jpms-maven-transitive");
-    let config = load_project(&root).expect("load jpms maven workspace");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load jpms maven workspace");
 
     let app = ModuleName::new("com.example.app");
     let lib = ModuleName::new("com.example.lib");
@@ -72,14 +78,21 @@ fn parses_module_info_and_builds_workspace_graph() {
         "app should not read extra because lib does not re-export readability"
     );
 
-    let config2 = load_project(&root).expect("reload jpms maven workspace");
+    let config2 =
+        load_project_with_options(&root, &options).expect("reload jpms maven workspace");
     assert_eq!(config, config2);
 }
 
 #[test]
 fn module_info_parse_errors_are_best_effort() {
     let root = testdata_path("jpms-invalid");
-    let config = load_project(&root).expect("load workspace with invalid module-info");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config =
+        load_project_with_options(&root, &options).expect("load workspace with invalid module-info");
 
     let invalid = ModuleName::new("com.example.invalid");
     let module = config

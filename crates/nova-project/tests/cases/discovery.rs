@@ -2,9 +2,11 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use nova_project::{
-    load_project, load_workspace_model, BuildSystem, ClasspathEntryKind, JavaVersion,
-    LanguageLevelProvenance, OutputDirKind, SourceRootKind, SourceRootOrigin,
+    load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
+    JavaVersion, LanguageLevelProvenance, LoadOptions, OutputDirKind, SourceRootKind,
+    SourceRootOrigin,
 };
+use tempfile::tempdir;
 
 fn testdata_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -15,7 +17,12 @@ fn testdata_path(rel: &str) -> PathBuf {
 #[test]
 fn loads_maven_multi_module_workspace() {
     let root = testdata_path("maven-multi");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.java.source, JavaVersion(17));
@@ -70,14 +77,20 @@ fn loads_maven_multi_module_workspace() {
     )));
 
     // Ensure config is deterministic.
-    let config2 = load_project(&root).expect("load maven project again");
+    let config2 =
+        load_project_with_options(&root, &options).expect("load maven project again");
     assert_eq!(config, config2);
 }
 
 #[test]
 fn loads_maven_nested_multi_module_workspace() {
     let root = testdata_path("maven-nested");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     let module_roots: BTreeSet<_> = config
         .modules
@@ -111,14 +124,20 @@ fn loads_maven_nested_multi_module_workspace() {
     )));
 
     // Ensure config is deterministic.
-    let config2 = load_project(&root).expect("load maven project again");
+    let config2 =
+        load_project_with_options(&root, &options).expect("load maven project again");
     assert_eq!(config, config2);
 }
 
 #[test]
 fn resolves_maven_nested_properties() {
     let root = testdata_path("maven-nested-properties");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     let dep = config
         .dependencies
@@ -145,7 +164,12 @@ fn resolves_maven_nested_properties() {
 #[test]
 fn resolves_inherited_maven_managed_versions_with_child_property_overrides() {
     let root = testdata_path("maven-nested-properties-override");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     let dep = config
         .dependencies
@@ -172,7 +196,12 @@ fn resolves_inherited_maven_managed_versions_with_child_property_overrides() {
 #[test]
 fn resolves_maven_java_version_placeholders() {
     let root = testdata_path("maven-java-placeholder");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.java.source, JavaVersion(11));
@@ -182,7 +211,12 @@ fn resolves_maven_java_version_placeholders() {
 #[test]
 fn loads_maven_profile_modules_active_by_default() {
     let root = testdata_path("maven-profile-modules");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     let module_roots: BTreeSet<_> = config
         .modules
@@ -215,7 +249,12 @@ fn loads_maven_profile_modules_active_by_default() {
 #[test]
 fn loads_gradle_multi_module_workspace() {
     let root = testdata_path("gradle-multi");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
     assert_eq!(config.java.source, JavaVersion(17));
@@ -247,14 +286,20 @@ fn loads_gradle_multi_module_workspace() {
         Some("33.0.0-jre".to_string())
     )));
 
-    let config2 = load_project(&root).expect("load gradle project again");
+    let config2 =
+        load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 
 #[test]
 fn loads_gradle_projectdir_mapping_workspace() {
     let root = testdata_path("gradle-projectdir-mapping");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
@@ -284,7 +329,12 @@ fn loads_gradle_projectdir_mapping_workspace() {
 #[test]
 fn loads_gradle_custom_source_sets_workspace() {
     let root = testdata_path("gradle-custom-sourcesets");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
@@ -309,14 +359,20 @@ fn loads_gradle_custom_source_sets_workspace() {
         PathBuf::from("app/src/integrationTest/java")
     )));
 
-    let config2 = load_project(&root).expect("load gradle project again");
+    let config2 =
+        load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 
 #[test]
 fn loads_gradle_toolchain_language_version() {
     let root = testdata_path("gradle-toolchain-only");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
     assert_eq!(config.java.source, JavaVersion(21));
@@ -326,7 +382,12 @@ fn loads_gradle_toolchain_language_version() {
 #[test]
 fn gradle_source_compatibility_overrides_toolchain_language_version() {
     let root = testdata_path("gradle-toolchain-with-compat");
-    let config = load_project(&root).expect("load gradle project");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
     assert_eq!(config.java.source, JavaVersion(17));
@@ -336,7 +397,13 @@ fn gradle_source_compatibility_overrides_toolchain_language_version() {
 #[test]
 fn loads_maven_multi_module_workspace_model() {
     let root = testdata_path("maven-multi");
-    let model = load_workspace_model(&root).expect("load maven workspace model");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load maven workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Maven);
 
@@ -457,7 +524,8 @@ fn loads_maven_multi_module_workspace_model() {
     }));
 
     // Ensure model is deterministic.
-    let model2 = load_workspace_model(&root).expect("load maven workspace model again");
+    let model2 =
+        load_workspace_model_with_options(&root, &options).expect("load maven workspace model again");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
@@ -465,7 +533,13 @@ fn loads_maven_multi_module_workspace_model() {
 #[test]
 fn loads_gradle_multi_module_workspace_model() {
     let root = testdata_path("gradle-multi");
-    let model = load_workspace_model(&root).expect("load gradle workspace model");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
@@ -516,7 +590,13 @@ fn loads_gradle_multi_module_workspace_model() {
 #[test]
 fn loads_gradle_projectdir_mapping_workspace_model() {
     let root = testdata_path("gradle-projectdir-mapping");
-    let model = load_workspace_model(&root).expect("load gradle workspace model");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(&root, &options)
+        .expect("load gradle workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
@@ -560,7 +640,13 @@ fn loads_gradle_projectdir_mapping_workspace_model() {
 #[test]
 fn loads_gradle_custom_source_sets_workspace_model() {
     let root = testdata_path("gradle-custom-sourcesets");
-    let model = load_workspace_model(&root).expect("load gradle workspace model");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(&root, &options)
+        .expect("load gradle workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
@@ -599,14 +685,20 @@ fn loads_gradle_custom_source_sets_workspace_model() {
 #[test]
 fn loads_maven_compiler_plugin_language_level() {
     let root = testdata_path("maven-compiler-plugin-java");
-    let config = load_project(&root).expect("load maven project");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
 
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.java.source, JavaVersion(21));
     assert_eq!(config.java.target, JavaVersion(21));
     assert!(config.java.enable_preview);
 
-    let model = load_workspace_model(&root).expect("load maven workspace model");
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load maven workspace model");
     let module = model
         .module_by_id("maven:com.example:maven-compiler-plugin-java")
         .expect("root module");

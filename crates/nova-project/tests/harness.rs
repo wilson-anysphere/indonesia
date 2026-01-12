@@ -7,17 +7,56 @@
 #[path = "cases/bazel_model.rs"]
 mod bazel_model;
 
+#[path = "cases/bazel_bsp_feature.rs"]
+mod bazel_bsp_feature;
+
+#[path = "cases/bazel_heuristic.rs"]
+mod bazel_heuristic;
+
+#[path = "cases/bazel_ignore.rs"]
+mod bazel_ignore;
+
+#[path = "cases/bazel_reload.rs"]
+mod bazel_reload;
+
 #[path = "cases/discovery.rs"]
 mod discovery;
+
+#[path = "cases/gradle_cache.rs"]
+mod gradle_cache;
+
+#[path = "cases/gradle_reload_build_files.rs"]
+mod gradle_reload_build_files;
 
 #[path = "cases/jpms.rs"]
 mod jpms;
 
+#[path = "cases/maven_jpms_workspace_model.rs"]
+mod maven_jpms_workspace_model;
+
+#[path = "cases/maven_repo_config.rs"]
+mod maven_repo_config;
+
+#[path = "cases/maven_resolution.rs"]
+mod maven_resolution;
+
+#[path = "cases/maven_settings_repo.rs"]
+mod maven_settings_repo;
+
+#[path = "cases/maven_snapshot.rs"]
+mod maven_snapshot;
+
 #[path = "cases/real_projects.rs"]
 mod real_projects;
 
+#[path = "cases/reload_project.rs"]
+mod reload_project;
+
 #[path = "cases/workspace_config.rs"]
 mod workspace_config;
+
+#[path = "cases/workspace_model_module_path.rs"]
+mod workspace_model_module_path;
 
 #[path = "cases/workspace_root.rs"]
 mod workspace_root;
