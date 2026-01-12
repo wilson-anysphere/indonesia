@@ -169,6 +169,26 @@ disk” and avoid depending on unsaved buffers surviving worker crashes/restarts
 
 For worker CLI flags and examples, see [`crates/nova-worker/README.md`](../crates/nova-worker/README.md).
 
+### Enabling distributed mode in `nova-lsp` (editor / stdio server)
+
+The shipped `nova-lsp` stdio server can run the local router + spawn `nova-worker` processes when
+started with:
+
+```bash
+nova-lsp --distributed
+```
+
+You can override the worker binary path via:
+
+```bash
+nova-lsp --distributed --distributed-worker-command /path/to/nova-worker
+```
+
+When enabled, `nova-lsp` starts the router after the LSP `initialize` handshake and forwards
+best-effort file updates to the router for indexing/search. See
+`ServerState::start_distributed_after_initialize` and `parse_distributed_cli` in
+`crates/nova-lsp/src/main.rs` for the current entrypoints.
+
 ### Local multi-process mode (recommended)
 
 In local mode, the router listens on a local IPC transport and spawns `nova-worker` processes on

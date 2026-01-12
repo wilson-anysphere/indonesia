@@ -21,5 +21,5 @@ fn integration_tests_are_consolidated_into_this_harness() {
     }
 
     root_rs_files.sort();
-    assert_eq!(root_rs_files, vec!["integration.rs"]);
+    assert_eq!(root_rs_files, vec!["harness.rs"]);
 }
