@@ -534,6 +534,8 @@ include that file’s contents in a prompt, including:
 
 - multi-token completions
 - AI code actions that produce patches / file edits
+- semantic search indexing (excluded files are omitted from the semantic index and therefore cannot
+  be surfaced as related-code context)
 
 Explain-only actions may still be available, but they will omit code context from excluded files.
 
