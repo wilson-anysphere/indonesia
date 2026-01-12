@@ -5267,11 +5267,11 @@ fn record_lightweight_expr(
                 );
             }
         }
-        Expr::ArrayCreation(array) => {
+        Expr::ArrayCreation(array_expr) => {
             record_type_names_in_range(
                 file,
                 text,
-                TextRange::new(array.elem_ty.range.start, array.elem_ty.range.end),
+                TextRange::new(array_expr.elem_ty.range.start, array_expr.elem_ty.range.end),
                 type_scopes,
                 scope_result,
                 resolver,
@@ -5279,7 +5279,7 @@ fn record_lightweight_expr(
                 references,
                 spans,
             );
-            for dim in &array.dim_exprs {
+            for dim in &array_expr.dim_exprs {
                 record_lightweight_expr(
                     file,
                     text,
@@ -5607,7 +5607,6 @@ fn record_lightweight_expr(
         | Expr::Missing(_) => {}
     }
 }
-
 fn record_type_names_in_range(
     file: &FileId,
     text: &str,

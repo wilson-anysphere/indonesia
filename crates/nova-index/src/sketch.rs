@@ -659,6 +659,14 @@ impl Index {
         self.find_method(class_name, method_name).map(|sym| sym.id)
     }
 
+    /// Return all method symbol ids matching `class_name.method_name`.
+    ///
+    /// This is the overload-aware replacement for [`Index::method_symbol_id`].
+    #[must_use]
+    pub fn method_symbol_ids(&self, class_name: &str, method_name: &str) -> Vec<SymbolId> {
+        self.method_overloads(class_name, method_name)
+    }
+
     /// Return all method overloads matching `class_name.method_name`.
     #[must_use]
     pub fn method_overloads(&self, class_name: &str, method_name: &str) -> Vec<SymbolId> {
@@ -709,6 +717,32 @@ impl Index {
                     .zip(param_types)
                     .all(|(a, b)| eq_ignore_ascii_ws(a, b))
             })
+    }
+
+    /// Return the unique method overload matching `class_name.method_name(param_types...)`.
+    ///
+    /// This differs from [`Index::method_overload_by_param_types`] by normalizing the provided
+    /// `param_types` in the same way the sketch parser normalizes stored signatures. This makes
+    /// lookups resilient to formatting differences such as spaces after commas in generic type
+    /// arguments.
+    pub fn method_symbol_id_by_signature(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        param_types: &[String],
+    ) -> Option<SymbolId> {
+        let normalized: Vec<String> = param_types
+            .iter()
+            .map(|s| normalize_type_signature(s))
+            .collect();
+        self.method_overload_by_param_types(class_name, method_name, &normalized)
+    }
+
+    /// Best-effort method signature for a method symbol.
+    ///
+    /// Currently this returns the method's parameter type strings.
+    pub fn method_signature(&self, id: SymbolId) -> Option<&[String]> {
+        self.method_param_types(id)
     }
 
     /// Best-effort parameter type strings for a method symbol.
@@ -1946,21 +1980,59 @@ fn strip_param_prefix_modifiers(ty: &str) -> String {
     s.to_string()
 }
 
-fn normalize_ws(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+pub fn normalize_type_signature(text: &str) -> String {
+    // Step 1: collapse whitespace to single spaces.
+    let mut collapsed = String::with_capacity(text.len());
     let mut prev_ws = false;
     for ch in text.chars() {
         if ch.is_whitespace() {
             if !prev_ws {
-                out.push(' ');
+                collapsed.push(' ');
                 prev_ws = true;
             }
         } else {
             prev_ws = false;
-            out.push(ch);
+            collapsed.push(ch);
         }
     }
+    let collapsed = collapsed.trim();
+
+    // Step 2: remove spaces around punctuation that commonly appears in type signatures so that
+    // formatting differences (e.g. `Map<String, Integer>` vs `Map<String,Integer>`) don't break
+    // overload + override matching.
+    //
+    // We intentionally do *not* attempt to fully parse Java types here; this is a best-effort
+    // lexical normalization.
+    fn no_space_around(ch: char) -> bool {
+        matches!(ch, '<' | '>' | ',' | '[' | ']' | '.' )
+    }
+
+    let mut out = String::with_capacity(collapsed.len());
+    let mut chars = collapsed.chars().peekable();
+    let mut prev: Option<char> = None;
+    while let Some(ch) = chars.next() {
+        if ch == ' ' {
+            let Some(prev_ch) = prev else {
+                continue;
+            };
+            let next = chars.peek().copied();
+            if no_space_around(prev_ch) || next.map_or(false, no_space_around) {
+                continue;
+            }
+            // Only emit a single space when it isn't adjacent to punctuation we normalize.
+            out.push(' ');
+            prev = Some(' ');
+            continue;
+        }
+        out.push(ch);
+        prev = Some(ch);
+    }
+
     out.trim().to_string()
+}
+
+fn normalize_ws(text: &str) -> String {
+    normalize_type_signature(text)
 }
 
 fn split_top_level(text: &str, sep: u8) -> Vec<String> {

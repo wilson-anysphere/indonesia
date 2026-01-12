@@ -30,13 +30,13 @@ fn overloaded_methods_indexed_with_signatures_and_lookup_works() {
     assert_eq!(index.method_param_types(id_int).unwrap(), ["int"]);
     assert_eq!(index.method_param_names(id_int).unwrap(), ["x".to_string()]);
 
-    let sig_map = vec!["Map<String, Integer>".to_string()];
+    let sig_map = vec!["Map<String,Integer>".to_string()];
     let id_map = index
         .method_overload_by_param_types("A", "foo", &sig_map)
         .expect("foo(Map<String, Integer>) should be indexed");
     assert_eq!(
         index.method_param_types(id_map).unwrap(),
-        ["Map<String, Integer>"]
+        ["Map<String,Integer>"]
     );
     assert_eq!(index.method_param_names(id_map).unwrap(), ["m".to_string()]);
 
@@ -70,13 +70,13 @@ fn method_param_splitting_handles_generic_commas_and_string_literals() {
     );
     let index = Index::new(files);
 
-    let sig = vec!["String".to_string(), "Map<String, Integer>".to_string()];
+    let sig = vec!["String".to_string(), "Map<String,Integer>".to_string()];
     let id = index
         .method_overload_by_param_types("A", "bar", &sig)
         .expect("bar(String, Map<String, Integer>) should be indexed");
     assert_eq!(
         index.method_param_types(id).unwrap(),
-        ["String", "Map<String, Integer>"]
+        ["String", "Map<String,Integer>"]
     );
     assert_eq!(
         index.method_param_names(id).unwrap(),
@@ -127,7 +127,7 @@ fn overload_lookup_ignores_whitespace_in_param_types() {
         .expect("expected foo(Map<String,Integer>) to match foo(Map<String, Integer>)");
     assert_eq!(
         index.method_param_types(id).unwrap(),
-        ["Map<String, Integer>"]
+        ["Map<String,Integer>"]
     );
 }
 

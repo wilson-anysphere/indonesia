@@ -3966,13 +3966,14 @@ fn find_local_variable_declaration(
     root: &nova_syntax::SyntaxNode,
     name_range: TextRange,
 ) -> Option<LocalVarDeclInfo> {
-    for stmt in root
-        .descendants()
-        .filter_map(ast::LocalVariableDeclarationStatement::cast)
-    {
-        let Some(list) = stmt.declarator_list() else {
-            continue;
-        };
+    fn info_for_statement(
+        db: &dyn RefactorDatabase,
+        file: &FileId,
+        symbol: SymbolId,
+        stmt: ast::LocalVariableDeclarationStatement,
+        name_range: TextRange,
+    ) -> Option<LocalVarDeclInfo> {
+        let list = stmt.declarator_list()?;
         let declarators: Vec<_> = list.declarators().collect();
 
         let mut target_idx = declarators.iter().position(|decl| {
@@ -4006,10 +4007,7 @@ fn find_local_variable_declaration(
             });
         }
 
-        let Some(target_idx) = target_idx else {
-            continue;
-        };
-
+        let target_idx = target_idx?;
         let decl = declarators.get(target_idx)?.clone();
         let initializer = decl.initializer()?;
         let statement_range = syntax_range(stmt.syntax());
@@ -4042,15 +4040,46 @@ fn find_local_variable_declaration(
             .filter_map(|(_, decl)| decl.initializer())
             .any(|expr| has_side_effects(expr.syntax()));
 
-        return Some(LocalVarDeclInfo {
+        Some(LocalVarDeclInfo {
             statement: stmt,
             statement_range,
             declarator_delete_range,
             other_initializers_have_side_effects,
             initializer,
-        });
+        })
     }
-    None
+
+    // Fast path: scan all local variable declaration statements and match on the declarator token
+    // range. (Avoid using `?` inside the loop: some malformed/incomplete statements can omit
+    // subtrees, and we still want to keep searching.)
+    for stmt in root
+        .descendants()
+        .filter_map(ast::LocalVariableDeclarationStatement::cast)
+    {
+        if let Some(info) = info_for_statement(db, file, symbol, stmt, name_range) {
+            return Some(info);
+        }
+    }
+
+    // Fallback: locate the identifier token by range and walk up. This is more robust in the
+    // presence of parser quirks where the statement cast exists but the declarator list is missing
+    // or trivia shifts statement boundaries.
+    let tok = root
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| {
+            tok.kind() == SyntaxKind::Identifier
+                && {
+                    let range = syntax_token_range(tok);
+                    range.start <= name_range.start && name_range.end <= range.end
+                }
+        })?;
+
+    let stmt = tok
+        .parent()
+        .and_then(|node| node.ancestors().find_map(ast::LocalVariableDeclarationStatement::cast))?;
+
+    info_for_statement(db, file, symbol, stmt, name_range)
 }
 
 fn syntax_token_range(tok: &nova_syntax::SyntaxToken) -> TextRange {

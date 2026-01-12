@@ -4,7 +4,7 @@ use crate::edit::{
     EditError, FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange,
     WorkspaceEdit,
 };
-use nova_index::{Index, ReferenceKind, SymbolId, SymbolKind, TextRange};
+use nova_index::{normalize_type_signature, Index, ReferenceKind, SymbolId, SymbolKind, TextRange};
 use nova_syntax::ast::{self, AstNode};
 use nova_syntax::parse_java;
 use nova_types::MethodId;
@@ -257,10 +257,17 @@ fn collect_affected_methods(
     out.push(target.clone());
 
     let target_param_types: Vec<String> = index
-        .method_param_types(SymbolId(target.method_id.0))
-        .map(|tys| tys.to_vec())
-        .unwrap_or_else(|| target.params.iter().map(|p| p.ty.clone()).collect());
+        .method_signature(SymbolId(target.method_id.0))
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| {
+            target
+                .params
+                .iter()
+                .map(|p| normalize_type_signature(&p.ty))
+                .collect()
+        });
     let target_is_interface = index.is_interface(target_class);
+    let target_id = SymbolId(target.method_id.0);
 
     if propagation.include_overridden() {
         if target_is_interface {
@@ -274,16 +281,16 @@ fn collect_affected_methods(
                 ));
             }
         } else {
-            // Class -> superclasses.
-            let mut cur = index.class_extends(target_class);
-            while let Some(super_name) = cur {
-                out.extend(find_methods_by_signature(
-                    index,
-                    super_name,
-                    &target.name,
-                    &target_param_types,
-                ));
-                cur = index.class_extends(super_name);
+            // Class -> superclasses via override chain.
+            let mut cur = target_id;
+            while let Some(next) = index.find_overridden(cur) {
+                let Some(sym) = index.find_symbol(next) else {
+                    break;
+                };
+                if let Ok(parsed) = parse_method(index, sym, MethodId(next.0)) {
+                    out.push(parsed);
+                }
+                cur = next;
             }
 
             // Also include interface methods that the class implements (directly or via its
@@ -356,46 +363,27 @@ fn collect_affected_methods(
                     Ok(m) => m,
                     Err(_) => continue,
                 };
-                let parsed_types: Vec<String> =
-                    parsed.params.iter().map(|p| p.ty.clone()).collect();
+                let parsed_types: Vec<String> = index
+                    .method_signature(SymbolId(parsed.method_id.0))
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_else(|| {
+                        parsed
+                            .params
+                            .iter()
+                            .map(|p| normalize_type_signature(&p.ty))
+                            .collect()
+                    });
                 if parsed_types == target_param_types {
                     out.push(parsed);
                 }
             }
         } else {
             // Class -> subclasses overriding the method.
-            for sym in index.symbols() {
-                if sym.kind != SymbolKind::Method || sym.name != target.name {
-                    continue;
-                }
-                let Some(class_name) = sym.container.as_deref() else {
+            for id in index.find_overrides(target_id) {
+                let Some(sym) = index.find_symbol(id) else {
                     continue;
                 };
-                if class_name == target_class {
-                    continue;
-                }
-                if !is_subclass_of(index, class_name, target_class) {
-                    continue;
-                }
-
-                let id = MethodId(sym.id.0);
-                if let Some(sig_types) = index.method_param_types(sym.id) {
-                    if sig_types != target_param_types.as_slice() {
-                        continue;
-                    }
-                    if let Ok(parsed) = parse_method(index, sym, id) {
-                        out.push(parsed);
-                    }
-                    continue;
-                }
-
-                let parsed = match parse_method(index, sym, id) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                let parsed_types: Vec<String> =
-                    parsed.params.iter().map(|p| p.ty.clone()).collect();
-                if parsed_types == target_param_types {
+                if let Ok(parsed) = parse_method(index, sym, MethodId(id.0)) {
                     out.push(parsed);
                 }
             }
@@ -409,19 +397,6 @@ fn collect_affected_methods(
     });
     out.dedup_by(|a, b| a.method_id == b.method_id);
     out
-}
-
-fn is_subclass_of<'a>(index: &'a Index, mut sub: &'a str, sup: &'a str) -> bool {
-    if sub == sup {
-        return true;
-    }
-    while let Some(next) = index.class_extends(sub) {
-        if next == sup {
-            return true;
-        }
-        sub = next;
-    }
-    false
 }
 
 fn is_subinterface_of(index: &Index, sub: &str, sup: &str) -> bool {
@@ -509,34 +484,46 @@ fn find_methods_by_signature(
     param_types: &[String],
 ) -> Vec<ParsedMethod> {
     let mut out = Vec::new();
-    for sym_id in index.method_overloads(class, name) {
+
+    if let Some(sym_id) = index.method_symbol_id_by_signature(class, name, param_types) {
+        let Some(sym) = index.find_symbol(sym_id) else {
+            return out;
+        };
+        let id = MethodId(sym_id.0);
+        if let Ok(parsed) = parse_method(index, sym, id) {
+            out.push(parsed);
+        }
+        return out;
+    }
+
+    // Best-effort fallback: scan overloads in the class and compare parsed types. This keeps
+    // behavior similar to the previous symbol-scan implementation when the sketch signature
+    // extraction is incomplete.
+    let expected: Vec<String> = param_types
+        .iter()
+        .map(|t| normalize_type_signature(t))
+        .collect();
+    for sym_id in index.method_symbol_ids(class, name) {
         let Some(sym) = index.find_symbol(sym_id) else {
             continue;
         };
         let id = MethodId(sym_id.0);
-
-        if let Some(sig_types) = index.method_param_types(sym_id) {
-            if sig_types != param_types {
-                continue;
-            }
-            if let Ok(parsed) = parse_method(index, sym, id) {
-                out.push(parsed);
-            }
+        let Ok(parsed) = parse_method(index, sym, id) else {
             continue;
-        }
-
-        let parsed = match parse_method(index, sym, id) {
-            Ok(m) => m,
-            Err(_) => continue,
         };
-        let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
-        if parsed_types == param_types {
+        let parsed_types: Vec<String> = parsed
+            .params
+            .iter()
+            .map(|p| normalize_type_signature(&p.ty))
+            .collect();
+        if parsed_types == expected {
             out.push(parsed);
+            break;
         }
     }
+
     out
 }
-
 fn compute_new_params(
     old: &[ParamDecl],
     ops: &[ParameterOperation],
@@ -585,9 +572,15 @@ fn compute_new_params(
 
 fn method_param_types_for_signature(index: &Index, method: &ParsedMethod) -> Vec<String> {
     index
-        .method_param_types(SymbolId(method.method_id.0))
-        .map(|tys| tys.to_vec())
-        .unwrap_or_else(|| method.params.iter().map(|p| p.ty.clone()).collect())
+        .method_signature(SymbolId(method.method_id.0))
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| {
+            method
+                .params
+                .iter()
+                .map(|p| normalize_type_signature(&p.ty))
+                .collect()
+        })
 }
 
 fn compute_new_param_types_for_signature(
@@ -602,13 +595,13 @@ fn compute_new_param_types_for_signature(
                 new_type,
                 ..
             } => {
-                if let Some(new_ty) = new_type {
-                    out.push(normalize_ws(new_ty));
-                } else if *old_index < old_param_types.len() {
-                    out.push(old_param_types[*old_index].clone());
-                }
+                let ty = match new_type {
+                    Some(ty) => normalize_type_signature(ty),
+                    None => old_param_types.get(*old_index).cloned().unwrap_or_default(),
+                };
+                out.push(ty);
             }
-            ParameterOperation::Add { ty, .. } => out.push(normalize_ws(ty)),
+            ParameterOperation::Add { ty, .. } => out.push(normalize_type_signature(ty)),
         }
     }
     out
@@ -695,37 +688,21 @@ fn detect_overload_collisions(
     let old_param_types = method_param_types_for_signature(index, method);
     let new_param_types =
         compute_new_param_types_for_signature(&old_param_types, &change.parameters);
-
-    for sym_id in index.method_overloads(method.class.as_str(), &new_name) {
-        let other_id = MethodId(sym_id.0);
-        if affected.contains(&other_id) {
-            continue;
-        }
-        let Some(sym) = index.find_symbol(sym_id) else {
-            continue;
-        };
-
-        if let Some(other_types) = index.method_param_types(sym_id) {
-            if other_types == new_param_types.as_slice() {
-                conflicts.push(ChangeSignatureConflict::OverloadCollision {
-                    method: method.method_id,
-                    collides_with: other_id,
-                });
-            }
-            continue;
-        }
-
-        let Ok(other) = parse_method(index, sym, other_id) else {
-            continue;
-        };
-        let other_types: Vec<String> = other.params.iter().map(|p| p.ty.clone()).collect();
-        if other_types == new_param_types {
-            conflicts.push(ChangeSignatureConflict::OverloadCollision {
-                method: method.method_id,
-                collides_with: other_id,
-            });
-        }
+    let Some(collides_with) = index.method_symbol_id_by_signature(
+        &method.class,
+        &new_name,
+        &new_param_types,
+    ) else {
+        return;
+    };
+    let collides_with = MethodId(collides_with.0);
+    if collides_with == method.method_id || affected.contains(&collides_with) {
+        return;
     }
+    conflicts.push(ChangeSignatureConflict::OverloadCollision {
+        method: method.method_id,
+        collides_with,
+    });
 }
 
 fn collect_call_site_updates(
@@ -804,7 +781,10 @@ fn collect_call_site_updates(
 
         // Best-effort overload disambiguation: if we can infer an argument's type and it
         // doesn't match the target signature, treat it as a call to a different overload.
-        let inferred_arg_types = infer_call_arg_types(text, call_range.start, &args);
+        let inferred_arg_types = infer_call_arg_types(text, call_range.start, &args)
+            .into_iter()
+            .map(|ty| ty.map(|t| normalize_type_signature(&t)))
+            .collect::<Vec<_>>();
         if inferred_arg_types.len() == old_param_types.len()
             && inferred_arg_types
                 .iter()
@@ -839,6 +819,7 @@ fn collect_call_site_updates(
             index,
             &receiver_class,
             affected_ids,
+            old_name,
             &new_name,
             &new_expected_types,
             &new_param_types,
@@ -1065,6 +1046,7 @@ fn overload_candidates_after_change(
     index: &Index,
     receiver_class: &str,
     affected: &HashSet<MethodId>,
+    old_name: &str,
     new_name: &str,
     expected_param_types: &[Option<String>],
     new_param_types: &[String],
@@ -1074,36 +1056,36 @@ fn overload_candidates_after_change(
 
     let mut cur = Some(receiver_class);
     while let Some(class) = cur {
-        for sym in index.symbols() {
-            if sym.kind != SymbolKind::Method {
-                continue;
-            }
-            if sym.container.as_deref() != Some(class) {
-                continue;
-            }
-
-            let id = MethodId(sym.id.0);
-            let (name, param_types) = if affected.contains(&id) {
-                (new_name, new_param_types.to_vec())
+        // Methods already named `new_name`.
+        for sym_id in index.method_symbol_ids(class, new_name) {
+            let id = MethodId(sym_id.0);
+            let param_types = if affected.contains(&id) {
+                new_param_types.to_vec()
             } else {
-                if sym.name != new_name {
+                index
+                    .method_signature(sym_id)
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default()
+            };
+            if param_types.len() == expected_param_count
+                && param_types_match_expected(&param_types, expected_param_types)
+            {
+                by_sig.entry(param_types).or_insert(id);
+            }
+        }
+
+        // If we're renaming, include methods currently named `old_name` that will become
+        // `new_name` (i.e. affected methods).
+        if old_name != new_name {
+            for sym_id in index.method_symbol_ids(class, old_name) {
+                let id = MethodId(sym_id.0);
+                if !affected.contains(&id) {
                     continue;
                 }
-                let param_types: Vec<String> =
-                    if let Some(sig_types) = index.method_param_types(sym.id) {
-                        sig_types.to_vec()
-                    } else {
-                        let parsed = match parse_method(index, sym, id) {
-                            Ok(m) => m,
-                            Err(_) => continue,
-                        };
-                        parsed.params.iter().map(|p| p.ty.clone()).collect()
-                    };
-                (sym.name.as_str(), param_types)
-            };
-
-            if name == new_name && param_types.len() == expected_param_count {
-                if param_types_match_expected(&param_types, expected_param_types) {
+                let param_types = new_param_types.to_vec();
+                if param_types.len() == expected_param_count
+                    && param_types_match_expected(&param_types, expected_param_types)
+                {
                     by_sig.entry(param_types).or_insert(id);
                 }
             }
@@ -1223,7 +1205,7 @@ fn rewrite_types_for_call(
             ParameterOperation::Existing { old_index, .. } => {
                 out.push(old_types.get(*old_index).cloned().unwrap_or(None));
             }
-            ParameterOperation::Add { ty, .. } => out.push(Some(ty.clone())),
+            ParameterOperation::Add { ty, .. } => out.push(Some(normalize_type_signature(ty))),
         }
     }
     out
@@ -1547,26 +1529,30 @@ fn resolve_method_in_hierarchy(
     // class table.
     let mut class = receiver_class.to_string();
     loop {
-        for sym_id in index.method_overloads(class.as_str(), name) {
+        if let Some(id) = index.method_symbol_id_by_signature(&class, name, param_types) {
+            return Some(MethodId(id.0));
+        }
+
+        // Best-effort fallback when signature lookup fails: parse overload declarations in this
+        // class and compare their parameter types.
+        let expected: Vec<String> = param_types
+            .iter()
+            .map(|t| normalize_type_signature(t))
+            .collect();
+        for sym_id in index.method_symbol_ids(&class, name) {
             let Some(sym) = index.find_symbol(sym_id) else {
                 continue;
             };
             let id = MethodId(sym_id.0);
-
-            if let Some(sig_types) = index.method_param_types(sym_id) {
-                if sig_types == param_types {
-                    return Some(id);
-                }
-                // Best-effort: fall back to parsing the declaration when the index signature
-                // doesn't match. The index signature is derived from a lightweight parser and may
-                // normalize whitespace or split generic type arguments differently.
-            }
-
             let Ok(parsed) = parse_method(index, sym, id) else {
                 continue;
             };
-            let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
-            if parsed_types == param_types {
+            let parsed_types: Vec<String> = parsed
+                .params
+                .iter()
+                .map(|p| normalize_type_signature(&p.ty))
+                .collect();
+            if parsed_types == expected {
                 return Some(id);
             }
         }
@@ -1597,29 +1583,34 @@ fn resolve_method_in_interfaces(
     name: &str,
     param_types: &[String],
 ) -> Option<MethodId> {
+    let expected: Vec<String> = param_types
+        .iter()
+        .map(|t| normalize_type_signature(t))
+        .collect();
     let mut matches: HashSet<MethodId> = HashSet::new();
 
     for iface in interfaces {
         let iface = iface.as_ref();
-        for sym_id in index.method_overloads(iface, name) {
+        if let Some(sym_id) = index.method_symbol_id_by_signature(iface, name, &expected) {
+            matches.insert(MethodId(sym_id.0));
+            continue;
+        }
+
+        // Best-effort fallback: parse overload declarations in this interface and compare types.
+        for sym_id in index.method_symbol_ids(iface, name) {
             let Some(sym) = index.find_symbol(sym_id) else {
                 continue;
             };
             let id = MethodId(sym_id.0);
-
-            if let Some(sig_types) = index.method_param_types(sym_id) {
-                if sig_types == param_types {
-                    matches.insert(id);
-                    continue;
-                }
-                // Best-effort: fall back to parsing in case the signature normalization differs.
-            }
-
             let Ok(parsed) = parse_method(index, sym, id) else {
                 continue;
             };
-            let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
-            if parsed_types == param_types {
+            let parsed_types: Vec<String> = parsed
+                .params
+                .iter()
+                .map(|p| normalize_type_signature(&p.ty))
+                .collect();
+            if parsed_types == expected {
                 matches.insert(id);
             }
         }

@@ -24,167 +24,12 @@ fn build_index(files: Vec<(&str, &str)>) -> (Index, BTreeMap<String, String>) {
     (Index::new(map.clone()), map)
 }
 
-fn normalize_ascii_ws(s: &str) -> String {
-    s.chars().filter(|c| !c.is_ascii_whitespace()).collect()
-}
-
-fn param_types_equal(a: &[String], b: &[String]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter()
-        .zip(b)
-        .all(|(a, b)| normalize_ascii_ws(a) == normalize_ascii_ws(b))
-}
-
 fn method_id(index: &Index, class: &str, name: &str, param_types: &[&str]) -> MethodId {
     let wanted: Vec<String> = param_types.iter().map(|s| s.to_string()).collect();
-
-    // Fast path: use the index's stored param type vectors (whitespace-insensitive).
-    if let Some(sym_id) = index.method_overload_by_param_types(class, name, &wanted) {
-        return MethodId(sym_id.0);
-    }
-
-    // Best-effort fallback for methods where signature extraction failed.
-    for sym_id in index.method_overloads(class, name) {
-        let Some(sym) = index.find_symbol(sym_id) else {
-            continue;
-        };
-
-        if let Some(sig_types) = index.method_param_types(sym_id) {
-            if param_types_equal(sig_types, &wanted) {
-                return MethodId(sym_id.0);
-            }
-            continue;
-        }
-
-        let parsed = parse_param_types(index, sym);
-        if param_types_equal(&parsed, &wanted) {
-            return MethodId(sym_id.0);
-        }
-    }
-    panic!("method not found: {class}.{name}({wanted:?})");
-}
-
-fn parse_param_types(index: &Index, sym: &nova_index::Symbol) -> Vec<String> {
-    let text = index.file_text(&sym.file).expect("file text");
-    let bytes = text.as_bytes();
-    let mut open = sym.name_range.end;
-    while open < bytes.len() && bytes[open].is_ascii_whitespace() {
-        open += 1;
-    }
-    assert_eq!(
-        bytes.get(open),
-        Some(&b'('),
-        "expected `(` after method name"
-    );
-    let close = find_matching_paren(text, open).expect("matching paren");
-    let params_src = &text[open + 1..close - 1];
-    parse_params(params_src)
-}
-
-fn parse_params(params: &str) -> Vec<String> {
-    let params = params.trim();
-    if params.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for part in split_top_level(params, ',') {
-        let p = part.trim();
-        if p.is_empty() {
-            continue;
-        }
-        let tokens: Vec<&str> = p.split_whitespace().collect();
-        if tokens.len() < 2 {
-            continue;
-        }
-        let ty = tokens[..tokens.len() - 1].join(" ");
-        out.push(ty);
-    }
-    out
-}
-
-fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open_paren;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => depth += 1,
-            b')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            b'"' => {
-                // Skip strings
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-fn split_top_level(text: &str, sep: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth_paren = 0i32;
-    let mut depth_brack = 0i32;
-    let mut depth_brace = 0i32;
-    let mut depth_angle = 0i32;
-    let mut start = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '[' => depth_brack += 1,
-            ']' => depth_brack -= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -= 1,
-            '<' => depth_angle += 1,
-            '>' => depth_angle -= 1,
-            _ => {}
-        }
-
-        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && depth_angle == 0
-        {
-            out.push(text[start..i].to_string());
-            start = i + 1;
-        }
-        i += 1;
-    }
-    out.push(text[start..].to_string());
-    out
+    let id = index
+        .method_symbol_id_by_signature(class, name, &wanted)
+        .unwrap_or_else(|| panic!("method not found: {class}.{name}({wanted:?})"));
+    MethodId(id.0)
 }
 
 #[test]
@@ -395,9 +240,13 @@ class A {
     // (i.e. it does not split on commas inside `<...>`).
     let wanted = vec!["Map<String, Integer>".to_string()];
     let sym_id = index
-        .method_overload_by_param_types("A", "foo", &wanted)
+        .method_symbol_id_by_signature("A", "foo", &wanted)
         .expect("index param type extraction should keep `Map<String, Integer>` intact");
-    assert_eq!(index.method_param_types(sym_id).unwrap(), wanted.as_slice());
+    let normalized = vec![nova_index::normalize_type_signature(&wanted[0])];
+    assert_eq!(
+        index.method_param_types(sym_id).unwrap(),
+        normalized.as_slice()
+    );
 
     let target = MethodId(sym_id.0);
     let change = ChangeSignature {
@@ -634,4 +483,21 @@ fn unicode_identifiers_round_trip_to_utf16_lsp_positions() {
     assert_eq!(call_edit.range.start.character, 17);
     assert_eq!(call_edit.range.end.line, 6);
     assert_eq!(call_edit.range.end.character, 26);
+}
+
+#[test]
+fn signature_lookup_handles_generic_commas_inside_type_arguments() {
+    let (index, _files) = build_index(vec![(
+        "file:///A.java",
+        r#"class A {
+    void foo(java.util.Map<String, Integer> m) {}
+}
+"#,
+    )]);
+
+    let sig = vec!["java.util.Map<String,Integer>".to_string()];
+    let id = index
+        .method_symbol_id_by_signature("A", "foo", &sig)
+        .expect("foo(Map<String,Integer>) should be indexed");
+    assert_eq!(index.find_symbol(id).unwrap().name, "foo");
 }

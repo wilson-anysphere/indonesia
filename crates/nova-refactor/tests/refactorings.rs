@@ -1680,12 +1680,12 @@ fn extract_variable_allows_initializer_that_depends_on_earlier_declarator_with_q
 fn extract_variable_rejects_expression_bodied_lambda() {
     let file = FileId::new("Test.java");
     let fixture = r#"import java.util.function.Function;
-class C {
-  void m() {
-    Function<Integer,Integer> f = x -> /*start*/x + 1/*end*/;
-  }
-}
-"#;
+ class C {
+   void m() {
+     Function<Integer,Integer> f = x -> /*start*/x + 1/*end*/;
+   }
+ }
+ "#;
     let (src, expr_range) = extract_range(fixture);
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
