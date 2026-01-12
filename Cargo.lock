@@ -3403,6 +3403,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-build-model"
+version = "0.1.0"
+
+[[package]]
 name = "nova-cache"
 version = "0.1.0"
 dependencies = [
@@ -3443,11 +3447,11 @@ name = "nova-classpath"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "nova-build-model",
  "nova-classfile",
  "nova-core",
  "nova-deps-cache",
  "nova-modules",
- "nova-project",
  "nova-storage",
  "nova-types",
  "rkyv",
@@ -4073,6 +4077,7 @@ dependencies = [
  "anyhow",
  "nova-archive",
  "nova-build-bazel",
+ "nova-build-model",
  "nova-classfile",
  "nova-config",
  "nova-hir",

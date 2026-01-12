@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
+pub use nova_build_model::{ClasspathEntry, ClasspathEntryKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BuildSystem {
@@ -120,18 +121,6 @@ pub struct AnnotationProcessing {
 pub struct SourceRoot {
     pub kind: SourceRootKind,
     pub origin: SourceRootOrigin,
-    pub path: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ClasspathEntryKind {
-    Directory,
-    Jar,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ClasspathEntry {
-    pub kind: ClasspathEntryKind,
     pub path: PathBuf,
 }
 

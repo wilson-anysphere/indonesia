@@ -147,13 +147,13 @@ pub enum ClasspathEntry {
     Jmod(PathBuf),
 }
 
-impl From<&nova_project::ClasspathEntry> for ClasspathEntry {
-    fn from(value: &nova_project::ClasspathEntry) -> Self {
+impl From<&nova_build_model::ClasspathEntry> for ClasspathEntry {
+    fn from(value: &nova_build_model::ClasspathEntry) -> Self {
         match value.kind {
-            nova_project::ClasspathEntryKind::Directory => {
+            nova_build_model::ClasspathEntryKind::Directory => {
                 ClasspathEntry::ClassDir(value.path.clone())
             }
-            nova_project::ClasspathEntryKind::Jar => ClasspathEntry::Jar(value.path.clone()),
+            nova_build_model::ClasspathEntryKind::Jar => ClasspathEntry::Jar(value.path.clone()),
         }
     }
 }

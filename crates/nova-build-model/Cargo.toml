@@ -1,0 +1,6 @@
+[package]
+name = "nova-build-model"
+version.workspace = true
+edition = "2021"
+
+[dependencies]

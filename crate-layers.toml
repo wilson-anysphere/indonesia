@@ -40,6 +40,7 @@ to = "xtask"
 
 [crates]
 # core (foundation)
+nova-build-model = "core"
 nova-config = "core"
 nova-core = "core"
 nova-ids = "core"

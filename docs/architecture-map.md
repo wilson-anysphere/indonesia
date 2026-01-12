@@ -97,6 +97,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
     standard `.bsp/*.json` discovery or `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS`); the default metadata
     path is still `query`/`aquery`.
 
+### `nova-build-model`
+- **Purpose:** shared “build model” types used across crates (e.g. classpath entry descriptors) to avoid coupling consumers to `nova-project` implementation details.
+- **Key entry points:** `crates/nova-build-model/src/lib.rs` (`ClasspathEntry`, `ClasspathEntryKind`).
+- **Maturity:** scaffolding
+- **Known gaps vs intended docs:**
+  - Currently only contains classpath entry types; additional build/discovery model types may move here over time.
+
 ### `nova-cache`
 - **Purpose:** per-project persistent cache directory management + cache packaging (`tar.zst`).
 - **Key entry points:** `crates/nova-cache/src/lib.rs` (`CacheDir`, `AstArtifactCache`, `pack_cache_package`).

@@ -13,7 +13,7 @@ nova-classfile = { path = "../nova-classfile" }
 nova-core = { path = "../nova-core" }
 nova-deps-cache = { path = "../nova-deps-cache" }
 nova-storage = { path = "../nova-storage" }
-nova-project = { path = "../nova-project" }
+nova-build-model = { path = "../nova-build-model" }
 nova-modules = { path = "../nova-modules" }
 nova-types = { path = "../nova-types" }
 rkyv = { version = "0.7", features = ["validation"] }
