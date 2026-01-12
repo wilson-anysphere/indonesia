@@ -30,6 +30,12 @@ const FILE_OPERATION_LISTENERS: ReadonlyArray<{
   { kind: 'rename', listenerMethod: 'onDidRenameFiles', notificationMethod: 'workspace/didRenameFiles' },
 ];
 
+const FILE_OPERATION_NOTIFICATION_TYPES: Readonly<Record<string, string>> = {
+  DidCreateFilesNotification: 'workspace/didCreateFiles',
+  DidDeleteFilesNotification: 'workspace/didDeleteFiles',
+  DidRenameFilesNotification: 'workspace/didRenameFiles',
+};
+
 function evalConstString(expr: ts.Expression, env: Map<string, string>): string | undefined {
   if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
     return expr.text;
@@ -66,6 +72,68 @@ function evalConstString(expr: ts.Expression, env: Map<string, string>): string 
 
   if (ts.isIdentifier(expr)) {
     return env.get(expr.text);
+  }
+
+  return undefined;
+}
+
+function buildImportAliasMap(sourceFile: ts.SourceFile): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) {
+      continue;
+    }
+    const clause = statement.importClause;
+    if (!clause?.namedBindings) {
+      continue;
+    }
+    if (!ts.isNamedImports(clause.namedBindings)) {
+      continue;
+    }
+    for (const element of clause.namedBindings.elements) {
+      const imported = element.propertyName ? element.propertyName.text : element.name.text;
+      const local = element.name.text;
+      aliases.set(local, imported);
+    }
+  }
+  return aliases;
+}
+
+function lastPropertyName(expr: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expr)) {
+    return expr.text;
+  }
+  if (ts.isPropertyAccessExpression(expr)) {
+    return expr.name.text;
+  }
+  return undefined;
+}
+
+function resolveNotificationMethod(
+  expr: ts.Expression,
+  env: Map<string, string>,
+  imports: Map<string, string>,
+): string | undefined {
+  const asString = evalConstString(expr, env);
+  if (typeof asString === 'string') {
+    return asString;
+  }
+
+  // Handle common LSP constant patterns, e.g.
+  //   client.sendNotification(DidRenameFilesNotification.type, ...)
+  //   client.sendNotification(DidRenameFilesNotification.type.method, ...)
+  if (ts.isPropertyAccessExpression(expr)) {
+    if (expr.name.text === 'method') {
+      return resolveNotificationMethod(expr.expression, env, imports);
+    }
+
+    if (expr.name.text === 'type') {
+      const localName = lastPropertyName(expr.expression);
+      const importedName = localName ? (imports.get(localName) ?? localName) : undefined;
+      if (importedName && importedName in FILE_OPERATION_NOTIFICATION_TYPES) {
+        return FILE_OPERATION_NOTIFICATION_TYPES[importedName];
+      }
+    }
   }
 
   return undefined;
@@ -119,12 +187,13 @@ test('extension does not manually forward workspace file operations (vscode-lang
     const raw = await fs.readFile(filePath, 'utf8');
     const sourceFile = ts.createSourceFile(filePath, raw, ts.ScriptTarget.ESNext, true);
     const fileEnv = buildConstStringEnvFromVariableStatements(sourceFile.statements);
+    const importAliases = buildImportAliasMap(sourceFile);
 
     const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>) => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
         if (node.expression.name.text === 'sendNotification') {
           const arg0 = node.arguments[0];
-          const method = arg0 ? evalConstString(arg0, env) : undefined;
+          const method = arg0 ? resolveNotificationMethod(arg0, env, importAliases) : undefined;
           if (method && bannedNotificationMethods.has(method)) {
             const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
             violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`);
@@ -181,7 +250,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
           if (handlerNode.expression.name.text === 'sendNotification') {
             const arg0 = handlerNode.arguments[0];
             if (arg0) {
-              const resolved = evalConstString(arg0, env);
+              const resolved = resolveNotificationMethod(arg0, env, importAliases);
               if (resolved === listener.notificationMethod) {
                 const loc = sourceFile.getLineAndCharacterOfPosition(handlerNode.getStart(sourceFile));
                 violations.add(
