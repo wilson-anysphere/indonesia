@@ -154,6 +154,37 @@ Notes:
   be >= 1.
 - If multiple toolchains share the same `release`, the later entry wins.
 
+### Build tool integration (`NovaConfig.build`)
+
+Nova can optionally invoke external build tools (Maven/Gradle) during workspace load/reload to
+compute more accurate classpaths and source roots. This is intentionally **opt-in** because build
+tools can be slow and may spawn subprocesses or touch dependency caches.
+
+Configuration lives under the `[build]` table in `nova.toml`:
+
+- `build.enabled` (`bool`, default: `false`): allow build-tool invocation during load/reload.
+- `build.timeout_ms` (`integer`, default: `30000`): timeout for build-tool invocation (bounds the
+  work; values must be >= 1 when enabled).
+
+Optional per-tool toggles (only apply when `build.enabled = true`):
+
+- `build.maven.enabled` (`bool`, default: `true`)
+- `build.gradle.enabled` (`bool`, default: `true`)
+
+Example:
+
+```toml
+[build]
+enabled = true
+timeout_ms = 30000
+
+[build.maven]
+enabled = true
+
+[build.gradle]
+enabled = true
+```
+
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be
