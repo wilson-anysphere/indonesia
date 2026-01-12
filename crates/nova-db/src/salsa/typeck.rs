@@ -2110,28 +2110,31 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
         store.intern_class_id(name);
     }
 
-    // 3) Pre-intern external types from the (legacy) classpath in deterministic order so
-    // `ClassId`s are stable across body-local clones even when external types are loaded in
-    // different orders.
+    // 3) Pre-intern external types in deterministic order so `ClassId`s are stable across
+    // body-local clones even when external types are loaded in different orders.
     //
-    // NOTE: In JPMS mode we intentionally *do not* pre-intern types from the legacy
-    // `classpath_index` input. Workspace loading historically merged module-path jars into this
-    // index, and pre-interning would then allow `TypeEnv` lookups (used as a best-effort fallback
-    // during type-ref parsing) to "resolve" types that should be rejected by JPMS readability /
-    // exports enforcement (see `tests/suite/typeck_jpms.rs`).
+    // In JPMS mode, do **not** use the legacy `classpath_index` input (workspace loading
+    // historically merged module-path jars into it); instead, use the JPMS compilation
+    // environment's module-aware classpath index.
     //
     // Also mirror the resolver's `java.*` handling: application class loaders cannot define
-    // `java.*` packages, so classpath stubs should not be able to "rescue" unresolved `java.*`
-    // references.
-    if jpms_env.is_none() {
-        if let Some(cp) = classpath.as_deref() {
-            for (idx, name) in cp.iter_binary_names().enumerate() {
-                cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
-                if name.starts_with("java.") {
-                    continue;
-                }
-                store.intern_class_id(name);
+    // `java.*` packages, so classpath/module-path stubs should not be able to "rescue" unresolved
+    // `java.*` references.
+    if let Some(env) = jpms_env.as_deref() {
+        for (idx, name) in env.classpath.types.iter_binary_names().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+            if name.starts_with("java.") {
+                continue;
             }
+            store.intern_class_id(name);
+        }
+    } else if let Some(cp) = classpath.as_deref() {
+        for (idx, name) in cp.iter_binary_names().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+            if name.starts_with("java.") {
+                continue;
+            }
+            store.intern_class_id(name);
         }
     }
 

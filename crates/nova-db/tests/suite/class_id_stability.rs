@@ -2,10 +2,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
-use nova_db::{ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase};
+use nova_db::{
+    ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
+};
+use nova_hir::module_info::lower_module_info_source_strict;
 use nova_jdk::JdkIndex;
+use nova_modules::ModuleName;
+use nova_project::{
+    BuildSystem, ClasspathEntry as ProjectClasspathEntry, ClasspathEntryKind, JavaConfig,
+    JpmsModuleRoot, Module, ProjectConfig,
+};
 use nova_resolve::ids::DefWithBodyId;
 use nova_types::TypeEnv;
+use tempfile::TempDir;
 
 fn dep_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
@@ -357,4 +366,102 @@ class Bar {
         foo_from_foo, foo_from_bar,
         "expected Foo to have stable ClassId across files"
     );
+}
+
+#[test]
+fn jpms_external_class_ids_are_stable_across_bodies_in_same_file() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    // JPMS projects still read the `classpath_index` input even if typeck ignores it.
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_info = lower_module_info_source_strict("module workspace.a { requires dep; }")
+        .expect("module-info should parse");
+
+    let cfg = ProjectConfig {
+        workspace_root: tmp.path().to_path_buf(),
+        build_system: BuildSystem::Simple,
+        java: JavaConfig::default(),
+        modules: vec![Module {
+            name: "dummy".to_string(),
+            root: tmp.path().to_path_buf(),
+            annotation_processing: Default::default(),
+        }],
+        jpms_modules: vec![JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: mod_a_info,
+        }],
+        jpms_workspace: None,
+        source_roots: Vec::new(),
+        module_path: vec![ProjectClasspathEntry {
+            kind: ClasspathEntryKind::Jar,
+            path: dep_jar(),
+        }],
+        classpath: Vec::new(),
+        output_dirs: Vec::new(),
+        dependencies: Vec::new(),
+        workspace_model: None,
+    };
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file = FileId::from_raw(1);
+    db.set_file_project(file, project);
+    db.set_file_rel_path(
+        file,
+        Arc::new("mod-a/src/main/java/com/example/a/C.java".to_string()),
+    );
+    db.set_source_root(file, SourceRootId::from_raw(0));
+    db.set_all_file_ids(Arc::new(vec![file]));
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let src = r#"
+package com.example.a;
+
+class C {
+    void a() {
+        com.example.dep.Foo foo;
+        com.example.dep.Bar bar;
+    }
+
+    void b() {
+        com.example.dep.Bar bar;
+        com.example.dep.Foo foo;
+    }
+}
+"#;
+    db.set_file_text(file, src);
+
+    let tree = db.hir_item_tree(file);
+    let method_a = find_method_named(&tree, "a");
+    let method_b = find_method_named(&tree, "b");
+
+    let body_a = db.typeck_body(DefWithBodyId::Method(method_a));
+    let body_b = db.typeck_body(DefWithBodyId::Method(method_b));
+
+    let foo_a = body_a
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("Foo should be interned in body a env");
+    let bar_a = body_a
+        .env
+        .lookup_class("com.example.dep.Bar")
+        .expect("Bar should be interned in body a env");
+
+    let foo_b = body_b
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("Foo should be interned in body b env");
+    let bar_b = body_b
+        .env
+        .lookup_class("com.example.dep.Bar")
+        .expect("Bar should be interned in body b env");
+
+    assert_eq!(foo_a, foo_b, "expected Foo to have stable ClassId across bodies");
+    assert_eq!(bar_a, bar_b, "expected Bar to have stable ClassId across bodies");
 }
