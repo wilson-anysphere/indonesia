@@ -273,6 +273,10 @@ impl TrigramIndex {
     /// Generates candidate ids by intersecting posting lists for query trigrams.
     ///
     /// The output is sorted and contains no duplicates.
+    ///
+    /// Note: this is a convenience API that allocates and materializes a `Vec`. Hot paths should
+    /// prefer [`Self::candidates_with_scratch`], which can reuse buffers and (for single-trigram
+    /// queries) borrow the underlying posting list without copying.
     pub fn candidates(&self, query: &str) -> Vec<SymbolId> {
         let mut scratch = TrigramCandidateScratch::default();
         self.candidates_with_scratch(query, &mut scratch).to_vec()
