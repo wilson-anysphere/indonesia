@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 
 mod document_store;
 
-pub use document_store::DecompiledDocumentStore;
+pub use document_store::{
+    DecompiledDocumentStore, DecompiledStoreGcPolicy, DecompiledStoreGcReport,
+};
 
 /// URI scheme used by Nova for all virtual documents (ADR0006).
 ///

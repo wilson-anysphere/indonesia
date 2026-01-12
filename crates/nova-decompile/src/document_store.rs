@@ -2,8 +2,10 @@ use crate::{SymbolKey, SymbolRange};
 use nova_cache::{atomic_write, deps_cache_dir, CacheConfig, CacheError, Fingerprint};
 use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// Persistent, content-addressed store for canonical ADR0006 decompiled virtual documents.
 ///
@@ -25,6 +27,26 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct DecompiledDocumentStore {
     root: PathBuf,
+}
+
+/// Best-effort policy for garbage-collecting decompiled virtual documents stored on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecompiledStoreGcPolicy {
+    /// Maximum total disk usage allowed for decompiled documents (bytes).
+    pub max_total_bytes: u64,
+    /// Optional maximum age for decompiled documents (milliseconds).
+    ///
+    /// Entries older than `now - max_age_ms` are deleted first.
+    pub max_age_ms: Option<u64>,
+}
+
+/// Summary of a decompiled-store GC pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecompiledStoreGcReport {
+    pub before_bytes: u64,
+    pub after_bytes: u64,
+    pub deleted_files: usize,
+    pub deleted_bytes: u64,
 }
 
 impl DecompiledDocumentStore {
@@ -158,6 +180,97 @@ impl DecompiledDocumentStore {
         self.load_text(&parsed.content_hash, &parsed.binary_name)
     }
 
+    /// Best-effort garbage collection for decompiled documents stored under this store's root.
+    ///
+    /// GC operates on all regular files under the store root (e.g. `.java` documents and any
+    /// metadata sidecars). Symlinks are ignored and never followed.
+    pub fn gc(&self, policy: &DecompiledStoreGcPolicy) -> Result<DecompiledStoreGcReport, CacheError> {
+        let before_files = enumerate_regular_files(&self.root)?;
+        let before_bytes: u64 = before_files
+            .iter()
+            .fold(0u64, |acc, f| acc.saturating_add(f.size_bytes));
+
+        // Fast path: nothing to do.
+        if before_files.is_empty() {
+            return Ok(DecompiledStoreGcReport {
+                before_bytes: 0,
+                after_bytes: 0,
+                deleted_files: 0,
+                deleted_bytes: 0,
+            });
+        }
+
+        let mut size_by_path = HashMap::<PathBuf, u64>::with_capacity(before_files.len());
+        for entry in &before_files {
+            size_by_path.insert(entry.path.clone(), entry.size_bytes);
+        }
+
+        let now_ms = nova_cache::now_millis();
+        let mut deleted_paths = HashSet::<PathBuf>::new();
+        let mut deleted_files = 0usize;
+        let mut deleted_bytes = 0u64;
+        let mut remaining_estimate = before_bytes;
+
+        // 1) Age-based deletion.
+        if let Some(max_age_ms) = policy.max_age_ms {
+            for entry in &before_files {
+                if !is_older_than(entry.modified_millis, now_ms, max_age_ms) {
+                    continue;
+                }
+                delete_with_companion_best_effort(
+                    &self.root,
+                    &entry.path,
+                    &size_by_path,
+                    &mut deleted_paths,
+                    &mut deleted_files,
+                    &mut deleted_bytes,
+                    &mut remaining_estimate,
+                );
+            }
+        }
+
+        // 2) Size-based deletion (oldest first) if still above budget.
+        if remaining_estimate > policy.max_total_bytes {
+            let mut remaining: Vec<&FileEntry> = before_files
+                .iter()
+                .filter(|e| !deleted_paths.contains(&e.path))
+                .collect();
+
+            remaining.sort_by(|a, b| {
+                let a_ts = a.modified_millis.unwrap_or(0);
+                let b_ts = b.modified_millis.unwrap_or(0);
+                a_ts.cmp(&b_ts).then_with(|| a.path.cmp(&b.path))
+            });
+
+            for entry in remaining {
+                if remaining_estimate <= policy.max_total_bytes {
+                    break;
+                }
+                delete_with_companion_best_effort(
+                    &self.root,
+                    &entry.path,
+                    &size_by_path,
+                    &mut deleted_paths,
+                    &mut deleted_files,
+                    &mut deleted_bytes,
+                    &mut remaining_estimate,
+                );
+            }
+        }
+
+        // Recompute actual post-GC size (best-effort, no follow).
+        let after_bytes = enumerate_regular_files(&self.root)?
+            .iter()
+            .fold(0u64, |acc, f| acc.saturating_add(f.size_bytes));
+
+        Ok(DecompiledStoreGcReport {
+            before_bytes,
+            after_bytes,
+            deleted_files,
+            deleted_bytes,
+        })
+    }
+
     fn path_for(&self, content_hash: &str, binary_name: &str) -> Result<PathBuf, CacheError> {
         validate_content_hash(content_hash)?;
         validate_binary_name(binary_name)?;
@@ -186,6 +299,194 @@ fn safe_binary_name_stem(binary_name: &str) -> Fingerprint {
     // - never collides with Windows reserved device names (`CON`, `PRN`, `NUL`, ...), since it's a
     //   64-character hex digest.
     Fingerprint::from_bytes(binary_name.as_bytes())
+}
+
+#[derive(Debug, Clone)]
+struct FileEntry {
+    path: PathBuf,
+    size_bytes: u64,
+    modified_millis: Option<u64>,
+}
+
+fn enumerate_regular_files(root: &Path) -> Result<Vec<FileEntry>, CacheError> {
+    let meta = match std::fs::symlink_metadata(root) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+
+    // Never follow symlinks. If the root isn't a directory, treat as empty.
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    enumerate_regular_files_impl(root, &mut out);
+    Ok(out)
+}
+
+fn enumerate_regular_files_impl(dir: &Path, out: &mut Vec<FileEntry>) {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            continue;
+        }
+
+        if meta.is_dir() {
+            enumerate_regular_files_impl(&path, out);
+            continue;
+        }
+
+        if !meta.is_file() {
+            continue;
+        }
+
+        let modified_millis = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+
+        out.push(FileEntry {
+            path,
+            size_bytes: meta.len(),
+            modified_millis,
+        });
+    }
+}
+
+fn is_older_than(modified_millis: Option<u64>, now_ms: u64, max_age_ms: u64) -> bool {
+    let Some(modified) = modified_millis else {
+        // If we can't determine recency, treat it as stale so GC can clean it up.
+        return true;
+    };
+    now_ms.saturating_sub(modified) > max_age_ms
+}
+
+fn delete_with_companion_best_effort(
+    root: &Path,
+    path: &Path,
+    size_by_path: &HashMap<PathBuf, u64>,
+    deleted: &mut HashSet<PathBuf>,
+    deleted_files: &mut usize,
+    deleted_bytes: &mut u64,
+    remaining_estimate: &mut u64,
+) {
+    delete_single_path_best_effort(
+        root,
+        path,
+        size_by_path,
+        deleted,
+        deleted_files,
+        deleted_bytes,
+        remaining_estimate,
+    );
+
+    let Some(companion) = companion_path(path) else {
+        return;
+    };
+    delete_single_path_best_effort(
+        root,
+        &companion,
+        size_by_path,
+        deleted,
+        deleted_files,
+        deleted_bytes,
+        remaining_estimate,
+    );
+}
+
+fn delete_single_path_best_effort(
+    root: &Path,
+    path: &Path,
+    size_by_path: &HashMap<PathBuf, u64>,
+    deleted: &mut HashSet<PathBuf>,
+    deleted_files: &mut usize,
+    deleted_bytes: &mut u64,
+    remaining_estimate: &mut u64,
+) {
+    if deleted.contains(path) {
+        return;
+    }
+
+    // Lexical check only; do not follow symlinks.
+    if path.strip_prefix(root).is_err() {
+        return;
+    }
+
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            deleted.insert(path.to_path_buf());
+            return;
+        }
+        Err(_) => return,
+    };
+
+    // Only delete regular files; never follow symlinks.
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return;
+    }
+
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return,
+    }
+
+    deleted.insert(path.to_path_buf());
+    *deleted_files += 1;
+
+    if let Some(size) = size_by_path.get(path) {
+        *deleted_bytes = deleted_bytes.saturating_add(*size);
+        *remaining_estimate = remaining_estimate.saturating_sub(*size);
+    }
+
+    remove_empty_parents_best_effort(root, path);
+}
+
+fn companion_path(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name()?.to_str()?;
+    if let Some(stem) = file_name.strip_suffix(".java") {
+        Some(path.with_file_name(format!("{stem}.meta.json")))
+    } else if let Some(stem) = file_name.strip_suffix(".meta.json") {
+        Some(path.with_file_name(format!("{stem}.java")))
+    } else {
+        None
+    }
+}
+
+fn remove_empty_parents_best_effort(root: &Path, file_path: &Path) {
+    let mut dir = file_path.parent();
+    while let Some(candidate) = dir {
+        if candidate == root {
+            break;
+        }
+        if candidate.strip_prefix(root).is_err() {
+            break;
+        }
+
+        match std::fs::remove_dir(candidate) {
+            Ok(()) => {
+                dir = candidate.parent();
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
