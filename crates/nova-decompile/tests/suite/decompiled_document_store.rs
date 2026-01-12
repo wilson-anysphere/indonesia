@@ -108,6 +108,39 @@ fn load_document_is_miss_and_deletes_oversized_metadata() {
     );
 }
 
+#[test]
+fn load_document_is_miss_and_deletes_invalid_json_metadata() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    store
+        .store_text(content_hash, binary_name, "hello")
+        .unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let meta_path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.meta.json"));
+
+    std::fs::write(&meta_path, b"{this is not valid json").unwrap();
+
+    let loaded = store.load_document(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!meta_path.exists(), "invalid JSON metadata should be deleted");
+    assert_eq!(
+        store
+            .load_text(content_hash, binary_name)
+            .unwrap()
+            .as_deref(),
+        Some("hello"),
+        "text entry should remain present"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn load_document_is_miss_and_deletes_symlinked_metadata() {
@@ -436,6 +469,28 @@ fn non_file_entries_are_treated_as_cache_miss_and_deleted() {
     let loaded = store.load_text(content_hash, binary_name).unwrap();
     assert!(loaded.is_none());
     assert!(!path.exists(), "directory cache entry should be deleted");
+}
+
+#[test]
+fn invalid_utf8_text_is_treated_as_cache_miss_and_deleted() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!path.exists(), "invalid UTF-8 cache entry should be deleted");
 }
 
 #[cfg(unix)]
