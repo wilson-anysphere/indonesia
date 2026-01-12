@@ -65,6 +65,49 @@ BUILD FAILED in 1s
     }
 }
 
+#[derive(Debug)]
+struct MultiOutputGradleRunner {
+    invocations: Mutex<Vec<Invocation>>,
+    output_all_configs: CommandOutput,
+    output_single_config: CommandOutput,
+}
+
+impl MultiOutputGradleRunner {
+    fn new(output_all_configs: CommandOutput, output_single_config: CommandOutput) -> Self {
+        Self {
+            invocations: Mutex::new(Vec::new()),
+            output_all_configs,
+            output_single_config,
+        }
+    }
+
+    fn invocations(&self) -> Vec<Invocation> {
+        self.invocations.lock().expect("lock poisoned").clone()
+    }
+}
+
+impl CommandRunner for MultiOutputGradleRunner {
+    fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
+        self.invocations
+            .lock()
+            .expect("lock poisoned")
+            .push(Invocation {
+                cwd: cwd.to_path_buf(),
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+            });
+
+        if args
+            .iter()
+            .any(|arg| arg.as_str() == "printNovaAllJavaCompileConfigs")
+        {
+            return Ok(self.output_all_configs.clone());
+        }
+
+        Ok(self.output_single_config.clone())
+    }
+}
+
 fn exit_status(code: i32) -> ExitStatus {
     #[cfg(unix)]
     {
@@ -258,5 +301,109 @@ fn java_compile_config_for_buildsrc_uses_project_dir_flag_and_root_task() {
         java_configs.contains_key(":__buildSrc"),
         "expected snapshot to include config for :__buildSrc, got keys {:?}",
         java_configs.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn java_compile_config_for_buildsrc_skips_all_configs_batch_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Make the workspace look multi-project so `gradle_settings_suggest_multi_project` returns
+    // true. Older versions of `nova-build` would run the batch
+    // `printNovaAllJavaCompileConfigs` task first, which can never return buildSrc (it is a nested
+    // build).
+    std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
+
+    let app_dir = project_root.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    let buildsrc_dir = project_root.join("buildSrc");
+    std::fs::create_dir_all(&buildsrc_dir).unwrap();
+
+    let dep_jar = buildsrc_dir.join("deps.jar");
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    let payload_all = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": project_root.to_string_lossy(),
+                "config": {
+                    "projectPath": ":",
+                    "projectDir": project_root.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false
+                }
+            },
+            {
+                "path": ":app",
+                "projectDir": app_dir.to_string_lossy(),
+                "config": {
+                    "projectPath": ":app",
+                    "projectDir": app_dir.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false
+                }
+            }
+        ]
+    });
+    let stdout_all = format!(
+        "NOVA_ALL_JSON_BEGIN\n{}\nNOVA_ALL_JSON_END\n",
+        serde_json::to_string(&payload_all).unwrap()
+    );
+
+    let payload_buildsrc = serde_json::json!({
+        "projectDir": buildsrc_dir.to_string_lossy(),
+        "compileClasspath": [dep_jar.to_string_lossy()],
+    });
+    let stdout_buildsrc = format!(
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload_buildsrc).unwrap()
+    );
+
+    let runner = Arc::new(MultiOutputGradleRunner::new(
+        output(0, &stdout_all, ""),
+        output(0, &stdout_buildsrc, ""),
+    ));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, Some(":__buildSrc"), &cache)
+        .unwrap();
+
+    // Ensure we only invoked the buildSrc-targeted task (no batch query against the root build).
+    let invocations = runner.invocations();
+    assert_eq!(
+        invocations.len(),
+        1,
+        "expected only a single Gradle invocation for buildSrc, got invocations: {invocations:#?}"
+    );
+    let args = &invocations[0].args;
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.as_str() == "printNovaAllJavaCompileConfigs"),
+        "did not expect batch all-configs task when querying buildSrc, got args {args:?}"
+    );
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some("printNovaJavaCompileConfig")
     );
 }

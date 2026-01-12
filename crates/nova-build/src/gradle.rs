@@ -476,6 +476,11 @@ impl GradleBuild {
         // fetch *all* project configs in a single Gradle invocation. This avoids N× Gradle
         // startups in multi-module workspaces when callers query multiple modules in sequence.
         if let Some(requested_path) = project_path {
+            // `buildSrc/` is a separate nested build (invoked via `--project-dir buildSrc`), so it
+            // can never be part of the root build's all-project query.
+            if requested_path == GRADLE_BUILDSRC_PROJECT_PATH {
+                // Skip the batch helper task; we'll fall back to a targeted buildSrc query below.
+            } else
             // Avoid running the batch task for simple single-project builds.
             if gradle_settings_suggest_multi_project(project_root) {
                 if let Ok(configs) = self.java_compile_configs_all(project_root, cache) {
