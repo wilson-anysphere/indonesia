@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use nova_types::CompletionItem;
 use regex::Regex;
@@ -12,10 +13,11 @@ pub fn collect_config_property_names(
 ) -> Vec<String> {
     let mut props = BTreeSet::<String>::new();
 
-    let config_re = Regex::new(
-        r#"@(?:[\w$]+\.)*ConfigProperty\s*\([^)]*\bname\s*=\s*"([^"]+)""#,
-    )
-    .unwrap();
+    static CONFIG_RE: OnceLock<Regex> = OnceLock::new();
+    let config_re = CONFIG_RE.get_or_init(|| {
+        Regex::new(r#"@(?:[\w$]+\.)*ConfigProperty\s*\([^)]*\bname\s*=\s*"([^"]+)""#)
+            .expect("ConfigProperty regex must compile")
+    });
     for src in java_sources {
         for cap in config_re.captures_iter(src) {
             props.insert(cap[1].to_string());

@@ -16,7 +16,7 @@ pub use cdi::{CdiAnalysis, CdiAnalysisWithSources, CdiModel, SourceDiagnostic, S
 pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
 pub use config::{collect_config_property_names, config_property_completions};
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -100,11 +100,19 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
             return Vec::new();
         };
 
-        let java_source_refs: Vec<&str> = entry.java_sources.iter().map(|s| s.as_str()).collect();
         let property_file_refs = collect_application_properties(db, ctx.project);
 
-        let mut items =
-            config_property_completions(prefix, &java_source_refs, &property_file_refs);
+        // Avoid rescanning all Java sources on every completion request by reusing the cached
+        // `config_properties` extracted during the project's last analysis.
+        let mut names = BTreeSet::<String>::new();
+        names.extend(entry.analysis.config_properties.iter().cloned());
+        names.extend(collect_config_property_names(&[], &property_file_refs));
+
+        let mut items: Vec<_> = names
+            .into_iter()
+            .filter(|name| name.starts_with(prefix))
+            .map(CompletionItem::new)
+            .collect();
         for item in &mut items {
             item.replace_span = Some(replace_span);
         }
@@ -119,7 +127,6 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
 #[derive(Debug, Clone)]
 struct CachedProjectAnalysis {
     fingerprint: u64,
-    java_sources: Vec<String>,
     file_to_source_idx: HashMap<FileId, usize>,
     analysis: AnalysisResultWithSpans,
 }
@@ -159,7 +166,6 @@ impl QuarkusAnalyzer {
 
         let entry = Arc::new(CachedProjectAnalysis {
             fingerprint,
-            java_sources,
             file_to_source_idx,
             analysis,
         });
