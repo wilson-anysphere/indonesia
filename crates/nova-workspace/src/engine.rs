@@ -27,7 +27,7 @@ use nova_project::{
 };
 #[cfg(test)]
 use nova_scheduler::SchedulerConfig;
-use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
+use nova_scheduler::{Cancelled, CancellationToken, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
@@ -844,6 +844,68 @@ fn default_build_runner() -> Arc<dyn CommandRunner> {
     #[cfg(not(test))]
     {
         Arc::new(nova_build::DefaultCommandRunner::default())
+    }
+}
+
+#[derive(Debug)]
+struct DeadlineCommandRunner {
+    deadline: Instant,
+    cancellation: Option<CancellationToken>,
+    inner: DeadlineCommandRunnerInner,
+}
+
+#[derive(Debug)]
+enum DeadlineCommandRunnerInner {
+    /// Use Nova's default command runner with a per-command timeout equal to the remaining
+    /// time budget.
+    Default,
+    /// Delegate to a caller-supplied runner (primarily for tests).
+    Custom(Arc<dyn CommandRunner>),
+}
+
+impl CommandRunner for DeadlineCommandRunner {
+    fn run(
+        &self,
+        cwd: &Path,
+        program: &Path,
+        args: &[String],
+    ) -> std::io::Result<nova_build::CommandOutput> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let command = format_command(program, args);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("command `{command}` skipped because request time budget was exhausted"),
+            ));
+        }
+
+        match &self.inner {
+            DeadlineCommandRunnerInner::Default => {
+                let runner = nova_build::DefaultCommandRunner {
+                    timeout: Some(remaining),
+                    cancellation: self.cancellation.clone(),
+                };
+                runner.run(cwd, program, args)
+            }
+            DeadlineCommandRunnerInner::Custom(inner) => inner.run(cwd, program, args),
+        }
+    }
+}
+
+fn format_command(program: &Path, args: &[String]) -> String {
+    let mut out = format_command_part(&program.to_string_lossy());
+    for arg in args {
+        out.push(' ');
+        out.push_str(&format_command_part(arg));
+    }
+    out
+}
+
+fn format_command_part(part: &str) -> String {
+    if part.contains(' ') || part.contains('\t') {
+        format!("\"{}\"", part.replace('"', "\\\""))
+    } else {
+        part.to_string()
     }
 }
 
@@ -1773,7 +1835,9 @@ impl WorkspaceEngine {
             "workspace-reload",
             delay,
             move |token| {
-                let _ctx = scheduler.request_context_with_token("workspace/reload_project", token);
+                let cancellation = token.clone();
+                let _ctx =
+                    scheduler.request_context_with_token("workspace/reload_project", token);
 
                 let changed = {
                     let mut state = project_state
@@ -1796,6 +1860,7 @@ impl WorkspaceEngine {
                     &subscribers,
                     &build_runner,
                     build_runner_is_default,
+                    Some(cancellation),
                 ) {
                     publish_to_subscribers(
                         &subscribers,
@@ -1851,6 +1916,7 @@ impl WorkspaceEngine {
             &self.subscribers,
             &self.build_runner,
             self.build_runner_is_default,
+            None,
         );
 
         // Ensure we drive eviction after loading/updating a potentially large set of files.
@@ -3513,6 +3579,7 @@ fn reload_project_and_sync(
     subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
     build_runner: &Arc<dyn CommandRunner>,
     build_runner_is_default: bool,
+    cancellation: Option<CancellationToken>,
 ) -> Result<()> {
     let mut file_id_for_path = |path: &Path| vfs.file_id(VfsPath::local(path.to_path_buf()));
 
@@ -3622,6 +3689,24 @@ fn reload_project_and_sync(
             .collect();
         let refresh_build =
             should_refresh_build_config(workspace_root, &module_roots, changed_files);
+        let invalidate_build_cache = !changed_files.is_empty()
+            && changed_files.iter().any(|path| {
+                let mut best: Option<&Path> = None;
+                let mut best_len = 0usize;
+                for root in
+                    std::iter::once(workspace_root).chain(module_roots.iter().map(PathBuf::as_path))
+                {
+                    if let Ok(stripped) = path.strip_prefix(root) {
+                        let len = root.components().count();
+                        if len > best_len {
+                            best_len = len;
+                            best = Some(stripped);
+                        }
+                    }
+                }
+                let rel = best.unwrap_or(path.as_path());
+                is_build_tool_input_file(rel)
+            });
 
         if matches!(
             current_config.build_system,
@@ -3641,8 +3726,6 @@ fn reload_project_and_sync(
                 ),
                 _ => unreachable!("build integration only applies to Maven/Gradle"),
             };
-            #[cfg(test)]
-            let _ = timeout;
 
             // Treat build integration mode changes (e.g. `auto` -> `on`) as a signal to refresh
             // build metadata even when the file change set doesn't include build tool inputs.
@@ -3661,6 +3744,19 @@ fn reload_project_and_sync(
             let refresh_build = refresh_build || mode_rank(mode) > mode_rank(previous_mode);
 
             if refresh_build {
+                if invalidate_build_cache {
+                    let cache_dir = build_cache_dir(workspace_root, query_db);
+                    // Best-effort invalidation: if removing the cache fails (permissions, etc),
+                    // continue with the existing workspace config rather than failing reload.
+                    let build = BuildManager::new(cache_dir);
+                    if let Err(err) = build.reload_project(workspace_root) {
+                        tracing::warn!(
+                            "failed to invalidate nova-build cache for {}: {err}",
+                            workspace_root.display()
+                        );
+                    }
+                }
+
                 match mode {
                     BuildIntegrationMode::Off => {}
                     BuildIntegrationMode::Auto => {
@@ -3710,24 +3806,30 @@ fn reload_project_and_sync(
                     }
                     BuildIntegrationMode::On => {
                         let cache_dir = build_cache_dir(workspace_root, query_db);
-
-                        // When using the default build runner, respect the configured build
-                        // integration timeout. Custom runners are expected to implement their own
-                        // timeout semantics.
+                        let deadline = Instant::now() + timeout;
                         let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
                             #[cfg(not(test))]
                             {
-                                Arc::new(nova_build::DefaultCommandRunner {
-                                    timeout: Some(timeout),
-                                    cancellation: None,
+                                Arc::new(DeadlineCommandRunner {
+                                    deadline,
+                                    cancellation: cancellation.clone(),
+                                    inner: DeadlineCommandRunnerInner::Default,
                                 })
                             }
                             #[cfg(test)]
                             {
-                                Arc::clone(build_runner)
+                                Arc::new(DeadlineCommandRunner {
+                                    deadline,
+                                    cancellation: cancellation.clone(),
+                                    inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
+                                })
                             }
                         } else {
-                            Arc::clone(build_runner)
+                            Arc::new(DeadlineCommandRunner {
+                                deadline,
+                                cancellation: cancellation.clone(),
+                                inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
+                            })
                         };
 
                         let build = BuildManager::with_runner(cache_dir, runner);
