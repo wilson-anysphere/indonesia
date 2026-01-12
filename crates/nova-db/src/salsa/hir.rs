@@ -48,14 +48,12 @@ fn java_parse(db: &dyn NovaHir, file: FileId) -> Arc<nova_syntax::java::Parse> {
 
     cancel::check_cancelled(db);
 
-    let text = if db.file_exists(file) {
-        db.file_content(file)
-    } else {
-        Arc::new(String::new())
-    };
-
     let parse_java = db.parse_java(file);
-    let parsed = nova_syntax::java::parse_with_syntax(&parse_java.syntax(), text.len());
+    let root = parse_java.syntax();
+    // Avoid re-reading `file_content` just to compute `text.len()`: the parsed
+    // syntax tree's range is always file-relative (`0..text_len`).
+    let text_len = u32::from(root.text_range().end()) as usize;
+    let parsed = nova_syntax::java::parse_with_syntax(&root, text_len);
     let result = Arc::new(parsed);
     db.record_query_stat("java_parse", start.elapsed());
     result
