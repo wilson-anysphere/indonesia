@@ -1384,6 +1384,119 @@ fn inline_variable_all_usages_replaces_and_deletes_declaration() {
 }
 
 #[test]
+fn inline_variable_wraps_cast_receiver() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo { void m() {} }
+class C {
+  void t(Object o) {
+    Foo a = (Foo) o;
+    a.m();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("Foo a").unwrap() + "Foo ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Foo { void m() {} }
+class C {
+  void t(Object o) {
+    ((Foo) o).m();
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_wraps_conditional_receiver() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo { void m() {} }
+class C {
+  void t(boolean cond, Foo x, Foo y) {
+    Foo a = cond ? x : y;
+    a.m();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("Foo a").unwrap() + "Foo ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Foo { void m() {} }
+class C {
+  void t(boolean cond, Foo x, Foo y) {
+    (cond ? x : y).m();
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_does_not_parenthesize_method_call_receiver() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo { void m() {} }
+class C {
+  Foo make() { return null; }
+  void t() {
+    Foo a = make();
+    a.m();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("Foo a").unwrap() + "Foo ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Foo { void m() {} }
+class C {
+  Foo make() { return null; }
+  void t() {
+    make().m();
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_in_switch_one_line_case_label_does_not_delete_case() {
     let file = FileId::new("Test.java");
     let src = r#"class C {

@@ -1255,18 +1255,22 @@ fn parenthesize_initializer(text: &str, expr: &ast::Expression) -> String {
         return text.to_string();
     }
 
-    let needs_parens = matches!(
+    let is_simple_primary = matches!(
         expr,
-        ast::Expression::BinaryExpression(_)
-            | ast::Expression::UnaryExpression(_)
-            | ast::Expression::ConditionalExpression(_)
-            | ast::Expression::AssignmentExpression(_)
+        ast::Expression::NameExpression(_)
+            | ast::Expression::LiteralExpression(_)
+            | ast::Expression::ThisExpression(_)
+            | ast::Expression::SuperExpression(_)
+            | ast::Expression::NewExpression(_)
+            | ast::Expression::MethodCallExpression(_)
+            | ast::Expression::FieldAccessExpression(_)
+            | ast::Expression::ArrayAccessExpression(_)
     );
 
-    if needs_parens {
-        format!("({text})")
-    } else {
+    if is_simple_primary {
         text.to_string()
+    } else {
+        format!("({text})")
     }
 }
 
