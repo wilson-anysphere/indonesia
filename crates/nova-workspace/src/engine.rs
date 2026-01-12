@@ -5176,6 +5176,47 @@ mod tests {
             "expected parse_java results to be recomputed for closed documents after memo eviction"
         );
     }
+
+    #[test]
+    fn open_documents_reuse_item_tree_across_salsa_memo_eviction() {
+        use std::sync::Arc;
+
+        use nova_db::NovaSemantic;
+        use nova_memory::MemoryPressure;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/Main.java");
+        fs::write(&file, "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let vfs_path = VfsPath::local(file.clone());
+
+        let file_id =
+            workspace.open_document(vfs_path.clone(), "class Main { int x; }".to_string(), 1);
+        let text_arc = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+
+        let first = engine.query_db.with_snapshot(|snap| snap.item_tree(file_id));
+        engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
+        let second = engine.query_db.with_snapshot(|snap| snap.item_tree(file_id));
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "expected item_tree results to be reused for open documents across memo eviction"
+        );
+
+        // Closing the document should disable pinning even if the text `Arc` matches.
+        workspace.close_document(&vfs_path);
+        engine.query_db.set_file_content(file_id, text_arc);
+        engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
+        let third = engine.query_db.with_snapshot(|snap| snap.item_tree(file_id));
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "expected item_tree results to be recomputed for closed documents after memo eviction"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn manual_watcher_propagates_disk_edits_into_workspace() {
         let dir = tempfile::tempdir().unwrap();
