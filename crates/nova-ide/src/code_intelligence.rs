@@ -2751,6 +2751,15 @@ fn general_completions(
     let analysis = analyze(text);
     let mut items = Vec::new();
 
+    maybe_add_lambda_snippet_completion(
+        &mut items,
+        text,
+        &analysis,
+        prefix_start,
+        offset,
+        prefix,
+    );
+
     for m in &analysis.methods {
         items.push(CompletionItem {
             label: m.name.clone(),
@@ -2912,6 +2921,231 @@ fn general_completions(
     deduplicate_completion_items(&mut items);
     rank_completions(prefix, &mut items, &ctx);
     items
+}
+
+fn maybe_add_lambda_snippet_completion(
+    items: &mut Vec<CompletionItem>,
+    text: &str,
+    analysis: &Analysis,
+    prefix_start: usize,
+    offset: usize,
+    prefix: &str,
+) {
+    // Gating early avoids doing semantic work when the prefix clearly isn't asking for a lambda.
+    let label = "lambda";
+    if !prefix.is_empty() && !label.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+        return;
+    }
+
+    let mut types = TypeStore::with_minimal_jdk();
+    define_local_interfaces(&mut types, &analysis.tokens);
+
+    let expected = expected_type_for_completion(&mut types, text, analysis, prefix_start, offset);
+    let Some(expected) = expected else {
+        return;
+    };
+
+    // Load methods from the JDK/classpath for the expected type if needed, so SAM detection has
+    // access to method signatures.
+    ensure_type_methods_loaded(&mut types, &expected);
+
+    let Some(param_count) = sam_param_count(&types, &expected) else {
+        return;
+    };
+
+    let snippet = lambda_snippet(param_count);
+    items.push(CompletionItem {
+        label: label.to_string(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some("lambda".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+        ..Default::default()
+    });
+}
+
+fn expected_type_for_completion(
+    types: &mut TypeStore,
+    text: &str,
+    analysis: &Analysis,
+    prefix_start: usize,
+    offset: usize,
+) -> Option<Type> {
+    let bytes = text.as_bytes();
+    let before = skip_whitespace_backwards(text, prefix_start);
+
+    // 1) Assignment / initializer: `x = <cursor>`
+    if before > 0 && bytes.get(before - 1) == Some(&b'=') && is_simple_assignment_op(bytes, before)
+    {
+        let lhs_end = skip_whitespace_backwards(text, before - 1);
+        let (_, lhs) = identifier_prefix(text, lhs_end);
+        if !lhs.is_empty() {
+            if let Some(ty) = analysis
+                .vars
+                .iter()
+                .filter(|v| v.name == lhs && v.name_span.start <= offset)
+                .max_by_key(|v| v.name_span.start)
+                .map(|v| v.ty.as_str())
+                .or_else(|| {
+                    analysis
+                        .fields
+                        .iter()
+                        .find(|f| f.name == lhs)
+                        .map(|f| f.ty.as_str())
+                })
+            {
+                return Some(parse_source_type(types, ty));
+            }
+        }
+    }
+
+    // 2) Return: `return <cursor>`
+    let (_, kw) = identifier_prefix(text, before);
+    if kw == "return" {
+        if let Some(method) = analysis.methods.iter().find(|m| span_contains(m.body_span, offset)) {
+            return Some(parse_source_type(types, &method.ret_ty));
+        }
+    }
+
+    // 3) Method argument: `foo(<cursor>)`
+    let call = analysis
+        .calls
+        .iter()
+        .filter(|c| c.open_paren < prefix_start && prefix_start <= c.close_paren)
+        .max_by_key(|c| c.open_paren)?;
+    let arg_index = call_argument_index(text, call.open_paren, prefix_start);
+    expected_type_for_call_argument(types, analysis, call, arg_index)
+}
+
+fn expected_type_for_call_argument(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    call: &CallExpr,
+    arg_index: usize,
+) -> Option<Type> {
+    let receiver = call.receiver.as_deref()?;
+    let (receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    ensure_type_methods_loaded(types, &receiver_ty);
+
+    let mut args = call
+        .arg_starts
+        .iter()
+        .map(|start| infer_expr_type_at(types, analysis, *start))
+        .collect::<Vec<_>>();
+
+    // If we're completing the Nth argument but haven't parsed a token for it yet (e.g. `foo(x, <|>)`),
+    // extend the arg list with unknown placeholders so overload resolution has the right arity.
+    while args.len() <= arg_index {
+        args.push(Type::Unknown);
+    }
+
+    let call = MethodCall {
+        receiver: receiver_ty,
+        call_kind,
+        name: call.name.as_str(),
+        args,
+        expected_return: None,
+        explicit_type_args: Vec::new(),
+    };
+
+    let mut ctx = TyContext::new(&*types);
+    match nova_types::resolve_method_call(&mut ctx, &call) {
+        MethodResolution::Found(method) => method.params.get(arg_index).cloned(),
+        // Be conservative: don't guess a parameter type when overload resolution is ambiguous.
+        MethodResolution::Ambiguous(_) | MethodResolution::NotFound(_) => None,
+    }
+}
+
+fn sam_param_count(types: &TypeStore, ty: &Type) -> Option<usize> {
+    let class_id = match ty {
+        Type::Class(nova_types::ClassType { def, .. }) => *def,
+        Type::Named(name) => types.class_id(name)?,
+        _ => return None,
+    };
+
+    let class = types.class(class_id)?;
+    if class.kind != ClassKind::Interface {
+        return None;
+    }
+
+    let mut abstract_instance_methods = class
+        .methods
+        .iter()
+        .filter(|m| m.is_abstract && !m.is_static)
+        .filter(|m| !is_object_method(m))
+        .collect::<Vec<_>>();
+
+    if abstract_instance_methods.len() != 1 {
+        return None;
+    }
+
+    Some(abstract_instance_methods.remove(0).params.len())
+}
+
+fn is_object_method(method: &MethodDef) -> bool {
+    match (method.name.as_str(), method.params.len()) {
+        ("toString" | "hashCode", 0) => true,
+        ("equals", 1) => true,
+        _ => false,
+    }
+}
+
+fn lambda_snippet(param_count: usize) -> String {
+    if param_count == 0 {
+        return "() -> $0".to_string();
+    }
+
+    let mut out = String::new();
+    out.push('(');
+    for idx in 0..param_count {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        // Snippet placeholders are 1-indexed; `$0` is the final cursor position.
+        let placeholder = idx + 1;
+        out.push_str(&format!("${{{placeholder}:arg{idx}}}"));
+    }
+    out.push_str(") -> $0");
+    out
+}
+
+fn is_simple_assignment_op(bytes: &[u8], before: usize) -> bool {
+    // `before` is the index immediately after the `=`.
+    let eq_idx = before.saturating_sub(1);
+    match bytes.get(eq_idx.wrapping_sub(1)).copied() {
+        Some(b'=' | b'!' | b'<' | b'>') => false,
+        _ => true,
+    }
+}
+
+fn call_argument_index(text: &str, open_paren: usize, offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    if open_paren >= bytes.len() {
+        return 0;
+    }
+
+    let mut depth = 0i32;
+    let mut commas = 0usize;
+    let mut i = open_paren + 1;
+    let end = offset.min(bytes.len());
+    while i < end {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            b',' if depth == 0 => commas += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    commas
 }
 
 fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
@@ -5227,6 +5461,7 @@ struct ParamDecl {
 
 #[derive(Clone, Debug)]
 struct MethodDecl {
+    ret_ty: String,
     name: String,
     name_span: Span,
     params: Vec<ParamDecl>,
@@ -5253,6 +5488,7 @@ struct CallExpr {
     receiver: Option<String>,
     name: String,
     name_span: Span,
+    open_paren: usize,
     arg_starts: Vec<usize>,
     close_paren: usize,
 }
@@ -5376,6 +5612,7 @@ fn analyze(text: &str) -> Analysis {
                         find_matching_brace(&tokens, r_paren_idx + 1)
                     {
                         analysis.methods.push(MethodDecl {
+                            ret_ty: ret.text.clone(),
                             name: name.text.clone(),
                             name_span: name.span,
                             params,
@@ -5527,6 +5764,7 @@ fn analyze(text: &str) -> Analysis {
                     receiver,
                     name: t.text.clone(),
                     name_span: t.span,
+                    open_paren: next.span.start,
                     arg_starts,
                     close_paren,
                 });
@@ -5732,6 +5970,160 @@ fn infer_var_type(tokens: &[&Token], after_name: usize) -> Option<String> {
         i += 1;
     }
     None
+}
+
+fn define_local_interfaces(types: &mut TypeStore, tokens: &[Token]) {
+    let mut i = 0usize;
+    while i + 1 < tokens.len() {
+        if tokens[i].kind == TokenKind::Ident && tokens[i].text == "interface" {
+            let Some(name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident) else {
+                i += 1;
+                continue;
+            };
+
+            // Find the opening `{` for the interface body.
+            let mut j = i + 2;
+            while j < tokens.len() && tokens[j].kind != TokenKind::Symbol('{') {
+                j += 1;
+            }
+            let Some(open_idx) = (j < tokens.len()).then_some(j) else {
+                i += 1;
+                continue;
+            };
+
+            let Some((end_idx, _span)) = find_matching_brace(tokens, open_idx) else {
+                i += 1;
+                continue;
+            };
+
+            let body = &tokens[(open_idx + 1)..end_idx];
+            let methods = parse_interface_methods(body);
+
+            let id = types.intern_class_id(&name_tok.text);
+            let object = types.well_known().object;
+            types.define_class(
+                id,
+                nova_types::ClassDef {
+                    name: name_tok.text.clone(),
+                    kind: ClassKind::Interface,
+                    type_params: Vec::new(),
+                    super_class: Some(Type::class(object, vec![])),
+                    interfaces: Vec::new(),
+                    fields: Vec::new(),
+                    constructors: Vec::new(),
+                    methods,
+                },
+            );
+
+            i = end_idx;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn parse_interface_methods(tokens: &[Token]) -> Vec<MethodDef> {
+    let mut methods = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        // Skip nested blocks/types inside an interface body to avoid accidentally parsing nested
+        // method declarations.
+        if tokens[i].kind == TokenKind::Symbol('{') {
+            if let Some((end_idx, _)) = find_matching_brace(tokens, i) {
+                i = end_idx + 1;
+                continue;
+            }
+        }
+
+        let mut j = i;
+        let mut is_static = false;
+        while let Some(tok) = tokens.get(j) {
+            if tok.kind == TokenKind::Ident && is_interface_method_modifier(&tok.text) {
+                if tok.text == "static" {
+                    is_static = true;
+                }
+                j += 1;
+                continue;
+            }
+            break;
+        }
+
+        let Some(ret_tok) = tokens.get(j) else {
+            break;
+        };
+        let Some(name_tok) = tokens.get(j + 1) else {
+            i += 1;
+            continue;
+        };
+        let Some(l_paren) = tokens.get(j + 2) else {
+            i += 1;
+            continue;
+        };
+
+        if !(ret_tok.kind == TokenKind::Ident
+            && name_tok.kind == TokenKind::Ident
+            && l_paren.kind == TokenKind::Symbol('('))
+        {
+            i += 1;
+            continue;
+        }
+
+        let Some((r_paren_idx, _close_paren)) = find_matching_paren(tokens, j + 2) else {
+            i += 1;
+            continue;
+        };
+
+        let params = parse_params(&tokens[(j + 3)..r_paren_idx]);
+
+        let Some(after_r_paren) = tokens.get(r_paren_idx + 1) else {
+            i = r_paren_idx + 1;
+            continue;
+        };
+
+        let (is_abstract, end_idx) = match after_r_paren.kind {
+            TokenKind::Symbol(';') => (true, r_paren_idx + 1),
+            TokenKind::Symbol('{') => {
+                let end_idx = find_matching_brace(tokens, r_paren_idx + 1)
+                    .map(|(idx, _)| idx)
+                    .unwrap_or(r_paren_idx + 1);
+                (false, end_idx)
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        methods.push(MethodDef {
+            name: name_tok.text.clone(),
+            type_params: Vec::new(),
+            params: vec![Type::Unknown; params.len()],
+            return_type: Type::Unknown,
+            is_static,
+            is_varargs: false,
+            is_abstract,
+        });
+
+        i = end_idx + 1;
+    }
+
+    methods
+}
+
+fn is_interface_method_modifier(ident: &str) -> bool {
+    matches!(
+        ident,
+        "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "default"
+            | "abstract"
+            | "final"
+            | "native"
+            | "synchronized"
+            | "strictfp"
+    )
 }
 
 fn format_method_signature(method: &MethodDecl) -> String {

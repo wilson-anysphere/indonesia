@@ -64,3 +64,60 @@ class A {
     );
 }
 
+#[test]
+fn completion_includes_lambda_snippet_for_functional_interface_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+interface Fun { int apply(int x); }
+class A {
+  void m() {
+    Fun f = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let lambda_item = items
+        .iter()
+        .find(|item| {
+            item.kind == Some(lsp_types::CompletionItemKind::SNIPPET)
+                && item
+                    .insert_text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("->"))
+        })
+        .expect("expected completion list to contain a lambda snippet item");
+
+    assert_eq!(
+        lambda_item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected lambda completion to use snippet insert text format; got {lambda_item:#?}"
+    );
+}
+
+#[test]
+fn completion_does_not_include_lambda_snippet_for_nonfunctional_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items.iter().any(|item| {
+            item.kind == Some(lsp_types::CompletionItemKind::SNIPPET)
+                && item
+                    .insert_text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("->"))
+        }),
+        "expected completion list to not contain a lambda snippet item; got {items:#?}"
+    );
+}
+
