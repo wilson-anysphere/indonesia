@@ -261,8 +261,33 @@ Response body:
 
 ```jsonc
 {
-  "analysis": { /* nova_stream_debug::StreamChain */ },
-  "runtime": { /* nova_stream_debug::StreamDebugResult */ }
+  "analysis": {
+    // nova_stream_debug::StreamChain
+    "expression": "list.stream().map(x -> x * 2).count()",
+    "streamKind": "stream",
+    "source": { "kind": "collection", "collectionExpr": "list", "streamExpr": "list.stream()", "method": "stream" },
+    "intermediates": [
+      { "name": "map", "kind": "map", "callSource": "map(x -> x * 2)", "argCount": 1, "expr": "list.stream().map(x -> x * 2)" }
+    ],
+    "terminal": { "name": "count", "kind": "count", "callSource": "count()", "argCount": 0, "expr": "list.stream().map(x -> x * 2).count()" }
+  },
+  "runtime": {
+    // nova_stream_debug::StreamDebugResult
+    "expression": "list.stream().map(x -> x * 2).count()",
+    "sourceSample": { "elements": ["1", "2"], "truncated": false, "elementType": "int", "collectionType": "java.util.ArrayList" },
+    "steps": [
+      {
+        "operation": "map",
+        "kind": "map",
+        "executed": true,
+        "input": { "elements": ["1", "2"], "truncated": false, "elementType": "int", "collectionType": "java.util.ArrayList" },
+        "output": { "elements": ["2", "4"], "truncated": false, "elementType": "int", "collectionType": "java.util.ArrayList" },
+        "durationMs": 2
+      }
+    ],
+    "terminal": { "operation": "count", "kind": "count", "executed": true, "value": "2", "typeName": "long", "durationMs": 1 },
+    "totalDurationMs": 5
+  }
 }
 ```
 
