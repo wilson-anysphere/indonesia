@@ -85,8 +85,9 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// This is designed to be used by LSP layers that already have a list of diagnostics relevant to
 /// the requested selection range (e.g. `CodeActionParams.context.diagnostics`).
 ///
-/// Today this provides a single quick-fix:
+/// Today this provides two quick-fixes:
 /// - `unresolved-type` → `Create class '<Name>'`
+/// - `FLOW_UNREACHABLE` → `Remove unreachable code`
 pub fn diagnostic_quick_fixes(
     source: &str,
     uri: Option<Uri>,
@@ -99,7 +100,11 @@ pub fn diagnostic_quick_fixes(
 
     diagnostics
         .iter()
-        .filter_map(|diag| create_class_quick_fix(source, &uri, &selection, diag))
+        .flat_map(|diag| {
+            create_class_quick_fix(source, &uri, &selection, diag)
+                .into_iter()
+                .chain(remove_unreachable_code_quick_fix(source, &uri, &selection, diag).into_iter())
+        })
         .collect()
 }
 
@@ -142,6 +147,44 @@ fn create_class_quick_fix(
 
     Some(CodeAction {
         title: format!("Create class '{name}'"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    })
+}
+
+fn remove_unreachable_code_quick_fix(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Option<CodeAction> {
+    if diagnostic_code(diagnostic)? != "FLOW_UNREACHABLE" {
+        return None;
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return None;
+    }
+
+    let delete_range = full_line_range(source, &diagnostic.range)?;
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: delete_range,
+            new_text: String::new(),
+        }],
+    );
+
+    Some(CodeAction {
+        title: "Remove unreachable code".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
         edit: Some(WorkspaceEdit {
             changes: Some(changes),
@@ -200,6 +243,29 @@ fn normalize_range(range: &Range) -> (Position, Position) {
     } else {
         (range.end, range.start)
     }
+}
+
+fn full_line_range(source: &str, range: &Range) -> Option<Range> {
+    let (start, end) = normalize_range(range);
+    let start_offset = crate::text::position_to_offset(source, start)?;
+    let end_offset = crate::text::position_to_offset(source, end)?;
+
+    let start_offset = start_offset.min(source.len());
+    let end_offset = end_offset.min(source.len());
+
+    let line_start = source[..start_offset]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let line_end = source[end_offset..]
+        .find('\n')
+        .map(|idx| end_offset + idx + 1)
+        .unwrap_or(source.len());
+
+    Some(Range {
+        start: crate::text::offset_to_position(source, line_start),
+        end: crate::text::offset_to_position(source, line_end),
+    })
 }
 
 fn position_within_range(start: Position, end: Position, pos: Position) -> bool {
