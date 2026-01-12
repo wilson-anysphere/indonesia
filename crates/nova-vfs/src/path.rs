@@ -123,7 +123,8 @@ impl VfsPath {
     pub fn to_file_uri(&self) -> Option<String> {
         match self {
             VfsPath::Local(path) => {
-                let abs = AbsPathBuf::new(path.clone()).ok()?;
+                let normalized = normalize_local_path(path.as_path());
+                let abs = AbsPathBuf::new(normalized).ok()?;
                 path_to_file_uri(&abs).ok()
             }
             _ => None,
@@ -141,7 +142,8 @@ impl VfsPath {
         match self {
             VfsPath::Local(_) => self.to_file_uri(),
             VfsPath::Archive(path) => {
-                let abs = AbsPathBuf::new(path.archive.clone()).ok()?;
+                let normalized = normalize_local_path(path.archive.as_path());
+                let abs = AbsPathBuf::new(normalized).ok()?;
                 let archive_uri = path_to_file_uri(&abs).ok()?;
                 let scheme = match path.kind {
                     ArchiveKind::Jar => "jar",
@@ -605,6 +607,36 @@ mod tests {
         let (uri, expected) = ("file:///C:/a/./b/./c.java", PathBuf::from(r"C:\a\b\c.java"));
 
         assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
+    }
+
+    #[test]
+    fn to_file_uri_normalizes_local_paths() {
+        #[cfg(not(windows))]
+        {
+            let path = VfsPath::Local(PathBuf::from("/a/b/../c.java"));
+            assert_eq!(path.to_uri().as_deref(), Some("file:///a/c.java"));
+        }
+
+        #[cfg(windows)]
+        {
+            let path = VfsPath::Local(PathBuf::from(r"C:\a\b\..\c.java"));
+            assert_eq!(path.to_uri().as_deref(), Some("file:///C:/a/c.java"));
+        }
+    }
+
+    #[test]
+    fn to_uri_normalizes_archive_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("lib.jar");
+        let with_dotdot = dir.path().join("x").join("..").join("lib.jar");
+
+        let abs = AbsPathBuf::new(normalized).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+        let entry = "com/example/Foo.class".to_string();
+        let expected = format!("jar:{archive_uri}!/{entry}");
+
+        let jar = VfsPath::Archive(ArchivePath::new(ArchiveKind::Jar, with_dotdot, entry));
+        assert_eq!(jar.to_uri().as_deref(), Some(expected.as_str()));
     }
 
     #[test]
