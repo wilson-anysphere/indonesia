@@ -187,10 +187,11 @@ pub fn reload_project(
 
     let discovered_path = nova_config::discover_config_path(workspace_root);
     let reload_config = changed_files.iter().any(|changed| {
-        options
-            .nova_config_path
-            .as_ref()
-            .is_some_and(|p| p == changed)
+        changed.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
+            || options
+                .nova_config_path
+                .as_ref()
+                .is_some_and(|p| p == changed)
             || discovered_path.as_ref().is_some_and(|p| p == changed)
     });
 
