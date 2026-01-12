@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncReadExt, BufReader},
     net::{lookup_host, TcpListener},
     process::{Child, Command},
     sync::{broadcast, mpsc, watch, Mutex},
@@ -4273,6 +4273,24 @@ async fn pick_free_port() -> std::io::Result<u16> {
     Ok(port)
 }
 
+const OUTPUT_TRUNCATION_MARKER: &str = "\n<output truncated>";
+/// Maximum number of bytes forwarded in a single DAP `output` event.
+///
+/// This is intentionally small-ish to avoid huge DAP frames from pathological debuggee output.
+const MAX_OUTPUT_EVENT_BYTES: usize = 8 * 1024;
+/// Maximum number of bytes buffered while waiting for a newline before we emit/truncate.
+const MAX_OUTPUT_LINE_BUFFER_BYTES: usize = 8 * 1024;
+
+fn truncate_message(mut message: String, max_len: usize) -> String {
+    if message.len() <= max_len {
+        return message;
+    }
+
+    message.truncate(max_len);
+    message.push_str(OUTPUT_TRUNCATION_MARKER);
+    message
+}
+
 fn spawn_output_task<R>(
     reader: R,
     tx: mpsc::UnboundedSender<Value>,
@@ -4283,30 +4301,110 @@ fn spawn_output_task<R>(
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
+        // Output from debuggees can be adversarially large (e.g., a single "line" with no newline
+        // or an extremely long line). Reading with `read_until('\n')` would grow an unbounded
+        // buffer and can OOM the adapter or retain a huge capacity forever. Bound buffering and
+        // truncate long lines instead.
         let mut reader = BufReader::new(reader);
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(MAX_OUTPUT_LINE_BUFFER_BYTES);
+        let mut scratch = [0u8; 4096];
+        let mut discarding = false;
 
         loop {
-            buf.clear();
             let read = tokio::select! {
                 _ = server_shutdown.cancelled() => return,
-                res = reader.read_until(b'\n', &mut buf) => match res {
+                res = reader.read(&mut scratch) => match res {
                     Ok(n) => n,
                     Err(_) => return,
                 }
             };
 
             if read == 0 {
+                if !discarding && !buf.is_empty() {
+                    let output =
+                        truncate_message(String::from_utf8_lossy(&buf).to_string(), MAX_OUTPUT_EVENT_BYTES);
+                    send_event(
+                        &tx,
+                        &seq,
+                        "output",
+                        Some(json!({ "category": category, "output": output })),
+                    );
+                }
                 return;
             }
 
-            let output = String::from_utf8_lossy(&buf).to_string();
-            send_event(
-                &tx,
-                &seq,
-                "output",
-                Some(json!({ "category": category, "output": output })),
-            );
+            let mut input = &scratch[..read];
+            while !input.is_empty() {
+                if discarding {
+                    if let Some(nl) = input.iter().position(|&b| b == b'\n') {
+                        // Drop everything through the newline, then resume normal processing.
+                        input = &input[nl + 1..];
+                        discarding = false;
+                    } else {
+                        // Still in the middle of an oversized line.
+                        break;
+                    }
+                    continue;
+                }
+
+                // Find the next newline so we can preserve the existing "one event per line"
+                // behavior for normal output.
+                let (chunk, has_newline) = match input.iter().position(|&b| b == b'\n') {
+                    Some(nl) => (&input[..nl + 1], true),
+                    None => (input, false),
+                };
+
+                let remaining = MAX_OUTPUT_LINE_BUFFER_BYTES.saturating_sub(buf.len());
+                if chunk.len() <= remaining {
+                    buf.extend_from_slice(chunk);
+                    input = &input[chunk.len()..];
+                    if has_newline {
+                        let output = truncate_message(
+                            String::from_utf8_lossy(&buf).to_string(),
+                            MAX_OUTPUT_EVENT_BYTES,
+                        );
+                        send_event(
+                            &tx,
+                            &seq,
+                            "output",
+                            Some(json!({ "category": category, "output": output })),
+                        );
+                        buf.clear();
+                    }
+                    continue;
+                }
+
+                // We exceeded our per-line buffer cap. Emit a truncated output event and discard
+                // the remainder of this line until we see the next newline.
+                if remaining > 0 {
+                    buf.extend_from_slice(&chunk[..remaining]);
+                }
+
+                let mut output = truncate_message(
+                    String::from_utf8_lossy(&buf).to_string(),
+                    MAX_OUTPUT_EVENT_BYTES,
+                );
+                if !output.ends_with(OUTPUT_TRUNCATION_MARKER) {
+                    output.push_str(OUTPUT_TRUNCATION_MARKER);
+                }
+                send_event(
+                    &tx,
+                    &seq,
+                    "output",
+                    Some(json!({ "category": category, "output": output })),
+                );
+                buf.clear();
+
+                // Discard the rest of the current line from this chunk (including the newline if
+                // present), then keep discarding from subsequent reads until a newline is seen.
+                if let Some(nl) = chunk[remaining..].iter().position(|&b| b == b'\n') {
+                    input = &input[(remaining + nl + 1)..];
+                    discarding = false;
+                } else {
+                    input = &input[chunk.len()..];
+                    discarding = true;
+                }
+            }
         }
     });
 }
