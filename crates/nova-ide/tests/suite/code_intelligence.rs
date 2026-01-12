@@ -3383,6 +3383,51 @@ class A {
 }
 
 #[test]
+fn completion_cast_type_position_includes_int_primitive() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m(Object o) {
+    int x = (in<|>) o;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"int"),
+        "expected cast type completion to contain primitive int; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_cast_type_position_does_not_suggest_var() {
+    let (db, file, pos) = fixture(
+        r#"
+class Value {}
+class A {
+  void m(Object o) {
+    Object x = (v<|>) o;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Value"),
+        "expected cast type completion to contain class Value; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"var"),
+        "expected cast type completion to not suggest `var`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_workspace_annotation_types_after_at_sign() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");

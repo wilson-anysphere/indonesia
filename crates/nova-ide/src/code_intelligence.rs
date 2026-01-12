@@ -3134,6 +3134,7 @@ const JAVA_LANG_COMMON_TYPES: &[&str] = &[
 enum TypePositionCompletionContext {
     Type,
     ReturnType,
+    Cast,
 }
 
 const MAX_NEW_TYPE_COMPLETIONS: usize = 100;
@@ -8131,7 +8132,7 @@ fn type_position_completion_context(
         tok.kind == TokenKind::Ident && tok.span.start == prefix_start && offset <= tok.span.end
     })?;
 
-    let prev = prev_type_position_token(&tokens, idx)?;
+    let (prev_idx, prev) = prev_type_position_token(&tokens, idx)?;
 
     // Avoid offering type completions for class/enum/interface names (`class Foo {}`).
     if prev.kind == TokenKind::Ident
@@ -8159,22 +8160,20 @@ fn type_position_completion_context(
     // Require a following identifier (variable / parameter / method name). This
     // avoids hijacking expression completions at the start of a statement (e.g.
     // `tr<cursor>` should suggest `true`, not only types).
+    //
+    // Exception: casts (`(int) foo`) don't have an identifier after the type; we
+    // still want primitive completions in that context.
     let next = tokens.get(idx + 1)?;
     if next.kind != TokenKind::Ident {
-        return None;
-    }
-
-    // If the current identifier is immediately followed by `(` and we're *not* in
-    // a `new Foo(` expression, we're more likely completing a constructor/method
-    // name than a type.
-    let next_is_lparen = matches!(
-        tokens.get(idx + 1),
-        Some(Token {
-            kind: TokenKind::Symbol('('),
-            ..
-        })
-    );
-    if next_is_lparen && !(prev.kind == TokenKind::Ident && prev.text == "new") {
+        if next.kind == TokenKind::Symbol(')')
+            && prev.kind == TokenKind::Symbol('(')
+            && is_likely_cast_paren(&tokens, prev_idx)
+            && tokens
+                .get(idx + 2)
+                .is_some_and(|tok| token_can_start_expression(tok))
+        {
+            return Some(TypePositionCompletionContext::Cast);
+        }
         return None;
     }
 
@@ -8199,7 +8198,7 @@ fn type_position_completion_context(
     })
 }
 
-fn prev_type_position_token<'a>(tokens: &'a [Token], idx: usize) -> Option<&'a Token> {
+fn prev_type_position_token<'a>(tokens: &'a [Token], idx: usize) -> Option<(usize, &'a Token)> {
     if idx == 0 {
         return None;
     }
@@ -8235,10 +8234,19 @@ fn prev_type_position_token<'a>(tokens: &'a [Token], idx: usize) -> Option<&'a T
             }
         }
 
-        return Some(tok);
+        return Some((j as usize, tok));
     }
 
     None
+}
+
+fn token_can_start_expression(tok: &Token) -> bool {
+    match tok.kind {
+        TokenKind::Ident | TokenKind::StringLiteral | TokenKind::CharLiteral | TokenKind::Number => {
+            true
+        }
+        TokenKind::Symbol(ch) => matches!(ch, '(' | '!' | '~' | '+' | '-'),
+    }
 }
 
 fn matching_open_paren(tokens: &[Token], close_idx: usize) -> Option<usize> {
