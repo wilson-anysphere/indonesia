@@ -5337,6 +5337,30 @@ fn record_lightweight_expr(
                 spans,
             );
         }
+        Expr::Cast(expr) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::Lambda(expr) => match &expr.body {
             java_syntax::ast::LambdaBody::Expr(expr) => record_lightweight_expr(
                 file,
