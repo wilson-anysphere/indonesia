@@ -144,6 +144,20 @@ fn path_to_label_accepts_canonical_paths_when_root_is_symlink() {
 }
 
 #[test]
+fn path_to_label_recognizes_build_bazel() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD.bazel"), "# java package\n");
+    create_file(&dir.path().join("java/com/Hello.java"));
+
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/com/Hello.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//java:com/Hello.java"));
+}
+
+#[test]
 fn path_to_label_subpackage_prefers_nearest_build() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
