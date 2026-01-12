@@ -224,8 +224,8 @@ RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60
 Seed corpora (main harness) live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
 `fuzz/artifacts/<target>/`.
 
-There are additional targets (e.g. `format_java` idempotence and `refactor_smoke` which requires
-`--features refactor`)—list them with:
+There are additional targets (e.g. `parse_java`, `format_java` idempotence, and `refactor_smoke` which
+requires `--features refactor`)—list them with:
 
 ```bash
 cargo +nightly fuzz list
@@ -235,9 +235,13 @@ Remote protocol fuzzers live in separate harnesses and must be run from their cr
 
 ```bash
 cd crates/nova-remote-proto
+cargo +nightly fuzz list
 cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run decode_v3_wire_frame -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262144
 
 cd ../nova-remote-rpc
+cargo +nightly fuzz list
 cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
 ```
 
