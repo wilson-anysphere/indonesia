@@ -528,7 +528,7 @@ nova cache fetch <project-root> https://example.com/nova-cache.tar.zst
 ```yaml
 - name: Build Nova cache package
   run: |
-    cargo run -p nova-cli -- cache pack . --out nova-cache.tar.zst
+    cargo run --locked -p nova-cli -- cache pack . --out nova-cache.tar.zst
 
 - name: Upload Nova cache package
   uses: actions/upload-artifact@v4

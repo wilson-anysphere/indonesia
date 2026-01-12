@@ -8,11 +8,11 @@ formatting, refactors, and classpath indexing).
 
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
-cargo bench -p nova-core --bench critical_paths
-cargo bench -p nova-syntax --bench parse_java
-cargo bench -p nova-format --bench format
-cargo bench -p nova-refactor --bench refactor
-cargo bench -p nova-classpath --bench index
+cargo bench --locked -p nova-core --bench critical_paths
+cargo bench --locked -p nova-syntax --bench parse_java
+cargo bench --locked -p nova-format --bench format
+cargo bench --locked -p nova-refactor --bench refactor
+cargo bench --locked -p nova-classpath --bench index
 ```
 
 Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
@@ -49,7 +49,7 @@ requests and on pushes to `main`:
 ## Capturing a run
 
 ```bash
-cargo run -p nova-cli --release -- perf capture \
+cargo run --locked -p nova-cli --release -- perf capture \
   --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
   --out perf-current.json
 ```
@@ -57,7 +57,7 @@ cargo run -p nova-cli --release -- perf capture \
 ## Comparing two runs
 
 ```bash
-cargo run -p nova-cli --release -- perf compare \
+cargo run --locked -p nova-cli --release -- perf compare \
   --baseline perf-base.json \
   --current perf-current.json \
   --thresholds-config perf/thresholds.toml
@@ -72,10 +72,10 @@ for known/intentional slowdowns.
 You can convert that into a compact runtime snapshot:
 
 ```bash
-cargo run -p nova-cli --release -- index path/to/project --json > index-report.json
+cargo run --locked -p nova-cli --release -- index path/to/project --json > index-report.json
 cache_root=$(jq -r .cache_root index-report.json)
 
-cargo run -p nova-cli --release -- perf capture-runtime \
+cargo run --locked -p nova-cli --release -- perf capture-runtime \
   --workspace-cache "$cache_root" \
   --out runtime-current.json
 ```
@@ -84,8 +84,8 @@ To include LSP startup + `nova/memoryStatus` (MemoryReport) metrics in the snaps
 `nova-lsp` binary:
 
 ```bash
-cargo build -p nova-lsp --release
-cargo run -p nova-cli --release -- perf capture-runtime \
+cargo build --locked -p nova-lsp --release
+cargo run --locked -p nova-cli --release -- perf capture-runtime \
   --workspace-cache "$cache_root" \
   --out runtime-current.json \
   --nova-lsp target/release/nova-lsp
@@ -94,7 +94,7 @@ cargo run -p nova-cli --release -- perf capture-runtime \
 Compare two snapshots with per-metric thresholds:
 
 ```bash
-cargo run -p nova-cli --release -- perf compare-runtime \
+cargo run --locked -p nova-cli --release -- perf compare-runtime \
   --baseline runtime-base.json \
   --current runtime-current.json \
   --thresholds-config perf/runtime-thresholds.toml
