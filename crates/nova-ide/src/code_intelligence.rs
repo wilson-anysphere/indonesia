@@ -964,6 +964,35 @@ fn resolve_annotation_type(
 // Diagnostics
 // -----------------------------------------------------------------------------
 
+fn salsa_inputs_for_single_file(
+    db: &dyn Database,
+    file: FileId,
+) -> (Arc<String>, Option<Arc<nova_project::ProjectConfig>>) {
+    let Some(path) = db.file_path(file) else {
+        return (
+            Arc::new(format!("/virtual/file_{}.java", file.to_raw())),
+            None,
+        );
+    };
+
+    let root = framework_cache::project_root_for_path(path);
+    let rel_path = path
+        .strip_prefix(&root)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .unwrap_or_else(|| format!("/virtual/file_{}.java", file.to_raw()));
+
+    let config = root
+        .parent()
+        .is_some()
+        .then(|| framework_cache::project_config(&root))
+        .flatten();
+
+    (Arc::new(rel_path), config)
+}
+
 fn with_salsa_snapshot_for_single_file<T>(
     db: &dyn Database,
     file: FileId,
@@ -976,14 +1005,32 @@ fn with_salsa_snapshot_for_single_file<T>(
         .cloned()
         .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
+    let (file_rel_path, project_config) = salsa_inputs_for_single_file(db, file);
+
     let salsa = match db.salsa_db() {
         Some(salsa) => {
-            ensure_salsa_inputs_for_single_file(&salsa, project, &jdk, file, text);
+            ensure_salsa_inputs_for_single_file(
+                &salsa,
+                project,
+                &jdk,
+                file,
+                text,
+                &file_rel_path,
+                project_config.as_ref(),
+            );
             salsa
         }
         None => {
             let salsa = SalsaDatabase::new();
-            seed_salsa_inputs_for_single_file(&salsa, project, &jdk, file, text);
+            seed_salsa_inputs_for_single_file(
+                &salsa,
+                project,
+                &jdk,
+                file,
+                text,
+                &file_rel_path,
+                project_config.as_ref(),
+            );
             salsa
         }
     };
@@ -998,11 +1045,17 @@ fn seed_salsa_inputs_for_single_file(
     jdk: &Arc<JdkIndex>,
     file: FileId,
     text: &str,
+    file_rel_path: &Arc<String>,
+    project_config: Option<&Arc<nova_project::ProjectConfig>>,
 ) {
     salsa.set_jdk_index(project, Arc::clone(jdk));
     salsa.set_classpath_index(project, None);
+    salsa.set_file_project(file, project);
+    if let Some(cfg) = project_config {
+        salsa.set_project_config(project, Arc::clone(cfg));
+    }
     salsa.set_file_text(file, text.to_string());
-    salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
+    salsa.set_file_rel_path(file, Arc::clone(file_rel_path));
     salsa.set_project_files(project, Arc::new(vec![file]));
 }
 
@@ -1012,6 +1065,8 @@ fn ensure_salsa_inputs_for_single_file(
     jdk: &Arc<JdkIndex>,
     file: FileId,
     text: &str,
+    file_rel_path: &Arc<String>,
+    project_config: Option<&Arc<nova_project::ProjectConfig>>,
 ) {
     // IMPORTANT: When reusing a caller-provided Salsa DB, treat it as authoritative.
     // Only seed *missing* inputs (i.e. ones that would otherwise panic) so `nova-ide` does not
@@ -1031,6 +1086,16 @@ fn ensure_salsa_inputs_for_single_file(
     .is_err();
     if needs_classpath {
         salsa.set_classpath_index(project, None);
+    }
+
+    if let Some(cfg) = project_config {
+        let needs_project_config = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            salsa.with_snapshot(|snap| snap.project_config(project))
+        }))
+        .is_err();
+        if needs_project_config {
+            salsa.set_project_config(project, Arc::clone(cfg));
+        }
     }
 
     let needs_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1054,7 +1119,7 @@ fn ensure_salsa_inputs_for_single_file(
     }))
     .is_err();
     if needs_file_rel_path {
-        salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
+        salsa.set_file_rel_path(file, Arc::clone(file_rel_path));
     }
 
     let needs_project_files = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1498,28 +1563,9 @@ pub fn file_diagnostics_with_semantic_db(
 /// best-effort Salsa database seeded with only the current file.
 pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     let text = db.file_content(file);
-    let project = nova_db::ProjectId::from_raw(0);
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
-
-    let salsa = SalsaDatabase::new();
-    salsa.set_jdk_index(project, jdk);
-    salsa.set_classpath_index(project, None);
-    salsa.set_file_text(file, text.to_string());
-
-    // `import_diagnostics` requires these inputs.
-    let rel = db
-        .file_path(file)
-        .and_then(|path| path.to_str())
-        .unwrap_or("unknown.java")
-        .to_string();
-    salsa.set_file_rel_path(file, Arc::new(rel));
-    salsa.set_project_files(project, Arc::new(vec![file]));
-
-    let snap = salsa.snapshot();
-    file_diagnostics_with_semantic_db(db, &snap, file)
+    with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+        file_diagnostics_with_semantic_db(db, snap, file)
+    })
 }
 
 /// Map Nova diagnostics into LSP diagnostics.
