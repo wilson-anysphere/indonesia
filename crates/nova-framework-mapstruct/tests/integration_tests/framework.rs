@@ -44,6 +44,88 @@ import org.mapstruct.Mapper;
 }
 
 #[test]
+fn diagnostics_do_not_require_db_file_enumeration() {
+    struct NoAllFilesDb {
+        inner: MemoryDatabase,
+    }
+
+    impl nova_framework::Database for NoAllFilesDb {
+        fn class(&self, class: nova_types::ClassId) -> &nova_hir::framework::ClassData {
+            nova_framework::Database::class(&self.inner, class)
+        }
+
+        fn project_of_class(&self, class: nova_types::ClassId) -> nova_core::ProjectId {
+            nova_framework::Database::project_of_class(&self.inner, class)
+        }
+
+        fn project_of_file(&self, file: nova_vfs::FileId) -> nova_core::ProjectId {
+            nova_framework::Database::project_of_file(&self.inner, file)
+        }
+
+        fn file_text(&self, file: nova_vfs::FileId) -> Option<&str> {
+            nova_framework::Database::file_text(&self.inner, file)
+        }
+
+        fn file_path(&self, file: nova_vfs::FileId) -> Option<&std::path::Path> {
+            nova_framework::Database::file_path(&self.inner, file)
+        }
+
+        fn file_id(&self, path: &std::path::Path) -> Option<nova_vfs::FileId> {
+            nova_framework::Database::file_id(&self.inner, path)
+        }
+
+        fn all_files(&self, _project: nova_core::ProjectId) -> Vec<nova_vfs::FileId> {
+            Vec::new()
+        }
+
+        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+            nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
+        }
+
+        fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+            nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
+        }
+
+        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+            nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+
+    // Make the analyzer applicable via classpath-based detection, but don't add
+    // any org.mapstruct dependency coordinates.
+    inner.add_classpath_class(project, "org.mapstruct.Mapper");
+
+    let mapper = r#"
+package com.example;
+
+import org.mapstruct.Mapper;
+
+@Mapper
+public interface FooMapper {}
+"#;
+    let mapper_path = root.join("src/main/java/com/example/FooMapper.java");
+    write_file(&mapper_path, mapper);
+    let mapper_file = inner.add_file_with_path_and_text(project, mapper_path, mapper);
+
+    // Wrap the DB so the analyzer cannot enumerate project files via `all_files`.
+    let db = NoAllFilesDb { inner };
+
+    let analyzer = MapStructAnalyzer::new();
+    let diags = analyzer.diagnostics(&db, mapper_file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        "expected missing-dependency diagnostic even without db.all_files(), got: {diags:?}"
+    );
+}
+
+#[test]
 fn navigation_links_mapper_to_generated_implementation_when_indexed() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
