@@ -43,6 +43,7 @@ struct TestIndex {
     types: HashMap<String, TypeName>,
     package_to_types: HashMap<String, HashMap<String, TypeName>>,
     packages: HashSet<String>,
+    static_members: HashMap<String, HashMap<String, StaticMemberId>>,
 }
 
 impl TestIndex {
@@ -57,6 +58,15 @@ impl TestIndex {
         self.packages.insert(package.to_string());
         self.package_to_types
             .entry(package.to_string())
+            .or_default()
+            .insert(name.to_string(), id.clone());
+        id
+    }
+
+    fn add_static_member(&mut self, owner: &str, name: &str) -> StaticMemberId {
+        let id = StaticMemberId::new(format!("{owner}::{name}"));
+        self.static_members
+            .entry(owner.to_string())
             .or_default()
             .insert(name.to_string(), id.clone());
         id
@@ -77,6 +87,13 @@ impl TypeIndex for TestIndex {
 
     fn package_exists(&self, package: &PackageName) -> bool {
         self.packages.contains(&package.to_dotted())
+    }
+
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+        self.static_members
+            .get(owner.as_str())
+            .and_then(|m| m.get(name.as_str()))
+            .cloned()
     }
 }
 
@@ -931,6 +948,38 @@ class C {}
         diags.iter().any(|d| d.code.as_ref() == "duplicate-import"
             && d.severity == Severity::Warning),
         "expected duplicate-import warning, got {diags:?}"
+    );
+}
+
+#[test]
+fn distinct_static_single_imports_report_ambiguity() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import static a.Util.max;
+import static b.Util.max;
+class C {}
+"#,
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+
+    let mut index = TestIndex::default();
+    index.add_type("a", "Util");
+    index.add_type("b", "Util");
+    index.add_static_member("a.Util", "max");
+    index.add_static_member("b.Util", "max");
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let diags = resolver.diagnose_imports(&imports);
+
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
+        "expected ambiguous-import, got {diags:?}"
     );
 }
 
