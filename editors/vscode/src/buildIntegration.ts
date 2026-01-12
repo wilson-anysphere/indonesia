@@ -720,12 +720,18 @@ export function registerNovaBuildIntegration(
     return picked?.value ?? 'auto';
   }
 
-  const promptForBazelTarget = async (folder: vscode.WorkspaceFolder): Promise<string | undefined> => {
+  const promptForBazelTarget = async (
+    folder: vscode.WorkspaceFolder,
+    token?: vscode.CancellationToken,
+  ): Promise<string | undefined> => {
     const projectRoot = folder.uri.fsPath;
     try {
+      if (token?.isCancellationRequested) {
+        return undefined;
+      }
       const model = projectModelCache
         ? ((await projectModelCache.getProjectModel(folder)) as unknown as ProjectModelResult)
-        : await request<ProjectModelResult>('nova/projectModel', { projectRoot });
+        : await request<ProjectModelResult>('nova/projectModel', { projectRoot }, token ? { token } : undefined);
       if (!model) {
         throw new Error('projectModel unavailable');
       }
@@ -876,7 +882,7 @@ export function registerNovaBuildIntegration(
 
                 const message = formatError(err);
                 if (buildTool === 'auto' && !target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
-                  target = await promptForBazelTarget(folder);
+                  target = await promptForBazelTarget(folder, token);
                   if (!target) {
                     buildOutput.appendLine('Build cancelled (no Bazel target selected).');
                     logBuildFinished();
