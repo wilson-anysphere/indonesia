@@ -93,3 +93,43 @@ fn build_cache_store_is_safe_under_concurrent_writers() {
         bytes.len()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn build_cache_keys_are_stable_when_project_root_is_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let base_dir = dir.path().join("cache");
+    let cache = BuildCache::new(base_dir);
+
+    let real_root = dir.path().join("real");
+    std::fs::create_dir_all(&real_root).unwrap();
+    std::fs::write(real_root.join("pom.xml"), "<project></project>").unwrap();
+
+    let link_root = dir.path().join("link");
+    symlink(&real_root, &link_root).unwrap();
+
+    let fingerprint = BuildFileFingerprint {
+        digest: "fingerprint".to_string(),
+    };
+    let kind = BuildSystemKind::Maven;
+
+    let mut data = cache
+        .load(&link_root, kind, &fingerprint)
+        .unwrap()
+        .unwrap_or_default();
+    data.modules.insert("module-a".to_string(), Default::default());
+    cache.store(&link_root, kind, &fingerprint, &data).unwrap();
+
+    // If `BuildCache` hashes the raw path string, loading via the real root would miss the entry.
+    // We canonicalize roots best-effort, so both spellings should share the same cache key.
+    let loaded = cache
+        .load(&real_root, kind, &fingerprint)
+        .unwrap()
+        .expect("expected cache entry to be found via canonical root");
+    assert!(
+        loaded.modules.contains_key("module-a"),
+        "expected cached module data to be present"
+    );
+}
