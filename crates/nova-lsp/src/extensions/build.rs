@@ -1497,22 +1497,30 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
                             let composite_root_project_path =
                                 composite_gradle_build_root_project_path(&project_path);
-                            let composite_build_root =
-                                composite_root_project_path.and_then(|root_project_path| {
-                                    gradle_roots_by_project_path.get(root_project_path)
-                                });
-                            let (invocation_root, invocation_project_path) =
-                                match composite_build_root {
+                            let is_buildsrc = composite_root_project_path
+                                .is_some_and(|root_project_path| root_project_path == ":__buildSrc");
+
+                            // `nova-build` already knows how to invoke Gradle's special `buildSrc`
+                            // build by passing `--project-dir buildSrc` when the project path is
+                            // `:__buildSrc` (or a nested `:__buildSrc:*` path). Keep the invocation
+                            // rooted at the main workspace so we can still use `./gradlew`.
+                            let (invocation_root, invocation_project_path) = if is_buildsrc {
+                                (project_root.as_path(), Some(project_path.as_str()))
+                            } else if let Some(root_project_path) = composite_root_project_path {
+                                match gradle_roots_by_project_path.get(root_project_path) {
                                     Some(build_root) => {
                                         let inner = project_path
-                                            .strip_prefix(composite_root_project_path.unwrap())
+                                            .strip_prefix(root_project_path)
                                             .unwrap_or_default();
                                         let inner =
                                             if inner.is_empty() { None } else { Some(inner) };
                                         (build_root.as_path(), inner)
                                     }
                                     None => (project_root.as_path(), Some(project_path.as_str())),
-                                };
+                                }
+                            } else {
+                                (project_root.as_path(), Some(project_path.as_str()))
+                            };
 
                             let cfg = if invocation_root == project_root.as_path() {
                                 if project_path == ":" {
@@ -2919,7 +2927,7 @@ esac\n",
 
     #[test]
     #[cfg(unix)]
-    fn project_model_resolves_buildsrc_via_composite_build_root() {
+    fn project_model_resolves_buildsrc_via_gradle_wrapper_project_dir() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         let original_path = std::env::var("PATH").unwrap_or_default();
 
@@ -2942,10 +2950,6 @@ esac\n",
         )
         .unwrap();
 
-        let bin_dir = root.join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        let counter = root.join("gradle-invocations.txt");
-
         let app_dep = root.join("app.jar");
         let buildsrc_dep = root.join("buildsrc.jar");
         fs::write(&app_dep, "").unwrap();
@@ -2961,26 +2965,65 @@ esac\n",
             "compileClasspath": [buildsrc_dep.to_string_lossy()]
         });
 
-        let root_path = root.to_string_lossy();
-        let buildsrc_root = root.join("buildSrc");
-        let buildsrc_root_path = buildsrc_root.to_string_lossy();
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let counter = root.join("gradle-invocations.txt");
 
+        // Guardrail: `nova-build` should prefer `./gradlew` when present. If `handle_project_model`
+        // ever falls back to invoking `gradle` directly (e.g. by `chdir`ing into `buildSrc/`), we
+        // want the test to fail deterministically even if a system Gradle exists on the runner.
         write_executable(
             &bin_dir.join("gradle"),
+            "#!/bin/sh\n\
+set -eu\n\
+echo \"unexpected system gradle invocation\" >&2\n\
+exit 1\n",
+        );
+
+        write_executable(
+            &root.join("gradlew"),
             &format!(
                 "#!/bin/sh\n\
 set -eu\n\
 \n\
 echo 1 >> \"{counter}\"\n\
 \n\
-cwd=\"$(pwd)\"\n\
-\n\
+has_project_dir=0\n\
+project_dir=\"\"\n\
+prev=\"\"\n\
 last=\"\"\n\
 for arg in \"$@\"; do\n\
   last=\"$arg\"\n\
+  if [ \"$prev\" = \"--project-dir\" ]; then\n\
+    has_project_dir=1\n\
+    project_dir=\"$arg\"\n\
+  fi\n\
+  prev=\"$arg\"\n\
 done\n\
 \n\
-if [ \"$cwd\" = \"{root_path}\" ]; then\n\
+if [ \"$has_project_dir\" = 1 ]; then\n\
+  if [ \"$project_dir\" != \"buildSrc\" ]; then\n\
+    echo \"unexpected --project-dir: $project_dir\" >&2\n\
+    exit 1\n\
+  fi\n\
+  case \"$last\" in\n\
+    :__buildSrc:printNovaJavaCompileConfig)\n\
+      echo \"unexpected gradle task (synthetic buildSrc project path used as task prefix): $last\" >&2\n\
+      exit 1\n\
+      ;;\n\
+    printNovaJavaCompileConfig)\n\
+      cat <<'EOF'\n\
+NOVA_JSON_BEGIN\n\
+{buildsrc_payload}\n\
+NOVA_JSON_END\n\
+EOF\n\
+      ;;\n\
+    *)\n\
+      echo \"unexpected gradle task for buildSrc build: $last\" >&2\n\
+      exit 1\n\
+      ;;\n\
+  esac\n\
+else\n\
   case \"$last\" in\n\
     printNovaAllJavaCompileConfigs)\n\
       cat <<'EOF'\n\
@@ -2998,27 +3041,8 @@ EOF\n\
       exit 1\n\
       ;;\n\
   esac\n\
-elif [ \"$cwd\" = \"{buildsrc_root_path}\" ]; then\n\
-  case \"$last\" in\n\
-    printNovaJavaCompileConfig)\n\
-      cat <<'EOF'\n\
-NOVA_JSON_BEGIN\n\
-{buildsrc_payload}\n\
-NOVA_JSON_END\n\
-EOF\n\
-      ;;\n\
-    *)\n\
-      echo \"unexpected gradle task in buildSrc build: $last\" >&2\n\
-      exit 1\n\
-      ;;\n\
-  esac\n\
-else\n\
-  echo \"unexpected gradle cwd: $cwd\" >&2\n\
-  exit 1\n\
 fi\n",
                 counter = counter.to_string_lossy(),
-                root_path = root_path,
-                buildsrc_root_path = buildsrc_root_path,
                 batch_payload = batch_payload,
                 buildsrc_payload = buildsrc_payload,
             ),
