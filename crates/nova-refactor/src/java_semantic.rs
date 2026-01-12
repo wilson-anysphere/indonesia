@@ -19,6 +19,7 @@ use nova_syntax::java as java_syntax;
 use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
+use crate::java::is_ident_char_byte;
 use crate::semantic::{
     MethodSignature as SemanticMethodSignature, RefactorDatabase, Reference, ReferenceKind,
     SymbolDefinition, TypeSymbolInfo,
@@ -851,6 +852,20 @@ impl RefactorJavaDatabase {
                 scope_result,
                 &snap,
                 &item_trees,
+                &resolver,
+                &workspace_def_map,
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
+
+            // Record references in `import static ...` declarations so member renames update the
+            // import line as well.
+            record_static_import_references(
+                file,
+                text,
+                tree.as_ref(),
+                scope_result,
                 &resolver,
                 &workspace_def_map,
                 &resolution_to_symbol,
@@ -4091,6 +4106,157 @@ fn token_text_range(token: &nova_syntax::SyntaxToken) -> TextRange {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
+}
+
+fn record_static_import_references(
+    file: &FileId,
+    file_text: &str,
+    tree: &nova_hir::item_tree::ItemTree,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    workspace_def_map: &WorkspaceDefMap,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    for import in &tree.imports {
+        if !import.is_static || import.is_star {
+            continue;
+        }
+
+        let Some((owner_path, member_name)) = split_static_import_path(&import.path) else {
+            continue;
+        };
+
+        let Some(member_range) = static_import_member_range(file_text, import.range) else {
+            continue;
+        };
+
+        // Ensure ranges target only the imported member token.
+        if file_text.get(member_range.start..member_range.end) != Some(member_name.as_str()) {
+            continue;
+        }
+
+        let Some(TypeResolution::Source(owner_item)) = resolver
+            .resolve_qualified_type_resolution_in_scope(
+                &scope_result.scopes,
+                scope_result.file_scope,
+                &QualifiedName::from_dotted(&owner_path),
+            )
+        else {
+            continue;
+        };
+
+        let Some(owner_def) = workspace_def_map.type_def(owner_item) else {
+            continue;
+        };
+
+        let member = Name::from(member_name.as_str());
+
+        // `import static p.Foo.member;` imports *all* static members named `member`. If the name is
+        // ambiguous between a field and a method group, skip indexing the import since it is not a
+        // reference to a single symbol (renaming would require splitting the import).
+        let static_field = owner_def
+            .fields
+            .get(&member)
+            .filter(|field| field.is_static)
+            .map(|field| field.id);
+        let static_method = owner_def
+            .methods
+            .get(&member)
+            .and_then(|methods| methods.iter().find(|m| m.is_static))
+            .map(|method| method.id);
+
+        match (static_field, static_method) {
+            (Some(field), None) => record_symbol_reference(
+                file,
+                member_range,
+                ResolutionKey::Field(field),
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+            (None, Some(method)) => record_symbol_reference(
+                file,
+                member_range,
+                ResolutionKey::Method(method),
+                resolution_to_symbol,
+                references,
+                spans,
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn record_symbol_reference(
+    file: &FileId,
+    range: TextRange,
+    key: ResolutionKey,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let Some(&symbol) = resolution_to_symbol.get(&key) else {
+        return;
+    };
+
+    references[symbol.as_usize()].push(Reference {
+        file: file.clone(),
+        range,
+        scope: None,
+        kind: ReferenceKind::Name,
+    });
+    spans.push((file.clone(), range, symbol));
+}
+
+fn split_static_import_path(path: &str) -> Option<(String, String)> {
+    let mut segments: Vec<&str> = path.split('.').collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let member = segments.pop().expect("len >= 2").to_string();
+    let owner = segments.join(".");
+    Some((owner, member))
+}
+
+fn static_import_member_range(text: &str, span: nova_types::Span) -> Option<TextRange> {
+    if span.end > text.len() || span.start >= span.end {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut end = span.end;
+
+    // Find the end of the last token (skip trailing whitespace and the `;`).
+    while end > span.start {
+        let b = bytes[end - 1];
+        if b == b';' || (b as char).is_ascii_whitespace() {
+            end -= 1;
+            continue;
+        }
+        break;
+    }
+
+    if end == span.start {
+        return None;
+    }
+
+    // Ignore star imports (`import static Foo.*;`).
+    if bytes[end - 1] == b'*' {
+        return None;
+    }
+
+    let mut start = end;
+    while start > span.start && is_ident_char_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+
+    if start == end {
+        return None;
+    }
+
+    Some(TextRange::new(start, end))
 }
 
 fn is_ident_start_char(ch: char) -> bool {
