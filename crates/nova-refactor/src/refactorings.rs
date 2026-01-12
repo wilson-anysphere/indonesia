@@ -3245,6 +3245,15 @@ fn check_extract_variable_name_conflicts(
         if is_within_nested_type(decl.syntax(), enclosing.body().syntax()) {
             continue;
         }
+        // Loop variables declared in `for (...)` headers are scoped to the `for` statement,
+        // not the surrounding block. Handle them separately below so we use the correct scope.
+        if decl
+            .syntax()
+            .ancestors()
+            .any(|node| node.kind() == SyntaxKind::ForHeader)
+        {
+            continue;
+        }
         let Some(tok) = decl.name_token() else {
             continue;
         };
@@ -3285,6 +3294,42 @@ fn check_extract_variable_name_conflicts(
         };
         if ranges_overlap(new_scope, scope) {
             return Err(name_collision());
+        }
+    }
+
+    // `for (...)` / enhanced-for loop header variables.
+    for for_stmt in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::ForStatement::cast)
+    {
+        if is_within_nested_type(for_stmt.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+
+        let Some(header) = for_stmt
+            .syntax()
+            .children()
+            .find(|n| n.kind() == SyntaxKind::ForHeader)
+        else {
+            continue;
+        };
+
+        let for_end = syntax_range(for_stmt.syntax()).end;
+        for decl in header.descendants().filter_map(ast::VariableDeclarator::cast) {
+            let Some(tok) = decl.name_token() else {
+                continue;
+            };
+            if tok.text() != name {
+                continue;
+            }
+
+            let start = u32::from(tok.text_range().start()) as usize;
+            let scope = TextRange::new(start, for_end);
+            if ranges_overlap(new_scope, scope) {
+                return Err(name_collision());
+            }
         }
     }
 

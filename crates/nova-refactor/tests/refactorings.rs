@@ -2627,6 +2627,121 @@ fn extract_variable_rejects_name_conflict_with_pattern_variable_flow_scope_else_
 }
 
 #[test]
+fn extract_variable_rejects_name_conflict_with_for_loop_variable() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    for (int i = 0; i < 1; i++) {
+      int x = /*start*/1 + 2/*end*/;
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "i".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "i")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_reusing_name_after_for_loop_scope_ends() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    for (int i = 0; i < 1; i++) {
+    }
+    int x = /*start*/1 + 2/*end*/;
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "i".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    for (int i = 0; i < 1; i++) {
+    }
+    var i = 1 + 2;
+    int x = i;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_rejects_name_conflict_with_enhanced_for_variable() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(java.util.List<Integer> xs) {
+    for (int i : xs) {
+      int x = /*start*/1 + 2/*end*/;
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "i".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "i")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_switch_expression_rule_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
