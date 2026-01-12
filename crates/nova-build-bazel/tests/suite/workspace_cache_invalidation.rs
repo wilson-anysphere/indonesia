@@ -342,6 +342,58 @@ fn bazelrc_transitive_import_digest_invalidation_triggers_aquery() {
 }
 
 #[test]
+fn bazelrc_import_file_creation_invalidation_triggers_aquery() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
+    fs::write(root.join(".bazelrc"), "try-import tools/generated.rc").unwrap();
+    fs::create_dir_all(root.join("tools")).unwrap();
+    // Intentionally do not create `tools/generated.rc` yet.
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Cache hit with "absent" digest for the imported file.
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Creating the previously-absent imported file should invalidate the cache.
+    fs::write(root.join("tools/generated.rc"), "build --javacopt=-Xlint").unwrap();
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 2);
+}
+
+#[test]
+fn bazelrc_import_file_deletion_invalidation_triggers_aquery() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
+    fs::write(root.join(".bazelrc"), "try-import tools/optional.rc").unwrap();
+    fs::create_dir_all(root.join("tools")).unwrap();
+    fs::write(root.join("tools/optional.rc"), "build --javacopt=-Xlint").unwrap();
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Cache hit.
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Deleting the imported file should invalidate the cache.
+    fs::remove_file(root.join("tools/optional.rc")).unwrap();
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 2);
+}
+
+#[test]
 fn target_compile_info_cache_is_invalidated_when_any_build_definition_input_changes() {
     let dir = tempdir().unwrap();
     let workspace_root = dir.path().join("workspace");
