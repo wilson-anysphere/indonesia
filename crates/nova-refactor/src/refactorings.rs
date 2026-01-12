@@ -1326,8 +1326,11 @@ pub fn extract_variable(
     //
     // When extracting to `var`, be conservative and reject side-effectful initializers to avoid
     // producing surprising code (and to avoid `void`-typed method invocations that `var` cannot
-    // represent). For explicit-typed extraction we allow side effects and rely on the downstream
-    // evaluation-order guards to preserve correctness.
+    // represent).
+    //
+    // For explicit-typed extraction we allow side effects and rely on downstream evaluation-order
+    // guards to preserve correctness (many common selections like `new Foo()` would otherwise be
+    // rejected entirely).
     if params.use_var && has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractSideEffects);
     }
