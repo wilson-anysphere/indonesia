@@ -326,7 +326,7 @@ fn gradle_includes_buildsrc_when_only_subprojects_have_sources() {
 #[test]
 fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let workspace_root = tmp.path();
+    let workspace_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     std::fs::write(
         workspace_root.join("settings.gradle"),
@@ -373,7 +373,7 @@ fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
     std::fs::create_dir_all(jar.parent().unwrap()).expect("mkdir buildSrc libs");
     std::fs::write(&jar, b"not a real jar").expect("write jar placeholder");
 
-    let fingerprint = compute_gradle_fingerprint(workspace_root);
+    let fingerprint = compute_gradle_fingerprint(&workspace_root);
 
     let snapshot_path = workspace_root.join(GRADLE_SNAPSHOT_REL_PATH);
     std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
@@ -414,7 +414,8 @@ fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
         ..LoadOptions::default()
     };
 
-    let config = load_project_with_options(workspace_root, &options).expect("load gradle project");
+    let config =
+        load_project_with_options(&workspace_root, &options).expect("load gradle project");
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
     assert!(
@@ -446,7 +447,7 @@ fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
     );
 
     let model =
-        load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
+        load_workspace_model_with_options(&workspace_root, &options).expect("load gradle model");
     let buildsrc = model
         .module_by_id("gradle::__buildSrc")
         .expect("buildSrc module config");

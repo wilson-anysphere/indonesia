@@ -20,7 +20,7 @@ fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
 #[test]
 fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let workspace_root = tmp.path();
+    let workspace_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     std::fs::write(
         workspace_root.join("settings.gradle"),
@@ -88,7 +88,7 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
     std::fs::write(&jar, b"not a real jar").unwrap();
 
-    let fingerprint = compute_gradle_fingerprint(workspace_root);
+    let fingerprint = compute_gradle_fingerprint(&workspace_root);
 
     let snapshot_path = workspace_root.join(GRADLE_SNAPSHOT_REL_PATH);
     std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
@@ -128,7 +128,8 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
         ..LoadOptions::default()
     };
-    let project = load_project_with_options(workspace_root, &options).expect("load gradle project");
+    let project =
+        load_project_with_options(&workspace_root, &options).expect("load gradle project");
     assert_eq!(project.build_system, BuildSystem::Gradle);
 
     let app_module = project
@@ -164,7 +165,7 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     );
 
     let model =
-        load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
+        load_workspace_model_with_options(&workspace_root, &options).expect("load gradle model");
     let app = model
         .module_by_id("gradle::app")
         .expect("app module config");
@@ -196,13 +197,13 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     // Now mutate one of the extra build files that participates in the fingerprint and ensure the
     // snapshot is rejected (fingerprint mismatch).
     std::fs::write(workspace_root.join("deps.gradle.kts"), "// changed\n").unwrap();
-    let new_fingerprint = compute_gradle_fingerprint(workspace_root);
+    let new_fingerprint = compute_gradle_fingerprint(&workspace_root);
     assert_ne!(
         new_fingerprint, fingerprint,
         "fingerprint should change after build-file modifications"
     );
     let project_no_snapshot =
-        load_project_with_options(workspace_root, &options).expect("reload gradle project");
+        load_project_with_options(&workspace_root, &options).expect("reload gradle project");
     assert!(
         !project_no_snapshot
             .classpath

@@ -167,3 +167,76 @@ fn gradle_wrapper_properties_is_path_aware() {
     let next = reload_project(&config, &mut options, &[bogus]).expect("reload project");
     assert_eq!(next, config);
 }
+
+#[test]
+fn reload_project_rescans_on_build_markers_under_external_gradle_module_roots() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tmp_root = dir.path().canonicalize().expect("canonicalize tempdir");
+
+    // Workspace root is *not* under a noisy directory like `build/`, but one of its modules is.
+    // This ensures `reload_project` strips the module root prefix before calling `is_build_file`,
+    // otherwise `is_in_noisy_dir` would treat the absolute path as noisy and skip reload.
+    let workspace_root = tmp_root.join("workspace");
+    let external_root = tmp_root.join("build/external");
+
+    std::fs::create_dir_all(&workspace_root).expect("mkdir workspace");
+    std::fs::create_dir_all(external_root.join("src/main/java/com/example")).expect("mkdir external");
+    std::fs::create_dir_all(workspace_root.join("consumer/src/main/java/com/example"))
+        .expect("mkdir consumer");
+
+    // Gradle settings: wire up an external module via an explicit `projectDir` override.
+    write_file(
+        &workspace_root.join("settings.gradle"),
+        "include(':consumer', ':external')\n\
+         project(':external').projectDir = file('../build/external')\n",
+    );
+    write_file(&workspace_root.join("build.gradle"), "\n");
+
+    // Build marker under the external module root. The directory name `build/` is intentionally
+    // present in the absolute path.
+    let external_build_gradle = external_root.join("build.gradle");
+    write_file(&external_build_gradle, "// external build\n");
+    write_file(
+        &external_root.join("src/main/java/com/example/External.java"),
+        "package com.example; class External {}",
+    );
+    write_file(
+        &workspace_root.join("consumer/src/main/java/com/example/Consumer.java"),
+        "package com.example; class Consumer {}",
+    );
+
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let config = load_project_with_options(&workspace_root, &options).expect("load project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert!(
+        !config
+            .modules
+            .iter()
+            .any(|m| m.root == config.workspace_root.join("lib")),
+        "unexpected lib module in initial config"
+    );
+
+    // Update settings.gradle to include a new module.
+    write_file(
+        &config.workspace_root.join("settings.gradle"),
+        "include(':consumer', ':external', ':lib')\n\
+         project(':external').projectDir = file('../build/external')\n",
+    );
+    std::fs::create_dir_all(config.workspace_root.join("lib"))
+        .expect("mkdir lib module root");
+
+    // Report only an external module build marker as changed.
+    let next =
+        reload_project(&config, &mut options, &[external_build_gradle]).expect("reload project");
+    assert!(
+        next.modules
+            .iter()
+            .any(|m| m.root == next.workspace_root.join("lib")),
+        "expected rescan to pick up the new :lib module"
+    );
+}
