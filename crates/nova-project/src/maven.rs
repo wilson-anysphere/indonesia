@@ -535,11 +535,11 @@ impl EffectivePom {
             .map(|p| p.dependency_management.clone())
             .unwrap_or_default();
         for dep in &raw.dependency_management {
-            let mut dep = dep.clone();
-            dep.version = dep
-                .version
-                .as_deref()
-                .map(|v| resolve_placeholders(v, &properties));
+            // Preserve raw placeholders in dependency management and resolve them using the
+            // current module's merged properties when applying versions to dependencies. This
+            // matches Maven's effective POM interpolation semantics where inherited values may be
+            // influenced by child property overrides.
+            let dep = dep.clone();
             dependency_management.insert((dep.group_id.clone(), dep.artifact_id.clone()), dep);
         }
 

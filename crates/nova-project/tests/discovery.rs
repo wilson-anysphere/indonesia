@@ -143,6 +143,33 @@ fn resolves_maven_nested_properties() {
 }
 
 #[test]
+fn resolves_inherited_maven_managed_versions_with_child_property_overrides() {
+    let root = testdata_path("maven-nested-properties-override");
+    let config = load_project(&root).expect("load maven project");
+
+    let dep = config
+        .dependencies
+        .iter()
+        .find(|d| d.group_id == "com.example" && d.artifact_id == "managed-dep")
+        .expect("expected managed dependency to be discovered");
+    assert_eq!(dep.version, Some("2.0.0".to_string()));
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+
+    let jar_path = jar_entries
+        .iter()
+        .find(|p| p.contains("com/example/managed-dep"))
+        .expect("expected managed-dep to have a synthesized jar path");
+    assert!(jar_path.contains("/2.0.0/"), "jar path: {jar_path}");
+    assert!(!jar_path.contains("${"), "jar path: {jar_path}");
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace() {
     let root = testdata_path("gradle-multi");
     let config = load_project(&root).expect("load gradle project");

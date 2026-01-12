@@ -1,0 +1,27 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>maven-nested-properties-override</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <revision>1.2.3</revision>
+    <dep.version>${revision}</dep.version>
+  </properties>
+
+  <modules>
+    <module>app</module>
+  </modules>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>managed-dep</artifactId>
+        <version>${dep.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+
