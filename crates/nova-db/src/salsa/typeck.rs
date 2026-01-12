@@ -2181,12 +2181,17 @@ fn type_diagnostics(db: &dyn NovaTypeck, file: FileId) -> Vec<Diagnostic> {
 
     cancel::check_cancelled(db);
 
+    let file_text = db.file_content(file);
+    let file_text = file_text.as_str();
+    let file_tokens = lex(file_text);
+
     let tree = db.hir_item_tree(file);
-    let mut diags = signature_type_diagnostics(db, file, &tree);
+    let mut diags = signature_type_diagnostics(db, file, &tree, &file_tokens, file_text);
     let owners = collect_body_owners(&tree);
     for (idx, owner) in owners.iter().enumerate() {
         cancel::checkpoint_cancelled_every(db, idx as u32, 32);
-        diags.extend(db.typeck_body(*owner).diagnostics.iter().cloned());
+        let body_diags: Vec<_> = db.typeck_body(*owner).diagnostics.iter().cloned().collect();
+        extend_type_ref_diagnostics(&mut diags, &file_tokens, file_text, body_diags);
     }
 
     diags.sort_by_key(|d| {
@@ -2209,12 +2214,10 @@ fn signature_type_diagnostics(
     db: &dyn NovaTypeck,
     file: FileId,
     tree: &nova_hir::item_tree::ItemTree,
+    file_tokens: &[Token],
+    file_text: &str,
 ) -> Vec<Diagnostic> {
     cancel::check_cancelled(db);
-
-    let file_text = db.file_content(file);
-    let file_text = file_text.as_str();
-    let file_tokens = lex(file_text);
 
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
@@ -2411,7 +2414,7 @@ fn signature_type_diagnostics(
             *item,
             &mut loader,
             &object_ty,
-            &file_tokens,
+            file_tokens,
             file_text,
             &mut out,
         );

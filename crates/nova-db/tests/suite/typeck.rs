@@ -8529,6 +8529,79 @@ class C {
 }
 
 #[test]
+fn parameterized_qualifying_nested_type_is_preserved_in_field_type() {
+    let src = r#"
+class Outer<T> {
+    class Inner<U> {}
+}
+
+class C {
+    Outer<String>.Inner<Integer> x;
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let mut field_ty = None;
+    for item in &tree.items {
+        let Item::Class(id) = item else {
+            continue;
+        };
+        let class = tree.class(*id);
+        if class.name != "C" {
+            continue;
+        }
+        for member in &class.members {
+            let Member::Field(id) = member else {
+                continue;
+            };
+            let field = tree.field(*id);
+            if field.name == "x" {
+                field_ty = Some(field.ty.clone());
+            }
+        }
+    }
+
+    assert_eq!(
+        field_ty.as_deref(),
+        Some("Outer<String>.Inner<Integer>"),
+        "expected nested generic type to be preserved in field.ty (syntax lowering)"
+    );
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref" || d.code.as_ref() == "unresolved-type"),
+        "expected nested generic field type to parse + resolve without diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn type_use_annotation_types_are_ignored_in_qualified_new_expression() {
+    let src = r#"
+class Outer {
+    static class Inner {
+    }
+}
+
+class C {
+    void m() {
+        new Outer.@Missing Inner();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+        "expected type-use annotation types to be ignored in new expressions; got {diags:?}"
+    );
+}
+
+#[test]
 fn type_use_annotation_types_are_ignored_with_block_comment_after_at() {
     let src = r#"
 import java.util.List;

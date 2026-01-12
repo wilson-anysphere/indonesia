@@ -2838,8 +2838,14 @@ impl<'a> Parser<'a> {
         } else {
             self.builder.start_node(SyntaxKind::NamedType.into());
             self.expect_ident_like("expected type name");
+            if self.at(SyntaxKind::Less) {
+                self.parse_type_arguments();
+            }
             loop {
-                if !self.at(SyntaxKind::Dot) {
+                // NOTE: Use `nth(0)` instead of `at(Dot)` so we don't consume trailing trivia (e.g.
+                // the whitespace between a parameterized type and the following identifier:
+                // `Map<String, Integer> m`).
+                if self.nth(0) != Some(SyntaxKind::Dot) {
                     break;
                 }
                 self.bump(); // '.'
@@ -2857,9 +2863,9 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 self.expect_ident_like("expected type name segment");
-            }
-            if self.at(SyntaxKind::Less) {
-                self.parse_type_arguments();
+                if self.at(SyntaxKind::Less) {
+                    self.parse_type_arguments();
+                }
             }
             self.builder.finish_node();
         }
@@ -3779,8 +3785,23 @@ impl<'a> Parser<'a> {
             if self.nth(0) == Some(SyntaxKind::Less) {
                 self.parse_type_arguments();
             }
-            while self.at(SyntaxKind::Dot) && self.nth(1).is_some_and(|k| k.is_identifier_like()) {
-                self.bump();
+            loop {
+                // Avoid consuming trailing trivia when checking for `.` after a parameterized type.
+                if self.nth(0) != Some(SyntaxKind::Dot) {
+                    break;
+                }
+                self.bump(); // '.'
+                self.eat_trivia();
+                // Type-use annotations can appear before qualified name segments:
+                // `Outer.@A Inner`.
+                while self.at_type_annotation_start() {
+                    self.parse_annotation();
+                    self.eat_trivia();
+                }
+                if !self.at_ident_like() {
+                    self.error_here("expected type name segment");
+                    break;
+                }
                 self.expect_ident_like("expected type name segment");
                 if self.nth(0) == Some(SyntaxKind::Less) {
                     self.parse_type_arguments();
