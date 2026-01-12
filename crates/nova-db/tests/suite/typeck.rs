@@ -516,6 +516,30 @@ class C {
 }
 
 #[test]
+fn static_method_called_via_instance_emits_warning() {
+    let src = r#"
+class C {
+    static int foo(){ return 1; }
+    int m(){ C c = new C(); return c.foo(); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let count = diags
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.code.as_ref() == "static-access-via-instance"
+        })
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "expected one static-access-via-instance warning, got {diags:?}"
+    );
+}
+
+#[test]
 fn static_type_receiver_calling_instance_method_emits_static_context_diag() {
     let src = r#"
 class C {

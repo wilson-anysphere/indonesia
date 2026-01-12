@@ -19,7 +19,8 @@ use nova_types::{
     cast_conversion, format_resolved_method, format_type, is_subtype, CallKind, ClassDef, ClassId,
     ClassKind, ConstValue, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
     MethodDef, MethodNotFound, MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext,
-    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId, WildcardBound,
+    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId, TypeWarning, UncheckedReason,
+    WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -2850,6 +2851,52 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
+    fn emit_method_warnings(&mut self, method: &ResolvedMethod, call_span: Span) {
+        // `nova-types` aggregates some warnings in `ResolvedMethod.warnings`, but certain
+        // call paths may also attach warnings to per-argument conversions. Surface both,
+        // while ensuring we don't emit duplicates for the same call-site.
+        let mut unique: Vec<TypeWarning> = Vec::new();
+        for warning in &method.warnings {
+            if !unique.contains(warning) {
+                unique.push(warning.clone());
+            }
+        }
+        for conv in &method.conversions {
+            for warning in &conv.warnings {
+                if !unique.contains(warning) {
+                    unique.push(warning.clone());
+                }
+            }
+        }
+
+        for warning in unique {
+            match warning {
+                TypeWarning::StaticAccessViaInstance => {
+                    self.diagnostics.push(Diagnostic::warning(
+                        "static-access-via-instance",
+                        format!(
+                            "static member `{}` accessed via an instance",
+                            method.name.as_str()
+                        ),
+                        Some(call_span),
+                    ));
+                }
+                TypeWarning::Unchecked(reason) => {
+                    let reason = match reason {
+                        UncheckedReason::RawConversion => "raw conversion",
+                        UncheckedReason::UncheckedCast => "cast",
+                        UncheckedReason::UncheckedVarargs => "varargs",
+                    };
+                    self.diagnostics.push(Diagnostic::warning(
+                        "unchecked",
+                        format!("unchecked {reason}"),
+                        Some(call_span),
+                    ));
+                }
+            }
+        }
+    }
+
     fn infer_call(
         &mut self,
         loader: &mut ExternalTypeLoader<'_>,
@@ -2888,6 +2935,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let mut ctx = TyContext::new(env_ro);
                 match nova_types::resolve_method_call(&mut ctx, &call) {
                     MethodResolution::Found(method) => {
+                        self.emit_method_warnings(&method, self.body.exprs[expr].range());
                         self.call_resolutions[expr.idx()] = Some(method.clone());
                         ExprInfo {
                             ty: method.return_type,
@@ -2991,6 +3039,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let mut ctx = TyContext::new(env_ro);
                     match nova_types::resolve_method_call(&mut ctx, &call) {
                         MethodResolution::Found(method) => {
+                            self.emit_method_warnings(&method, self.body.exprs[expr].range());
                             self.call_resolutions[expr.idx()] = Some(method.clone());
                             return ExprInfo {
                                 ty: method.return_type,
@@ -3085,6 +3134,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
+                                self.emit_method_warnings(&method, self.body.exprs[expr].range());
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
                                 ExprInfo {
                                     ty: method.return_type,
@@ -3138,7 +3188,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 is_type_ref: false,
                             };
                         };
-
                         let recv_ty = self
                             .ensure_workspace_class(loader, &owner)
                             .or_else(|| loader.ensure_class(&owner))
@@ -3159,6 +3208,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
+                                self.emit_method_warnings(&method, self.body.exprs[expr].range());
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
                                 ExprInfo {
                                     ty: method.return_type,
