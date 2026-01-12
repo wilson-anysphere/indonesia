@@ -17,6 +17,10 @@ fn fake_jdk_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/fake-jdk")
 }
 
+fn fake_jdk8_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/fake-jdk8")
+}
+
 fn find_jdk_symbol_index_cache_file(cache_root: &Path) -> PathBuf {
     fn visit(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -209,6 +213,71 @@ fn reads_java_lang_string_class_bytes_from_test_jmod() -> Result<(), Box<dyn std
 }
 
 #[test]
+fn loads_java_lang_string_from_test_rt_jar() -> Result<(), Box<dyn std::error::Error>> {
+    let index = JdkIndex::from_jdk_root(fake_jdk8_root())?;
+
+    assert!(
+        index.module_graph().is_none(),
+        "legacy jar-backed JdkIndex should not expose a module graph"
+    );
+
+    let string = index
+        .lookup_type("java.lang.String")?
+        .expect("java.lang.String should be present in testdata");
+    assert_eq!(string.internal_name, "java/lang/String");
+
+    let list = index
+        .lookup_type("java.util.List")?
+        .expect("java.util.List should be present in testdata");
+    assert_eq!(list.internal_name, "java/util/List");
+
+    let java_lang = index.java_lang_symbols()?;
+    assert!(java_lang
+        .iter()
+        .any(|t| t.binary_name == "java.lang.String"));
+
+    let pkgs = index.packages()?;
+    assert!(pkgs.contains(&"java.lang".to_owned()));
+    assert!(pkgs.contains(&"java.util".to_owned()));
+
+    assert!(
+        index.module_of_type("java.lang.String").is_none(),
+        "legacy jar-backed JdkIndex should not report JPMS modules"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn reads_java_lang_string_class_bytes_from_test_rt_jar() -> Result<(), Box<dyn std::error::Error>> {
+    let index = JdkIndex::from_jdk_root(fake_jdk8_root())?;
+
+    let bytes = index
+        .read_class_bytes("java/lang/String")?
+        .expect("java/lang/String should be present in testdata");
+    assert!(
+        bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE]),
+        "class files should start with CAFEBABE"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn resolves_static_member_from_jar_stub() -> Result<(), Box<dyn std::error::Error>> {
+    let index = JdkIndex::from_jdk_root(fake_jdk8_root())?;
+
+    let owner = TypeName::from("java.lang.Custom");
+    let member = Name::from("FOO");
+    assert_eq!(
+        index.resolve_static_member(&owner, &member),
+        Some(StaticMemberId::new("java.lang.Custom::FOO"))
+    );
+
+    Ok(())
+}
+
+#[test]
 fn resolves_static_member_from_jmod_stub() -> Result<(), Box<dyn std::error::Error>> {
     let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
 
@@ -291,6 +360,28 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
     std::fs::create_dir_all(&jre_dir)?;
 
     let _java_home = EnvVarGuard::set("JAVA_HOME", &jre_dir);
+    let install = JdkInstallation::discover(None)?;
+    assert_eq!(install.root(), root);
+
+    Ok(())
+}
+
+#[test]
+fn discovery_coerces_java_home_jre_subdir_for_legacy_rt_jar() -> Result<(), Box<dyn std::error::Error>>
+{
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    let jre_lib_dir = root.join("jre").join("lib");
+    std::fs::create_dir_all(&jre_lib_dir)?;
+    std::fs::copy(
+        fake_jdk8_root().join("jre/lib/rt.jar"),
+        jre_lib_dir.join("rt.jar"),
+    )?;
+
+    let _java_home = EnvVarGuard::set("JAVA_HOME", &root.join("jre"));
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);
 
@@ -456,6 +547,38 @@ fn reuses_persisted_jmod_class_map_cache() -> Result<(), Box<dyn std::error::Err
 
     // Ensure the loaded mapping is actually used to locate classes.
     assert!(index.lookup_type("java.lang.String")?.is_some());
+
+    Ok(())
+}
+
+#[test]
+fn reuses_persisted_jar_class_map_cache() -> Result<(), Box<dyn std::error::Error>> {
+    let cache_dir = tempdir()?;
+
+    let stats_first = IndexingStats::default();
+    let _ = JdkIndex::from_jdk_root_with_cache_and_stats(
+        fake_jdk8_root(),
+        Some(cache_dir.path()),
+        Some(&stats_first),
+    )?;
+
+    assert_eq!(stats_first.cache_hits(), 0);
+    assert_eq!(stats_first.cache_writes(), 1);
+    assert!(stats_first.module_scans() > 0);
+
+    let stats_second = IndexingStats::default();
+    let index = JdkIndex::from_jdk_root_with_cache_and_stats(
+        fake_jdk8_root(),
+        Some(cache_dir.path()),
+        Some(&stats_second),
+    )?;
+
+    assert_eq!(stats_second.cache_hits(), 1);
+    assert_eq!(stats_second.cache_writes(), 0);
+    assert_eq!(stats_second.module_scans(), 0);
+
+    assert!(index.lookup_type("java.lang.String")?.is_some());
+    assert!(index.lookup_type("java.util.List")?.is_some());
 
     Ok(())
 }

@@ -8,7 +8,8 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JdkInstallation {
     root: PathBuf,
-    jmods_dir: PathBuf,
+    jmods_dir: Option<PathBuf>,
+    java_home: PathBuf,
 }
 
 impl JdkInstallation {
@@ -16,8 +17,18 @@ impl JdkInstallation {
         &self.root
     }
 
-    pub fn jmods_dir(&self) -> &Path {
-        &self.jmods_dir
+    /// Returns the JPMS `jmods/` directory if present (JDK 9+ layout).
+    pub fn jmods_dir(&self) -> Option<&Path> {
+        self.jmods_dir.as_deref()
+    }
+
+    /// Returns the Java runtime home directory (i.e. `java.home`).
+    ///
+    /// - JPMS JDKs (9+): `<root>`
+    /// - Legacy JDK 8: `<root>/jre`
+    /// - Legacy JRE 8: `<root>`
+    pub fn java_home(&self) -> &Path {
+        &self.java_home
     }
 
     /// Returns the path to the JDK `src.zip` if it exists.
@@ -42,11 +53,34 @@ impl JdkInstallation {
     pub fn from_root(root: impl AsRef<Path>) -> Result<Self, JdkDiscoveryError> {
         let root = root.as_ref().to_path_buf();
         let jmods_dir = root.join("jmods");
-        if !jmods_dir.is_dir() {
-            return Err(JdkDiscoveryError::MissingJmodsDir { root });
+        if jmods_dir.is_dir() {
+            return Ok(Self {
+                root: root.clone(),
+                jmods_dir: Some(jmods_dir),
+                java_home: root,
+            });
         }
 
-        Ok(Self { root, jmods_dir })
+        // Legacy JDK 8 layout: `$JDK/jre/lib/rt.jar`.
+        let java_home = root.join("jre");
+        if java_home.join("lib").join("rt.jar").is_file() {
+            return Ok(Self {
+                root,
+                jmods_dir: None,
+                java_home,
+            });
+        }
+
+        // Legacy JRE 8 layout: `$JRE/lib/rt.jar`.
+        if root.join("lib").join("rt.jar").is_file() {
+            return Ok(Self {
+                root: root.clone(),
+                jmods_dir: None,
+                java_home: root,
+            });
+        }
+
+        Err(JdkDiscoveryError::InvalidJdkRoot { root })
     }
 
     /// Discover a JDK installation.
@@ -77,8 +111,8 @@ pub enum JdkDiscoveryError {
     #[error("could not discover a JDK installation (tried JAVA_HOME and `java` on PATH)")]
     NotFound,
 
-    #[error("JDK root `{root}` does not contain a `jmods/` directory")]
-    MissingJmodsDir { root: PathBuf },
+    #[error("JDK root `{root}` does not contain `jmods/` or an `rt.jar` runtime")]
+    InvalidJdkRoot { root: PathBuf },
 }
 
 fn discover_from_java_home() -> Option<PathBuf> {
@@ -146,16 +180,47 @@ fn find_java_on_path() -> Option<PathBuf> {
 }
 
 fn coerce_to_jdk_root(mut candidate: PathBuf) -> Option<PathBuf> {
-    // For older installations `java.home` might point at `$JDK/jre`. On modern
-    // JPMS JDKs we need the directory containing `jmods/`.
-    if candidate.join("jmods").is_dir() {
-        return Some(candidate);
+    // Accept JPMS JDK roots.
+    if is_jpms_root(&candidate) || is_legacy_jdk_root(&candidate) || is_legacy_jre_root(&candidate)
+    {
+        return prefer_parent_if_jre(candidate);
     }
 
+    // Some probes (e.g. symlink resolution) may return `$JAVA_HOME/bin`; accept one level up.
     candidate.pop();
-    if candidate.join("jmods").is_dir() {
-        return Some(candidate);
+    if is_jpms_root(&candidate) || is_legacy_jdk_root(&candidate) || is_legacy_jre_root(&candidate)
+    {
+        return prefer_parent_if_jre(candidate);
     }
 
     None
+}
+
+fn is_jpms_root(root: &Path) -> bool {
+    root.join("jmods").is_dir()
+}
+
+fn is_legacy_jdk_root(root: &Path) -> bool {
+    root.join("jre").join("lib").join("rt.jar").is_file()
+}
+
+fn is_legacy_jre_root(root: &Path) -> bool {
+    root.join("lib").join("rt.jar").is_file()
+}
+
+fn prefer_parent_if_jre(candidate: PathBuf) -> Option<PathBuf> {
+    // For older installations `java.home` often points at `$JDK/jre`. Prefer the
+    // parent directory when it looks like a full JDK root.
+    if candidate
+        .file_name()
+        .is_some_and(|name| name == std::ffi::OsStr::new("jre"))
+    {
+        if let Some(parent) = candidate.parent() {
+            if is_jpms_root(parent) || is_legacy_jdk_root(parent) {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+
+    Some(candidate)
 }

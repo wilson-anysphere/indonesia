@@ -11,6 +11,7 @@
 mod ct_sym;
 mod discovery;
 mod index;
+mod jar;
 mod jmod;
 mod persist;
 mod stub;
@@ -115,7 +116,8 @@ impl JdkIndex {
         this
     }
 
-    /// Build an index backed by a JDK installation's `jmods/` directory.
+    /// Build an index backed by a JDK installation's standard-library containers
+    /// (`jmods/` on JPMS JDKs, `rt.jar`/`tools.jar` on legacy JDK 8).
     pub fn from_jdk_root(root: impl AsRef<Path>) -> Result<Self, JdkIndexError> {
         let policy = cache_policy_from_env();
         let cache_dir = policy.as_ref().map(|p| p.dir.as_path());
@@ -123,7 +125,8 @@ impl JdkIndex {
         Self::from_jdk_root_with_cache_and_stats_policy(root, cache_dir, allow_write, None)
     }
 
-    /// Discover a JDK installation and build an index backed by its `jmods/`.
+    /// Discover a JDK installation and build an index backed by its platform
+    /// containers.
     pub fn discover(config: Option<&JdkConfig>) -> Result<Self, JdkIndexError> {
         let policy = cache_policy_from_env();
         let cache_dir = policy.as_ref().map(|p| p.dir.as_path());
@@ -131,7 +134,7 @@ impl JdkIndex {
         Self::discover_with_cache_and_stats_policy(config, cache_dir, allow_write, None)
     }
 
-    /// Build an index backed by a JDK installation's `jmods/` directory and an optional persisted cache.
+    /// Build an index backed by a JDK installation's platform containers and an optional persisted cache.
     pub fn from_jdk_root_with_cache(
         root: impl AsRef<Path>,
         cache_dir: Option<&Path>,
@@ -139,7 +142,7 @@ impl JdkIndex {
         Self::from_jdk_root_with_cache_and_stats(root, cache_dir, None)
     }
 
-    /// Build an index backed by a JDK installation's `jmods/` directory and an optional persisted cache,
+    /// Build an index backed by a JDK installation's platform containers and an optional persisted cache,
     /// emitting indexing stats as it loads or rebuilds the on-disk cache.
     pub fn from_jdk_root_with_cache_and_stats(
         root: impl AsRef<Path>,
@@ -149,7 +152,7 @@ impl JdkIndex {
         Self::from_jdk_root_with_cache_and_stats_policy(root, cache_dir, cache_dir.is_some(), stats)
     }
 
-    /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache.
+    /// Discover a JDK installation and build an index backed by its platform containers and an optional persisted cache.
     pub fn discover_with_cache(
         config: Option<&JdkConfig>,
         cache_dir: Option<&Path>,
@@ -157,7 +160,7 @@ impl JdkIndex {
         Self::discover_with_cache_and_stats(config, cache_dir, None)
     }
 
-    /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache,
+    /// Discover a JDK installation and build an index backed by its platform containers and an optional persisted cache,
     /// emitting indexing stats as it loads or rebuilds the on-disk cache.
     pub fn discover_with_cache_and_stats(
         config: Option<&JdkConfig>,
@@ -260,7 +263,7 @@ impl JdkIndex {
 
     /// Module graph for the underlying JDK, if this index is backed by JMODs.
     pub fn module_graph(&self) -> Option<&ModuleGraph> {
-        self.symbols.as_ref().map(|symbols| symbols.module_graph())
+        self.symbols.as_ref().and_then(|symbols| symbols.module_graph())
     }
 
     /// Retrieve the parsed JPMS module descriptor for `name` (JMOD-backed only).
