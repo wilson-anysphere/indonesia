@@ -5617,14 +5617,44 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                 }
-                LiteralKind::Float => ExprInfo {
-                    ty: Type::Primitive(PrimitiveType::Float),
-                    is_type_ref: false,
-                },
-                LiteralKind::Double => ExprInfo {
-                    ty: Type::Primitive(PrimitiveType::Double),
-                    is_type_ref: false,
-                },
+                LiteralKind::Float => {
+                    if let Err(err) = nova_syntax::parse_float_literal(value) {
+                        let span = Span::new(
+                            range.start.saturating_add(err.span.start),
+                            range.start.saturating_add(err.span.end),
+                        );
+                        self.diagnostics
+                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
+                    } else {
+                        ExprInfo {
+                            ty: Type::Primitive(PrimitiveType::Float),
+                            is_type_ref: false,
+                        }
+                    }
+                }
+                LiteralKind::Double => {
+                    if let Err(err) = nova_syntax::parse_double_literal(value) {
+                        let span = Span::new(
+                            range.start.saturating_add(err.span.start),
+                            range.start.saturating_add(err.span.end),
+                        );
+                        self.diagnostics
+                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
+                    } else {
+                        ExprInfo {
+                            ty: Type::Primitive(PrimitiveType::Double),
+                            is_type_ref: false,
+                        }
+                    }
+                }
                 LiteralKind::Char => ExprInfo {
                     ty: Type::Primitive(PrimitiveType::Char),
                     is_type_ref: false,

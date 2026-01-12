@@ -361,15 +361,42 @@ fn parse_decimal_floating(
 ) -> Result<FloatValue, LiteralError> {
     validate_decimal_floating(main, had_suffix)?;
     let sanitized: String = main.chars().filter(|&ch| ch != '_').collect();
+
+    fn decimal_significand_has_nonzero_digit(main: &str) -> bool {
+        let bytes = main.as_bytes();
+        let end = bytes
+            .iter()
+            .position(|b| matches!(b, b'e' | b'E'))
+            .unwrap_or(bytes.len());
+        bytes[..end].iter().any(|b| matches!(b, b'1'..=b'9'))
+    }
+
+    let is_nonzero = decimal_significand_has_nonzero_digit(main);
     match target {
-        FloatTarget::F32 => sanitized
-            .parse::<f32>()
-            .map(FloatValue::F32)
-            .map_err(|_| err("Invalid float literal", 0..main.len())),
-        FloatTarget::F64 => sanitized
-            .parse::<f64>()
-            .map(FloatValue::F64)
-            .map_err(|_| err("Invalid double literal", 0..main.len())),
+        FloatTarget::F32 => {
+            let value = sanitized
+                .parse::<f32>()
+                .map_err(|_| err("Invalid float literal", 0..main.len()))?;
+            if value.is_infinite() {
+                return Err(err("Floating-point literal is too large", 0..main.len()));
+            }
+            if value == 0.0 && is_nonzero {
+                return Err(err("Floating-point literal is too small", 0..main.len()));
+            }
+            Ok(FloatValue::F32(value))
+        }
+        FloatTarget::F64 => {
+            let value = sanitized
+                .parse::<f64>()
+                .map_err(|_| err("Invalid double literal", 0..main.len()))?;
+            if value.is_infinite() {
+                return Err(err("Floating-point literal is too large", 0..main.len()));
+            }
+            if value == 0.0 && is_nonzero {
+                return Err(err("Floating-point literal is too small", 0..main.len()));
+            }
+            Ok(FloatValue::F64(value))
+        }
     }
 }
 
@@ -670,10 +697,31 @@ fn parse_hex_floating(main: &str, target: FloatTarget) -> Result<FloatValue, Lit
         FloatTarget::F64 => binary_to_ieee_bits(trimmed, bit_len, exp2, FloatParams::F64),
     };
 
-    Ok(match target {
+    let out = match target {
         FloatTarget::F32 => FloatValue::F32(f32::from_bits(bits as u32)),
         FloatTarget::F64 => FloatValue::F64(f64::from_bits(bits)),
-    })
+    };
+
+    match out {
+        FloatValue::F32(v) => {
+            if v.is_infinite() {
+                return Err(err("Floating-point literal is too large", 0..main.len()));
+            }
+            if v == 0.0 {
+                return Err(err("Floating-point literal is too small", 0..main.len()));
+            }
+        }
+        FloatValue::F64(v) => {
+            if v.is_infinite() {
+                return Err(err("Floating-point literal is too large", 0..main.len()));
+            }
+            if v == 0.0 {
+                return Err(err("Floating-point literal is too small", 0..main.len()));
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 fn hex_value(b: u8) -> Option<u8> {
@@ -1278,6 +1326,14 @@ mod tests {
         assert_eq!(parse_float_literal("1f").unwrap(), 1.0f32);
         assert_eq!(parse_double_literal("1.").unwrap(), 1.0f64);
         assert_eq!(parse_double_literal("0x1p1").unwrap(), 2.0f64);
+    }
+
+    #[test]
+    fn float_and_double_out_of_range() {
+        assert!(parse_double_literal("1e400").is_err());
+        assert!(parse_double_literal("1e-400").is_err());
+        assert!(parse_float_literal("1e50f").is_err());
+        assert!(parse_float_literal("1e-50f").is_err());
     }
 
     #[test]

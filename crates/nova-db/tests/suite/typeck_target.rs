@@ -148,6 +148,62 @@ class C { long m(){ return 2147483648; } }
 }
 
 #[test]
+fn double_literal_too_large_is_diagnostic() {
+    let src = r#"
+class C { double m(){ return 1e400; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-literal"),
+        "expected invalid-literal diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn double_literal_too_small_is_diagnostic() {
+    let src = r#"
+class C { double m(){ return 1e-400; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-literal"),
+        "expected invalid-literal diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn float_literal_too_large_is_diagnostic() {
+    let src = r#"
+class C { float m(){ return 1e50f; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-literal"),
+        "expected invalid-literal diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn float_literal_too_small_is_diagnostic() {
+    let src = r#"
+class C { float m(){ return 1e-50f; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-literal"),
+        "expected invalid-literal diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn byte_initializer_allows_char_constant_narrowing() {
     let src = r#"
 class C { void m(){ byte b = 'a'; } }
