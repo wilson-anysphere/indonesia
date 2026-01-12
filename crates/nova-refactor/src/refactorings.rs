@@ -368,6 +368,10 @@ pub fn inline_variable(
         .symbol_definition(params.symbol)
         .ok_or(RefactorError::InlineNotSupported)?;
 
+    if inline_variable_has_writes(db, params.symbol, &def)? {
+        return Err(RefactorError::InlineNotSupported);
+    }
+
     let text = db
         .file_text(&def.file)
         .ok_or_else(|| RefactorError::UnknownFile(def.file.clone()))?;
@@ -400,11 +404,6 @@ pub fn inline_variable(
     let init_replacement = parenthesize_initializer(init_text, &init_expr);
 
     let all_refs = db.find_references(params.symbol);
-
-    // Disallow inlining when the variable is written to after initialization.
-    if is_variable_written_to(db, &all_refs) {
-        return Err(RefactorError::InlineNotSupported);
-    }
 
     let targets = if params.inline_all {
         all_refs.clone()
@@ -486,6 +485,109 @@ pub fn inline_variable(
     let mut edit = WorkspaceEdit::new(edits);
     edit.normalize()?;
     Ok(edit)
+}
+
+fn inline_variable_has_writes(
+    db: &dyn RefactorDatabase,
+    symbol: SymbolId,
+    def: &crate::semantic::SymbolDefinition,
+) -> Result<bool, RefactorError> {
+    let mut parses: HashMap<FileId, nova_syntax::JavaParseResult> = HashMap::new();
+
+    for reference in db.find_references(symbol) {
+        // Some RefactorDatabase implementations may include the definition span in the reference
+        // list; ignore it so we only reject on writes after the initializer.
+        if reference.file == def.file && reference.range == def.name_range {
+            continue;
+        }
+
+        let parsed = match parses.get(&reference.file) {
+            Some(parsed) => parsed,
+            None => {
+                let text = db
+                    .file_text(&reference.file)
+                    .ok_or_else(|| RefactorError::UnknownFile(reference.file.clone()))?;
+                let parsed = parse_java(text);
+                if !parsed.errors.is_empty() {
+                    return Err(RefactorError::InlineNotSupported);
+                }
+                parses.insert(reference.file.clone(), parsed);
+                parses
+                    .get(&reference.file)
+                    .expect("just inserted parse result")
+            }
+        };
+
+        if reference_is_write(parsed, reference.range)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn reference_is_write(
+    parsed: &nova_syntax::JavaParseResult,
+    range: TextRange,
+) -> Result<bool, RefactorError> {
+    let syntax_range = to_syntax_range(range).ok_or(RefactorError::InlineNotSupported)?;
+    let element = parsed.covering_element(syntax_range);
+
+    let node = match element {
+        nova_syntax::SyntaxElement::Node(node) => node,
+        nova_syntax::SyntaxElement::Token(token) => token
+            .parent()
+            .ok_or(RefactorError::InlineNotSupported)?,
+    };
+
+    for ancestor in node.ancestors() {
+        if let Some(assign) = ast::AssignmentExpression::cast(ancestor.clone()) {
+            if let Some(lhs) = assign.lhs() {
+                let lhs_range = lhs.syntax().text_range();
+                let start = u32::from(lhs_range.start()) as usize;
+                let end = u32::from(lhs_range.end()) as usize;
+                if start <= range.start && range.end <= end {
+                    return Ok(true);
+                }
+            }
+        }
+
+        if let Some(unary) = ast::UnaryExpression::cast(ancestor) {
+            if unary_is_inc_or_dec(&unary) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn unary_is_inc_or_dec(expr: &ast::UnaryExpression) -> bool {
+    let mut first: Option<SyntaxKind> = None;
+    let mut last: Option<SyntaxKind> = None;
+
+    for tok in expr
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
+    {
+        let kind = tok.kind();
+        if first.is_none() {
+            first = Some(kind);
+        }
+        last = Some(kind);
+    }
+
+    matches!(first, Some(SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+        || matches!(last, Some(SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+}
+
+fn to_syntax_range(range: TextRange) -> Option<nova_syntax::TextRange> {
+    Some(nova_syntax::TextRange {
+        start: u32::try_from(range.start).ok()?,
+        end: u32::try_from(range.end).ok()?,
+    })
 }
 
 pub struct OrganizeImportsParams {
@@ -1419,78 +1521,6 @@ fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usiz
     }
 
     offset
-}
-
-fn is_variable_written_to(db: &dyn RefactorDatabase, refs: &[crate::semantic::Reference]) -> bool {
-    // Parse each file once.
-    let mut parsed_by_file: HashMap<FileId, Option<nova_syntax::SyntaxNode>> = HashMap::new();
-
-    for reference in refs {
-        let root = parsed_by_file
-            .entry(reference.file.clone())
-            .or_insert_with(|| {
-                let Some(text) = db.file_text(&reference.file) else {
-                    return None;
-                };
-                let parsed = parse_java(text);
-                if !parsed.errors.is_empty() {
-                    return None;
-                }
-                Some(parsed.syntax())
-            })
-            .clone();
-
-        let Some(root) = root else {
-            // If we can't parse, be conservative.
-            return true;
-        };
-
-        if is_write_reference(&root, reference.range) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn is_write_reference(root: &nova_syntax::SyntaxNode, range: TextRange) -> bool {
-    let Some(tok) = root
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .find(|tok| tok.kind() == SyntaxKind::Identifier && syntax_token_range(tok) == range)
-    else {
-        return false;
-    };
-
-    let token_range = range;
-    let Some(parent) = tok.parent() else {
-        return false;
-    };
-
-    // Detect assignment LHS.
-    for node in parent.ancestors() {
-        if let Some(assign) = ast::AssignmentExpression::cast(node.clone()) {
-            if let Some(lhs) = assign.lhs() {
-                let lhs_range = syntax_range(lhs.syntax());
-                if lhs_range.start <= token_range.start && token_range.end <= lhs_range.end {
-                    return true;
-                }
-            }
-        }
-
-        if let Some(unary) = ast::UnaryExpression::cast(node) {
-            let has_inc_dec = unary
-                .syntax()
-                .children_with_tokens()
-                .filter_map(|el| el.into_token())
-                .any(|tok| matches!(tok.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus));
-            if has_inc_dec {
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 #[derive(Clone, Debug)]
