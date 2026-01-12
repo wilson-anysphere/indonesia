@@ -116,6 +116,27 @@ cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=26214
 Seed corpora live under `fuzz/corpus/<target>/` (and under `crates/*/fuzz/corpus/<target>/` for
 per-crate harnesses).
 
+### Java seed corpus duplication (`fuzz_syntax_parse` / `fuzz_format`)
+
+The Java seed corpora for the `fuzz_syntax_parse` and `fuzz_format` targets are intentionally
+duplicated and are expected to stay **identical** (same `*.java` filenames and contents). This makes
+it easy for new Java seeds to immediately benefit both fuzz targets.
+
+To check that the two corpora haven't drifted:
+
+```bash
+bash scripts/check-fuzz-java-corpus-sync.sh
+```
+
+This check is also run as part of `./scripts/check-repo-invariants.sh` (and therefore in CI).
+
+To re-sync after adding/removing/updating a Java seed, mirror the canonical corpus
+(`fuzz/corpus/fuzz_syntax_parse/`) into `fuzz/corpus/fuzz_format/`:
+
+```bash
+bash scripts/sync-fuzz-java-corpus.sh
+```
+
 ## Hangs, timeouts, and input size caps
 
 Each fuzz target:

@@ -41,3 +41,6 @@ if [[ "${OS:-}" == "Windows_NT" ]]; then
 fi
 
 "${bin}" check-repo-invariants --metadata-path "$tmp"
+
+# Keep duplicated fuzz corpora in sync (Java seed inputs shared across multiple fuzz targets).
+bash "${ROOT_DIR}/scripts/check-fuzz-java-corpus-sync.sh"
