@@ -794,6 +794,35 @@ impl ConstructorDeclaration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactConstructorDeclaration {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for CompactConstructorDeclaration {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CompactConstructorDeclaration
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl CompactConstructorDeclaration {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::ident_token(&self.syntax)
+    }
+
+    pub fn body(&self) -> Option<Block> {
+        support::child::<Block>(&self.syntax)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitializerBlock {
     syntax: SyntaxNode,
 }
@@ -3641,6 +3670,7 @@ pub enum ClassMember {
     FieldDeclaration(FieldDeclaration),
     MethodDeclaration(MethodDeclaration),
     ConstructorDeclaration(ConstructorDeclaration),
+    CompactConstructorDeclaration(CompactConstructorDeclaration),
     InitializerBlock(InitializerBlock),
     EmptyDeclaration(EmptyDeclaration),
     ClassDeclaration(ClassDeclaration),
@@ -3655,6 +3685,7 @@ impl AstNode for ClassMember {
         FieldDeclaration::can_cast(kind)
             || MethodDeclaration::can_cast(kind)
             || ConstructorDeclaration::can_cast(kind)
+            || CompactConstructorDeclaration::can_cast(kind)
             || InitializerBlock::can_cast(kind)
             || EmptyDeclaration::can_cast(kind)
             || ClassDeclaration::can_cast(kind)
@@ -3678,6 +3709,9 @@ impl AstNode for ClassMember {
         }
         if let Some(it) = ConstructorDeclaration::cast(syntax.clone()) {
             return Some(Self::ConstructorDeclaration(it));
+        }
+        if let Some(it) = CompactConstructorDeclaration::cast(syntax.clone()) {
+            return Some(Self::CompactConstructorDeclaration(it));
         }
         if let Some(it) = InitializerBlock::cast(syntax.clone()) {
             return Some(Self::InitializerBlock(it));
@@ -3709,6 +3743,7 @@ impl AstNode for ClassMember {
             Self::FieldDeclaration(it) => it.syntax(),
             Self::MethodDeclaration(it) => it.syntax(),
             Self::ConstructorDeclaration(it) => it.syntax(),
+            Self::CompactConstructorDeclaration(it) => it.syntax(),
             Self::InitializerBlock(it) => it.syntax(),
             Self::EmptyDeclaration(it) => it.syntax(),
             Self::ClassDeclaration(it) => it.syntax(),

@@ -1354,6 +1354,28 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        // Record compact constructor: Ident '{'
+        //
+        // Example (JEP 395):
+        //   record Point(int x, int y) { Point { ... } }
+        //
+        // This is intentionally checked before the `at_type_start` branch below because
+        // `Ident '{'` is otherwise misinterpreted as a type+member-name prefix and triggers
+        // error recovery across the rest of the record body.
+        if self.at_ident_like()
+            && matches!(self.nth(1), Some(SyntaxKind::LBrace) | Some(SyntaxKind::ThrowsKw))
+        {
+            self.builder.start_node_at(
+                checkpoint,
+                SyntaxKind::CompactConstructorDeclaration.into(),
+            );
+            self.bump(); // name
+            self.parse_throws_opt();
+            self.parse_block_with_recovery(StatementContext::Normal, MEMBER_RECOVERY);
+            self.builder.finish_node();
+            return;
+        }
+
         // Method or field.
         if self.at(SyntaxKind::VoidKw) {
             self.builder

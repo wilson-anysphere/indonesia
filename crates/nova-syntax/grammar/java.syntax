@@ -28,6 +28,7 @@ ClassMember =
     FieldDeclaration
   | MethodDeclaration
   | ConstructorDeclaration
+  | CompactConstructorDeclaration
   | InitializerBlock
   | EmptyDeclaration
   | ClassDeclaration
@@ -230,6 +231,11 @@ ConstructorDeclaration {
   type_parameters: TypeParameters?
   name_token: Ident?
   parameter_list: ParameterList?
+  body: Block?
+}
+
+CompactConstructorDeclaration {
+  name_token: Ident?
   body: Block?
 }
 

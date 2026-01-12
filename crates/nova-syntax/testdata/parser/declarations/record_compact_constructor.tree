@@ -1,0 +1,41 @@
+CompilationUnit
+  RecordDeclaration
+    Modifiers
+    RecordKw "record"
+    Whitespace " "
+    Identifier "Point"
+    ParameterList
+      LParen "("
+      Parameter
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "x"
+      Comma ","
+      Whitespace " "
+      Parameter
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "y"
+      RParen ")"
+    Whitespace " "
+    RecordBody
+      LBrace "{"
+      Whitespace "\n  "
+      CompactConstructorDeclaration
+        Modifiers
+        Identifier "Point"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

@@ -1,8 +1,8 @@
 use crate::ast::{
     AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
     CompilationUnit, Expression, ExpressionFragment, FieldAccessExpression, FieldDeclaration,
-    ModuleDirectiveKind, NewExpression, Statement, StatementFragment, SuperExpression,
-    SwitchRuleBody, ThisExpression, TypeDeclaration,
+    ModuleDirectiveKind, NewExpression, RecordDeclaration, Statement, StatementFragment,
+    SuperExpression, SwitchRuleBody, ThisExpression, TypeDeclaration,
 };
 use crate::SyntaxKind;
 use crate::{
@@ -108,6 +108,40 @@ fn class_and_method_accessors() {
         .map(|p| p.name_token().unwrap().text().to_string())
         .collect();
     assert_eq!(params, vec!["a", "b"]);
+}
+
+#[test]
+fn record_compact_constructor_member_accessors() {
+    let src = "record Point(int x, int y) { Point { } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let record: RecordDeclaration = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::RecordDeclaration(record) => Some(record),
+            _ => None,
+        })
+        .unwrap();
+    let record_name = record
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .find(|tok| tok.kind() == SyntaxKind::Identifier)
+        .expect("record name token");
+    assert_eq!(record_name.text(), "Point");
+
+    let compact = record
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::CompactConstructorDeclaration(ctor) => Some(ctor),
+            _ => None,
+        })
+        .expect("compact constructor member");
+    assert_eq!(compact.name_token().unwrap().text(), record_name.text());
 }
 
 #[test]
