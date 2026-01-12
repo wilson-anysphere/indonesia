@@ -1855,6 +1855,128 @@ export async function activate(context: vscode.ExtensionContext) {
     return typed;
   };
 
+  const toLspRange = (range: vscode.Range): LspRange => {
+    return {
+      start: { line: range.start.line, character: range.start.character },
+      end: { line: range.end.line, character: range.end.character },
+    };
+  };
+
+  const resolveAiArgsFromActiveSelection = async (opts: {
+    kind: 'explainError' | 'generateMethodBody' | 'generateTests';
+  }): Promise<NovaAiShowCommandArgs | undefined> => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'java') {
+      return undefined;
+    }
+
+    const doc = editor.document;
+    const selection = editor.selection;
+
+    if (opts.kind === 'explainError') {
+      const diagnostics = vscode.languages.getDiagnostics(doc.uri);
+      if (!diagnostics.length) {
+        void vscode.window.showInformationMessage('Nova AI: No diagnostics found in the active file.');
+        return undefined;
+      }
+
+      const cursor = selection.active;
+      const atCursor = diagnostics.filter((d) => d.range.contains(cursor));
+      const candidates = atCursor.length ? atCursor : diagnostics;
+
+      let picked = candidates[0];
+      if (candidates.length > 1) {
+        const choice = await vscode.window.showQuickPick(
+          candidates.map((d) => ({
+            label: d.message.length > 80 ? `${d.message.slice(0, 77)}…` : d.message,
+            description: `${d.range.start.line + 1}:${d.range.start.character + 1}`,
+            diagnostic: d,
+          })),
+          { placeHolder: 'Select a diagnostic to explain' },
+        );
+        if (!choice) {
+          return undefined;
+        }
+        picked = choice.diagnostic;
+      }
+
+      const startLine = Math.max(0, picked.range.start.line - 2);
+      const endLine = Math.min(doc.lineCount - 1, picked.range.end.line + 2);
+      const snippet = doc.getText(
+        new vscode.Range(
+          new vscode.Position(startLine, 0),
+          new vscode.Position(endLine, doc.lineAt(endLine).text.length),
+        ),
+      );
+
+      return {
+        lspCommand: 'nova.ai.explainError',
+        lspArguments: [
+          {
+            diagnostic_message: picked.message,
+            code: snippet,
+            uri: doc.uri.toString(),
+            range: toLspRange(picked.range),
+          },
+        ],
+        kind: 'nova.explain',
+        title: 'Explain this error',
+      };
+    }
+
+    const selectionText = doc.getText(selection).trim();
+    const defaultRange = selection.isEmpty
+      ? new vscode.Range(
+          new vscode.Position(selection.active.line, 0),
+          new vscode.Position(selection.active.line, doc.lineAt(selection.active.line).text.length),
+        )
+      : selection;
+
+    if (opts.kind === 'generateMethodBody') {
+      const methodSignature =
+        selectionText ||
+        (await vscode.window.showInputBox({ prompt: 'Nova AI: Enter a method signature to generate a body for' }))?.trim();
+      if (!methodSignature) {
+        return undefined;
+      }
+
+      return {
+        lspCommand: 'nova.ai.generateMethodBody',
+        lspArguments: [
+          {
+            method_signature: methodSignature,
+            context: null,
+            uri: doc.uri.toString(),
+            range: toLspRange(defaultRange),
+          },
+        ],
+        kind: 'nova.ai.generate',
+        title: 'Generate method body with AI',
+      };
+    }
+
+    const target =
+      selectionText ||
+      (await vscode.window.showInputBox({ prompt: 'Nova AI: Enter a test target (method/class signature)' }))?.trim();
+    if (!target) {
+      return undefined;
+    }
+
+    return {
+      lspCommand: 'nova.ai.generateTests',
+      lspArguments: [
+        {
+          target,
+          context: null,
+          uri: doc.uri.toString(),
+          range: toLspRange(defaultRange),
+        },
+      ],
+      kind: 'nova.ai.tests',
+      title: 'Generate tests with AI',
+    };
+  };
+
   const runAiLspExecuteCommand = async (
     args: NovaAiShowCommandArgs,
     progressTitle: string,
@@ -1918,14 +2040,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND, async (payload: unknown) => {
-      if (!payload || typeof payload !== 'object') {
-        void vscode.window.showInformationMessage('Nova AI: Run "Explain this error" from the code action menu.');
-        return;
-      }
-
-      const args = payload as NovaAiShowCommandArgs;
-      if (typeof args.lspCommand !== 'string') {
-        void vscode.window.showInformationMessage('Nova AI: Run "Explain this error" from the code action menu.');
+      const args =
+        payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
+          ? (payload as NovaAiShowCommandArgs)
+          : await resolveAiArgsFromActiveSelection({ kind: 'explainError' });
+      if (!args) {
         return;
       }
 
@@ -1967,18 +2086,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND, async (payload: unknown) => {
-      if (!payload || typeof payload !== 'object') {
-        void vscode.window.showInformationMessage(
-          'Nova AI: Run "Generate method body with AI" from the code action menu.',
-        );
-        return;
-      }
-
-      const args = payload as NovaAiShowCommandArgs;
-      if (typeof args.lspCommand !== 'string') {
-        void vscode.window.showInformationMessage(
-          'Nova AI: Run "Generate method body with AI" from the code action menu.',
-        );
+      const args =
+        payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
+          ? (payload as NovaAiShowCommandArgs)
+          : await resolveAiArgsFromActiveSelection({ kind: 'generateMethodBody' });
+      if (!args) {
         return;
       }
 
@@ -2014,14 +2126,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_TESTS_COMMAND, async (payload: unknown) => {
-      if (!payload || typeof payload !== 'object') {
-        void vscode.window.showInformationMessage('Nova AI: Run "Generate tests with AI" from the code action menu.');
-        return;
-      }
-
-      const args = payload as NovaAiShowCommandArgs;
-      if (typeof args.lspCommand !== 'string') {
-        void vscode.window.showInformationMessage('Nova AI: Run "Generate tests with AI" from the code action menu.');
+      const args =
+        payload && typeof payload === 'object' && typeof (payload as { lspCommand?: unknown }).lspCommand === 'string'
+          ? (payload as NovaAiShowCommandArgs)
+          : await resolveAiArgsFromActiveSelection({ kind: 'generateTests' });
+      if (!args) {
         return;
       }
 
