@@ -7,7 +7,10 @@ use nova_framework::{
     VirtualField, VirtualMember,
 };
 use nova_hir::framework::ClassData;
+use nova_scheduler::CancellationToken;
 use nova_types::{CompletionItem, Diagnostic, Span, Type};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 struct FakeAnalyzer {
@@ -239,4 +242,104 @@ fn memory_database_tracks_file_paths_and_all_files() {
 
     let files_b = db.all_files(project_b);
     assert_eq!(files_b, vec![file_b1]);
+}
+
+#[test]
+fn analyzer_default_with_cancel_returns_empty_when_cancelled() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let analyzer = FakeAnalyzer {
+        applicable_to: project,
+        diag_message: "diag",
+        completion_label: "comp",
+        member_name: "m",
+    };
+
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let diags = analyzer.diagnostics_with_cancel(&db, file, &cancel);
+    assert!(diags.is_empty());
+}
+
+#[test]
+fn analyzer_registry_stops_running_analyzers_when_cancelled() {
+    struct CancellingAnalyzer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for CancellingAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            cancel: &CancellationToken,
+        ) -> Vec<Diagnostic> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            cancel.cancel();
+            vec![Diagnostic::warning(
+                "CANCEL",
+                "cancelled",
+                Some(Span::new(0, 1)),
+            )]
+        }
+    }
+
+    struct SecondAnalyzer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for SecondAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<Diagnostic> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            vec![Diagnostic::warning(
+                "SECOND",
+                "should-not-run",
+                Some(Span::new(0, 1)),
+            )]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_calls = Arc::new(AtomicUsize::new(0));
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(CancellingAnalyzer {
+        calls: Arc::clone(&first_calls),
+    }));
+    registry.register(Box::new(SecondAnalyzer {
+        calls: Arc::clone(&second_calls),
+    }));
+
+    let cancel = CancellationToken::new();
+    let diags = registry.framework_diagnostics_with_cancel(&db, file, &cancel);
+
+    assert!(cancel.is_cancelled());
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, "CANCEL");
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        second_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop after cancellation"
+    );
 }
