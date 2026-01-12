@@ -255,6 +255,14 @@ pub fn extract_variable(
         .find_map(ast::Statement::cast)
         .ok_or(RefactorError::InvalidSelection)?;
 
+    // Java requires an explicit constructor invocation (`this(...)` / `super(...)`) to be the
+    // first statement in a constructor body. Extracting a variable would insert a new statement
+    // before it, producing uncompilable code.
+    if matches!(stmt, ast::Statement::ExplicitConstructorInvocation(_)) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract from explicit constructor invocation (`this(...)` / `super(...)`)",
+        });
+    }
     reject_unsafe_extract_variable_context(&expr, &stmt)?;
 
     // Be conservative: extracting from loop conditions changes evaluation frequency.

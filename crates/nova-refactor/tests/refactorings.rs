@@ -876,6 +876,74 @@ fn extract_variable_rejects_new_expression() {
 }
 
 #[test]
+fn extract_variable_rejects_super_constructor_invocation_argument() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class B { B(int x) {} }
+class C extends B {
+  C() { super(/*start*/1 + 2/*end*/); }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason
+                    == "cannot extract from explicit constructor invocation (`this(...)` / `super(...)`)"
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_this_constructor_invocation_argument() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  C(int x) {}
+  C() { this(/*start*/1 + 2/*end*/); }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason
+                    == "cannot extract from explicit constructor invocation (`this(...)` / `super(...)`)"
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_if_body_without_braces_multiline() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
