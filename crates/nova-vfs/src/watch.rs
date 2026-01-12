@@ -933,30 +933,42 @@ mod notify_impl {
 
             // Use a tiny downstream queue so we can deterministically force an overflow without any
             // OS timing assumptions.
-            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(16);
+            //
+            // Use a synchronous raw channel so `send(...)` doesn't complete until the drain loop has
+            // actually received the event.
+            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(0);
             let (events_tx, events_rx) = channel::bounded::<WatchMessage>(1);
             let (stop_tx, stop_rx) = channel::bounded::<()>(0);
             let overflowed = Arc::new(AtomicBool::new(false));
 
+            // Pre-fill the downstream queue so the drain loop's first attempt to deliver a `Changes`
+            // event experiences backpressure.
+            let placeholder_change = FileChange::Modified {
+                path: VfsPath::local("/tmp/placeholder.java"),
+            };
+            events_tx
+                .send(Ok(WatchEvent::Changes {
+                    changes: vec![placeholder_change.clone()],
+                }))
+                .unwrap();
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
             let make_event = |path: &str| notify::Event {
                 kind: EventKind::Modify(ModifyKind::Any),
                 paths: vec![PathBuf::from(path)],
                 attrs: Default::default(),
             };
 
-            // Fill the downstream queue before starting the drain loop so the next Changes message
-            // deterministically overflows it.
-            events_tx
-                .try_send(Ok(WatchEvent::Changes { changes: Vec::new() }))
-                .unwrap();
+            // This change should overflow the downstream queue, triggering a Rescan request.
             raw_tx.send(Ok(make_event("/tmp/A.java"))).unwrap();
 
-            let overflowed_for_thread = Arc::clone(&overflowed);
-            let thread = std::thread::spawn(move || {
-                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
-            });
-
-            // Wait for the drain loop to observe the overflow.
+            // Wait until the drain loop has observed the queue overflow.
+            //
+            // This avoids a race where we drain the placeholder message too early, allowing the
+            // subsequent `Changes` send to succeed.
             let started_at = Instant::now();
             while !overflowed.load(Ordering::Acquire) {
                 if started_at.elapsed() > Duration::from_secs(1) {
@@ -964,6 +976,7 @@ mod notify_impl {
                 }
                 std::thread::yield_now();
             }
+            assert!(overflowed.load(Ordering::Acquire));
 
             // Ensure the drain loop has actually observed the overflow before we start receiving
             // messages. If we block on `recv` too early, the sender may deliver events directly to a
@@ -980,7 +993,12 @@ mod notify_impl {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("expected watcher message")
                 .expect("expected ok watcher event");
-            assert!(matches!(msg, WatchEvent::Changes { .. }));
+            assert_eq!(
+                msg,
+                WatchEvent::Changes {
+                    changes: vec![placeholder_change],
+                }
+            );
 
             // Wake the drain loop without generating additional Changes so it can retry emitting a
             // Rescan immediately (without waiting for the retry tick).
