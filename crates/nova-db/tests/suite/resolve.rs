@@ -12,7 +12,10 @@ use nova_hir::module_info::lower_module_info_source_strict;
 use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
 use nova_project::JpmsModuleRoot;
-use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
+use nova_project::{
+    BuildSystem, ClasspathEntry as ProjectClasspathEntry, ClasspathEntryKind, JavaConfig, Module,
+    ProjectConfig,
+};
 use nova_resolve::{NameResolution, Resolution, StaticMemberResolution, TypeResolution};
 use nova_types::Severity;
 use tempfile::TempDir;
@@ -27,6 +30,11 @@ fn executions(db: &SalsaRootDatabase, query_name: &str) -> u64 {
 
 fn test_dep_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
+}
+
+fn test_named_module_hidden_jar() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../nova-classpath/testdata/named-module-hidden.jar")
 }
 
 fn base_project_config(root: PathBuf) -> ProjectConfig {
@@ -1590,6 +1598,121 @@ class Use {
     assert_eq!(
         resolved,
         Some(Resolution::Type(TypeResolution::Source(hidden_item)))
+    );
+
+    let diags = db.import_diagnostics(use_file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected star import to be resolved, got diagnostics: {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_non_exported_module_path_package_star_import_is_unresolved() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_src = "module workspace.a { requires example.mod; }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![JpmsModuleRoot {
+        name: ModuleName::new("workspace.a"),
+        root: mod_a_root.clone(),
+        module_info: mod_a_root.join("module-info.java"),
+        info: mod_a_info,
+    }];
+    cfg.module_path = vec![ProjectClasspathEntry {
+        kind: ClasspathEntryKind::Jar,
+        path: test_named_module_hidden_jar(),
+    }];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let use_file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+import com.example.hidden.*;
+
+class Use {
+    Hidden field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![use_file]));
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Hidden"));
+    assert_eq!(resolved, None);
+
+    let diags = db.import_diagnostics(use_file);
+    assert!(
+        diags.iter().any(|d| {
+            d.code.as_ref() == "unresolved-import" && d.message.contains("com.example.hidden.*")
+        }),
+        "expected unresolved-import diagnostic for `com.example.hidden.*`, got {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_exported_module_path_package_star_import_resolves_type() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_src = "module workspace.a { requires example.mod; }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![JpmsModuleRoot {
+        name: ModuleName::new("workspace.a"),
+        root: mod_a_root.clone(),
+        module_info: mod_a_root.join("module-info.java"),
+        info: mod_a_info,
+    }];
+    cfg.module_path = vec![ProjectClasspathEntry {
+        kind: ClasspathEntryKind::Jar,
+        path: test_named_module_hidden_jar(),
+    }];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let use_file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+import com.example.api.*;
+
+class Use {
+    Api field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![use_file]));
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Api"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "com.example.api.Api"
+        ))))
     );
 
     let diags = db.import_diagnostics(use_file);
