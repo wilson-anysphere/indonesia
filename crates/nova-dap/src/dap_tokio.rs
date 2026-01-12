@@ -85,6 +85,44 @@ pub struct DapReader<R> {
     reader: BufReader<R>,
 }
 
+const MAX_DAP_HEADER_LINE_BYTES: usize = 8 * 1024;
+
+async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_len: usize,
+) -> io::Result<Option<String>> {
+    let mut buf = Vec::<u8>::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let take = newline_pos.map(|pos| pos + 1).unwrap_or(available.len());
+        if buf.len() + take > max_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("DAP header line exceeds maximum size ({max_len} bytes)"),
+            ));
+        }
+
+        buf.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline_pos.is_some() {
+            break;
+        }
+    }
+
+    let line = String::from_utf8(buf).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "DAP header line is not UTF-8")
+    })?;
+    Ok(Some(line))
+}
+
 impl<R: AsyncRead + Unpin> DapReader<R> {
     pub fn new(inner: R) -> Self {
         Self {
@@ -94,14 +132,12 @@ impl<R: AsyncRead + Unpin> DapReader<R> {
 
     pub async fn read_value(&mut self) -> Result<Option<Value>> {
         let mut content_length: Option<usize> = None;
-        let mut line = String::new();
 
         loop {
-            line.clear();
-            let n = self.reader.read_line(&mut line).await?;
-            if n == 0 {
+            let Some(line) = read_line_limited(&mut self.reader, MAX_DAP_HEADER_LINE_BYTES).await?
+            else {
                 return Ok(None);
-            }
+            };
 
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.is_empty() {

@@ -9,6 +9,40 @@ use std::io::{self, BufRead, Write};
 /// attempt to read the body.
 pub const MAX_DAP_MESSAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
+const MAX_DAP_HEADER_LINE_BYTES: usize = 8 * 1024;
+
+fn read_line_limited<R: BufRead>(reader: &mut R, max_len: usize) -> io::Result<Option<String>> {
+    let mut buf = Vec::<u8>::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let take = newline_pos.map(|pos| pos + 1).unwrap_or(available.len());
+        if buf.len() + take > max_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("DAP header line exceeds maximum size ({max_len} bytes)"),
+            ));
+        }
+
+        buf.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline_pos.is_some() {
+            break;
+        }
+    }
+
+    let line = String::from_utf8(buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "DAP header line is not UTF-8"))?;
+    Ok(Some(line))
+}
+
 /// Read a single DAP-framed JSON message from `reader`.
 ///
 /// DAP messages are framed using an HTTP-like header section:
@@ -42,12 +76,10 @@ pub fn read_raw_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Vec<u8>
 
     // Read header lines until the blank separator line.
     loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
+        let Some(line) = read_line_limited(reader, MAX_DAP_HEADER_LINE_BYTES)? else {
             // EOF without a message.
             return Ok(None);
-        }
+        };
 
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
