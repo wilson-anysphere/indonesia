@@ -546,6 +546,7 @@ pub(crate) struct WorkspaceEngine {
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
 
     build_runner: Arc<dyn CommandRunner>,
+    build_runner_is_default: bool,
 
     config: RwLock<EffectiveConfig>,
     scheduler: Scheduler,
@@ -739,6 +740,7 @@ impl WorkspaceEngine {
             memory,
             build_runner,
         } = config;
+        let build_runner_is_default = build_runner.is_none();
         let build_runner = build_runner.unwrap_or_else(default_build_runner);
 
         let vfs = Vfs::new(LocalFs::new());
@@ -797,6 +799,7 @@ impl WorkspaceEngine {
             indexes,
             indexes_evictor,
             build_runner,
+            build_runner_is_default,
             config: RwLock::new(EffectiveConfig::default()),
             scheduler,
             memory,
@@ -1560,6 +1563,7 @@ impl WorkspaceEngine {
         let closed_file_texts = Arc::clone(&self.closed_file_texts);
         let subscribers = Arc::clone(&self.subscribers);
         let build_runner = Arc::clone(&self.build_runner);
+        let build_runner_is_default = self.build_runner_is_default;
         let scheduler = self.scheduler.clone();
         let watch_config = Arc::clone(&self.watch_config);
         let watcher_command_store = Arc::clone(&self.watcher_command_store);
@@ -1593,6 +1597,7 @@ impl WorkspaceEngine {
                     &watcher_command_store,
                     &subscribers,
                     &build_runner,
+                    build_runner_is_default,
                 ) {
                     publish_to_subscribers(
                         &subscribers,
@@ -1646,6 +1651,7 @@ impl WorkspaceEngine {
             &self.watcher_command_store,
             &self.subscribers,
             &self.build_runner,
+            self.build_runner_is_default,
         );
 
         // Ensure we drive eviction after loading/updating a potentially large set of files.
@@ -3181,6 +3187,7 @@ fn reload_project_and_sync(
     watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
     subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
     build_runner: &Arc<dyn CommandRunner>,
+    build_runner_is_default: bool,
 ) -> Result<()> {
     let (previous_config, mut options, previous_classpath_fingerprint, previous_jdk_fingerprint) = {
         let state = project_state
@@ -3257,7 +3264,26 @@ fn reload_project_and_sync(
 
             if refresh_build {
                 let cache_dir = build_cache_dir(workspace_root, query_db);
-                let build = BuildManager::with_runner(cache_dir, Arc::clone(build_runner));
+                // When using the default build runner, respect the user-configured build
+                // integration timeout. Custom runners are expected to implement their own
+                // timeout semantics.
+                let runner = if build_runner_is_default {
+                    #[cfg(not(test))]
+                    {
+                        Arc::new(nova_build::DefaultCommandRunner {
+                            timeout: Some(options.nova_config.build.timeout()),
+                            cancellation: None,
+                        })
+                    }
+                    #[cfg(test)]
+                    {
+                        Arc::clone(build_runner)
+                    }
+                } else {
+                    Arc::clone(build_runner)
+                };
+
+                let build = BuildManager::with_runner(cache_dir, runner);
 
                 let compile_config = match loaded.build_system {
                     BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
