@@ -423,6 +423,16 @@ export async function activate(context: vscode.ExtensionContext) {
         if (handled) {
           return await handled;
         }
+
+        // Safety net: if nova-lsp ever returns AI code lenses (or other `workspace/executeCommand`
+        // invocations) that we didn't rewrite in the code action middleware, route them through the
+        // existing VS Code-side "show" commands so users see the AI output.
+        const rewrittenAi = rewriteNovaAiCodeActionOrCommand({ command, arguments: args });
+        if (rewrittenAi) {
+          await vscode.commands.executeCommand(rewrittenAi.command, ...rewrittenAi.args);
+          return;
+        }
+
         return await next(command, args);
       },
       sendRequest: async (type, param, token, next) => {
