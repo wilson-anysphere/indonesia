@@ -1009,38 +1009,47 @@ fn ensure_salsa_inputs_for_single_file(
     file: FileId,
     text: &str,
 ) {
-    let should_set_jdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // IMPORTANT: When reusing a caller-provided Salsa DB, treat it as authoritative.
+    // Only seed *missing* inputs (i.e. ones that would otherwise panic) to keep
+    // `nova-ide` from clobbering workspace-engine configuration like classpath/JDK.
+
+    let should_seed_jdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.jdk_index(project))
     }))
-    .map(|current| !Arc::ptr_eq(&current.0, jdk))
-    .unwrap_or(true);
-    if should_set_jdk {
+    .is_err();
+    if should_seed_jdk {
         salsa.set_jdk_index(project, Arc::clone(jdk));
     }
 
-    let should_clear_classpath = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let should_seed_classpath = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.classpath_index(project))
     }))
-    .map(|current| current.is_some())
-    .unwrap_or(true);
-    if should_clear_classpath {
+    .is_err();
+    if should_seed_classpath {
         salsa.set_classpath_index(project, None);
     }
 
-    let should_set_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let should_seed_file_project = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_project(file))
     }))
-    .map(|current| current != project)
-    .unwrap_or(true);
-    if should_set_file_project {
+    .is_err();
+    if should_seed_file_project {
         salsa.set_file_project(file, project);
     }
 
-    let should_set_file_rel_path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let should_seed_source_root = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        salsa.with_snapshot(|snap| snap.source_root(file))
+    }))
+    .is_err();
+    if should_seed_source_root {
+        salsa.set_source_root(file, nova_db::SourceRootId::from_raw(0));
+    }
+
+    let should_seed_file_rel_path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_rel_path(file))
     }))
     .is_err();
-    if should_set_file_rel_path {
+    if should_seed_file_rel_path {
         salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
     }
 
@@ -1051,11 +1060,10 @@ fn ensure_salsa_inputs_for_single_file(
 
     match project_files {
         Some(current) => {
+            // Preserve host ordering: only append the file when missing.
             if !current.iter().any(|id| *id == file) {
                 let mut files = current.as_ref().clone();
                 files.push(file);
-                files.sort_by_key(|id| id.to_raw());
-                files.dedup();
                 salsa.set_project_files(project, Arc::new(files));
             }
         }
@@ -1064,30 +1072,20 @@ fn ensure_salsa_inputs_for_single_file(
         }
     }
 
-    let should_set_file_exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let file_exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_exists(file))
     }))
-    .map(|current| !current)
-    .unwrap_or(true);
-    if should_set_file_exists {
+    .ok();
+    if file_exists.is_none_or(|current| !current) {
         salsa.set_file_exists(file, true);
     }
 
-    let should_set_source_root = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        salsa.with_snapshot(|snap| snap.source_root(file))
-    }))
-    .is_err();
-    if should_set_source_root {
-        salsa.set_source_root(file, nova_db::SourceRootId::from_raw(0));
-    }
-
-    let should_set_file_text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let file_text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         salsa.with_snapshot(|snap| snap.file_content(file))
     }))
-    .map(|current| current.as_str() != text)
-    .unwrap_or(true);
-    if should_set_file_text {
-        salsa.set_file_text(file, text.to_string());
+    .ok();
+    if file_text.is_none_or(|current| current.as_str() != text) {
+        salsa.set_file_content(file, Arc::new(text.to_string()));
     }
 }
 
