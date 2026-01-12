@@ -1317,6 +1317,22 @@ fn type_mismatch_quick_fixes(
     selection: Span,
     diagnostics: &[nova_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
+    fn cast_replacement(expected: &str, expr: &str) -> String {
+        // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
+        // `((T) a) + b` and does not cast the whole expression.
+        let needs_parens = expr.chars().any(|c| c.is_whitespace())
+            || [
+                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=",
+            ]
+            .into_iter()
+            .any(|op| expr.contains(op));
+
+        if needs_parens {
+            format!("({expected}) ({expr})")
+        } else {
+            format!("({expected}) {expr}")
+        }
+    }
     fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
         let message = message.strip_prefix("type mismatch: expected ")?;
         let (expected, found) = message.split_once(", found ")?;
@@ -1381,7 +1397,7 @@ fn type_mismatch_quick_fixes(
             ));
         }
 
-        let edit = single_replace_edit(uri, range, format!("({expected}) {expr}"));
+        let edit = single_replace_edit(uri, range, cast_replacement(&expected, expr));
         actions.push(lsp_types::CodeActionOrCommand::CodeAction(
             lsp_types::CodeAction {
                 title: format!("Cast to {expected}"),
@@ -1403,6 +1419,22 @@ fn type_mismatch_quick_fixes_from_context(
     selection: Span,
     context_diagnostics: &[lsp_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
+    fn cast_replacement(expected: &str, expr: &str) -> String {
+        // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
+        // `((T) a) + b` and does not cast the whole expression.
+        let needs_parens = expr.chars().any(|c| c.is_whitespace())
+            || [
+                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=",
+            ]
+            .into_iter()
+            .any(|op| expr.contains(op));
+
+        if needs_parens {
+            format!("({expected}) ({expr})")
+        } else {
+            format!("({expected}) {expr}")
+        }
+    }
     fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
         let message = message.strip_prefix("type mismatch: expected ")?;
         let (expected, found) = message.split_once(", found ")?;
@@ -1479,7 +1511,7 @@ fn type_mismatch_quick_fixes_from_context(
             ));
         }
 
-        let edit = single_replace_edit(uri, range, format!("({expected}) {expr}"));
+        let edit = single_replace_edit(uri, range, cast_replacement(&expected, expr));
         actions.push(lsp_types::CodeActionOrCommand::CodeAction(
             lsp_types::CodeAction {
                 title: format!("Cast to {expected}"),
