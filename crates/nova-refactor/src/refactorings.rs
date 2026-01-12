@@ -1106,9 +1106,14 @@ pub fn extract_variable(
         return Err(RefactorError::ExtractNotSupported { reason });
     }
 
-    let expr_range = syntax_range(expr.syntax());
+    // Some expression node ranges in the AST can include leading/trailing trivia (whitespace and
+    // comments). Treat the *token* span as the extracted expression text (so we don't move
+    // trailing comments into the new declaration), but use a slightly wider range for replacement
+    // so we keep legacy behavior of trimming stray whitespace when no trailing comment exists.
+    let expr_token_range = trimmed_syntax_range(expr.syntax());
+    let expr_range = expr_replacement_range(expr.syntax());
     let expr_text = text
-        .get(selection.start..selection.end)
+        .get(expr_token_range.start..expr_token_range.end)
         .ok_or(RefactorError::InvalidSelection)?
         .to_string();
 
@@ -1239,7 +1244,7 @@ pub fn extract_variable(
             parser_ty = parser_ty.replace("<>", "");
         }
 
-        let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_range);
+        let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_token_range);
 
         // For explicit-typed extraction we must be confident about the type. If we don't have
         // type-checker type information and our parser-only inference fell back to the generic
@@ -1306,8 +1311,8 @@ pub fn extract_variable(
                     && stmt_expr_range_ws.end == selection.end)
             {
                 let stmt_range = syntax_range(expr_stmt.syntax());
-                let prefix = &text[stmt_range.start..selection.start];
-                let suffix = &text[selection.end..stmt_range.end];
+                let prefix = &text[stmt_range.start..expr_token_range.start];
+                let suffix = &text[expr_range.end..stmt_range.end];
                 let replacement = format!("{prefix}{ty} {name} = {expr_text}{suffix}");
 
                 let mut edit = WorkspaceEdit::new(vec![TextEdit::replace(
@@ -4087,18 +4092,18 @@ fn find_replace_all_occurrences_same_execution_context(
 
     let mut ranges = Vec::new();
     for expr in search_root.descendants().filter_map(ast::Expression::cast) {
-        let range = syntax_range(expr.syntax());
+        // `SyntaxNode::text_range()` for expressions can include trivia. Use a trivia-trimmed range
+        // so `replace_all` still matches selections like `new Foo()` against occurrences like
+        // `new Foo() /*comment*/`, and so replacing preserves trailing comments.
+        let token_range = trimmed_syntax_range(expr.syntax());
 
         // The extracted local is declared immediately before `insertion_stmt`, so we only replace
         // occurrences within that statement and after it.
-        if range.start < min_offset {
+        if token_range.start < min_offset {
             continue;
         }
 
-        // Compare against a trimmed version so trailing trivia in expression node ranges does not
-        // affect equivalence matching.
-        let trimmed = trim_range(source, range);
-        let Some(text) = source.get(trimmed.start..trimmed.end) else {
+        let Some(text) = source.get(token_range.start..token_range.end) else {
             continue;
         };
         if normalize_expr_text(text) != selected_norm {
@@ -4118,7 +4123,7 @@ fn find_replace_all_occurrences_same_execution_context(
             continue;
         }
 
-        ranges.push(range);
+        ranges.push(expr_replacement_range(expr.syntax()));
     }
 
     ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
@@ -4895,6 +4900,59 @@ fn trimmed_syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
         (Some(start), Some(end)) => TextRange::new(start, end),
         _ => syntax_range(node),
     }
+}
+
+/// Compute the byte range to replace when rewriting an extracted expression occurrence.
+///
+/// Some expression node ranges include trailing trivia (whitespace/comments). For extraction we:
+/// - Use the token span (see [`trimmed_syntax_range`]) for the extracted expression text so we
+///   don't move trailing inline comments into the new declaration.
+/// - Use a slightly wider range for replacement so we keep legacy behavior of trimming stray
+///   whitespace after the expression (e.g. before `;`) when there is *no* trailing comment.
+///
+/// When a trailing comment is present, we preserve it (and any preceding whitespace) by limiting
+/// the replacement to the token span.
+fn expr_replacement_range(node: &nova_syntax::SyntaxNode) -> TextRange {
+    let full = syntax_range(node);
+    let token = trimmed_syntax_range(node);
+
+    // Always preserve leading trivia by starting replacement at the first non-trivia token.
+    let start = token.start;
+
+    // If trailing trivia contains a comment token, avoid replacing it (keep it at the usage site).
+    let mut has_trailing_comment = false;
+    for el in node.descendants_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        if !tok.kind().is_trivia() {
+            continue;
+        }
+
+        let range = tok.text_range();
+        let tok_start = u32::from(range.start()) as usize;
+
+        // Only consider trivia that occurs *after* the last non-trivia token.
+        if tok_start < token.end {
+            continue;
+        }
+
+        if matches!(
+            tok.kind(),
+            SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment
+        ) {
+            has_trailing_comment = true;
+            break;
+        }
+    }
+
+    let end = if has_trailing_comment {
+        token.end
+    } else {
+        full.end
+    };
+
+    TextRange::new(start, end)
 }
 
 fn reject_unsafe_extract_variable_context(
