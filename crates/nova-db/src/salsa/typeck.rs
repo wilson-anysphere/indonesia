@@ -457,7 +457,7 @@ fn type_of_expr(db: &dyn NovaTypeck, file: FileId, expr: FileExprId) -> Type {
 
 fn type_of_expr_demand_result(
     db: &dyn NovaTypeck,
-    _file: FileId,
+    file: FileId,
     expr: FileExprId,
 ) -> Arc<DemandExprTypeckResult> {
     let start = Instant::now();
@@ -474,6 +474,17 @@ fn type_of_expr_demand_result(
     cancel::check_cancelled(db);
 
     let owner = expr.owner;
+    // Avoid mismatched keys (shouldn't happen, but this query is used by IDE features).
+    if def_file(owner) != file {
+        let env = ArcEq::new(Arc::new(TypeStore::with_minimal_jdk()));
+        let result = Arc::new(DemandExprTypeckResult {
+            env,
+            ty: Type::Unknown,
+            diagnostics: Vec::new(),
+        });
+        db.record_query_stat("type_of_expr_demand_result", start.elapsed());
+        return result;
+    }
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
     let project = db.file_project(file);
@@ -1162,7 +1173,7 @@ fn resolve_method_call(
 
 fn resolve_method_call_demand(
     db: &dyn NovaTypeck,
-    _file: FileId,
+    file: FileId,
     call_site: FileExprId,
 ) -> Option<ResolvedMethod> {
     let start = Instant::now();
@@ -1174,6 +1185,11 @@ fn resolve_method_call_demand(
     cancel::check_cancelled(db);
 
     let owner = call_site.owner;
+    // Avoid mismatched keys (shouldn't happen, but this query is used by IDE features).
+    if def_file(owner) != file {
+        db.record_query_stat("resolve_method_call_demand", start.elapsed());
+        return None;
+    }
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
     let project = db.file_project(file);
