@@ -2274,4 +2274,51 @@ mod tests {
         let repo = maven_repo_from_maven_config(dir.path());
         assert_eq!(repo, None);
     }
+
+    #[test]
+    fn maven_dependency_jar_path_omits_missing_jars() {
+        let repo = tempfile::tempdir().expect("tempdir maven repo");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        assert!(
+            maven_dependency_jar_path(repo.path(), &dep).is_none(),
+            "missing jars should be omitted from the classpath"
+        );
+    }
+
+    #[test]
+    fn maven_dependency_jar_path_accepts_snapshot_fallback_jar() {
+        let repo = tempfile::tempdir().expect("tempdir maven repo");
+
+        let jar_path = repo
+            .path()
+            .join("com/example/dep/1.0-SNAPSHOT/dep-1.0-SNAPSHOT.jar");
+        if let Some(parent) = jar_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir snapshot version dir");
+        }
+        std::fs::write(&jar_path, b"").expect("write jar placeholder");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0-SNAPSHOT".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        assert_eq!(
+            maven_dependency_jar_path(repo.path(), &dep),
+            Some(jar_path),
+            "expected snapshot fallback jar to be accepted when present on disk"
+        );
+    }
 }
