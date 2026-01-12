@@ -135,7 +135,13 @@ export function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; p
     return vscode.Uri.file(raw).with({ scheme: baseUri.scheme, authority: baseUri.authority });
   }
 
-  return vscode.Uri.file(raw);
+  // If we don't have an explicit base URI, try inferring the workspace folder so we can preserve
+  // remote workspace schemes/authorities.
+  const inferredFolder = workspaceFolderForFsPath(raw);
+  const uri = vscode.Uri.file(raw);
+  return inferredFolder && inferredFolder.uri.scheme !== 'file'
+    ? uri.with({ scheme: inferredFolder.uri.scheme, authority: inferredFolder.uri.authority })
+    : uri;
 }
 
 function endpointPathFromItem(item: unknown): string | undefined {
