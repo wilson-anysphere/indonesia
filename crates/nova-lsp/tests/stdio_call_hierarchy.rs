@@ -195,3 +195,195 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn stdio_server_supports_call_hierarchy_across_files() {
+    let _lock = stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let foo_path = root.join("Foo.java");
+    let foo_uri = uri_for_path(&foo_path);
+    let bar_path = root.join("Bar.java");
+    let bar_uri = uri_for_path(&bar_path);
+    let root_uri = uri_for_path(root);
+
+    let foo_text = r#"
+        public class Foo {
+            void caller() {
+                Bar.callee();
+            }
+        }
+    "#;
+
+    let bar_text = r#"
+        public class Bar {
+            static void callee() {}
+        }
+    "#;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // didOpen both files
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": foo_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": foo_text,
+                }
+            }
+        }),
+    );
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": bar_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": bar_text,
+                }
+            }
+        }),
+    );
+
+    // prepareCallHierarchy at the caller method name.
+    let caller_offset = foo_text.find("caller").expect("caller method name");
+    let pos = utf16_position(foo_text, caller_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareCallHierarchy",
+            "params": {
+                "textDocument": { "uri": foo_uri.as_str() },
+                "position": { "line": pos.line, "character": pos.character },
+            }
+        }),
+    );
+
+    let prepare_resp = read_response_with_id(&mut stdout, 2);
+    let items = prepare_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected prepareCallHierarchy result array: {prepare_resp:#}"));
+    assert!(
+        !items.is_empty(),
+        "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
+    );
+    let item = items[0].clone();
+
+    // outgoingCalls should contain Bar.callee().
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "callHierarchy/outgoingCalls",
+            "params": { "item": item }
+        }),
+    );
+    let outgoing_resp = read_response_with_id(&mut stdout, 3);
+    let outgoing = outgoing_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected outgoingCalls result array: {outgoing_resp:#}"));
+
+    let callee_item = outgoing
+        .iter()
+        .find(|value| {
+            value
+                .pointer("/to/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "callee")
+                && value
+                    .pointer("/to/uri")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|uri| uri == bar_uri.as_str())
+        })
+        .and_then(|value| value.get("to"))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!("expected outgoing calls to include Bar.callee: {outgoing_resp:#}")
+        });
+
+    // incomingCalls on Bar.callee should include Foo.caller.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "callHierarchy/incomingCalls",
+            "params": { "item": callee_item }
+        }),
+    );
+    let incoming_resp = read_response_with_id(&mut stdout, 4);
+    let incoming = incoming_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    assert!(
+        incoming.iter().any(|value| {
+            value
+                .pointer("/from/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "caller")
+                && value
+                    .pointer("/from/uri")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|uri| uri == foo_uri.as_str())
+        }),
+        "expected incoming calls to include Foo.caller: {incoming_resp:#}"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 5);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
