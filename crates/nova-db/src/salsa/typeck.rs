@@ -9595,6 +9595,32 @@ fn find_best_expr_in_stmt(
     owner: DefWithBodyId,
     best: &mut Option<(DefWithBodyId, HirExprId, usize)>,
 ) {
+    let stmt_range = match &body.stmts[stmt] {
+        HirStmt::Block { range, .. }
+        | HirStmt::Let { range, .. }
+        | HirStmt::Expr { range, .. }
+        | HirStmt::Assert { range, .. }
+        | HirStmt::Return { range, .. }
+        | HirStmt::If { range, .. }
+        | HirStmt::While { range, .. }
+        | HirStmt::For { range, .. }
+        | HirStmt::ForEach { range, .. }
+        | HirStmt::Synchronized { range, .. }
+        | HirStmt::Switch { range, .. }
+        | HirStmt::Try { range, .. }
+        | HirStmt::Throw { range, .. }
+        | HirStmt::Break { range, .. }
+        | HirStmt::Continue { range, .. }
+        | HirStmt::Empty { range, .. } => *range,
+    };
+
+    // Fast path: if the cursor isn't inside this statement's range, none of its descendants can
+    // contain the target offset. Keep this best-effort by only pruning when we have a non-empty
+    // range (parse recovery can yield empty/degenerate spans).
+    if !stmt_range.is_empty() && !(stmt_range.start <= offset && offset < stmt_range.end) {
+        return;
+    }
+
     match &body.stmts[stmt] {
         HirStmt::Block { statements, .. } => {
             for &stmt in statements {
@@ -10169,6 +10195,9 @@ fn find_best_expr_in_expr(
     best: &mut Option<(DefWithBodyId, HirExprId, usize)>,
 ) {
     let range = body.exprs[expr].range();
+    if !range.is_empty() && !(range.start <= offset && offset < range.end) {
+        return;
+    }
     // `Span` uses end-exclusive semantics (mirrors `text_size::TextRange`).
     if range.start <= offset && offset < range.end {
         let len = range.len();
