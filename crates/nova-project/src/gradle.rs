@@ -45,7 +45,11 @@ fn root_project_has_sources(root: &Path) -> bool {
 /// but it is compiled by Gradle and often contains build logic developers want indexed.
 const GRADLE_BUILDSRC_PROJECT_PATH: &str = ":__buildSrc";
 
-fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, workspace_root: &Path) {
+fn maybe_insert_buildsrc_module_ref(
+    module_refs: &mut Vec<GradleModuleRef>,
+    workspace_root: &Path,
+    snapshot: Option<&GradleSnapshotFile>,
+) {
     let buildsrc_root = workspace_root.join("buildSrc");
     if !buildsrc_root.is_dir() {
         return;
@@ -78,7 +82,17 @@ fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, work
         }
     }
 
-    if !has_sources {
+    let include_from_snapshot = snapshot.is_some_and(|snapshot| {
+        snapshot
+            .java_compile_configs
+            .contains_key(GRADLE_BUILDSRC_PROJECT_PATH)
+            || snapshot
+                .projects
+                .iter()
+                .any(|p| p.path == GRADLE_BUILDSRC_PROJECT_PATH)
+    });
+
+    if !has_sources && !include_from_snapshot {
         return;
     }
 
@@ -231,7 +245,8 @@ pub(crate) fn load_gradle_project(
         module_refs.insert(0, GradleModuleRef::root());
     }
 
-    maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+    let snapshot = load_gradle_snapshot(root);
+    maybe_insert_buildsrc_module_ref(&mut module_refs, root, snapshot.as_ref());
     let buildsrc_builds: Vec<GradleModuleRef> = module_refs
         .iter()
         .filter(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
@@ -241,7 +256,6 @@ pub(crate) fn load_gradle_project(
     append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &buildsrc_builds);
 
-    let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
     if let Some(snapshot) = snapshot.as_ref() {
         for project in &snapshot.projects {
@@ -568,7 +582,8 @@ pub(crate) fn load_gradle_workspace_model(
         module_refs.insert(0, GradleModuleRef::root());
     }
 
-    maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+    let snapshot = load_gradle_snapshot(root);
+    maybe_insert_buildsrc_module_ref(&mut module_refs, root, snapshot.as_ref());
     let buildsrc_builds: Vec<GradleModuleRef> = module_refs
         .iter()
         .filter(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
@@ -578,7 +593,6 @@ pub(crate) fn load_gradle_workspace_model(
     append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &buildsrc_builds);
 
-    let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
     if let Some(snapshot) = snapshot.as_ref() {
         for project in &snapshot.projects {

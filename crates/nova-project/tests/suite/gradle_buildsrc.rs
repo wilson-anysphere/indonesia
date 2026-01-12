@@ -473,3 +473,97 @@ fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
     assert_eq!(owning.module.id, "gradle::__buildSrc");
     assert_eq!(owning.source_root.path, snapshot_main_src);
 }
+
+#[test]
+fn gradle_snapshot_can_add_buildsrc_module_without_conventional_java_layout() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path();
+
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "rootProject.name = \"demo\"\n",
+    )
+    .expect("write settings.gradle");
+    std::fs::write(workspace_root.join("build.gradle"), "").expect("write build.gradle");
+
+    // Create buildSrc sources in a non-standard layout (no `buildSrc/src/main/java`), so heuristic
+    // discovery would normally skip it. The snapshot should still cause it to be included.
+    let buildsrc_root = workspace_root.join("buildSrc");
+    let snapshot_main_src = buildsrc_root.join("snapshotSrc/java");
+    std::fs::create_dir_all(snapshot_main_src.join("com/example"))
+        .expect("mkdir snapshotSrc sources");
+    std::fs::write(
+        snapshot_main_src.join("com/example/SnapshotOnly.java"),
+        "package com.example; class SnapshotOnly {}",
+    )
+    .expect("write snapshot java");
+
+    let main_out = buildsrc_root.join("out/classes");
+    let test_out = buildsrc_root.join("out/test-classes");
+    std::fs::create_dir_all(&main_out).expect("mkdir snapshot main output");
+    std::fs::create_dir_all(&test_out).expect("mkdir snapshot test output");
+
+    let fingerprint = compute_gradle_fingerprint(workspace_root);
+    let snapshot_path = workspace_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+
+    let snapshot_json = serde_json::json!({
+        "schemaVersion": GRADLE_SNAPSHOT_SCHEMA_VERSION,
+        "buildFingerprint": fingerprint,
+        "projects": [
+            { "path": ":", "projectDir": workspace_root.to_string_lossy() },
+            { "path": ":__buildSrc", "projectDir": buildsrc_root.to_string_lossy() },
+        ],
+        "javaCompileConfigs": {
+            ":__buildSrc": {
+                "projectDir": buildsrc_root.to_string_lossy(),
+                "compileClasspath": [ main_out.to_string_lossy() ],
+                "testClasspath": [ test_out.to_string_lossy() ],
+                "modulePath": [],
+                "mainSourceRoots": [ snapshot_main_src.to_string_lossy() ],
+                "testSourceRoots": [],
+                "mainOutputDir": main_out.to_string_lossy(),
+                "testOutputDir": test_out.to_string_lossy(),
+                "source": "17",
+                "target": "17",
+                "release": "17",
+                "enablePreview": false
+            }
+        }
+    });
+    std::fs::write(
+        &snapshot_path,
+        serde_json::to_vec_pretty(&snapshot_json).expect("serialize snapshot json"),
+    )
+    .expect("write snapshot");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let config = load_project_with_options(workspace_root, &options).expect("load gradle project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    assert!(
+        config.modules.iter().any(|m| m.root == buildsrc_root),
+        "expected buildSrc module to be present (from snapshot)"
+    );
+    assert!(
+        config.source_roots.iter().any(|sr| {
+            sr.kind == SourceRootKind::Main
+                && sr.origin == SourceRootOrigin::Source
+                && sr.path == snapshot_main_src
+        }),
+        "expected snapshot-provided buildSrc source root to be present"
+    );
+
+    let model =
+        load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
+    let owning = model
+        .module_for_path(&snapshot_main_src.join("com/example/SnapshotOnly.java"))
+        .expect("module_for_path should resolve snapshot buildSrc java file");
+    assert_eq!(owning.module.id, "gradle::__buildSrc");
+    assert_eq!(owning.source_root.path, snapshot_main_src);
+}
