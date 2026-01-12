@@ -3244,10 +3244,10 @@ fn import_completions(
     // Optional star import (`import foo.bar.*;`). Only offer when the cursor is at the start of a
     // segment (e.g. after a dot).
     if items.len() < MAX_ITEMS
-        && !ctx.is_static
         && ctx.segment_prefix.is_empty()
         && !ctx.base_prefix.is_empty()
         && ctx.base_prefix.ends_with('.')
+        && (!ctx.is_static || nested_type_owner.is_some())
     {
         items.push(CompletionItem {
             label: "*".to_string(),
@@ -5132,6 +5132,17 @@ fn static_import_completions(
         .static_member_names_with_prefix(&owner, member_prefix)
         .unwrap_or_default();
 
+    // Nested types are also importable in `import static` statements because static member types
+    // (e.g. `java.util.Map.Entry`) are static members.
+    //
+    // These come from the class-name index, not from `static_member_names_with_prefix` (which only
+    // includes fields + methods).
+    let fallback_jdk = JdkIndex::new();
+    let class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
+
     let mut static_methods: HashSet<String> = HashSet::new();
     let mut static_fields: HashSet<String> = HashSet::new();
     if let Ok(Some(stub)) = jdk.lookup_type(&owner) {
@@ -5155,6 +5166,45 @@ fn static_import_completions(
             label: "*".to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
             insert_text: Some("*".to_string()),
+            ..Default::default()
+        });
+    }
+
+    fn is_java_ident_segment(segment: &str) -> bool {
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_alphabetic() || first == '_' || first == '$')
+            && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+    }
+
+    let mut seen_types: HashSet<String> = HashSet::new();
+    let nested_prefix = format!("{owner}${member_prefix}");
+    let start = class_names.partition_point(|name| name.as_str() < nested_prefix.as_str());
+    for name in &class_names[start..] {
+        if !name.starts_with(nested_prefix.as_str()) {
+            break;
+        }
+        let Some(rest) = name.get(owner.len() + 1..) else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        if !rest.split('$').all(is_java_ident_segment) {
+            continue;
+        }
+
+        let label = rest.replace('$', ".");
+        if !seen_types.insert(label.clone()) {
+            continue;
+        }
+
+        items.push(CompletionItem {
+            label,
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(name.clone()),
             ..Default::default()
         });
     }

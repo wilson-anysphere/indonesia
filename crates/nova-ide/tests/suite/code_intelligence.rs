@@ -1978,8 +1978,8 @@ class A {}
 fn completion_includes_static_import_star() {
     let (db, file, pos) = fixture(
         r#"
-import static java.lang.Math.<|>;
-class A {}
+ import static java.lang.Math.<|>;
+ class A {}
 "#,
     );
 
@@ -1992,6 +1992,23 @@ class A {}
     assert!(
         labels.contains(&"max"),
         "expected completion list to contain Math.max with empty member prefix; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_static_import_nested_type() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.util.Map.<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Entry"),
+        "expected completion list to contain Map.Entry; got {labels:?}"
     );
 }
 
@@ -2057,6 +2074,27 @@ fn static_import_completion_replaces_only_member_segment() {
 
     assert_eq!(edit.range.start, offset_to_position(&text, member_start));
     assert_eq!(edit.range.end, pos);
+}
+
+#[test]
+fn completion_in_static_import_workspace_type_offers_star() {
+    let outer_path = PathBuf::from("/workspace/src/main/java/p/Outer.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let outer_text = "package p; public class Outer { public static class Inner {} }".to_string();
+    let main_text = r#"
+package q;
+import static p.Outer.<|>;
+class A {}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(outer_path, outer_text)]);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"*"),
+        "expected completion list to contain `*` for workspace static import; got {labels:?}"
+    );
 }
 
 #[test]
