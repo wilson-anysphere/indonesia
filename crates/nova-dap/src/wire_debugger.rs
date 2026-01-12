@@ -2778,6 +2778,106 @@ impl Debugger {
             Ok(None)
         }
 
+        const FIELD_MODIFIER_STATIC: u32 = 0x0008;
+        const ERROR_NOT_FOUND: u16 = 41;
+        const ERROR_UNSUPPORTED_VERSION: u16 = 68;
+        const ERROR_NOT_IMPLEMENTED: u16 = 99;
+
+        fn is_unsupported_command_error(err: &JdwpError) -> bool {
+            matches!(
+                err,
+                JdwpError::VmError(
+                    ERROR_NOT_FOUND | ERROR_UNSUPPORTED_VERSION | ERROR_NOT_IMPLEMENTED
+                )
+            )
+        }
+
+        async fn resolve_static_field_in_frame(
+            jdwp: &JdwpClient,
+            cancel: &CancellationToken,
+            location: Location,
+            name: &str,
+        ) -> Result<Option<JdwpValue>> {
+            check_cancel(cancel)?;
+
+            #[derive(Debug, Clone)]
+            struct FieldMeta {
+                declaring_type: ReferenceTypeId,
+                field_id: u64,
+                name: String,
+                mod_bits: u32,
+            }
+
+            async fn reference_type_fields_best_effort(
+                jdwp: &JdwpClient,
+                cancel: &CancellationToken,
+                class_id: ReferenceTypeId,
+            ) -> Result<Vec<FieldMeta>> {
+                match cancellable_jdwp(cancel, jdwp.reference_type_fields_with_generic(class_id))
+                    .await
+                {
+                    Ok(fields) => Ok(fields
+                        .into_iter()
+                        .map(|f| FieldMeta {
+                            declaring_type: class_id,
+                            field_id: f.field_id,
+                            name: f.name,
+                            mod_bits: f.mod_bits,
+                        })
+                        .collect()),
+                    Err(err) if is_unsupported_command_error(&err) => {
+                        let fields =
+                            cancellable_jdwp(cancel, jdwp.reference_type_fields(class_id)).await?;
+                        Ok(fields
+                            .into_iter()
+                            .map(|f| FieldMeta {
+                                declaring_type: class_id,
+                                field_id: f.field_id,
+                                name: f.name,
+                                mod_bits: f.mod_bits,
+                            })
+                            .collect())
+                    }
+                    Err(err) => Err(err.into()),
+                }
+            }
+
+            let mut current = location.class_id;
+            let mut seen = std::collections::HashSet::new();
+            while current != 0 && seen.insert(current) {
+                let fields = match reference_type_fields_best_effort(jdwp, cancel, current).await {
+                    Ok(fields) => fields,
+                    Err(DebuggerError::Jdwp(JdwpError::Cancelled)) => {
+                        return Err(JdwpError::Cancelled.into())
+                    }
+                    Err(_) => Vec::new(),
+                };
+
+                if let Some(field) = fields.into_iter().find(|f| f.name == name) {
+                    if field.mod_bits & FIELD_MODIFIER_STATIC != 0 {
+                        let mut values = cancellable_jdwp(
+                            cancel,
+                            jdwp.reference_type_get_values(field.declaring_type, &[field.field_id]),
+                        )
+                        .await?;
+                        return Ok(values.pop());
+                    }
+
+                    // Field hiding: an instance field with the same name blocks inherited static
+                    // fields (and in static contexts would be a compile error).
+                    return Ok(None);
+                }
+
+                match cancellable_jdwp(cancel, jdwp.class_type_superclass(current)).await {
+                    Ok(super_id) => current = super_id,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_) => break,
+                }
+            }
+
+            Ok(None)
+        }
+
         let started = Instant::now();
         let mut inspector = Inspector::new(jdwp.clone());
 
@@ -2933,6 +3033,16 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         }
                     }
                 }
+            }
+
+            // Finally, fall back to resolving static fields on the declaring class hierarchy.
+            //
+            // Note: we intentionally do this after searching for locals/instance fields across
+            // frames so we preserve Java's shadowing rules (locals > fields > static fields) even
+            // when the selected frame is a synthetic lambda frame that lacks the original locals.
+            if value.is_none() {
+                value =
+                    resolve_static_field_in_frame(&jdwp, cancel, frame.location, lookup_name).await?;
             }
 
             let Some(value) = value else {

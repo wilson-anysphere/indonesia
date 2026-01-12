@@ -724,6 +724,231 @@ async fn dap_stream_debug_request_works_on_real_jvm() {
 }
 
 #[tokio::test]
+async fn dap_stream_debug_supports_static_field_sources_on_real_jvm() {
+    if !tool_available("java") || !tool_available("javac") {
+        // There isn't a built-in "skip" in Rust's test harness; treat this as a no-op
+        // so CI environments without a JDK stay green.
+        eprintln!(
+            "skipping real JVM stream debug static-field test: java and/or javac not found in PATH"
+        );
+        return;
+    }
+
+    let sources_dir = TempDir::new().unwrap();
+    let classes_dir = TempDir::new().unwrap();
+    let source_path = sources_dir.path().join("Main.java");
+
+    std::fs::write(
+        &source_path,
+        "import java.util.*;\npublic class Main {\n  static List<Integer> nums = Arrays.asList(1,2,3);\n  public static void main(String[] args) throws Exception {\n    Thread.sleep(500);\n    long c = nums.stream().filter(x -> x > 1).map(x -> x * 2).count(); // BREAKPOINT\n    System.out.println(c);\n  }\n}\n",
+    )
+    .unwrap();
+
+    compile_inline_java_source(&source_path, classes_dir.path()).unwrap();
+
+    let port = pick_free_port();
+    let mut jvm = ChildGuard::spawn(port, classes_dir.path()).unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut dap = DapHarness::new(client_read, client_write);
+
+    dap.send_request(1, "initialize", json!({})).await;
+    let init_resp = dap
+        .wait_for_response(1, Instant::now() + Duration::from_secs(5))
+        .await;
+    assert_eq!(
+        init_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let _initialized = dap
+        .wait_for_event("initialized", Instant::now() + Duration::from_secs(5))
+        .await;
+
+    let attach_deadline = Instant::now() + Duration::from_secs(30);
+    let mut seq = 2i64;
+    loop {
+        dap.send_request(
+            seq,
+            "attach",
+            json!({
+                "host": "127.0.0.1",
+                "port": port,
+            }),
+        )
+        .await;
+        let resp = dap.wait_for_response(seq, attach_deadline).await;
+        if resp.get("success").and_then(|v| v.as_bool()) == Some(true) {
+            break;
+        }
+
+        if let Some(status) = jvm.try_wait().unwrap() {
+            panic!("JVM exited before attach succeeded (status={status})");
+        }
+
+        if Instant::now() >= attach_deadline {
+            panic!("timed out waiting to attach to JDWP port {port}: {resp}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        seq += 1;
+    }
+
+    let set_bps_seq = seq + 1;
+    dap.send_request(
+        set_bps_seq,
+        "setBreakpoints",
+        json!({
+            "source": { "path": source_path.to_string_lossy() },
+            "breakpoints": [ { "line": STREAM_DEBUG_BREAKPOINT_LINE } ]
+        }),
+    )
+    .await;
+    let bp_resp = dap
+        .wait_for_response(set_bps_seq, Instant::now() + Duration::from_secs(10))
+        .await;
+    assert_eq!(bp_resp.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    let continue_seq = set_bps_seq + 1;
+    dap.send_request(continue_seq, "continue", json!({})).await;
+    let continue_resp = dap
+        .wait_for_response(continue_seq, Instant::now() + Duration::from_secs(10))
+        .await;
+    assert_eq!(
+        continue_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let stopped = dap
+        .wait_for_event("stopped", Instant::now() + Duration::from_secs(30))
+        .await;
+    assert_eq!(
+        stopped.pointer("/body/reason").and_then(|v| v.as_str()),
+        Some("breakpoint"),
+        "expected breakpoint stop: {stopped}"
+    );
+    let thread_id = stopped
+        .pointer("/body/threadId")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    let stack_seq = continue_seq + 1;
+    dap.send_request(stack_seq, "stackTrace", json!({ "threadId": thread_id }))
+        .await;
+    let stack_resp = dap
+        .wait_for_response(stack_seq, Instant::now() + Duration::from_secs(15))
+        .await;
+    assert_eq!(
+        stack_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "stackTrace request failed: {stack_resp}",
+    );
+
+    let frames = stack_resp
+        .pointer("/body/stackFrames")
+        .and_then(|v| v.as_array())
+        .expect("stackTrace.body.stackFrames missing");
+
+    let source_path = source_path.canonicalize().unwrap_or(source_path);
+    let source_path = source_path.to_string_lossy().to_string();
+    assert!(Path::new(&source_path).exists());
+    let frame_id = frames
+        .iter()
+        .find(|frame| {
+            frame
+                .pointer("/source/path")
+                .and_then(|v| v.as_str())
+                .is_some_and(|path| path == source_path.as_str())
+        })
+        .and_then(|frame| frame.get("id").and_then(|v| v.as_i64()))
+        .expect("expected a frame id for Main.java");
+
+    let expr = "nums.stream().filter(x -> x > 1).map(x -> x * 2).count()";
+    let stream_seq = stack_seq + 1;
+    dap.send_request(
+        stream_seq,
+        "nova/streamDebug",
+        json!({
+            "expression": expr,
+            "frameId": frame_id,
+            "maxSampleSize": 3,
+            "allowTerminalOps": true,
+        }),
+    )
+    .await;
+    let stream_resp = dap
+        .wait_for_response(stream_seq, Instant::now() + Duration::from_secs(60))
+        .await;
+    if stream_resp.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        panic!("nova/streamDebug request failed: {stream_resp}");
+    }
+
+    let source_elements: Vec<_> = stream_resp
+        .pointer("/body/runtime/sourceSample/elements")
+        .and_then(|v| v.as_array())
+        .expect("nova/streamDebug.body.runtime.sourceSample.elements missing")
+        .iter()
+        .map(|v| v.as_str().expect("sourceSample element should be a string"))
+        .collect();
+    assert_eq!(source_elements, vec!["1", "2", "3"]);
+
+    let steps = stream_resp
+        .pointer("/body/runtime/steps")
+        .and_then(|v| v.as_array())
+        .expect("nova/streamDebug.body.runtime.steps missing");
+
+    let filter_step = steps
+        .iter()
+        .find(|step| step.get("operation").and_then(|v| v.as_str()) == Some("filter"))
+        .expect("expected a filter step");
+    let filter_output: Vec<_> = filter_step
+        .pointer("/output/elements")
+        .and_then(|v| v.as_array())
+        .expect("filter step output.elements missing")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("filter output element should be a string")
+        })
+        .collect();
+    assert_eq!(filter_output, vec!["2", "3"]);
+
+    let map_step = steps
+        .iter()
+        .find(|step| step.get("operation").and_then(|v| v.as_str()) == Some("map"))
+        .expect("expected a map step");
+    let map_output: Vec<_> = map_step
+        .pointer("/output/elements")
+        .and_then(|v| v.as_array())
+        .expect("map step output.elements missing")
+        .iter()
+        .map(|v| v.as_str().expect("map output element should be a string"))
+        .collect();
+    assert_eq!(map_output, vec!["4", "6"]);
+
+    assert_eq!(
+        stream_resp
+            .pointer("/body/runtime/terminal/value")
+            .and_then(|v| v.as_str()),
+        Some("2")
+    );
+
+    let disconnect_seq = stream_seq + 1;
+    dap.send_request(disconnect_seq, "disconnect", json!({}))
+        .await;
+    let _ = dap
+        .wait_for_response(disconnect_seq, Instant::now() + Duration::from_secs(5))
+        .await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_smart_step_into_target_works_on_real_jvm() {
     if !tool_available("java") || !tool_available("javac") {
         // There isn't a built-in "skip" in Rust's test harness; treat this as a no-op
