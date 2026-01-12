@@ -170,6 +170,11 @@ impl Debugger {
 
         let class_sig = self.signature(cancel, frame.location.class_id).await?;
         let package = package_from_signature(&class_sig);
+        let declaring_class_fqcn = signature_to_java_source_type(&class_sig);
+
+        let (instance_method_names, static_method_names) = self
+            .collect_declaring_class_method_names(cancel, frame.location.class_id)
+            .await?;
 
         let nonce = STREAM_EVAL_CLASS_COUNTER.fetch_add(1, Ordering::Relaxed);
         let simple_name = format!("NovaStreamEval_{nonce}");
@@ -189,10 +194,25 @@ impl Debugger {
 
         let stage_exprs: Vec<String> = stage_expressions
             .iter()
-            .map(|expr| normalize_expr(expr, needs_this_rewrite))
+            .map(|expr| {
+                normalize_expr(
+                    expr,
+                    needs_this_rewrite,
+                    &instance_method_names,
+                    &static_method_names,
+                    &declaring_class_fqcn,
+                )
+            })
             .collect();
-        let terminal_expr =
-            terminal_expression.map(|expr| normalize_expr(expr, needs_this_rewrite));
+        let terminal_expr = terminal_expression.map(|expr| {
+            normalize_expr(
+                expr,
+                needs_this_rewrite,
+                &instance_method_names,
+                &static_method_names,
+                &declaring_class_fqcn,
+            )
+        });
 
         let source = render_eval_source(
             package.as_deref(),
@@ -362,6 +382,52 @@ impl Debugger {
             stage_expressions: stage_exprs,
             terminal_expression: terminal_expr,
         })
+    }
+
+    async fn collect_declaring_class_method_names(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+    ) -> Result<(HashSet<String>, HashSet<String>)> {
+        check_cancel(cancel)?;
+
+        const MODIFIER_STATIC: u32 = 0x0008;
+
+        let mut instance = HashSet::new();
+        let mut static_ = HashSet::new();
+
+        let mut seen_types: HashSet<ReferenceTypeId> = HashSet::new();
+        let mut current = class_id;
+        while current != 0 && seen_types.insert(current) {
+            if !self.methods_cache.contains_key(&current) {
+                let fetched =
+                    cancellable_jdwp(cancel, self.jdwp.reference_type_methods(current)).await?;
+                self.methods_cache.insert(current, fetched);
+            }
+
+            if let Some(methods) = self.methods_cache.get(&current) {
+                for method in methods {
+                    let name = method.name.as_str();
+                    if name == "<init>" || name == "<clinit>" {
+                        continue;
+                    }
+                    if (method.mod_bits & MODIFIER_STATIC) != 0 {
+                        static_.insert(name.to_string());
+                    } else {
+                        instance.insert(name.to_string());
+                    }
+                }
+            }
+
+            current = match cancellable_jdwp(cancel, self.jdwp.class_type_superclass(current)).await
+            {
+                Ok(id) => id,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => break,
+            };
+        }
+
+        Ok((instance, static_))
     }
 
     async fn scoped_locals_with_values(
@@ -551,14 +617,28 @@ fn build_param_bindings(locals: &[ScopedLocal]) -> (Vec<JdwpValue>, Vec<String>,
     (args, params, needs_this_rewrite)
 }
 
-fn normalize_expr(expr: &str, rewrite_this: bool) -> String {
+fn normalize_expr(
+    expr: &str,
+    rewrite_this: bool,
+    instance_method_names: &HashSet<String>,
+    static_method_names: &HashSet<String>,
+    declaring_class_fqcn: &str,
+) -> String {
     let expr = expr.trim();
     let expr = expr.strip_suffix(';').unwrap_or(expr).trim();
-    if rewrite_this {
+    let expr = if rewrite_this {
         rewrite_this_token(expr)
     } else {
         expr.to_string()
-    }
+    };
+
+    rewrite_unqualified_method_calls(
+        &expr,
+        instance_method_names,
+        static_method_names,
+        rewrite_this,
+        declaring_class_fqcn,
+    )
 }
 
 fn rewrite_this_token(expr: &str) -> String {
@@ -628,12 +708,203 @@ fn rewrite_this_token(expr: &str) -> String {
     out
 }
 
+fn rewrite_unqualified_method_calls(
+    expr: &str,
+    instance_method_names: &HashSet<String>,
+    static_method_names: &HashSet<String>,
+    has_this_param: bool,
+    declaring_class_fqcn: &str,
+) -> String {
+    // Fast path: avoid allocation if there are no possible call sites.
+    if !expr.contains('(') {
+        return expr.to_string();
+    }
+    if instance_method_names.is_empty() && static_method_names.is_empty() {
+        return expr.to_string();
+    }
+
+    let mut out = String::with_capacity(expr.len());
+    let mut chars = expr.char_indices().peekable();
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+    let mut prev_non_ws = None::<char>;
+
+    while let Some((_idx, ch)) = chars.next() {
+        if in_str {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            if !ch.is_whitespace() {
+                prev_non_ws = Some(ch);
+            }
+            continue;
+        }
+
+        if in_char {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            if !ch.is_whitespace() {
+                prev_non_ws = Some(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                in_str = true;
+                out.push(ch);
+                prev_non_ws = Some(ch);
+                continue;
+            }
+            '\'' => {
+                in_char = true;
+                out.push(ch);
+                prev_non_ws = Some(ch);
+                continue;
+            }
+            _ if is_ident_start(ch) => {
+                let mut ident = String::new();
+                ident.push(ch);
+
+                while let Some((_, next_ch)) = chars.peek().copied() {
+                    if is_ident_part(next_ch) {
+                        ident.push(next_ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                let is_keyword = is_java_keyword(&ident);
+
+                // Detect `foo(` or `foo   (` (unqualified call site).
+                let is_call = if !is_keyword {
+                    let mut lookahead = chars.clone();
+                    while let Some((_, next_ch)) = lookahead.peek().copied() {
+                        if next_ch.is_whitespace() {
+                            lookahead.next();
+                            continue;
+                        }
+                        break;
+                    }
+                    lookahead.peek().is_some_and(|(_, next_ch)| *next_ch == '(')
+                } else {
+                    false
+                };
+
+                let is_unqualified = is_call && prev_non_ws != Some('.');
+
+                if is_unqualified {
+                    if has_this_param && instance_method_names.contains(&ident) {
+                        out.push_str("__this.");
+                        out.push_str(&ident);
+                    } else if static_method_names.contains(&ident)
+                        && !declaring_class_fqcn.is_empty()
+                    {
+                        out.push_str(declaring_class_fqcn);
+                        out.push('.');
+                        out.push_str(&ident);
+                    } else {
+                        out.push_str(&ident);
+                    }
+                } else {
+                    out.push_str(&ident);
+                }
+
+                prev_non_ws = ident.chars().last();
+                continue;
+            }
+            _ => {}
+        }
+
+        out.push(ch);
+        if !ch.is_whitespace() {
+            prev_non_ws = Some(ch);
+        }
+    }
+
+    out
+}
+
 fn is_ident_start(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_alphabetic()
 }
 
 fn is_ident_part(ch: char) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
+}
+
+fn is_java_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        // Java keywords.
+        "abstract"
+            | "assert"
+            | "boolean"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extends"
+            | "final"
+            | "finally"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "implements"
+            | "import"
+            | "instanceof"
+            | "int"
+            | "interface"
+            | "long"
+            | "native"
+            | "new"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "static"
+            | "strictfp"
+            | "super"
+            | "switch"
+            | "synchronized"
+            | "this"
+            | "throw"
+            | "throws"
+            | "transient"
+            | "try"
+            | "void"
+            | "volatile"
+            | "while"
+            // literals / reserved identifiers
+            | "true"
+            | "false"
+            | "null"
+    )
 }
 
 fn render_eval_source(
@@ -1088,7 +1359,46 @@ erased generic types). Try adding explicit casts or types, e.g. \
         );
     }
 
+    // Unqualified method calls (compile+inject helpers are top-level classes).
+    if lower.contains("cannot find symbol") {
+        if let Some(name) = javac_output
+            .lines()
+            .find_map(|line| extract_missing_method_name(line))
+        {
+            hints.push(format!(
+                "Javac could not resolve `{name}(...)`. The stream debugger evaluates expressions in an injected helper class, \
+so unqualified method calls from your source file may need to be qualified. Try `this.{name}(...)` (instance) or \
+`DeclaringClass.{name}(...)` (static)."
+            ));
+        }
+    }
+
     hints
+}
+
+fn extract_missing_method_name(line: &str) -> Option<String> {
+    // `javac` continuation line:
+    // `symbol:   method helper(int)`
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("symbol:")?.trim_start();
+    let rest = rest.strip_prefix("method")?.trim_start();
+
+    let start = rest
+        .char_indices()
+        .find(|(_, ch)| is_ident_start(*ch))
+        .map(|(idx, _)| idx)?;
+    let after = &rest[start..];
+    let end = after
+        .char_indices()
+        .find(|(_, ch)| !is_ident_part(*ch))
+        .map(|(idx, _)| idx)
+        .unwrap_or(after.len());
+    let name = &after[..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1404,5 +1714,79 @@ mod tests {
             message.contains("Stage: source sample"),
             "expected stage0 to be treated as source sample, not terminal:\n{message}"
         );
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_rewrites_instance_methods_only_at_unqualified_call_sites() {
+        let mut instance = HashSet::new();
+        instance.insert("getNums".to_string());
+        let static_ = HashSet::new();
+
+        let rewritten = rewrite_unqualified_method_calls(
+            "getNums().stream()",
+            &instance,
+            &static_,
+            true,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "__this.getNums().stream()");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_does_not_rewrite_unknown_methods() {
+        let instance = HashSet::new();
+        let static_ = HashSet::new();
+
+        let rewritten =
+            rewrite_unqualified_method_calls("toList()", &instance, &static_, true, "Foo");
+        assert_eq!(rewritten, "toList()");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_rewrites_inside_lambda_bodies() {
+        let mut instance = HashSet::new();
+        instance.insert("helper".to_string());
+        let static_ = HashSet::new();
+
+        let rewritten = rewrite_unqualified_method_calls(
+            "x -> helper(x)",
+            &instance,
+            &static_,
+            true,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "x -> __this.helper(x)");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_rewrites_static_methods_when_no_this_param() {
+        let instance = HashSet::new();
+        let mut static_ = HashSet::new();
+        static_.insert("staticHelper".to_string());
+
+        let rewritten = rewrite_unqualified_method_calls(
+            "staticHelper(1)",
+            &instance,
+            &static_,
+            false,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "com.example.Foo.staticHelper(1)");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_does_not_rewrite_inside_string_literals() {
+        let mut instance = HashSet::new();
+        instance.insert("helper".to_string());
+        let static_ = HashSet::new();
+
+        let rewritten = rewrite_unqualified_method_calls(
+            "\"helper(\" + helper(x)",
+            &instance,
+            &static_,
+            true,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "\"helper(\" + __this.helper(x)");
     }
 }
