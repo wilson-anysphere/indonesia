@@ -114,6 +114,53 @@ CompilationUnit
               Whitespace "\n      "
               ExpressionStatement
                 NewExpression
+                  NameExpression
+                    Identifier "o"
+                  Dot "."
+                  TypeArguments
+                    Less "<"
+                    TypeArgument
+                      Type
+                        NamedType
+                          Identifier "String"
+                    Greater ">"
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    NamedType
+                      Identifier "Inner"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n      "
+              ExpressionStatement
+                NewExpression
+                  ThisExpression
+                    NameExpression
+                      Identifier "Outer"
+                    Dot "."
+                    ThisKw "this"
+                  Dot "."
+                  TypeArguments
+                    Less "<"
+                    TypeArgument
+                      Type
+                        NamedType
+                          Identifier "String"
+                    Greater ">"
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    NamedType
+                      Identifier "Inner"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n      "
+              ExpressionStatement
+                NewExpression
                   NewKw "new"
                   TypeArguments
                     Whitespace " "

@@ -3093,8 +3093,18 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                     // Qualified class instance creation: `expr.new T(...)`.
-                    if self.nth(1) == Some(SyntaxKind::NewKw) {
+                    let mut lookahead = skip_trivia(&self.tokens, 1);
+                    if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
+                        lookahead =
+                            skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, lookahead));
+                    }
+                    if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::NewKw) {
                         self.bump(); // .
+                        // Java allows optional type arguments between `.` and `new` for qualified
+                        // instance creations: `expr.<T>new Foo(...)`.
+                        if self.nth(0) == Some(SyntaxKind::Less) {
+                            self.parse_type_arguments();
+                        }
                         self.parse_new_expression_or_array_creation(checkpoint, allow_lambda);
                         continue;
                     }
