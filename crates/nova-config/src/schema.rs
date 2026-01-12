@@ -316,6 +316,64 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // Cloud code-editing requires a strict set of opt-ins because patches cannot be applied
+    // reliably to anonymized identifiers and because code edits generally include more source code.
+    //
+    // This mirrors `nova_ai::code_edit_policy::enforce_code_edit_policy` at the schema level so
+    // editor/CI validation catches misconfiguration early.
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled", "privacy"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "privacy": {
+                                "required": ["local_only", "allow_cloud_code_edits"],
+                                "properties": {
+                                    "local_only": { "const": false },
+                                    "allow_cloud_code_edits": { "const": true }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "properties": {
+                            "privacy": {
+                                "required": ["allow_code_edits_without_anonymization"],
+                                "properties": {
+                                    "allow_code_edits_without_anonymization": { "const": true }
+                                },
+                                "anyOf": [
+                                    {
+                                        "required": ["anonymize_identifiers"],
+                                        "properties": {
+                                            "anonymize_identifiers": { "const": false }
+                                        }
+                                    },
+                                    {
+                                        "required": ["anonymize"],
+                                        "properties": {
+                                            "anonymize": { "const": false }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
     disallow_alias_collisions(schema);
 

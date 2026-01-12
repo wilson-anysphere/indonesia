@@ -260,6 +260,59 @@ fn json_schema_requires_non_whitespace_api_key_for_cloud_providers() {
 }
 
 #[test]
+fn json_schema_requires_cloud_code_edit_opt_in_in_cloud_mode() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let all_of = value
+        .pointer("/allOf")
+        .and_then(|v| v.as_array())
+        .expect("root schema should include allOf semantic constraints");
+
+    let rule = all_of
+        .iter()
+        .find(|entry| {
+            entry
+                .pointer(
+                    "/if/properties/ai/properties/privacy/properties/allow_cloud_code_edits/const",
+                )
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        })
+        .expect("cloud code-edit semantic rule should exist");
+
+    assert_eq!(
+        rule.pointer("/then/properties/ai/properties/privacy/properties/allow_code_edits_without_anonymization/const")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let any_of = rule
+        .pointer("/then/properties/ai/properties/privacy/anyOf")
+        .and_then(|v| v.as_array())
+        .expect("then clause should require disabling anonymization (anyOf)");
+
+    assert!(
+        any_of.iter().any(|entry| {
+            entry
+                .pointer("/properties/anonymize_identifiers/const")
+                .and_then(|v| v.as_bool())
+                == Some(false)
+        }),
+        "expected anyOf to allow anonymize_identifiers=false"
+    );
+    assert!(
+        any_of.iter().any(|entry| {
+            entry
+                .pointer("/properties/anonymize/const")
+                .and_then(|v| v.as_bool())
+                == Some(false)
+        }),
+        "expected anyOf to allow anonymize=false"
+    );
+}
+
+#[test]
 fn json_schema_requires_non_empty_ai_privacy_patterns() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");

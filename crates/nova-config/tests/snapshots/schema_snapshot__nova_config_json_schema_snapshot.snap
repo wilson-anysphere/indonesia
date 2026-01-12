@@ -402,6 +402,83 @@ expression: schema
           }
         }
       }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "privacy"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "privacy": {
+                "required": [
+                  "allow_cloud_code_edits",
+                  "local_only"
+                ],
+                "properties": {
+                  "allow_cloud_code_edits": {
+                    "const": true
+                  },
+                  "local_only": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "properties": {
+              "privacy": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "anonymize_identifiers"
+                    ],
+                    "properties": {
+                      "anonymize_identifiers": {
+                        "const": false
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "anonymize"
+                    ],
+                    "properties": {
+                      "anonymize": {
+                        "const": false
+                      }
+                    }
+                  }
+                ],
+                "required": [
+                  "allow_code_edits_without_anonymization"
+                ],
+                "properties": {
+                  "allow_code_edits_without_anonymization": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
