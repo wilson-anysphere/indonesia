@@ -505,7 +505,8 @@ pub fn is_bazel_workspace(root: &Path) -> bool {
         .any(|marker| root.join(marker).is_file())
 }
 
-fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
+/// Check whether a file change should trigger a full project reload for a given build system.
+pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };

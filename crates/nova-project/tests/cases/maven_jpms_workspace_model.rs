@@ -19,16 +19,16 @@ fn write_fake_jar_dir_with_automatic_module_name(jar_path: &std::path::Path, mod
 #[test]
 fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let workspace_root = tmp.path().join("workspace");
+    let maven_repo = tmp.path().join("repo");
+    fs::create_dir_all(&workspace_root).expect("mkdir workspace");
+    fs::create_dir_all(&maven_repo).expect("mkdir repo");
 
-    // Use an isolated Maven repo so this test is hermetic (does not depend on a pre-populated
-    // `~/.m2/repository`).
-    let maven_repo = root.join("m2");
     let guava_dir = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
     write_fake_jar_dir_with_automatic_module_name(&guava_dir, "com.google.common");
 
     fs::write(
-        root.join("pom.xml"),
+        workspace_root.join("pom.xml"),
         r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.example</groupId>
@@ -47,12 +47,12 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
       <version>33.0.0-jre</version>
     </dependency>
   </dependencies>
-</project>
+ </project>
 "#,
     )
     .expect("write pom.xml");
 
-    let src_dir = root.join("src/main/java");
+    let src_dir = workspace_root.join("src/main/java");
     fs::create_dir_all(&src_dir).expect("mkdir src/main/java");
     fs::write(
         src_dir.join("module-info.java"),
@@ -64,7 +64,8 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
         maven_repo: Some(maven_repo),
         ..LoadOptions::default()
     };
-    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let model =
+        load_workspace_model_with_options(&workspace_root, &options).expect("load workspace model");
     assert_eq!(model.build_system, BuildSystem::Maven);
     assert_eq!(model.modules.len(), 1);
 
@@ -115,7 +116,8 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     );
 
     // Ensure model is deterministic (important for cache keys and downstream indexing).
-    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
+    let model2 =
+        load_workspace_model_with_options(&workspace_root, &options).expect("reload workspace model");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
