@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 nova-core = { path = "../nova-core" }
 unicode-normalization = { version = "0.1.24", optional = true }
-unicode-casefold = { version = "0.2.0", optional = true }
 unicode-segmentation = { version = "1.12.0", optional = true }
 
 [dev-dependencies]
@@ -17,10 +16,7 @@ criterion = "0.5"
 # - NFKC normalization
 # - Unicode case folding (including expansions like ß -> ss)
 # - grapheme-cluster aware scoring (for non-ASCII inputs)
-# NOTE: `unicode-normalization` does not currently expose an `nfkc_casefold()` helper (UAX#15
-# NFKC_Casefold) nor a streaming case-folding iterator. Keep `unicode-casefold` to ensure correct
-# full case folding (including expansions like ß -> ss).
-unicode = ["dep:unicode-normalization", "dep:unicode-casefold", "dep:unicode-segmentation"]
+unicode = ["dep:unicode-normalization", "dep:unicode-segmentation"]
 
 [[bench]]
 name = "fuzzy"

@@ -147,12 +147,7 @@ fn trigrams_with_unicode_buf(text: &str, out: &mut Vec<Trigram>, buf: &mut Strin
         return;
     }
 
-    use unicode_casefold::UnicodeCaseFold;
-    use unicode_normalization::UnicodeNormalization;
-
-    buf.clear();
-    buf.reserve(text.len());
-    buf.extend(text.nfkc().case_fold());
+    crate::unicode_folding::fold_nfkc_casefold(text, buf);
 
     // If normalization+casefolding produces pure ASCII (e.g. "Straße" → "strasse"),
     // keep the packed representation to remain compatible with ASCII-only queries.
@@ -753,6 +748,16 @@ mod tests {
     fn unicode_case_folding_makes_strasse_match_strasse() {
         let mut builder = TrigramIndexBuilder::new();
         builder.insert(1, "Straße");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("strasse"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_case_folding_expands_capital_sharp_s() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "STRAẞE");
         let index = builder.build();
 
         assert_eq!(index.candidates("strasse"), vec![1]);
