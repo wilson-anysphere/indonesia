@@ -1568,6 +1568,7 @@ pub fn completions_for_file(
     }
 
     let roots = source_roots(project_root);
+    let mut type_cache: HashMap<String, Option<HashMap<String, JavaType>>> = HashMap::new();
 
     for mapper in &mappers {
         for method in &mapper.methods {
@@ -1580,6 +1581,7 @@ pub fn completions_for_file(
                         offset,
                         mapping.target_span,
                         &method.target_type,
+                        &mut type_cache,
                     ));
                 }
 
@@ -1592,6 +1594,7 @@ pub fn completions_for_file(
                             offset,
                             span,
                             &method.source_type,
+                            &mut type_cache,
                         ));
                     }
                 }
@@ -1609,6 +1612,7 @@ fn mapping_property_completions_fs(
     offset: usize,
     value_span: Span,
     ty: &JavaType,
+    cache: &mut HashMap<String, Option<HashMap<String, JavaType>>>,
 ) -> Vec<CompletionItem> {
     let cursor = offset.min(value_span.end).min(file_text.len());
     if cursor < value_span.start || value_span.start > file_text.len() {
@@ -1620,22 +1624,102 @@ fn mapping_property_completions_fs(
     let segment_start = value_span.start + segment_start_rel;
     let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
 
-    let Some(props) = properties_for_type(project_root, roots, ty).ok().flatten() else {
+    // Resolve the type for nested property paths (`foo.bar.<cursor>`).
+    let resolved_ty = if segment_start_rel > 0 {
+        let path = before_cursor
+            .get(..segment_start_rel.saturating_sub(1))
+            .unwrap_or_default();
+        resolve_property_path_type_fs(cache, project_root, roots, ty, path)
+            .unwrap_or_else(|| ty.clone())
+    } else {
+        ty.clone()
+    };
+
+    let Some(prop_types) = property_types_for_type_fs_cached(cache, project_root, roots, &resolved_ty)
+    else {
         return Vec::new();
     };
 
     let replace_span = Span::new(segment_start, cursor);
-    let mut items: Vec<CompletionItem> = props
-        .into_iter()
+    let mut items: Vec<CompletionItem> = prop_types
+        .keys()
         .filter(|name| name.starts_with(prefix))
         .map(|name| CompletionItem {
-            label: name,
+            label: name.clone(),
             detail: None,
             replace_span: Some(replace_span),
         })
         .collect();
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items
+}
+
+fn resolve_property_path_type_fs(
+    cache: &mut HashMap<String, Option<HashMap<String, JavaType>>>,
+    project_root: &Path,
+    roots: &[PathBuf],
+    root: &JavaType,
+    path: &str,
+) -> Option<JavaType> {
+    let mut current = root.clone();
+    if path.trim().is_empty() {
+        return Some(current);
+    }
+
+    for seg in path.split('.') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            return None;
+        }
+        let map = property_types_for_type_fs_cached(cache, project_root, roots, &current)?;
+        let next = map.get(seg)?.clone();
+        current = next;
+    }
+
+    Some(current)
+}
+
+fn property_types_for_type_fs_cached(
+    cache: &mut HashMap<String, Option<HashMap<String, JavaType>>>,
+    project_root: &Path,
+    roots: &[PathBuf],
+    ty: &JavaType,
+) -> Option<HashMap<String, JavaType>> {
+    let key = ty.qualified_name();
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
+
+    let value = property_types_for_type_fs(project_root, roots, ty).ok().flatten();
+    cache.insert(key, value.clone());
+    value
+}
+
+fn property_types_for_type_fs(
+    project_root: &Path,
+    roots: &[PathBuf],
+    ty: &JavaType,
+) -> std::io::Result<Option<HashMap<String, JavaType>>> {
+    let Some(file) = find_type_file(project_root, roots, ty)? else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&file)?;
+    let tree =
+        parse_java(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let root = tree.root_node();
+    let package = package_of_source(root, &text);
+    let imports = imports_of_source(root, &text);
+
+    Ok(Some(collect_property_types_in_class(
+        root,
+        &text,
+        &ty.name,
+        package.as_deref(),
+        &imports,
+    )))
 }
 
 fn parse_formal_parameter_types(

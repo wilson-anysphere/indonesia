@@ -82,6 +82,13 @@ fn maven_project_omits_missing_dependency_jars_until_present_on_disk() {
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
         "expected jar path to appear on classpath after creation"
     );
+    assert!(
+        !config2
+            .module_path
+            .iter()
+            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
+        "jar should not be added to module-path for non-JPMS projects"
+    );
 }
 
 #[test]
@@ -160,6 +167,14 @@ fn maven_workspace_model_omits_missing_dependency_jars_until_present_on_disk() {
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
             "expected jar path to appear on module classpath after creation ({})",
+            module.id
+        );
+        assert!(
+            !module
+                .module_path
+                .iter()
+                .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
+            "jar should not be placed on module-path for non-JPMS modules ({})",
             module.id
         );
     }
