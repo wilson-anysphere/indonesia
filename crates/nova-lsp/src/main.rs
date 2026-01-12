@@ -903,11 +903,26 @@ impl AnalysisState {
     }
 
     fn ensure_loaded(&mut self, uri: &lsp_types::Uri) -> nova_db::FileId {
-        let (file_id, _path) = self.file_id_for_uri(uri);
+        let (file_id, path) = self.file_id_for_uri(uri);
 
         // If we already have a view of the file (present or missing), keep it until we receive an
         // explicit notification (didChangeWatchedFiles) telling us it changed.
         if self.file_is_known(file_id) {
+            // Decompiled virtual documents can transition from missing -> present without any
+            // filesystem watcher event (they may be inserted into the VFS virtual document store
+            // later, e.g. after `goto_definition_jdk`).
+            //
+            // For on-disk files we keep the "known missing" cache until we receive explicit
+            // invalidation (didChangeWatchedFiles) to avoid unnecessary disk I/O.
+            if !self.exists(file_id)
+                && matches!(
+                    &path,
+                    VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. }
+                )
+                && self.vfs.exists(&path)
+            {
+                self.refresh_from_disk(uri);
+            }
             return file_id;
         }
 
@@ -4422,6 +4437,40 @@ mod tests {
 
         let looked_up = analysis.ensure_loaded(&uri);
         assert_eq!(looked_up, original);
+    }
+
+    #[test]
+    fn ensure_loaded_can_reload_decompiled_virtual_document_after_store() {
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            None,
+            MemoryBudgetOverrides::default(),
+        );
+
+        let uri: lsp_types::Uri = "nova:///decompiled/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/com.example.Foo.java"
+            .parse()
+            .expect("valid decompiled URI");
+
+        // Before the virtual document is stored, `ensure_loaded` caches the missing state.
+        let file_id = state.analysis.ensure_loaded(&uri);
+        assert!(state.analysis.file_is_known(file_id));
+        assert!(!state.analysis.exists(file_id));
+
+        let stored_text = "package com.example;\n\nclass Foo {}\n".to_string();
+        state
+            .analysis
+            .vfs
+            .store_virtual_document(VfsPath::from(&uri), stored_text.clone());
+
+        // After storing the virtual document, `ensure_loaded` should be able to reload it even
+        // though it was previously cached as missing.
+        let reloaded = state.analysis.ensure_loaded(&uri);
+        assert_eq!(reloaded, file_id);
+        assert!(state.analysis.exists(file_id));
+        assert!(
+            state.analysis.file_content(file_id).contains(&stored_text),
+            "expected reloaded content to contain stored text"
+        );
     }
 
     #[test]
