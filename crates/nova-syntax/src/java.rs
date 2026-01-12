@@ -445,8 +445,8 @@ pub mod ast {
         FieldAccess(FieldAccessExpr),
         ArrayAccess(ArrayAccessExpr),
         New(NewExpr),
-        ArrayCreation(ArrayCreationExpr),
         ArrayInitializer(ArrayInitializerExpr),
+        ArrayCreation(ArrayCreationExpr),
         Unary(UnaryExpr),
         Binary(BinaryExpr),
         Instanceof(InstanceofExpr),
@@ -487,8 +487,8 @@ pub mod ast {
                 Expr::FieldAccess(expr) => expr.range,
                 Expr::ArrayAccess(expr) => expr.range,
                 Expr::New(expr) => expr.range,
-                Expr::ArrayCreation(expr) => expr.range,
                 Expr::ArrayInitializer(expr) => expr.range,
+                Expr::ArrayCreation(expr) => expr.range,
                 Expr::Unary(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
                 Expr::Instanceof(expr) => expr.range,
@@ -2297,6 +2297,7 @@ impl Lowerer {
             SyntaxKind::ThisExpression => ast::Expr::This(self.spans.map_node(node)),
             SyntaxKind::SuperExpression => ast::Expr::Super(self.spans.map_node(node)),
             SyntaxKind::NewExpression => self.lower_new_expr(node),
+            SyntaxKind::ArrayInitializer => self.lower_array_initializer_expr(node),
             SyntaxKind::ArrayCreationExpression => self.lower_array_creation_expr(node),
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
@@ -2333,7 +2334,6 @@ impl Lowerer {
             SyntaxKind::ConditionalExpression => self.lower_conditional_expr(node),
             SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
             SyntaxKind::SwitchExpression => self.lower_switch_expr(node),
-            SyntaxKind::ArrayInitializer => self.lower_array_initializer_expr(node),
             SyntaxKind::ParenthesizedExpression => node
                 .children()
                 .find(|child| is_expression_kind(child.kind()))
@@ -3316,6 +3316,7 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::MethodCallExpression
             | SyntaxKind::FieldAccessExpression
             | SyntaxKind::ArrayAccessExpression
+            | SyntaxKind::ArrayInitializer
             | SyntaxKind::ArrayCreationExpression
             | SyntaxKind::ClassLiteralExpression
             | SyntaxKind::MethodReferenceExpression
@@ -3333,7 +3334,6 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::PrefixExpression
             | SyntaxKind::ExplicitGenericInvocationExpression
             | SyntaxKind::StringTemplateExpression
-            | SyntaxKind::ArrayInitializer
             | SyntaxKind::Error
     )
 }
@@ -3858,6 +3858,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_block_lowers_array_initializer_items_are_preserved() {
+        let block = parse_block("{ int[] a = { 1, 2 }; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::LocalVar(local) = &block.statements[0] else {
+            panic!("expected local var statement");
+        };
+        let Some(ast::Expr::ArrayInitializer(init)) = &local.initializer else {
+            panic!("expected array initializer");
+        };
+        assert_eq!(init.items.len(), 2);
+        assert!(
+            matches!(&init.items[0], ast::Expr::IntLiteral(_)),
+            "expected first element to be int literal"
+        );
+        assert!(
+            matches!(&init.items[1], ast::Expr::IntLiteral(_)),
+            "expected second element to be int literal"
+        );
+    }
+
+    #[test]
     fn parse_block_lowers_multidimensional_array_initializer_in_var_decl() {
         let text = "{ int[][] a = { {1}, {2} }; }";
         let block = parse_block(text, 0);
@@ -3885,6 +3907,30 @@ mod tests {
             second.items.first(),
             Some(ast::Expr::IntLiteral(_))
         ));
+    }
+
+    #[test]
+    fn parse_block_lowers_array_creation_with_initializer() {
+        let block = parse_block("{ new int[] { 1, 2 }; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        let ast::Expr::ArrayCreation(array) = &expr_stmt.expr else {
+            panic!("expected array creation expression");
+        };
+        assert_eq!(array.elem_ty.text, "int");
+        assert_eq!(array.dim_exprs.len(), 0);
+        assert_eq!(array.extra_dims, 1);
+
+        let Some(init_expr) = &array.initializer else {
+            panic!("expected array initializer");
+        };
+        let ast::Expr::ArrayInitializer(init) = init_expr.as_ref() else {
+            panic!("expected array initializer expression");
+        };
+        assert_eq!(init.items.len(), 2);
     }
 
     #[test]

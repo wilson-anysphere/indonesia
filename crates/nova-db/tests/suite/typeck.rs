@@ -842,6 +842,38 @@ class C { void m(){ Runnable[] rs = { () -> {}, () -> {} }; } }
 }
 
 #[test]
+fn array_initializer_provides_expected_type_to_lambda_elements() {
+    let src = r#"
+class C { void m(){ Runnable[] rs = new Runnable[] { () -> {} }; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("() -> {}")
+        .expect("snippet should contain lambda");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Runnable");
+}
+
+#[test]
+fn array_initializer_has_array_type() {
+    let src = r#"
+class C { void m(){ int[] a = { 1, 2 }; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("{ 1, 2 }")
+        .expect("snippet should contain array initializer");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[]");
+}
+
+#[test]
 fn rejects_non_statement_expression() {
     let src = r#"
 class C {

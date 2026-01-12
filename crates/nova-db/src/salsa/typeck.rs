@@ -717,33 +717,43 @@ fn type_of_expr_demand_result(
         // within a lambda argument to a method call), infer that enclosing expression first so
         // context-sensitive typing (target-typed lambdas, assignments, etc) can populate the type
         // environment before we query the leaf expression's type.
-        let mut inference_root: Option<(HirExprId, usize, Option<Type>)> = None;
-        {
-            let mut update_inference_root = |expr_id: HirExprId, expected: Option<Type>| {
-                let range = body.exprs[expr_id].range();
-                let size = range.end.saturating_sub(range.start);
-                let replace = match inference_root {
-                    Some((_, best_size, _)) => size < best_size,
-                    None => true,
-                };
-                if replace {
-                    inference_root = Some((expr_id, size, expected));
-                }
-            };
+         let mut inference_root: Option<(HirExprId, usize, Option<Type>)> = None;
+         {
+             let mut update_inference_root = |expr_id: HirExprId, expected: Option<Type>| {
+                 let range = body.exprs[expr_id].range();
+                 let size = range.end.saturating_sub(range.start);
+                 let replace = match inference_root {
+                     Some((_, best_size, _)) => size < best_size,
+                     None => true,
+                 };
+                 if replace {
+                     inference_root = Some((expr_id, size, expected));
+                 }
+             };
 
-            let mut stack = vec![body.root];
-            while let Some(stmt) = stack.pop() {
-                match &body.stmts[stmt] {
+             let mut stack = vec![body.root];
+             while let Some(stmt) = stack.pop() {
+                 match &body.stmts[stmt] {
                     HirStmt::Block { statements, .. } => {
                         stack.extend(statements.iter().rev().copied());
                     }
-                    HirStmt::Let {
-                        local, initializer, ..
-                    } => {
-                        if let Some(init) = initializer {
-                            let local_data = &body.locals[*local];
-                            let is_infer_var = local_data.ty_text.trim() == "var"
-                                && checker.var_inference_enabled();
+                     HirStmt::Let {
+                         local, initializer, ..
+                     } => {
+                         if let Some(init) = initializer {
+                             let local_data = &body.locals[*local];
+                             let is_infer_var = local_data.ty_text.trim() == "var"
+                                 && checker.var_inference_enabled();
+                            let declared_ty = if is_infer_var {
+                                None
+                            } else {
+                                let decl_ty = checker.resolve_source_type(
+                                    &mut loader,
+                                    local_data.ty_text.as_str(),
+                                    Some(local_data.ty_range),
+                                );
+                                (!decl_ty.is_errorish() && decl_ty != Type::Void).then_some(decl_ty)
+                            };
 
                             // The initializer expression is a statement-level typing boundary; inferring
                             // it with an expected type (when available) target-types nested lambdas and
@@ -753,31 +763,14 @@ fn type_of_expr_demand_result(
                                 let may_contain = init_range.start <= target_range.start
                                     && target_range.end <= init_range.end;
                                 if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
-                                    let expected_init = if is_infer_var {
-                                        None
-                                    } else {
-                                        let decl_ty = checker.resolve_source_type(
-                                            &mut loader,
-                                            local_data.ty_text.as_str(),
-                                            Some(local_data.ty_range),
-                                        );
-                                        (!decl_ty.is_errorish() && decl_ty != Type::Void)
-                                            .then_some(decl_ty)
-                                    };
-                                    update_inference_root(*init, expected_init);
+                                    update_inference_root(*init, declared_ty.clone());
                                 }
                             }
 
                             // If the target expression is the initializer of an explicitly-typed local,
                             // use the declared type as the expected type.
-                            if *init == target_expr && !is_infer_var {
-                                let data = local_data;
-                                let decl_ty = checker.resolve_source_type(
-                                    &mut loader,
-                                    data.ty_text.as_str(),
-                                    Some(data.ty_range),
-                                );
-                                if !decl_ty.is_errorish() && decl_ty != Type::Void {
+                            if *init == target_expr {
+                                if let Some(decl_ty) = declared_ty.clone() {
                                     expected_ty = Some(decl_ty);
                                 }
                             }
@@ -785,24 +778,17 @@ fn type_of_expr_demand_result(
                             // If the target expression is inside a lambda initializer that has an
                             // explicit target type, seed the lambda parameter locals from the SAM
                             // signature without type-checking the entire lambda body.
-                            if matches!(body.exprs[*init], HirExpr::Lambda { .. }) && !is_infer_var
-                            {
+                            if matches!(body.exprs[*init], HirExpr::Lambda { .. }) {
                                 let init_range = body.exprs[*init].range();
                                 let may_contain = init_range.start <= target_range.start
                                     && target_range.end <= init_range.end;
                                 if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
-                                    let data = local_data;
-                                    let decl_ty = checker.resolve_source_type(
-                                        &mut loader,
-                                        data.ty_text.as_str(),
-                                        Some(data.ty_range),
-                                    );
-                                    if !decl_ty.is_errorish() && decl_ty != Type::Void {
+                                    if let Some(decl_ty) = declared_ty.as_ref() {
                                         seed_lambda_params_from_target(
                                             &mut checker,
                                             &mut loader,
                                             *init,
-                                            &decl_ty,
+                                            decl_ty,
                                         );
                                     }
                                 }
@@ -1623,9 +1609,9 @@ fn resolve_method_call_demand(
                     initializer,
                     ..
                 } => {
-                    for dim in dim_exprs {
-                        set_parent(parent_expr, *dim);
-                        visit_expr(body, *dim, parent_expr, visited_expr);
+                    for dim_expr in dim_exprs {
+                        set_parent(parent_expr, *dim_expr);
+                        visit_expr(body, *dim_expr, parent_expr, visited_expr);
                     }
                     if let Some(init) = initializer {
                         set_parent(parent_expr, *init);
@@ -10426,6 +10412,9 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
         HirExpr::New { args, .. } => args
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirExpr::ArrayInitializer { items, .. } => items
+            .iter()
+            .any(|expr| contains_expr_in_expr(body, *expr, target)),
         HirExpr::ArrayCreation {
             dim_exprs,
             initializer,
@@ -10436,11 +10425,8 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
                 .any(|expr| contains_expr_in_expr(body, *expr, target))
                 || initializer
                     .as_ref()
-                    .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
+                    .is_some_and(|init| contains_expr_in_expr(body, *init, target))
         }
-        HirExpr::ArrayInitializer { items, .. } => items
-            .iter()
-            .any(|expr| contains_expr_in_expr(body, *expr, target)),
         HirExpr::Unary { expr, .. } => contains_expr_in_expr(body, *expr, target),
         HirExpr::Instanceof { expr, .. } => contains_expr_in_expr(body, *expr, target),
         HirExpr::Binary { lhs, rhs, .. } => {

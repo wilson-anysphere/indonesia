@@ -5960,10 +5960,6 @@ fn collect_switch_contexts(
                     );
                 }
             }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                }
             }
             hir::Expr::Unary { expr, .. }
             | hir::Expr::Instanceof { expr, .. }

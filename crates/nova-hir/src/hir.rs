@@ -407,8 +407,8 @@ impl Expr {
             | Expr::ClassLiteral { range, .. }
             | Expr::Cast { range, .. }
             | Expr::New { range, .. }
-            | Expr::ArrayCreation { range, .. }
             | Expr::ArrayInitializer { range, .. }
+            | Expr::ArrayCreation { range, .. }
             | Expr::Unary { range, .. }
             | Expr::Binary { range, .. }
             | Expr::Instanceof { range, .. }
