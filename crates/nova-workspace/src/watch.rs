@@ -109,15 +109,6 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         {
             return Some(ChangeCategory::Build);
         }
-        // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
-        // like a build change so we reload the project config instead of only updating file
-        // contents.
-        if path
-            .file_name()
-            .is_some_and(|name| name == "module-info.java")
-        {
-            return Some(ChangeCategory::Build);
-        }
         // Many build files are detected based on path components (e.g. ignoring `build/` output
         // directories). Use paths relative to the workspace root so absolute parent directories
         // (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
@@ -194,14 +185,20 @@ pub fn is_build_file(path: &Path) -> bool {
 
     // Mirror `nova-build` Gradle build-file fingerprinting exclusions to avoid
     // treating build output / cache directories as project-changing inputs.
-    let in_ignored_dir = path.components().any(|c| {
-        c.as_os_str() == std::ffi::OsStr::new(".git")
-            || c.as_os_str() == std::ffi::OsStr::new(".gradle")
-            || c.as_os_str() == std::ffi::OsStr::new("build")
-            || c.as_os_str() == std::ffi::OsStr::new("target")
-            || c.as_os_str() == std::ffi::OsStr::new(".nova")
-            || c.as_os_str() == std::ffi::OsStr::new(".idea")
-    });
+    let root_component_is_bazel_output = match path.components().next() {
+        Some(std::path::Component::Normal(name)) => name.to_string_lossy().starts_with("bazel-"),
+        _ => false,
+    };
+    let in_ignored_dir = root_component_is_bazel_output
+        || path.components().any(|c| {
+            c.as_os_str() == std::ffi::OsStr::new(".git")
+                || c.as_os_str() == std::ffi::OsStr::new(".gradle")
+                || c.as_os_str() == std::ffi::OsStr::new("build")
+                || c.as_os_str() == std::ffi::OsStr::new("target")
+                || c.as_os_str() == std::ffi::OsStr::new(".nova")
+                || c.as_os_str() == std::ffi::OsStr::new(".idea")
+                || c.as_os_str() == std::ffi::OsStr::new("node_modules")
+        });
 
     // Nova's generated-source roots discovery reads a snapshot under
     // `.nova/apt-cache/generated-roots.json`. Updates to this file should
@@ -245,10 +242,11 @@ pub fn is_build_file(path: &Path) -> bool {
     }
 
     // Bazel BSP server discovery uses `.bsp/*.json` connection files (optional).
-    if path
-        .parent()
-        .and_then(|p| p.file_name())
-        .is_some_and(|dir| dir == ".bsp")
+    if !in_ignored_dir
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|dir| dir == ".bsp")
         && path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -257,23 +255,24 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
-    if name == "pom.xml"
-        || name == "module-info.java"
-        || name == "nova.toml"
-        || name == ".nova.toml"
-        || name == "nova.config.toml"
-        || name == ".bazelrc"
-        || name.starts_with(".bazelrc.")
-        || name == ".bazelversion"
-        || name == "MODULE.bazel.lock"
-        || name == "bazelisk.rc"
-        || name == ".bazelignore"
-        || name.starts_with("build.gradle")
-        || name.starts_with("settings.gradle")
-        || matches!(
-            name,
-            "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel"
-        )
+    if !in_ignored_dir
+        && (name == "pom.xml"
+            || name == "module-info.java"
+            || name == "nova.toml"
+            || name == ".nova.toml"
+            || name == "nova.config.toml"
+            || name == ".bazelrc"
+            || name.starts_with(".bazelrc.")
+            || name == ".bazelversion"
+            || name == "MODULE.bazel.lock"
+            || name == "bazelisk.rc"
+            || name == ".bazelignore"
+            || name.starts_with("build.gradle")
+            || name.starts_with("settings.gradle")
+            || matches!(
+                name,
+                "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel"
+            ))
     {
         return true;
     }
@@ -377,8 +376,9 @@ mod tests {
         ];
 
         for path in build_files {
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
             assert!(
-                is_build_file(&path),
+                is_build_file(rel),
                 "expected {} to be treated as a build file",
                 path.display()
             );
@@ -410,11 +410,20 @@ mod tests {
                 .join("dependency-locks")
                 .join("compileClasspath.lockfile"),
             root.join("foo.lockfile"),
+            // Ignore build markers in irrelevant directories.
+            root.join("node_modules").join("pom.xml"),
+            root.join("node_modules").join("build.gradle"),
+            root.join("node_modules").join("deps.versions.toml"),
+            root.join("bazel-out").join("pom.xml"),
+            root.join("bazel-bin").join("build.gradle"),
+            root.join("bazel-testlogs").join("pom.xml"),
+            root.join("bazel-myworkspace").join("pom.xml"),
         ];
 
         for path in non_build_files {
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
             assert!(
-                !is_build_file(&path),
+                !is_build_file(rel),
                 "expected {} not to be treated as a build file",
                 path.display()
             );
