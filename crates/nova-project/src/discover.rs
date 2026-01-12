@@ -775,8 +775,6 @@ mod tests {
 
     #[test]
     fn reload_project_reloads_when_gradle_snapshot_changes() {
-        use sha2::{Digest, Sha256};
-
         let tmp = tempdir().expect("tempdir");
         let root = tmp.path();
 
@@ -791,17 +789,10 @@ mod tests {
         // the workspace build files. This should influence Gradle project loading, so we can
         // observe `reload_project()` reloading configuration when the snapshot changes.
         let workspace_root = &cfg.workspace_root;
-        let build_gradle = workspace_root.join("build.gradle");
-
-        let mut hasher = Sha256::new();
-        let rel = build_gradle
-            .strip_prefix(workspace_root)
-            .unwrap_or(&build_gradle);
-        hasher.update(rel.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(std::fs::read(&build_gradle).expect("read build.gradle"));
-        hasher.update([0]);
-        let fingerprint = hex::encode(hasher.finalize());
+        let fingerprint = nova_build_model::collect_gradle_build_files(workspace_root)
+            .and_then(|files| nova_build_model::BuildFileFingerprint::from_files(workspace_root, files))
+            .expect("gradle build fingerprint")
+            .digest;
 
         let snapshot_src = workspace_root.join("snapshot-src");
         std::fs::create_dir_all(&snapshot_src).expect("mkdir snapshot-src");
