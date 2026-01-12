@@ -16,7 +16,7 @@ pub use cdi::{CdiAnalysis, CdiAnalysisWithSources, CdiModel, SourceDiagnostic, S
 pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
 pub use config::{collect_config_property_names, config_property_completions};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -27,19 +27,21 @@ use nova_types::ClassId;
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 
+const MAX_CACHED_PROJECTS: usize = 32;
+
 /// Framework analyzer hook used by Nova's resolver for "virtual member" generation.
 ///
 /// Quarkus itself doesn't generate source-level members in the way Lombok does,
 /// but we still register an analyzer so Nova can detect that a project is Quarkus
 /// based on dependencies/classpath markers.
 pub struct QuarkusAnalyzer {
-    cache: Mutex<HashMap<ProjectId, Arc<CachedProjectAnalysis>>>,
+    cache: Mutex<LruCache<ProjectId, Arc<CachedProjectAnalysis>>>,
 }
 
 impl QuarkusAnalyzer {
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(LruCache::new(MAX_CACHED_PROJECTS)),
         }
     }
 }
@@ -136,8 +138,7 @@ impl QuarkusAnalyzer {
             .cache
             .lock()
             .expect("quarkus analyzer cache mutex poisoned")
-            .get(&project)
-            .cloned()
+            .get_cloned(&project)
         {
             if existing.fingerprint == fingerprint {
                 return Some(existing);
@@ -169,6 +170,55 @@ impl QuarkusAnalyzer {
             .insert(project, entry.clone());
 
         Some(entry)
+    }
+}
+
+#[derive(Debug)]
+struct LruCache<K, V> {
+    capacity: usize,
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let value = self.map.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&key);
+        }
     }
 }
 
