@@ -3242,14 +3242,27 @@ mod tests {
 
     #[test]
     fn parse_block_lowers_synchronized_statement() {
-        let text = "{ synchronized (x) { } }";
+        let text = "{ synchronized (x) { int y = 0; } }";
         let block = parse_block(text, 0);
 
         assert_eq!(block.statements.len(), 1);
-        match &block.statements[0] {
-            ast::Stmt::Synchronized(_) => {}
-            other => panic!("expected synchronized statement, got {other:?}"),
-        }
+        let ast::Stmt::Synchronized(sync) = &block.statements[0] else {
+            panic!("expected synchronized statement, got {:?}", block.statements[0]);
+        };
+
+        let ast::Expr::Name(lock) = &sync.expr else {
+            panic!("expected name lock expression, got {:?}", sync.expr);
+        };
+        assert_eq!(lock.name, "x");
+
+        assert_eq!(sync.body.statements.len(), 1);
+        let ast::Stmt::LocalVar(local) = &sync.body.statements[0] else {
+            panic!(
+                "expected local var statement inside synchronized body, got {:?}",
+                sync.body.statements[0]
+            );
+        };
+        assert_eq!(local.name, "y");
     }
 
     #[test]
