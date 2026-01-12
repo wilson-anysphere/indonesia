@@ -1219,6 +1219,22 @@ class A {
 }
 
 #[test]
+fn goto_definition_finds_parameter() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m(int x) {
+    x<|> = 1;
+  }
+}
+"#,
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
 fn goto_definition_finds_field() {
     let (db, file, pos) = fixture(
         r#"
@@ -1269,6 +1285,36 @@ fn goto_definition_resolves_member_method_call_across_files() {
 class Main {
   void m() {
     Foo foo = new Foo();
+    foo.ba<|>r();
+  }
+}
+"#;
+    let foo_text = r#"
+class Foo {
+  void bar() {}
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_member_method_call_on_parameter_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let main_text = r#"
+class Main {
+  void m(Foo foo) {
     foo.ba<|>r();
   }
 }
