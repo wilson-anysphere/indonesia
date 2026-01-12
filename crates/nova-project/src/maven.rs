@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -372,7 +372,11 @@ pub(crate) fn load_maven_workspace_model(
             },
         ];
 
-        let dependencies = effective.dependencies.clone();
+        let dependencies = effective
+            .dependencies
+            .iter()
+            .map(|d| d.as_public())
+            .collect::<Vec<_>>();
 
         // Maven dependencies are transitive by default. When a module depends on another
         // workspace module, we want to include both:
@@ -381,21 +385,56 @@ pub(crate) fn load_maven_workspace_model(
         //
         // This traversal expands workspace module dependencies into an "effective root"
         // dependency list that includes external deps contributed by workspace modules.
-        let mut expanded_dependencies = dependencies.clone();
-        let mut visited_workspace_modules: HashSet<(String, String)> = HashSet::new();
-        let mut queue: VecDeque<Dependency> = dependencies.iter().cloned().collect();
+        let mut expanded_pom_dependencies = effective.dependencies.clone();
+        let mut workspace_module_exclusions: HashMap<(String, String), BTreeSet<(String, String)>> =
+            HashMap::new();
 
-        while let Some(dep) = queue.pop_front() {
-            let key = (dep.group_id.clone(), dep.artifact_id.clone());
+        let mut queue: VecDeque<(PomDependency, BTreeSet<(String, String)>)> = effective
+            .dependencies
+            .iter()
+            .cloned()
+            .map(|dep| (dep.clone(), dep.exclusions.clone()))
+            .collect();
+
+        while let Some((dep, exclusions)) = queue.pop_front() {
+            let key = dep.ga();
             let Some(info) = workspace_modules.get(&key) else {
                 continue;
             };
             if !versions_compatible(dep.version.as_deref(), info.version.as_deref()) {
                 continue;
             }
-            if !visited_workspace_modules.insert(key) {
+
+            // Keep an intersection of exclusion sets across all discovered paths to a workspace
+            // module, mirroring MavenResolver's best-effort "don't over-exclude" behavior.
+            let should_expand = match workspace_module_exclusions.entry(key.clone()) {
+                Entry::Vacant(v) => {
+                    v.insert(exclusions.clone());
+                    true
+                }
+                Entry::Occupied(mut o) => {
+                    let intersection = o
+                        .get()
+                        .intersection(&exclusions)
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    if intersection == *o.get() {
+                        false
+                    } else {
+                        o.insert(intersection);
+                        true
+                    }
+                }
+            };
+
+            if !should_expand {
                 continue;
             }
+
+            let exclusions = workspace_module_exclusions
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
 
             classpath.push(ClasspathEntry {
                 kind: ClasspathEntryKind::Directory,
@@ -405,15 +444,28 @@ pub(crate) fn load_maven_workspace_model(
             // Best-effort: if the dependency module POM couldn't be parsed (or had no
             // dependencies), this list will be empty and we just won't expand further.
             for child in &info.dependencies {
-                expanded_dependencies.push(child.clone());
-                queue.push_back(child.clone());
+                // Optional dependencies do not propagate transitively.
+                if child.optional {
+                    continue;
+                }
+
+                let child_ga = child.ga();
+                if exclusions.contains(&child_ga) {
+                    continue;
+                }
+
+                let mut child_dep = child.clone();
+                child_dep.exclusions.extend(exclusions.iter().cloned());
+
+                expanded_pom_dependencies.push(child_dep.clone());
+                queue.push_back((child_dep.clone(), child_dep.exclusions.clone()));
             }
         }
 
         // Resolve direct + transitive external dependencies from local Maven repo, using the
         // expanded dependency list so workspace module dependencies contribute their external
         // dependency closure.
-        let resolved_deps = resolver.resolve_dependency_closure(&expanded_dependencies);
+        let resolved_deps = resolver.resolve_dependency_closure(&expanded_pom_dependencies);
         for dep in &resolved_deps {
             if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
                 continue;
@@ -600,8 +652,8 @@ struct RawPom {
     packaging: Option<String>,
     properties: BTreeMap<String, String>,
     compiler_plugin: Option<RawMavenCompilerPluginConfig>,
-    dependencies: Vec<Dependency>,
-    dependency_management: Vec<Dependency>,
+    dependencies: Vec<PomDependency>,
+    dependency_management: Vec<PomDependency>,
     modules: Vec<String>,
     parent: Option<PomParent>,
     profiles: Vec<RawProfile>,
@@ -677,8 +729,37 @@ struct PomParent {
 struct RawProfile {
     active_by_default: bool,
     properties: BTreeMap<String, String>,
-    dependencies: Vec<Dependency>,
-    dependency_management: Vec<Dependency>,
+    dependencies: Vec<PomDependency>,
+    dependency_management: Vec<PomDependency>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PomDependency {
+    group_id: String,
+    artifact_id: String,
+    version: Option<String>,
+    scope: Option<String>,
+    classifier: Option<String>,
+    type_: Option<String>,
+    optional: bool,
+    exclusions: BTreeSet<(String, String)>,
+}
+
+impl PomDependency {
+    fn ga(&self) -> (String, String) {
+        (self.group_id.clone(), self.artifact_id.clone())
+    }
+
+    fn as_public(&self) -> Dependency {
+        Dependency {
+            group_id: self.group_id.clone(),
+            artifact_id: self.artifact_id.clone(),
+            version: self.version.clone(),
+            scope: self.scope.clone(),
+            classifier: self.classifier.clone(),
+            type_: self.type_.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -689,8 +770,8 @@ struct EffectivePom {
     java: Option<JavaConfig>,
     properties: BTreeMap<String, String>,
     compiler_plugin: Option<RawMavenCompilerPluginConfig>,
-    dependency_management: BTreeMap<(String, String), Dependency>,
-    dependencies: Vec<Dependency>,
+    dependency_management: BTreeMap<(String, String), PomDependency>,
+    dependencies: Vec<PomDependency>,
 }
 
 impl EffectivePom {
@@ -710,6 +791,7 @@ impl EffectivePom {
         let artifact_id = raw
             .artifact_id
             .clone()
+            .or_else(|| raw.parent.as_ref().and_then(|p| p.artifact_id.clone()))
             .or_else(|| parent.and_then(|p| p.artifact_id.clone()));
         let version = raw
             .version
@@ -929,7 +1011,7 @@ impl RawPom {
     }
 }
 
-fn is_bom_import(dep: &Dependency) -> bool {
+fn is_bom_import(dep: &PomDependency) -> bool {
     dep.type_.as_deref() == Some("pom") && dep.scope.as_deref() == Some("import")
 }
 
@@ -1080,7 +1162,7 @@ impl MavenResolver {
             .join(format!("{artifact_id}-{version}.pom"))
     }
 
-    fn resolve_dependency_closure(&mut self, deps: &[Dependency]) -> Vec<Dependency> {
+    fn resolve_dependency_closure(&mut self, deps: &[PomDependency]) -> Vec<Dependency> {
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         struct DepKey {
             group_id: String,
@@ -1089,11 +1171,37 @@ impl MavenResolver {
             type_: Option<String>,
         }
 
-        let mut out = Vec::new();
-        let mut queue: VecDeque<Dependency> = deps.iter().cloned().collect();
-        let mut seen: HashSet<DepKey> = HashSet::new();
+        #[derive(Debug, Clone)]
+        struct NodeState {
+            /// Intersection of exclusions across all discovered paths to this node.
+            exclusions: BTreeSet<(String, String)>,
+            /// Exclusions used for the last expansion of this node, if any.
+            expanded_with: Option<BTreeSet<(String, String)>>,
+            /// A representative resolved version (if known) for loading the dependency's POM.
+            version: Option<String>,
+        }
 
-        while let Some(dep) = queue.pop_front() {
+        #[derive(Debug, Clone)]
+        struct QueueItem {
+            dep: PomDependency,
+            exclusions: BTreeSet<(String, String)>,
+        }
+
+        let mut out = Vec::new();
+        let mut queue: VecDeque<QueueItem> = deps
+            .iter()
+            .cloned()
+            .map(|dep| QueueItem {
+                exclusions: dep.exclusions.clone(),
+                dep,
+            })
+            .collect();
+
+        let mut seen: HashSet<DepKey> = HashSet::new();
+        let mut nodes: HashMap<DepKey, NodeState> = HashMap::new();
+
+        while let Some(item) = queue.pop_front() {
+            let dep = item.dep;
             if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
                 continue;
             }
@@ -1104,27 +1212,78 @@ impl MavenResolver {
                 classifier: dep.classifier.clone(),
                 type_: dep.type_.clone(),
             };
-            if !seen.insert(key) {
+
+            if seen.insert(key.clone()) {
+                out.push(dep.as_public());
+            }
+
+            // Update node state (exclusions + best-known version), and decide whether to expand.
+            let (exclusions, version, should_expand) = {
+                let state = nodes.entry(key).or_insert_with(|| NodeState {
+                    exclusions: item.exclusions.clone(),
+                    expanded_with: None,
+                    version: None,
+                });
+
+                let new_intersection: BTreeSet<_> =
+                    state.exclusions.intersection(&item.exclusions).cloned().collect();
+                if new_intersection != state.exclusions {
+                    state.exclusions = new_intersection;
+                }
+
+                if state.version.is_none() {
+                    if let Some(v) = dep.version.as_deref().map(str::trim).filter(|v| !v.is_empty())
+                    {
+                        if !v.contains("${") {
+                            state.version = Some(v.to_string());
+                        }
+                    }
+                }
+
+                let should_expand = state.version.is_some()
+                    && state.expanded_with.as_ref() != Some(&state.exclusions);
+                if should_expand {
+                    state.expanded_with = Some(state.exclusions.clone());
+                }
+
+                (state.exclusions.clone(), state.version.clone(), should_expand)
+            };
+
+            if !should_expand {
                 continue;
             }
 
-            out.push(dep.clone());
-
-            let Some(version) = dep.version.as_deref() else {
+            let Some(version) = version else {
                 continue;
             };
-            if version.contains("${") {
-                continue;
-            }
 
             let Some(effective) =
-                self.effective_pom_from_gav(&dep.group_id, &dep.artifact_id, version)
+                self.effective_pom_from_gav(&dep.group_id, &dep.artifact_id, &version)
             else {
                 continue;
             };
 
             for child in &effective.dependencies {
-                queue.push_back(child.clone());
+                if child.group_id.is_empty() || child.artifact_id.is_empty() {
+                    continue;
+                }
+
+                // Optional dependencies are not transitively inherited.
+                if child.optional {
+                    continue;
+                }
+
+                // Exclusions apply transitively to this subtree.
+                if exclusions.contains(&child.ga()) {
+                    continue;
+                }
+
+                let mut child_exclusions = exclusions.clone();
+                child_exclusions.extend(child.exclusions.iter().cloned());
+                queue.push_back(QueueItem {
+                    dep: child.clone(),
+                    exclusions: child_exclusions,
+                });
             }
         }
 
@@ -1136,7 +1295,7 @@ impl MavenResolver {
 struct WorkspaceModuleInfo {
     root: PathBuf,
     version: Option<String>,
-    dependencies: Vec<Dependency>,
+    dependencies: Vec<PomDependency>,
 }
 
 type WorkspaceModuleIndex = HashMap<(String, String), WorkspaceModuleInfo>;
@@ -1322,7 +1481,7 @@ fn parse_modules_list(modules_node: &roxmltree::Node<'_, '_>) -> Vec<String> {
         .collect()
 }
 
-fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<Dependency> {
+fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<PomDependency> {
     deps_node
         .children()
         .filter(|n| n.is_element() && n.has_tag_name("dependency"))
@@ -1333,14 +1492,35 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<Dependency> {
             let scope = child_text(&dep_node, "scope");
             let classifier = child_text(&dep_node, "classifier");
             let type_ = child_text(&dep_node, "type");
+            let optional = child_text(&dep_node, "optional")
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
 
-            Some(Dependency {
+            let mut exclusions = BTreeSet::new();
+            if let Some(exclusions_node) = child_element(&dep_node, "exclusions") {
+                for exclusion_node in exclusions_node
+                    .children()
+                    .filter(|n| n.is_element() && n.has_tag_name("exclusion"))
+                {
+                    let Some(group_id) = child_text(&exclusion_node, "groupId") else {
+                        continue;
+                    };
+                    let Some(artifact_id) = child_text(&exclusion_node, "artifactId") else {
+                        continue;
+                    };
+                    exclusions.insert((group_id, artifact_id));
+                }
+            }
+
+            Some(PomDependency {
                 group_id,
                 artifact_id,
                 version,
                 scope,
                 classifier,
                 type_,
+                optional,
+                exclusions,
             })
         })
         .collect()
