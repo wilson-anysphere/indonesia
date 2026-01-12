@@ -496,7 +496,7 @@
           ],
           "default": "auto",
           "scope": "resource",
-          "description": "Build tool to use for project builds/reloads. Use 'prompt' to choose each time."
+          "description": "Build tool to use for project builds/reloads for a workspace folder. Use 'prompt' to choose each time."
         }
       }
     },
