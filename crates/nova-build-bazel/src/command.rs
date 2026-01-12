@@ -13,6 +13,37 @@ use std::{
     time::Duration,
 };
 
+const ENV_BAZEL_QUERY_TIMEOUT_SECS: &str = "NOVA_BAZEL_QUERY_TIMEOUT_SECS";
+const DEFAULT_BAZEL_QUERY_TIMEOUT: Duration = Duration::from_secs(55);
+
+/// Default timeout for Bazel query/aquery invocations.
+///
+/// This is intentionally configurable via [`ENV_BAZEL_QUERY_TIMEOUT_SECS`] because `bazel query`
+/// / `bazel aquery` can exceed the default timeout in large workspaces even on warm caches.
+///
+/// Parsing rules:
+/// - missing / empty / invalid values => [`DEFAULT_BAZEL_QUERY_TIMEOUT`]
+/// - values <= 0 => treated as unset and fall back to [`DEFAULT_BAZEL_QUERY_TIMEOUT`] to avoid
+///   accidentally disabling timeouts and hanging forever.
+fn default_bazel_query_timeout() -> Duration {
+    let raw = std::env::var(ENV_BAZEL_QUERY_TIMEOUT_SECS).unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return DEFAULT_BAZEL_QUERY_TIMEOUT;
+    }
+
+    let secs: i64 = match raw.parse() {
+        Ok(secs) => secs,
+        Err(_) => return DEFAULT_BAZEL_QUERY_TIMEOUT,
+    };
+
+    if secs <= 0 {
+        return DEFAULT_BAZEL_QUERY_TIMEOUT;
+    }
+
+    Duration::from_secs(secs as u64)
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
     pub stdout: String,
@@ -71,7 +102,7 @@ pub struct DefaultCommandRunner;
 impl CommandRunner for DefaultCommandRunner {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<CommandOutput> {
         let opts = RunOptions {
-            timeout: Some(Duration::from_secs(55)),
+            timeout: Some(default_bazel_query_timeout()),
             max_bytes: 16 * 1024 * 1024,
             ..RunOptions::default()
         };
@@ -127,7 +158,7 @@ impl CommandRunner for DefaultCommandRunner {
         f: impl FnOnce(&mut dyn BufRead) -> Result<ControlFlow<R, R>>,
     ) -> Result<R> {
         const MAX_STDERR_BYTES: u64 = 1_048_576; // 1 MiB
-        const TIMEOUT: Duration = Duration::from_secs(55);
+        let timeout = default_bazel_query_timeout();
 
         let mut cmd = Command::new(program);
         cmd.args(args)
@@ -182,7 +213,7 @@ impl CommandRunner for DefaultCommandRunner {
         let timed_out = Arc::new(AtomicBool::new(false));
         let timed_out_for_timeout = Arc::clone(&timed_out);
         let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
-        let timeout_handle = thread::spawn(move || match cancel_rx.recv_timeout(TIMEOUT) {
+        let timeout_handle = thread::spawn(move || match cancel_rx.recv_timeout(timeout) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 timed_out_for_timeout.store(true, Ordering::SeqCst);
@@ -238,7 +269,7 @@ impl CommandRunner for DefaultCommandRunner {
 
         if timed_out.load(Ordering::SeqCst) && !broke_early && callback_err.is_none() {
             return Err(anyhow!(
-                "`{program} {}` timed out after {TIMEOUT:?}.\nstderr:\n{stderr}",
+                "`{program} {}` timed out after {timeout:?}.\nstderr:\n{stderr}",
                 args.join(" "),
             ));
         }
@@ -303,8 +334,34 @@ fn read_truncated_to_string_and_drain<R: Read>(reader: R, limit: u64) -> io::Res
 
 #[cfg(test)]
 mod tests {
-    use super::read_truncated_to_string_and_drain;
+    use super::{default_bazel_query_timeout, read_truncated_to_string_and_drain};
     use std::io::{Cursor, Read};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn with_query_timeout_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let prior = std::env::var_os(super::ENV_BAZEL_QUERY_TIMEOUT_SECS);
+        match value {
+            Some(value) => std::env::set_var(super::ENV_BAZEL_QUERY_TIMEOUT_SECS, value),
+            None => std::env::remove_var(super::ENV_BAZEL_QUERY_TIMEOUT_SECS),
+        }
+
+        let out = f();
+
+        match prior {
+            Some(value) => std::env::set_var(super::ENV_BAZEL_QUERY_TIMEOUT_SECS, value),
+            None => std::env::remove_var(super::ENV_BAZEL_QUERY_TIMEOUT_SECS),
+        }
+
+        out
+    }
 
     #[derive(Debug)]
     struct CountingReader<R> {
@@ -337,5 +394,28 @@ mod tests {
         let out = read_truncated_to_string_and_drain(&mut reader, 1024).unwrap();
         assert_eq!(out.len(), 1024);
         assert_eq!(reader.bytes_read, payload.len());
+    }
+
+    #[test]
+    fn bazel_query_timeout_defaults_when_env_missing() {
+        with_query_timeout_env(None, || {
+            assert_eq!(default_bazel_query_timeout(), Duration::from_secs(55));
+        });
+    }
+
+    #[test]
+    fn bazel_query_timeout_can_be_overridden_by_env_var() {
+        with_query_timeout_env(Some("123"), || {
+            assert_eq!(default_bazel_query_timeout(), Duration::from_secs(123));
+        });
+    }
+
+    #[test]
+    fn bazel_query_timeout_invalid_env_values_fall_back_to_default() {
+        for value in ["", "not-a-number", "0", "-5"] {
+            with_query_timeout_env(Some(value), || {
+                assert_eq!(default_bazel_query_timeout(), Duration::from_secs(55));
+            });
+        }
     }
 }
