@@ -30,6 +30,7 @@ use nova_db::{Database, FileId};
 use nova_scheduler::CancellationToken;
 use nova_types::{CompletionItem, Diagnostic};
 use once_cell::sync::Lazy;
+use nova_classpath::IndexOptions;
 
 const MAX_CACHED_ROOTS: usize = 32;
 
@@ -586,16 +587,26 @@ impl FrameworkWorkspaceCache {
                 .chain(config.module_path.iter())
                 .filter(|entry| match entry.kind {
                     nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
-                    nova_project::ClasspathEntryKind::Jar => entry.path.is_file(),
+                    nova_project::ClasspathEntryKind::Jar => entry.path.is_file() || entry.path.is_dir(),
                     #[allow(unreachable_patterns)]
                     _ => false,
                 })
                 .filter_map(to_classpath_entry)
                 .collect();
 
-            nova_classpath::ClasspathIndex::build(&entries, None)
-                .ok()
-                .map(Arc::new)
+            // Respect the workspace's configured language level for multi-release jars
+            // (`META-INF/versions/<n>/...`).
+            let target_release = Some(config.java.target.0)
+                .filter(|release| *release >= 1)
+                .or_else(|| Some(config.java.source.0).filter(|release| *release >= 1));
+
+            nova_classpath::ClasspathIndex::build_with_options(
+                &entries,
+                None,
+                IndexOptions { target_release },
+            )
+            .ok()
+            .map(Arc::new)
         });
 
         let entry = CachedClasspathIndex {
