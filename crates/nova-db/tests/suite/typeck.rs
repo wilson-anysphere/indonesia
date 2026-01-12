@@ -3695,6 +3695,80 @@ class Use {
 }
 
 #[test]
+fn qualified_type_name_expr_does_not_overwrite_workspace_class_def() {
+    // Ensure the classpath contains com.example.dep.Foo.
+    let classpath = ClasspathIndex::build_with_deps_store(
+        &[ClasspathEntry::Jar(test_dep_jar())],
+        None,
+        None,
+        None,
+    )
+    .expect("failed to build dep.jar classpath index");
+
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let foo_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/com/example/dep/Foo.java",
+        r#"
+package com.example.dep;
+class Foo {
+    static void workspaceMarker() {}
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/Use.java",
+        r#"
+class Use {
+    void m() {
+        // This is not a valid statement expression, but we still want type-name expressions to
+        // avoid loading colliding classpath stubs (which can overwrite the workspace ClassDef).
+        com.example.dep.Foo;
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![foo_file, use_file]));
+
+    let tree = db.hir_item_tree(use_file);
+    let m = find_method_named(&tree, "m");
+    let body = db.typeck_body(DefWithBodyId::Method(m));
+
+    let foo_id = body
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("expected Foo to be present in body env");
+    let foo_def = body.env.class(foo_id).expect("expected Foo ClassDef");
+    assert!(
+        foo_def.methods.iter().any(|m| m.name == "workspaceMarker"),
+        "expected Foo in env to come from workspace source (contain workspaceMarker()); got methods={:?}",
+        foo_def
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn differential_javac_type_mismatch() {
     use nova_test_utils::javac::{javac_available, run_javac_snippet};
 
