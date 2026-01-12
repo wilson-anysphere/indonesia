@@ -609,3 +609,47 @@ class A {
         "expected null-dereference diagnostic; got {diags:#?}"
     );
 }
+
+#[test]
+fn diagnostics_include_unreachable_code_in_constructor() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  A() {
+    return;
+    int x = 1;
+  }
+}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "FLOW_UNREACHABLE" && d.severity == Severity::Warning),
+        "expected unreachable-code diagnostic in constructor; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_include_unreachable_code_in_initializer() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  {
+    throw new RuntimeException();
+    int x = 1;
+  }
+}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "FLOW_UNREACHABLE" && d.severity == Severity::Warning),
+        "expected unreachable-code diagnostic in initializer; got {diags:#?}"
+    );
+}

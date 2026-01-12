@@ -1614,6 +1614,36 @@ class Foo {
     }
 
     #[test]
+    fn request_cancellation_unwinds_flow_diagnostics_query() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+        db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
+
+        // Build a body large enough that `flow_diagnostics` is still executing after the
+        // cancellation request is issued.
+        let mut source = String::from("class Foo { void m() { int x = 0;");
+        for _ in 0..2_000_u32 {
+            source.push_str("x = x;");
+        }
+        source.push_str("} }");
+        db.set_file_content(file, Arc::new(source));
+
+        // Prime `hir_item_tree` so the cancellation harness focuses on flow analysis.
+        let tree = db.hir_item_tree(file);
+        let (&method_ast_id, _) = tree
+            .methods
+            .iter()
+            .find(|(_, method)| method.name == "m")
+            .expect("expected Foo.m method");
+        let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
+
+        assert_query_is_cancelled(db, move |snap| {
+            let _ = snap.flow_diagnostics(method_id);
+        });
+    }
+
+    #[test]
     fn hir_queries_hit_cancellation_checkpoint() {
         use std::sync::mpsc;
         use std::time::Duration;
