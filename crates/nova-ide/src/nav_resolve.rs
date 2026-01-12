@@ -437,25 +437,18 @@ fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
         i -= 1;
     }
 
-    let has_dot = i > 0 && bytes[i - 1] == b'.';
-    let receiver = if has_dot {
-        let dot_idx = i - 1;
-        let mut recv_end = dot_idx;
-        while recv_end > 0 && (bytes[recv_end - 1] as char).is_ascii_whitespace() {
-            recv_end -= 1;
-        }
-        let mut recv_start = recv_end;
-        while recv_start > 0 && is_ident_continue(bytes[recv_start - 1]) {
-            recv_start -= 1;
-        }
-        if recv_start == recv_end {
-            None
-        } else {
-            Some(text[recv_start..recv_end].to_string())
-        }
+    // Support:
+    // - `recv . ident`
+    // - `recv . <T> ident` (generic invocation: `recv.<T>method(...)`)
+    let dot_idx = if i > 0 && bytes[i - 1] == b'.' {
+        Some(i - 1)
+    } else if i > 0 && bytes[i - 1] == b'>' {
+        dot_before_generic_invocation(bytes, i - 1)
     } else {
         None
     };
+
+    let receiver = dot_idx.and_then(|dot_idx| receiver_before_dot(text, bytes, dot_idx));
 
     // Look forwards for `(`, allowing whitespace between the identifier and `(`.
     let mut j = ident_span.end;
@@ -470,6 +463,52 @@ fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
         (None, true) => Some(OccurrenceKind::LocalCall),
         (None, false) => Some(OccurrenceKind::Ident),
     }
+}
+
+fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<String> {
+    let mut recv_end = dot_idx;
+    while recv_end > 0 && (bytes[recv_end - 1] as char).is_ascii_whitespace() {
+        recv_end -= 1;
+    }
+    let mut recv_start = recv_end;
+    while recv_start > 0 && is_ident_continue(bytes[recv_start - 1]) {
+        recv_start -= 1;
+    }
+    if recv_start == recv_end {
+        None
+    } else {
+        Some(text[recv_start..recv_end].to_string())
+    }
+}
+
+fn dot_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -> Option<usize> {
+    // We are positioned at the `>` directly before an identifier. Walk backwards
+    // to find the matching `<` and then check for a `.` before the type args.
+    let mut depth = 0usize;
+    let mut j = close_angle_idx;
+    loop {
+        match bytes.get(j)? {
+            b'>' => depth += 1,
+            b'<' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let mut k = j;
+                    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+                        k -= 1;
+                    }
+                    return (k > 0 && bytes[k - 1] == b'.').then_some(k - 1);
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    None
 }
 
 fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)> {
