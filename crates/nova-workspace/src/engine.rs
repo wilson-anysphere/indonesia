@@ -1476,6 +1476,41 @@ mod tests {
     }
 
     #[test]
+    fn java_file_outside_source_roots_is_not_added_to_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("pom.xml"), br#"<?xml version="1.0"?><project></project>"#).unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.project_config(project).build_system, BuildSystem::Maven);
+            assert_eq!(snap.project_files(project).len(), 1);
+        });
+
+        // A Java file under the workspace root but outside Maven source roots should not be added.
+        let scratch = root.join("Scratch.java");
+        fs::write(&scratch, "class Scratch {}".as_bytes()).unwrap();
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Created(scratch.clone())]);
+
+        let scratch_id = engine.vfs.get_id(&VfsPath::local(scratch.clone())).unwrap();
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(scratch_id));
+            assert!(!snap.project_files(project).contains(&scratch_id));
+        });
+    }
+
+    #[test]
     fn project_reload_updates_project_config_and_files() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
