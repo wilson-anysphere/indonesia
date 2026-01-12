@@ -171,7 +171,42 @@ impl DecompiledDocumentStore {
         let Ok(path) = self.path_for(content_hash, binary_name) else {
             return false;
         };
-        path.exists()
+
+        // Treat any unexpected filesystem state as corruption: delete and report
+        // a cache miss.
+        if let Ok(meta) = std::fs::symlink_metadata(&self.root) {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                remove_corrupt_path(&self.root);
+                return false;
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            if let Ok(meta) = std::fs::symlink_metadata(parent) {
+                if meta.file_type().is_symlink() || !meta.is_dir() {
+                    remove_corrupt_path(parent);
+                    return false;
+                }
+            }
+        }
+
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(_) => return false,
+        };
+
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            remove_corrupt_path(&path);
+            return false;
+        }
+
+        const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
+        if meta.len() > MAX_DOC_BYTES {
+            remove_corrupt_path(&path);
+            return false;
+        }
+
+        true
     }
 
     /// Convenience wrapper around [`Self::store_text`] that takes a canonical `nova:///...` URI.
