@@ -74,13 +74,17 @@ pub fn property_keys_from_configs(files: &[(&str, &str)]) -> BTreeSet<String> {
             Cow::Borrowed(file_name)
         };
         let file_name = file_name.as_ref();
-        if !file_name.starts_with("application") {
+        if !starts_with_ignore_ascii_case(file_name, "application") {
             continue;
         }
 
-        if file_name.ends_with(".properties") {
+        let ext = Path::new(file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        if ext.eq_ignore_ascii_case("properties") {
             keys.extend(parse_properties(text));
-        } else if file_name.ends_with(".yml") || file_name.ends_with(".yaml") {
+        } else if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml") {
             keys.extend(parse_yaml_keys(text));
         }
     }
@@ -94,6 +98,12 @@ pub fn property_keys_from_configs(files: &[(&str, &str)]) -> BTreeSet<String> {
     }
 
     keys
+}
+
+fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
+    haystack
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 /// Completion items for `@Value("${...}")` property keys.

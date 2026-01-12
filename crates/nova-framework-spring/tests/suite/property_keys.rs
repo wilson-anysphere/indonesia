@@ -34,3 +34,16 @@ fn property_keys_from_configs_handles_posix_paths() {
     assert_eq!(keys.len(), 2);
 }
 
+#[test]
+fn property_keys_from_configs_is_case_insensitive() {
+    let path = "src/main/resources/Application.PROPERTIES";
+    let text = "server.port=8080\ncustom.key=value\n";
+
+    let keys = property_keys_from_configs(&[(path, text)]);
+
+    assert!(keys.contains("custom.key"));
+    assert!(keys.contains("server.port"));
+    assert!(!keys.contains("spring.application.name"));
+    assert!(!keys.contains("logging.level.root"));
+    assert_eq!(keys.len(), 2);
+}
