@@ -4189,6 +4189,7 @@ fn record_syntax_only_references(
     fn visit_value(
         file: &FileId,
         file_text: &str,
+        tree: &nova_hir::item_tree::ItemTree,
         value: ast::AnnotationElementValue,
         scope: nova_resolve::ScopeId,
         scope_result: &ScopeBuildResult,
@@ -4217,6 +4218,7 @@ fn record_syntax_only_references(
             visit_annotation(
                 file,
                 file_text,
+                tree,
                 nested,
                 scope,
                 scope_result,
@@ -4233,6 +4235,7 @@ fn record_syntax_only_references(
                 visit_value(
                     file,
                     file_text,
+                    tree,
                     v,
                     scope,
                     scope_result,
@@ -4250,6 +4253,7 @@ fn record_syntax_only_references(
     fn visit_annotation(
         file: &FileId,
         file_text: &str,
+        tree: &nova_hir::item_tree::ItemTree,
         annotation: ast::Annotation,
         scope: nova_resolve::ScopeId,
         scope_result: &ScopeBuildResult,
@@ -4291,6 +4295,7 @@ fn record_syntax_only_references(
             visit_value(
                 file,
                 file_text,
+                tree,
                 value,
                 scope,
                 scope_result,
@@ -4307,7 +4312,10 @@ fn record_syntax_only_references(
                 let name_range = syntax_token_range(&name_tok);
                 let element_name = Name::from(name_tok.text());
                 if let Some(methods) = anno_def.methods.get(&element_name) {
-                    if let Some(method) = methods.first() {
+                    if let Some(method) = methods
+                        .iter()
+                        .find(|m| tree.method(m.id).params.is_empty())
+                    {
                         record_reference(
                             file,
                             name_range,
@@ -4326,6 +4334,7 @@ fn record_syntax_only_references(
             visit_value(
                 file,
                 file_text,
+                tree,
                 value,
                 scope,
                 scope_result,
@@ -4389,6 +4398,7 @@ fn record_syntax_only_references(
         visit_annotation(
             file,
             text,
+            tree,
             annotation,
             scope,
             scope_result,
@@ -4437,6 +4447,7 @@ fn record_syntax_only_references(
         visit_value(
             file,
             text,
+            tree,
             value,
             scope,
             scope_result,
