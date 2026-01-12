@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub mod java;
 
 pub use java::env::TyContext;
+pub use java::helpers::{instantiate_as_supertype, sam_signature, SamSignature};
 pub use java::overload::resolve_method_call;
 
 pub use java::format::{
