@@ -329,17 +329,16 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
             return Vec::new();
         };
 
-        let analysis = self.cached_analysis(db, ctx.project, Some(ctx.file));
-        let mut items =
-            completions_for_value_placeholder(text, ctx.offset, &analysis.config_keys);
-        if items.is_empty() {
-            return items;
-        }
+        // Avoid running project-wide Micronaut analysis unless the cursor is inside
+        // an `@Value("${...}")` placeholder.
+        let Some(replace_span) = completion_span_for_value_placeholder(text, ctx.offset) else {
+            return Vec::new();
+        };
 
-        if let Some(span) = completion_span_for_value_placeholder(text, ctx.offset) {
-            for item in &mut items {
-                item.replace_span = Some(span);
-            }
+        let analysis = self.cached_analysis(db, ctx.project, Some(ctx.file));
+        let mut items = completions_for_value_placeholder(text, ctx.offset, &analysis.config_keys);
+        for item in &mut items {
+            item.replace_span = Some(replace_span);
         }
 
         items
