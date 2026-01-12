@@ -1713,10 +1713,13 @@ fn import_completions(
         .or_else(|_| JdkIndex::new().packages_with_prefix(&ctx.prefix))
         .unwrap_or_default();
 
-    let classes = jdk
-        .class_names_with_prefix(&ctx.prefix)
-        .or_else(|_| JdkIndex::new().class_names_with_prefix(&ctx.prefix))
-        .unwrap_or_default();
+    // `class_names_with_prefix("")` allocates/clones *every* JDK type name; avoid it by scanning
+    // the pre-sorted in-memory name list and stopping once we've produced enough items.
+    let fallback_jdk = JdkIndex::new();
+    let class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
 
     let mut items = Vec::new();
 
@@ -1750,10 +1753,16 @@ fn import_completions(
 
     // Type/class completions (as remainder completions).
     let mut seen_types: HashSet<String> = HashSet::new();
-    for name in classes {
+    let start = class_names.partition_point(|name| name.as_str() < ctx.prefix.as_str());
+    for name in &class_names[start..] {
         if items.len() >= MAX_ITEMS {
             break;
         }
+        if !name.starts_with(ctx.prefix.as_str()) {
+            break;
+        }
+
+        let name = name.as_str();
         if !name.starts_with(&ctx.base_prefix) {
             continue;
         }
@@ -1771,7 +1780,7 @@ fn import_completions(
         items.push(CompletionItem {
             label: remainder.clone(),
             kind: Some(CompletionItemKind::CLASS),
-            detail: Some(name),
+            detail: Some(name.to_string()),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                 range: replace_range,
                 new_text: remainder,
