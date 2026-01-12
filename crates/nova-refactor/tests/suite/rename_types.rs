@@ -51,6 +51,8 @@ class Use {
     files.insert(use_file.clone(), use_src.to_string());
     let updated = apply_workspace_edit(&files, &edit).unwrap();
 
+    // `rename` performs an optional file rename for public top-level types when the file name
+    // matches the type name (`Foo.java` -> `Bar.java`).
     assert!(
         !updated.contains_key(&foo_file),
         "expected Foo.java to be renamed to Bar.java"

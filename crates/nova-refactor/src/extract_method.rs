@@ -67,6 +67,13 @@ fn is_valid_signature_type_string(ty: &str) -> bool {
     true
 }
 
+fn strip_java_lang_prefix(ty: &str) -> &str {
+    // `java.lang` types are implicitly imported in Java. Prefer the simple name when typeck reports
+    // a fully-qualified `java.lang.*` type so Extract Method doesn't introduce redundant package
+    // qualifiers (e.g. `RuntimeException` instead of `java.lang.RuntimeException`).
+    ty.strip_prefix("java.lang.").unwrap_or(ty)
+}
+
 fn type_at_offset_fully_qualified(
     snapshot: &SalsaSnapshot,
     file: DbFileId,
@@ -2770,6 +2777,7 @@ fn infer_thrown_exception_type_from_expr(
             if ty_text == "var" {
                 let inferred = infer_type_at_offsets(typeck, source, [use_offset])?;
                 let inferred = strip_type_arguments(inferred.trim());
+                let inferred = strip_java_lang_prefix(inferred);
                 if inferred.is_empty() || inferred.contains('|') {
                     None
                 } else {
@@ -3281,7 +3289,7 @@ fn type_for_local(
     }
 
     if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets) {
-        ty = inferred;
+        ty = strip_java_lang_prefix(inferred.trim()).to_string();
         return ty;
     }
 
@@ -3316,7 +3324,7 @@ fn type_for_decl_span(
     offsets.push(fallback_offset);
 
     if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets) {
-        ty = inferred;
+        ty = strip_java_lang_prefix(inferred.trim()).to_string();
         return ty;
     }
 

@@ -6123,11 +6123,11 @@ fn collect_switch_contexts(
                     );
                 }
             }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                }
-            }
+             hir::Expr::ArrayInitializer { items, .. } => {
+                 for item in items {
+                     walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
+                 }
+             }
             hir::Expr::Switch {
                 selector,
                 arms,
@@ -6332,6 +6332,48 @@ fn record_syntax_only_references(
     let Some(unit) = ast::CompilationUnit::cast(parse.syntax()) else {
         return;
     };
+
+    // Module directives (`module-info.java`) can reference types via `uses` / `provides`.
+    // These live outside any HIR body, so collect them directly from the syntax tree.
+    if let Some(module_decl) = unit.module_declaration() {
+        if let Some(body) = module_decl.body() {
+            for directive in body.directives() {
+                let service = if let Some(uses) = ast::UsesDirective::cast(directive.clone()) {
+                    uses.service()
+                } else if let Some(provides) = ast::ProvidesDirective::cast(directive) {
+                    provides.service()
+                } else {
+                    None
+                };
+                let Some(service) = service else {
+                    continue;
+                };
+
+                let segments = collect_ident_segments(service.syntax());
+                let Some((_, last_range)) = segments.last().cloned() else {
+                    continue;
+                };
+
+                let Some(TypeResolution::Source(item)) = resolve_type_from_segments(
+                    resolver,
+                    &scope_result.scopes,
+                    scope_result.file_scope,
+                    &segments,
+                ) else {
+                    continue;
+                };
+
+                record_reference(
+                    file,
+                    last_range,
+                    ResolutionKey::Type(item),
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+    }
 
     // Map declaration spans to their semantic scopes so we can pick an appropriate type-resolution
     // scope when walking the syntax tree.

@@ -1119,7 +1119,7 @@ fn is_java_identifier(s: &str) -> bool {
     chars.all(is_ident_continue)
 }
 fn looks_like_type_identifier(name: &str) -> bool {
-    if !crate::quick_fixes::is_java_identifier(name) {
+    if !is_java_identifier(name) {
         return false;
     }
 

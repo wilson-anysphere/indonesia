@@ -26,7 +26,6 @@ mod rename_field_accessors;
 mod rename_members;
 mod rename_method_interfaces;
 mod rename_method_overload_conflicts;
-mod rename_method_overrides;
 mod rename_package;
 mod rename_static_imports;
 mod rename_type;

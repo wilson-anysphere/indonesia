@@ -460,6 +460,48 @@ class Use {
 }
 
 #[test]
+fn rename_type_updates_module_info_uses_and_provides_directives() {
+    let module_info = FileId::new("module-info.java");
+    let foo = FileId::new("Foo.java");
+
+    let src_module = r#"module m {
+  uses Foo;
+  provides Foo;
+}
+"#;
+    let src_foo = r#"class Foo {}"#;
+
+    let db = RefactorJavaDatabase::new([
+        (module_info.clone(), src_module.to_string()),
+        (foo.clone(), src_foo.to_string()),
+    ]);
+
+    let offset = src_foo.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&foo, offset).expect("symbol at type Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let mut files = BTreeMap::new();
+    files.insert(module_info.clone(), src_module.to_string());
+    files.insert(foo.clone(), src_foo.to_string());
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_module = out.get(&module_info).unwrap();
+
+    assert!(after_module.contains("uses Bar;"), "{after_module}");
+    assert!(after_module.contains("provides Bar;"), "{after_module}");
+    assert!(!after_module.contains("uses Foo;"), "{after_module}");
+    assert!(!after_module.contains("provides Foo;"), "{after_module}");
+}
+
+#[test]
 fn rename_nested_type_outer_segment_is_renamed() {
     let file = FileId::new("Test.java");
     let src = r#"class Outer {

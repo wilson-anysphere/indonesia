@@ -1525,6 +1525,10 @@ fn type_mismatch_quick_fixes(
     selection: Span,
     diagnostics: &[Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     fn cast_replacement(expected: &str, expr: &str) -> String {
         if crate::code_action::is_simple_cast_expr(expr) {
             format!("({expected}) {expr}")

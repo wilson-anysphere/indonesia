@@ -1189,7 +1189,6 @@ pub fn extract_variable(
         .ancestors()
         .find_map(ast::Statement::cast)
         .ok_or(RefactorError::InvalidSelection)?;
-
     // Java requires an explicit constructor invocation (`this(...)` / `super(...)`) to be the
     // first statement in a constructor body. Extracting a variable would insert a new statement
     // before it, producing uncompilable code.
@@ -1408,7 +1407,6 @@ pub fn extract_variable(
             return Err(RefactorError::ExtractSideEffects);
         }
     }
-
     let file_newline = NewlineStyle::detect(text).as_str();
 
     // Special-case: extracting inside a multi-declarator local variable declaration needs to
