@@ -683,8 +683,14 @@ fn type_of_expr_demand_result(
         &mut loader,
     );
 
+    let file_text_arc = db.file_content(file);
+    let file_text = file_text_arc.as_str();
+    let file_tokens = lex(file_text);
+
     let mut checker = BodyChecker::new(
         db,
+        file_text,
+        &file_tokens,
         owner,
         file_text,
         &file_tokens,
@@ -1513,8 +1519,14 @@ fn resolve_method_call_demand(
         &mut loader,
     );
 
+    let file_text_arc = db.file_content(file);
+    let file_text = file_text_arc.as_str();
+    let file_tokens = lex(file_text);
+
     let mut checker = BodyChecker::new(
         db,
+        file_text,
+        &file_tokens,
         owner,
         file_text,
         &file_tokens,
@@ -3525,8 +3537,14 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         &mut loader,
     );
 
+    let file_text_arc = db.file_content(file);
+    let file_text = file_text_arc.as_str();
+    let file_tokens = lex(file_text);
+
     let mut checker = BodyChecker::new(
         db,
+        file_text,
+        &file_tokens,
         owner,
         file_text,
         &file_tokens,
@@ -3627,6 +3645,8 @@ fn is_placeholder_class_def(def: &ClassDef) -> bool {
 
 struct BodyChecker<'a, 'idx> {
     db: &'a dyn NovaTypeck,
+    file_text: &'a str,
+    file_tokens: &'a [Token],
     owner: DefWithBodyId,
     file_text: &'a str,
     file_tokens: &'a [Token],
@@ -3697,6 +3717,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         db: &'a dyn NovaTypeck,
+        file_text: &'a str,
+        file_tokens: &'a [Token],
         owner: DefWithBodyId,
         file_text: &'a str,
         file_tokens: &'a [Token],
@@ -3764,6 +3786,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
         Self {
             db,
+            file_text,
+            file_tokens,
             owner,
             file_text,
             file_tokens,
@@ -10649,6 +10673,11 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
             }
         }
         HirStmt::Return { expr, .. } => {
+            if let Some(expr) = expr {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::Yield { expr, .. } => {
             if let Some(expr) = expr {
                 find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
             }
