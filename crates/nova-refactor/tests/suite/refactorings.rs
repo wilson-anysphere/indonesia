@@ -286,6 +286,28 @@ fn extract_variable_generates_valid_edit() {
 }
 
 #[test]
+fn extract_variable_rejects_selection_end_past_eof_without_panicking() {
+    let file = FileId::new("Test.java");
+    let src = "class Test { void m() { int x = 1 + 2; } }\n";
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(0, src.len() + 5),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    // We return a normal error rather than panicking on the invalid range.
+    assert!(matches!(err, SemanticRefactorError::Edit(_)));
+}
+
+#[test]
 fn extract_variable_preserves_crlf_newlines() {
     let file = FileId::new("Test.java");
     let src_lf = r#"class Test {

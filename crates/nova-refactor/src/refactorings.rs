@@ -3277,6 +3277,9 @@ fn line_start(text: &str, offset: usize) -> usize {
 }
 
 fn trim_range(text: &str, mut range: TextRange) -> TextRange {
+    if range.start >= range.end || range.end > text.len() {
+        return range;
+    }
     let bytes = text.as_bytes();
     while range.start < range.end && bytes[range.start].is_ascii_whitespace() {
         range.start += 1;

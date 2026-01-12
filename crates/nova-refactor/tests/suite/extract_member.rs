@@ -129,6 +129,15 @@ fn extract_constant_rejects_selection_with_start_past_eof_without_panicking() {
 }
 
 #[test]
+fn extract_constant_rejects_selection_end_past_eof_without_panicking() {
+    let code = "class A { void m() { int x = 1 + 2; } }\n";
+    let range = TextRange::new(0, code.len() + 5);
+
+    let err = extract_constant("A.java", code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::InvalidSelection);
+}
+
+#[test]
 fn extract_constant_infers_double_for_double_literal() {
     let (code, range) = fixture_range(
         r#"
