@@ -872,9 +872,39 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // `Outer.@A Inner`, `String @A []`, ...). Nova does not currently model these in
         // `nova_types::Type`, so type refs should parse/resolve as if the annotation were absent.
         //
-        // We intentionally **do not** emit diagnostics for unresolved type-use annotation names:
-        // they are best-effort ignored throughout semantic analysis.
-        let _ = name_range;
+        // We *do* emit best-effort diagnostics for the annotation's *type name* when parsing an
+        // anchored source range (e.g. via `nova_db` / IDE diagnostics), because the annotation type
+        // being missing from the classpath is still actionable for users.
+        //
+        // However, callers frequently parse detached `TypeRef.text` snippets with
+        // `base_span = None`, and `TypeRef.text` may be whitespace-stripped. If we can't reliably
+        // map offsets back into the original source text, suppress these diagnostics to avoid
+        // mis-anchored spans and noisy errors.
+        let Some(base_span) = self.base_span else {
+            return;
+        };
+        if base_span.len() != self.text.len() {
+            return;
+        }
+        if name_range.is_empty() {
+            return;
+        }
+        let text = self.text.get(name_range.clone()).unwrap_or("");
+        if text.is_empty() {
+            return;
+        }
+
+        let segments: Vec<String> = text
+            .split('.')
+            .filter(|seg| !seg.is_empty())
+            .map(|seg| seg.to_string())
+            .collect();
+        if segments.is_empty() {
+            return;
+        }
+
+        let per_segment_args = vec![Vec::new(); segments.len()];
+        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(
