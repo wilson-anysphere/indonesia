@@ -31,6 +31,9 @@ mod discovery;
 #[path = "cases/gradle_cache.rs"]
 mod gradle_cache;
 
+#[path = "cases/gradle_canonical_paths.rs"]
+mod gradle_canonical_paths;
+
 #[path = "cases/gradle_dependencies.rs"]
 mod gradle_dependencies;
 
