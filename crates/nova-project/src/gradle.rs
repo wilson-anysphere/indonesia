@@ -1744,7 +1744,9 @@ fn parse_gradle_dependencies_from_text(
         });
     }
 
-    // `implementation group: 'g', name: 'a', version: 'v'` and similar.
+    // `implementation group: 'g', name: 'a', version: 'v'` (Groovy map notation),
+    // `implementation(group = "g", name = "a", version = "v")` (Kotlin named args),
+    // and similar.
     //
     // We also handle the common case where `version` is omitted:
     //   implementation group: 'g', name: 'a'
@@ -2080,6 +2082,9 @@ dependencies {
     // Map notation with double quotes.
     testImplementation group: "org.example", name: "bar", version: "4.5.6"
 
+    // Kotlin named args (even in a Groovy file, this is just text for regex extraction).
+    implementation(group = "org.example", name = "baz", version = "7.8.9")
+
     // Map notation with trailing closure and parens (config covered by Task 72).
     annotationProcessor(group: 'com.google.auto.service', name: 'auto-service', version: '1.1.1') {
         // closure content shouldn't matter for extraction
@@ -2110,6 +2115,11 @@ dependencies {
             "org.example".to_string(),
             "bar".to_string(),
             Some("4.5.6".to_string())
+        )));
+        assert!(got.contains(&(
+            "org.example".to_string(),
+            "baz".to_string(),
+            Some("7.8.9".to_string())
         )));
         assert!(got.contains(&(
             "com.google.auto.service".to_string(),

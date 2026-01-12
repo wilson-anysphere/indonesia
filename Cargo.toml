@@ -122,7 +122,7 @@ lto = "thin"
 # debuginfo can produce multi-gigabyte test binaries and push the linker over the
 # 4G RLIMIT_AS budget enforced by `scripts/cargo_agent.sh`.
 #
-# Disable debuginfo in `test` profile to reduce link-time memory pressure.
+# Disable debuginfo in `test` profile to keep link-time memory pressure manageable.
 [profile.test]
 debug = 0
 # Keep debug/test builds under the default `scripts/cargo_agent.sh` RLIMIT_AS budget
