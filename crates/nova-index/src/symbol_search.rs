@@ -279,7 +279,7 @@ impl SymbolSearchIndex {
 
             let mut push_scored = |id: SymbolId, score: MatchScore| {
                 let sym = &self.symbols[id as usize].symbol;
-                scored.push(Reverse(CandidateKey {
+                let key = CandidateKey {
                     id,
                     score,
                     name: sym.name.as_str(),
@@ -288,9 +288,27 @@ impl SymbolSearchIndex {
                     location_line: sym.location.line,
                     location_column: sym.location.column,
                     ast_id: sym.ast_id,
-                }));
-                if scored.len() > limit {
-                    scored.pop();
+                };
+
+                if scored.len() < limit {
+                    scored.push(Reverse(key));
+                    return;
+                }
+
+                // The heap is a max-heap of `Reverse<CandidateKey>`, so the root is the
+                // worst candidate (smallest `CandidateKey`).
+                let Some(&Reverse(worst)) = scored.peek() else {
+                    // Should be unreachable, but keep the logic resilient.
+                    scored.push(Reverse(key));
+                    return;
+                };
+
+                if key > worst {
+                    // Replace the current worst candidate with this better one.
+                    let mut worst_mut = scored
+                        .peek_mut()
+                        .expect("peek_mut should succeed when peek succeeds");
+                    *worst_mut = Reverse(key);
                 }
             };
 
@@ -614,6 +632,141 @@ mod tests {
         }
     }
 
+    fn search_reference_select_nth(
+        index: &SymbolSearchIndex,
+        query: &str,
+        limit: usize,
+    ) -> (Vec<SearchResult>, SearchStats) {
+        let q_bytes = query.as_bytes();
+        if q_bytes.is_empty() {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy: CandidateStrategy::FullScan,
+                    candidates_considered: 0,
+                },
+            );
+        }
+
+        enum CandidateSource<'a> {
+            Ids(&'a [SymbolId]),
+            FullScan(usize),
+        }
+
+        let mut trigram_scratch = TrigramCandidateScratch::default();
+        let (strategy, candidates_considered, candidates): (
+            CandidateStrategy,
+            usize,
+            CandidateSource<'_>,
+        ) = if q_bytes.len() < 3 {
+            let key = q_bytes[0].to_ascii_lowercase();
+            let bucket = &index.prefix1[key as usize];
+            if !bucket.is_empty() {
+                (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+            } else {
+                let scan_limit = 50_000usize.min(index.symbols.len());
+                (
+                    CandidateStrategy::FullScan,
+                    scan_limit,
+                    CandidateSource::FullScan(scan_limit),
+                )
+            }
+        } else {
+            let trigram_candidates =
+                index
+                    .trigram
+                    .candidates_with_scratch(query, &mut trigram_scratch);
+            if trigram_candidates.is_empty() {
+                let key = q_bytes[0].to_ascii_lowercase();
+                let bucket = &index.prefix1[key as usize];
+                if !bucket.is_empty() {
+                    (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                } else {
+                    let scan_limit = 50_000usize.min(index.symbols.len());
+                    (
+                        CandidateStrategy::FullScan,
+                        scan_limit,
+                        CandidateSource::FullScan(scan_limit),
+                    )
+                }
+            } else {
+                (
+                    CandidateStrategy::Trigram,
+                    trigram_candidates.len(),
+                    CandidateSource::Ids(trigram_candidates),
+                )
+            }
+        };
+
+        if limit == 0 {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy,
+                    candidates_considered,
+                },
+            );
+        }
+
+        let mut matcher = FuzzyMatcher::new(query);
+        let mut scored: Vec<CandidateKey<'_>> = Vec::new();
+
+        let mut push_scored = |id: SymbolId, score: MatchScore| {
+            let sym = &index.symbols[id as usize].symbol;
+            scored.push(CandidateKey {
+                id,
+                score,
+                name: sym.name.as_str(),
+                qualified_name: sym.qualified_name.as_str(),
+                location_file: sym.location.file.as_str(),
+                location_line: sym.location.line,
+                location_column: sym.location.column,
+                ast_id: sym.ast_id,
+            });
+        };
+
+        match candidates {
+            CandidateSource::Ids(ids) => {
+                for &id in ids {
+                    if let Some(score) = index.score_candidate(id, &mut matcher) {
+                        push_scored(id, score);
+                    }
+                }
+            }
+            CandidateSource::FullScan(scan_limit) => {
+                for id in 0..scan_limit {
+                    let id = id as SymbolId;
+                    if let Some(score) = index.score_candidate(id, &mut matcher) {
+                        push_scored(id, score);
+                    }
+                }
+            }
+        }
+
+        if scored.len() > limit {
+            scored.select_nth_unstable_by(limit - 1, |a, b| b.cmp(a));
+            scored.truncate(limit);
+        }
+        scored.sort_by(|a, b| b.cmp(a));
+
+        let results: Vec<SearchResult> = scored
+            .into_iter()
+            .map(|res| SearchResult {
+                id: res.id,
+                symbol: index.symbols[res.id as usize].symbol.clone(),
+                score: res.score,
+            })
+            .collect();
+
+        (
+            results,
+            SearchStats {
+                strategy,
+                candidates_considered,
+            },
+        )
+    }
+
     #[test]
     fn qualified_name_equal_to_name_preserves_results() {
         let symbol = sym("FooBar", "FooBar");
@@ -770,6 +923,45 @@ mod tests {
         let limited_qualified: Vec<String> =
             limited.iter().map(|r| r.symbol.qualified_name.clone()).collect();
         assert_eq!(limited_qualified, expected_all[..5].to_vec());
+    }
+
+    #[test]
+    fn streaming_top_k_matches_select_nth_reference_for_many_prefix_matches() {
+        let count = 10_000usize;
+        let mut symbols = Vec::with_capacity(count);
+        for i in (0..count).rev() {
+            symbols.push(Symbol {
+                name: "Foo".into(),
+                qualified_name: format!("com.example.pkg{i:05}.Foo"),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "A.java".into(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
+            });
+        }
+
+        let index = SymbolSearchIndex::build(symbols);
+        let limit = 100;
+
+        let (streaming, streaming_stats) = index.search_with_stats("f", limit);
+        let (reference, reference_stats) = search_reference_select_nth(&index, "f", limit);
+
+        assert_eq!(streaming_stats.strategy, reference_stats.strategy);
+        assert_eq!(
+            streaming_stats.candidates_considered,
+            reference_stats.candidates_considered
+        );
+
+        let streaming_ids: Vec<SymbolId> = streaming.iter().map(|r| r.id).collect();
+        let reference_ids: Vec<SymbolId> = reference.iter().map(|r| r.id).collect();
+        assert_eq!(streaming_ids, reference_ids);
+
+        assert_eq!(streaming.len(), limit);
+        assert_eq!(streaming[0].symbol.qualified_name, "com.example.pkg00000.Foo");
     }
 
     #[test]

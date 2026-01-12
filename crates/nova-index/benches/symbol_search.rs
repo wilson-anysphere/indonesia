@@ -140,6 +140,17 @@ fn bench_symbol_search(c: &mut Criterion) {
             CandidateStrategy::Prefix,
             "expected \"hm\" to hit prefix bucket ({label})"
         );
+        let (_results, stats) = index.search_with_stats("m", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::Prefix,
+            "expected \"m\" to hit prefix bucket ({label})"
+        );
+        assert!(
+            stats.candidates_considered > 5_000,
+            "expected \"m\" to consider many candidates ({label}), got {}",
+            stats.candidates_considered
+        );
         let (_results, stats) = index.search_with_stats("map", LIMIT);
         assert_eq!(
             stats.strategy,
@@ -171,6 +182,10 @@ fn bench_symbol_search(c: &mut Criterion) {
     ] {
         group.bench_with_input(BenchmarkId::new("prefix_hm", label), index, |b, index| {
             b.iter(|| black_box(index.search_with_stats(black_box("hm"), black_box(LIMIT))))
+        });
+
+        group.bench_with_input(BenchmarkId::new("prefix_m_many", label), index, |b, index| {
+            b.iter(|| black_box(index.search_with_stats(black_box("m"), black_box(LIMIT))))
         });
 
         group.bench_with_input(BenchmarkId::new("trigram_map", label), index, |b, index| {
