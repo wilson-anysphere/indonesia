@@ -43,6 +43,15 @@ pub trait NovaResolve: NovaHir + HasQueryStats {
         scope: nova_resolve::ScopeId,
         name: Name,
     ) -> Option<nova_resolve::Resolution>;
+
+    /// Like [`NovaResolve::resolve_name`], but returns a detailed resolution result that preserves
+    /// unresolved and ambiguous outcomes.
+    fn resolve_name_detailed(
+        &self,
+        file: FileId,
+        scope: nova_resolve::ScopeId,
+        name: Name,
+    ) -> nova_resolve::NameResolution;
 }
 
 fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTreeScopeBuildResult> {
@@ -253,6 +262,68 @@ fn resolve_name(
     };
 
     db.record_query_stat("resolve_name", start.elapsed());
+    resolved
+}
+
+fn resolve_name_detailed(
+    db: &dyn NovaResolve,
+    file: FileId,
+    scope: nova_resolve::ScopeId,
+    name: Name,
+) -> nova_resolve::NameResolution {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!(
+        "query",
+        name = "resolve_name_detailed",
+        ?file,
+        scope,
+        name = %name
+    )
+    .entered();
+
+    cancel::check_cancelled(db);
+
+    let project = db.file_project(file);
+    let jdk = db.jdk_index(project);
+    let workspace = db.workspace_def_map(project);
+    let cfg = db.project_config(project);
+    let file_rel = db.file_rel_path(file);
+
+    let jpms_enabled = jpms_enabled(&cfg);
+
+    let resolved = if jpms_enabled {
+        let env = db.jpms_compilation_env(project);
+        if let Some(env) = env.as_deref() {
+            let from = module_for_file(&cfg, file_rel.as_str());
+            let index = JpmsProjectIndex {
+                workspace: &workspace,
+                graph: &env.env.graph,
+                classpath: &env.classpath,
+                jdk: &*jdk,
+                from,
+            };
+            let resolver = nova_resolve::Resolver::new(&index).with_workspace(&workspace);
+            let built = db.scope_graph(file);
+            resolver.resolve_name_detailed(&built.scopes, scope, &name)
+        } else {
+            nova_resolve::NameResolution::Unresolved
+        }
+    } else {
+        let classpath = db.classpath_index(project);
+        let index = WorkspaceFirstIndex {
+            workspace: &workspace,
+            classpath: classpath.as_deref(),
+        };
+        let resolver = nova_resolve::Resolver::new(&*jdk)
+            .with_classpath(&index)
+            .with_workspace(&workspace);
+        let built = db.scope_graph(file);
+        resolver.resolve_name_detailed(&built.scopes, scope, &name)
+    };
+
+    db.record_query_stat("resolve_name_detailed", start.elapsed());
     resolved
 }
 

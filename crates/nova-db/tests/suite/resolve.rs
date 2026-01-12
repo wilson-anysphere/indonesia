@@ -9,7 +9,7 @@ use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
 use nova_project::JpmsModuleRoot;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
-use nova_resolve::{Resolution, TypeResolution};
+use nova_resolve::{NameResolution, Resolution, TypeResolution};
 use tempfile::TempDir;
 
 fn executions(db: &SalsaRootDatabase, query_name: &str) -> u64 {
@@ -364,6 +364,7 @@ import b.Foo;
 class C {
     Foo field;
 }
+
 "#,
     );
     db.set_project_files(project, Arc::new(vec![a_file, b_file, c_file]));
@@ -376,6 +377,90 @@ class C {
 
     let scopes = db.scope_graph(c_file);
     let resolved = db.resolve_name(c_file, scopes.file_scope, Name::from("Foo"));
+    assert_eq!(resolved, None);
+}
+
+#[test]
+fn ambiguous_star_imports_are_reported_by_resolve_name_detailed() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/a/Foo.java",
+        r#"
+package a;
+public class Foo {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/b/Foo.java",
+        r#"
+package b;
+public class Foo {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/c/C.java",
+        r#"
+package c;
+import a.*;
+import b.*;
+
+class C {
+    Foo field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![a_file, b_file, use_file]));
+
+    let foo_a = db
+        .def_map(a_file)
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared in package a");
+    let foo_b = db
+        .def_map(b_file)
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared in package b");
+
+    let scopes = db.scope_graph(use_file);
+    let detailed = db.resolve_name_detailed(use_file, scopes.file_scope, Name::from("Foo"));
+    match detailed {
+        NameResolution::Ambiguous(candidates) => {
+            assert_eq!(candidates.len(), 2, "expected two candidates, got {candidates:?}");
+            assert!(
+                candidates.contains(&Resolution::Type(TypeResolution::Source(foo_a))),
+                "expected candidate from package a, got {candidates:?}"
+            );
+            assert!(
+                candidates.contains(&Resolution::Type(TypeResolution::Source(foo_b))),
+                "expected candidate from package b, got {candidates:?}"
+            );
+        }
+        other => panic!("expected NameResolution::Ambiguous, got {other:?}"),
+    }
+
+    // `resolve_name` remains backwards-compatible and collapses ambiguity to `None`.
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Foo"));
     assert_eq!(resolved, None);
 }
 
