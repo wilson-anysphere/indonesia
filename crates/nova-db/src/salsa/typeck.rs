@@ -3763,6 +3763,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let class_id = loader
                     .store
                     .class_id("java.lang.Class")
+                    .or_else(|| self.ensure_workspace_class(loader, "java.lang.Class"))
                     .or_else(|| loader.ensure_class("java.lang.Class"));
                 if let Some(class_id) = class_id {
                     let arg = if inner.is_reference() {
@@ -4252,7 +4253,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             other => {
                 self.ensure_type_loaded(loader, other);
 
-                let Some(iterable_def) = loader.ensure_class("java.lang.Iterable") else {
+                let Some(iterable_def) = self
+                    .ensure_workspace_class(loader, "java.lang.Iterable")
+                    .or_else(|| loader.ensure_class("java.lang.Iterable"))
+                else {
                     return Type::Unknown;
                 };
 
@@ -4375,7 +4379,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
         let class_id = match &class_ty {
             Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
-            Type::Named(name) => loader.ensure_class(name),
+            Type::Named(name) => self
+                .ensure_workspace_class(loader, name)
+                .or_else(|| loader.ensure_class(name)),
             _ => None,
         };
 
@@ -4737,7 +4743,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         .resolve_qualified_type_in_scope(self.scopes, self.scope_id, &q)
                     {
                         let binary_name = resolved.as_str().to_string();
-                        if let Some(id) = loader.ensure_class(&binary_name) {
+                        if let Some(id) = self
+                            .ensure_workspace_class(loader, &binary_name)
+                            .or_else(|| loader.ensure_class(&binary_name))
+                        {
                             return ExprInfo {
                                 ty: Type::class(id, vec![]),
                                 is_type_ref: true,
