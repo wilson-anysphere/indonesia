@@ -48,7 +48,7 @@ fn bench_index_build(c: &mut Criterion) {
     for fixture in fixtures {
         let stats = IndexingStats::default();
         let index = ClasspathIndex::build_with_deps_store(
-            &[fixture.entry.clone()],
+            std::slice::from_ref(&fixture.entry),
             None,
             None,
             Some(&stats),
@@ -84,10 +84,9 @@ fn bench_index_build(c: &mut Criterion) {
         group.throughput(Throughput::Elements(
             fixture.expected_classfiles_parsed as u64,
         ));
-        let entries = [fixture.entry.clone()];
         group.bench_with_input(
             BenchmarkId::from_parameter(fixture.id),
-            entries.as_slice(),
+            std::slice::from_ref(&fixture.entry),
             |b, entries| {
                 b.iter(|| {
                     black_box(

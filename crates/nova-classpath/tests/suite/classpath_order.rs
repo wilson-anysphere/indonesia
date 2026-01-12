@@ -195,7 +195,7 @@ fn indexes_multi_release_jar_with_target_release() {
 
     // Build with release 9 first to ensure the deps cache key is release-aware.
     let index_9 = ClasspathIndex::build_with_deps_store_and_options(
-        &[entry.clone()],
+        std::slice::from_ref(&entry),
         None,
         Some(&deps_store),
         None,
@@ -208,7 +208,7 @@ fn indexes_multi_release_jar_with_target_release() {
     assert_eq!(stub.interfaces, vec!["java.lang.Runnable".to_string()]);
 
     let index_8 = ClasspathIndex::build_with_deps_store_and_options(
-        &[entry.clone()],
+        std::slice::from_ref(&entry),
         None,
         Some(&deps_store),
         None,
@@ -221,7 +221,7 @@ fn indexes_multi_release_jar_with_target_release() {
     assert!(stub.interfaces.is_empty());
 
     let index_none = ClasspathIndex::build_with_deps_store_and_options(
-        &[entry],
+        std::slice::from_ref(&entry),
         None,
         Some(&deps_store),
         None,
@@ -259,7 +259,7 @@ fn indexes_exploded_multi_release_directory_with_target_release() {
 
     // Build with release 9 first to ensure the per-entry disk cache key is release-aware.
     let index_9 = ClasspathIndex::build_with_deps_store_and_options(
-        &[entry.clone()],
+        std::slice::from_ref(&entry),
         Some(&cache_dir),
         Some(&deps_store),
         None,
@@ -272,7 +272,7 @@ fn indexes_exploded_multi_release_directory_with_target_release() {
     assert_eq!(stub.interfaces, vec!["java.lang.Runnable".to_string()]);
 
     let index_8 = ClasspathIndex::build_with_deps_store_and_options(
-        &[entry.clone()],
+        std::slice::from_ref(&entry),
         Some(&cache_dir),
         Some(&deps_store),
         None,
@@ -285,7 +285,7 @@ fn indexes_exploded_multi_release_directory_with_target_release() {
     assert!(stub.interfaces.is_empty());
 
     let index_none = ClasspathIndex::build_with_deps_store_and_options(
-        &[entry],
+        std::slice::from_ref(&entry),
         Some(&cache_dir),
         Some(&deps_store),
         None,
