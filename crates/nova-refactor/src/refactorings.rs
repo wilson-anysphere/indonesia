@@ -2404,7 +2404,11 @@ pub fn inline_variable(
             .descendants_with_tokens()
             .filter_map(|el| el.into_token())
             .filter(|tok| !tok.kind().is_trivia())
-            .find(|tok| ranges_overlap(syntax_token_range(tok), usage.range))
+            .find(|tok| {
+                tok.kind().is_identifier_like()
+                    && tok.text() == def.name.as_str()
+                    && ranges_overlap(syntax_token_range(tok), usage.range)
+            })
         else {
             return Err(RefactorError::InlineNotSupported);
         };

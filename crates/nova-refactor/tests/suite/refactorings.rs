@@ -504,8 +504,8 @@ fn extract_variable_preserves_trailing_comment_when_selection_excludes_comment()
     let fixture = r#"class Foo {}
 
 class Test {
-  Foo m() {
-    return /*select*/new Foo()/*end*/ /*middle*/;
+  Foo m(Foo foo) {
+    return /*select*/foo/*end*/ /*middle*/;
   }
 }
 "#;
@@ -529,8 +529,8 @@ class Test {
     let expected = r#"class Foo {}
 
 class Test {
-  Foo m() {
-    Foo result = new Foo();
+  Foo m(Foo foo) {
+    Foo result = foo;
     return result /*middle*/;
   }
 }
@@ -2569,9 +2569,8 @@ fn extract_variable_rejects_when_other_side_effects_exist_outside_selection() {
     let (src, expr_range) = strip_selection_markers(
         r#"class Test {
   int foo() { return 1; }
-  int bar() { return 2; }
-  void m() {
-    int y = foo() + /*select*/bar()/*end*/;
+  void m(int x) {
+    int y = foo() + /*select*/x/*end*/;
   }
 }
 "#,
@@ -2605,11 +2604,11 @@ fn extract_variable_rejects_when_inc_dec_outside_selection() {
     let file = FileId::new("Test.java");
     let (src, expr_range) = strip_selection_markers(
         r#"class Test {
-  int foo() { return 1; }
   void m() {
     int[] arr = new int[1];
     int i = 0;
-    arr[i++] = /*select*/foo()/*end*/;
+    int x = 1;
+    arr[i++] = /*select*/x/*end*/;
   }
 }
 "#,
@@ -2665,6 +2664,7 @@ fn extract_variable_allows_when_only_side_effect_is_inside_selection() {
     .unwrap();
 
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+
     assert!(
         after.contains("int tmp = foo();"),
         "expected extracted declaration: {after}"

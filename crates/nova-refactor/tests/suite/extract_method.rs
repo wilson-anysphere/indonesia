@@ -3058,7 +3058,7 @@ class C {
         boom(e);
     }
 
-    private void boom(RuntimeException e) throws RuntimeException {
+    private void boom(java.lang.RuntimeException e) throws java.lang.RuntimeException {
         throw e;
     }
 }
