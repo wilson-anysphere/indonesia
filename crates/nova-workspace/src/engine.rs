@@ -2501,9 +2501,19 @@ impl WorkspaceEngine {
             return Vec::new();
         };
 
+        // When closed-file `file_content` is evicted under memory pressure, the Salsa input is
+        // replaced with an empty placeholder. In degraded-diagnostics mode we avoid eagerly
+        // restoring that input into Salsa (which would retain the allocation), but we still want
+        // best-effort syntax diagnostics for the current on-disk contents. Fall back to reading
+        // from the VFS for evicted files only.
+        let vfs_text = (text.is_empty() && self.closed_file_texts.is_evicted(file_id))
+            .then(|| self.vfs.read_to_string(file).ok())
+            .flatten();
+        let text = vfs_text.as_deref().unwrap_or(text.as_str());
+
         let mut diagnostics = Vec::new();
 
-        let parse = nova_syntax::parse(text.as_str());
+        let parse = nova_syntax::parse(text);
         diagnostics.extend(parse.errors.into_iter().map(|e| {
             NovaDiagnostic::error(
                 "SYNTAX",
@@ -2512,7 +2522,7 @@ impl WorkspaceEngine {
             )
         }));
 
-        let java_parse = nova_syntax::parse_java(text.as_str());
+        let java_parse = nova_syntax::parse_java(text);
         diagnostics.extend(java_parse.errors.into_iter().map(|e| {
             NovaDiagnostic::error(
                 "SYNTAX",
@@ -6546,6 +6556,66 @@ enabled = false
         assert!(
             !Arc::ptr_eq(&first, &third),
             "expected item_tree results to be recomputed for closed documents after memo eviction"
+        );
+    }
+
+    #[test]
+    fn syntax_diagnostics_only_falls_back_to_vfs_when_closed_file_content_evicted() {
+        use nova_memory::MemoryPressure;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/Main.java");
+        // Intentionally invalid Java to ensure the syntax-only diagnostics path emits errors.
+        fs::write(&file, "class Main { /* unterminated".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let vfs_path = VfsPath::local(file.clone());
+        let file_id = engine
+            .vfs()
+            .get_id(&vfs_path)
+            .expect("expected VFS id for Main.java");
+
+        // Ensure the file content is initially resident in Salsa.
+        let before = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert!(
+            !before.is_empty(),
+            "expected Main.java content to be loaded into Salsa before eviction"
+        );
+
+        // Evict closed-file texts by replacing the Salsa input with the empty placeholder.
+        engine.closed_file_texts.evict(EvictionRequest {
+            pressure: MemoryPressure::High,
+            target_bytes: 0,
+        });
+
+        let after = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert_eq!(
+            after.as_str(),
+            "",
+            "expected Main.java Salsa file_content to be evicted"
+        );
+        assert!(
+            engine.closed_file_texts.is_evicted(file_id),
+            "expected Main.java to be tracked as evicted"
+        );
+
+        // In degraded mode, we still want best-effort syntax diagnostics for the real on-disk
+        // contents without restoring the Salsa input eagerly.
+        let diagnostics = engine.syntax_diagnostics_only(&vfs_path, file_id);
+        assert!(
+            !diagnostics.is_empty(),
+            "expected syntax-only diagnostics to read from disk for evicted file content"
+        );
+
+        // The fallback should not restore the Salsa input.
+        let final_text = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert_eq!(
+            final_text.as_str(),
+            "",
+            "expected syntax-only diagnostics to avoid restoring evicted Salsa file_content"
         );
     }
 
