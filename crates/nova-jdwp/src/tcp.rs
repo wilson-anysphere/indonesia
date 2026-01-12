@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::{collections::BTreeSet, net::SocketAddr};
 use std::time::Duration;
 
 use crate::{
@@ -846,20 +847,61 @@ impl Default for TcpJdwpClient {
 
 impl JdwpClient for TcpJdwpClient {
     fn connect(&mut self, host: &str, port: u16) -> Result<(), JdwpError> {
-        let addr = (host, port)
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid JDWP address"))?;
+        let mut unique = BTreeSet::new();
+        for addr in (host, port).to_socket_addrs()? {
+            unique.insert(addr);
+        }
 
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
-        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        if unique.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid JDWP address").into());
+        }
 
-        Self::perform_handshake(&mut stream.try_clone()?)?;
+        // `SocketAddr` orders IPv4 before IPv6, so `localhost` prefers `127.0.0.1` over `::1`.
+        // Still try all candidates to avoid getting stuck on an address family the debuggee isn't
+        // listening on.
+        let addrs: Vec<SocketAddr> = unique.into_iter().collect();
 
-        self.stream = Some(stream);
-        self.id_sizes = self.id_sizes()?;
-        Ok(())
+        let mut last_err: Option<JdwpError> = None;
+        for addr in addrs {
+            let stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    last_err = Some(err.into());
+                    continue;
+                }
+            };
+
+            if let Err(err) = stream.set_read_timeout(Some(Duration::from_secs(3))) {
+                last_err = Some(err.into());
+                continue;
+            }
+            if let Err(err) = stream.set_write_timeout(Some(Duration::from_secs(3))) {
+                last_err = Some(err.into());
+                continue;
+            }
+
+            if let Err(err) = Self::perform_handshake(&mut stream.try_clone()?) {
+                last_err = Some(err);
+                continue;
+            }
+
+            self.stream = Some(stream);
+            match self.id_sizes() {
+                Ok(id_sizes) => {
+                    self.id_sizes = id_sizes;
+                    return Ok(());
+                }
+                Err(err) => {
+                    // Best-effort: try other resolved addresses before giving up.
+                    self.stream = None;
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid JDWP address").into()
+        }))
     }
 
     fn set_line_breakpoint(
@@ -1744,8 +1786,22 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::mock::MockJdwpServer;
     use std::net::TcpListener;
     use std::thread;
+
+    #[tokio::test]
+    async fn tcp_jdwp_client_connect_accepts_hostname_localhost() {
+        let jdwp = MockJdwpServer::spawn().await.unwrap();
+        let port = jdwp.addr().port();
+
+        tokio::task::spawn_blocking(move || {
+            let mut client = TcpJdwpClient::new();
+            client.connect("localhost", port).unwrap();
+        })
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn class_signature_conversion() {
