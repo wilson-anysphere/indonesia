@@ -617,15 +617,19 @@ class A {
     );
 
     let items = completions(&db, file, pos);
-    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
-    assert!(
-        labels.contains(&"true"),
-        "expected completion list to contain boolean literal `true`; got {labels:?}"
-    );
-    assert!(
-        labels.contains(&"false"),
-        "expected completion list to contain boolean literal `false`; got {labels:?}"
-    );
+    let true_item = items
+        .iter()
+        .find(|i| i.label == "true")
+        .expect("expected completion list to contain boolean literal `true`");
+    assert_eq!(true_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(true_item.detail.as_deref(), Some("boolean"));
+
+    let false_item = items
+        .iter()
+        .find(|i| i.label == "false")
+        .expect("expected completion list to contain boolean literal `false`");
+    assert_eq!(false_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(false_item.detail.as_deref(), Some("boolean"));
 }
 
 #[test]
@@ -641,15 +645,19 @@ class A {
     );
 
     let items = completions(&db, file, pos);
-    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
-    assert!(
-        labels.contains(&"\"\""),
-        "expected completion list to contain empty string literal; got {labels:?}"
-    );
-    assert!(
-        labels.contains(&"null"),
-        "expected completion list to contain `null`; got {labels:?}"
-    );
+    let string_item = items
+        .iter()
+        .find(|i| i.label == "\"\"")
+        .expect("expected completion list to contain empty string literal");
+    assert_eq!(string_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(string_item.detail.as_deref(), Some("String"));
+
+    let null_item = items
+        .iter()
+        .find(|i| i.label == "null")
+        .expect("expected completion list to contain `null`");
+    assert_eq!(null_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(null_item.detail.as_deref(), Some("String"));
 }
 
 #[test]
@@ -665,9 +673,167 @@ class A {
     );
 
     let items = completions(&db, file, pos);
-    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
-    assert!(
-        labels.contains(&"0"),
-        "expected completion list to contain numeric literal `0`; got {labels:?}"
+    let zero_item = items
+        .iter()
+        .find(|i| i.label == "0")
+        .expect("expected completion list to contain numeric literal `0`");
+    assert_eq!(zero_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(zero_item.detail.as_deref(), Some("int"));
+}
+
+#[test]
+fn completion_suggests_boolean_literals_for_boolean_return_expr() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  boolean m() {
+    return <|>;
+  }
+}
+"#,
     );
+
+    let items = completions(&db, file, pos);
+    let true_item = items
+        .iter()
+        .find(|i| i.label == "true")
+        .expect("expected completion list to contain boolean literal `true`");
+    assert_eq!(true_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(true_item.detail.as_deref(), Some("boolean"));
+
+    let false_item = items
+        .iter()
+        .find(|i| i.label == "false")
+        .expect("expected completion list to contain boolean literal `false`");
+    assert_eq!(false_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(false_item.detail.as_deref(), Some("boolean"));
+}
+
+#[test]
+fn completion_suggests_string_and_null_literals_for_string_return_expr() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  String m() {
+    return <|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let string_item = items
+        .iter()
+        .find(|i| i.label == "\"\"")
+        .expect("expected completion list to contain empty string literal");
+    assert_eq!(string_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(string_item.detail.as_deref(), Some("String"));
+
+    let null_item = items
+        .iter()
+        .find(|i| i.label == "null")
+        .expect("expected completion list to contain `null`");
+    assert_eq!(null_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(null_item.detail.as_deref(), Some("String"));
+}
+
+#[test]
+fn completion_suggests_zero_for_numeric_return_expr() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  int m() {
+    return <|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let zero_item = items
+        .iter()
+        .find(|i| i.label == "0")
+        .expect("expected completion list to contain numeric literal `0`");
+    assert_eq!(zero_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(zero_item.detail.as_deref(), Some("int"));
+}
+
+#[test]
+fn completion_suggests_boolean_literals_for_boolean_call_argument() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void foo(boolean b) {}
+  void m() {
+    foo(<|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let true_item = items
+        .iter()
+        .find(|i| i.label == "true")
+        .expect("expected completion list to contain boolean literal `true`");
+    assert_eq!(true_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(true_item.detail.as_deref(), Some("boolean"));
+
+    let false_item = items
+        .iter()
+        .find(|i| i.label == "false")
+        .expect("expected completion list to contain boolean literal `false`");
+    assert_eq!(false_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(false_item.detail.as_deref(), Some("boolean"));
+}
+
+#[test]
+fn completion_suggests_string_and_null_literals_for_string_call_argument() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void foo(String s) {}
+  void m() {
+    foo(<|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let string_item = items
+        .iter()
+        .find(|i| i.label == "\"\"")
+        .expect("expected completion list to contain empty string literal");
+    assert_eq!(string_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(string_item.detail.as_deref(), Some("String"));
+
+    let null_item = items
+        .iter()
+        .find(|i| i.label == "null")
+        .expect("expected completion list to contain `null`");
+    assert_eq!(null_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(null_item.detail.as_deref(), Some("String"));
+}
+
+#[test]
+fn completion_suggests_zero_for_numeric_call_argument() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void foo(int n) {}
+  void m() {
+    foo(<|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let zero_item = items
+        .iter()
+        .find(|i| i.label == "0")
+        .expect("expected completion list to contain numeric literal `0`");
+    assert_eq!(zero_item.kind, Some(CompletionItemKind::VALUE));
+    assert_eq!(zero_item.detail.as_deref(), Some("int"));
 }
