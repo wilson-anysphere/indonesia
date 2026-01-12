@@ -8331,9 +8331,6 @@ fn find_enclosing_call_with_arg_in_expr(
     }
 
     match &body.exprs[expr] {
-        HirExpr::Cast { expr: inner, .. } => {
-            find_enclosing_call_with_arg_in_expr(body, *inner, target, target_range, best);
-        }
         HirExpr::FieldAccess { receiver, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *receiver, target, target_range, best);
         }

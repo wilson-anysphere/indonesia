@@ -2443,4 +2443,26 @@ class A {
             "expected cached applicability to prevent repeated applies_to calls"
         );
     }
+
+    #[test]
+    fn type_mismatch_quick_fixes_return_empty_when_cancelled() {
+        let uri: lsp_types::Uri = "file:///test.java".parse().unwrap();
+        let diagnostics = vec![Diagnostic::error(
+            "type-mismatch",
+            "type mismatch: expected String, found int",
+            Some(Span::new(0, 1)),
+        )];
+        let selection = Span::new(0, 1);
+
+        let cancel = CancellationToken::new();
+        let actions = type_mismatch_quick_fixes(&cancel, "x", &uri, selection, &diagnostics);
+        assert!(
+            !actions.is_empty(),
+            "sanity check: expected quick fixes when not cancelled"
+        );
+
+        cancel.cancel();
+        let actions = type_mismatch_quick_fixes(&cancel, "x", &uri, selection, &diagnostics);
+        assert!(actions.is_empty());
+    }
 }
