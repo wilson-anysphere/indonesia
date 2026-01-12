@@ -4778,13 +4778,14 @@ fn collect_initializer_locals_and_params(
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
     fn node_has_side_effects(node: &nova_syntax::SyntaxNode) -> bool {
-        match node.kind() {
+        matches!(
+            node.kind(),
             SyntaxKind::MethodCallExpression
-            | SyntaxKind::NewExpression
-            | SyntaxKind::AssignmentExpression
-            | SyntaxKind::LambdaExpression => true,
-            _ => false,
-        }
+                | SyntaxKind::NewExpression
+                | SyntaxKind::ArrayCreationExpression
+                | SyntaxKind::AssignmentExpression
+                | SyntaxKind::LambdaExpression
+        )
     }
 
     if node_has_side_effects(expr) || expr.descendants().any(|node| node_has_side_effects(&node)) {

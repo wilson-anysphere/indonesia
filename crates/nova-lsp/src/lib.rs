@@ -574,6 +574,9 @@ pub fn diagnostics_with_extensions(
     cancel: CancellationToken,
     file: nova_db::FileId,
 ) -> Vec<lsp_types::Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     let db = extensions.db();
     let text = db.file_content(file);
     // Preserve the exact built-in diagnostic ordering returned by `nova_ide::file_diagnostics_lsp`

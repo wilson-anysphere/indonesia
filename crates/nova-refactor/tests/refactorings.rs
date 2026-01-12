@@ -6921,6 +6921,34 @@ fn inline_variable_rejects_lambda_capture_breakage() {
 }
 
 #[test]
+fn inline_variable_array_creation_initializer_is_side_effectful() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int[] a = new int[1];
+    System.out.println(a);
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int[] a").unwrap() + "int[] ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
+
+#[test]
 fn rename_local_variable_inside_array_access() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
@@ -8079,6 +8107,35 @@ fn inline_variable_rejects_shadowing_by_for_header_declaration() {
         ),
         "expected InlineShadowedDependency for `b`, got: {err:?}"
     );
+}
+
+#[test]
+fn inline_variable_use_in_array_index_is_not_supported() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1;
+    int[] arr = new int[2];
+    arr[a] = 0;
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
 }
 
 #[test]

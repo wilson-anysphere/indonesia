@@ -4209,6 +4209,9 @@ fn handle_code_action(
             nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
 
         // Explain error (diagnostic-driven).
+        //
+        // This action is read-only, so we continue to offer it even when the document matches
+        // `ai.privacy.excluded_paths`. When excluded, strip any file-backed context (code snippet).
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let uri = Some(params.text_document.uri.clone());
             let range = Some(to_ide_range(&diagnostic.range));
@@ -7192,16 +7195,16 @@ fn method_body_insertion_range(
 }
 
 fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String> {
-    // Only attempt to derive a `src/test/java/...` path when the source file is already in a
-    // conventional Maven/Gradle layout (`src/main/java`). For ad-hoc single-file projects, fall
-    // back to generating tests inline in the current file.
-    let has_main_java = source_path
+    // Only derive a `src/test/java/...` target when the source file lives under a conventional
+    // `src/main/java` tree. For ad-hoc single-file projects (e.g. `Test.java` in the workspace
+    // root), prefer inserting tests into the current file selection.
+    let in_src_main_java = source_path
         .components()
-        .map(|c| c.as_os_str().to_string_lossy())
+        .filter_map(|c| c.as_os_str().to_str())
         .collect::<Vec<_>>()
         .windows(3)
-        .any(|w| w[0].as_ref() == "src" && w[1].as_ref() == "main" && w[2].as_ref() == "java");
-    if !has_main_java {
+        .any(|window| window == ["src", "main", "java"]);
+    if !in_src_main_java {
         return None;
     }
 

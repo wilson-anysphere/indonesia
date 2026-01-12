@@ -982,7 +982,7 @@ mod tests {
         let available = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let default_size = available.clamp(2, 4);
+        let default_size = available.clamp(2, 8);
 
         match std::env::var(ENV_KEY) {
             Ok(raw) => match raw.parse::<usize>() {
