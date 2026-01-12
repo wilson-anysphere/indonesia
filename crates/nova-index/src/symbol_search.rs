@@ -95,6 +95,18 @@ impl PartialOrd for CandidateKey<'_> {
     }
 }
 
+#[inline]
+fn starts_with_case_insensitive(candidate: &[u8], query: &[u8]) -> bool {
+    if query.len() > candidate.len() {
+        return false;
+    }
+    candidate
+        .iter()
+        .zip(query.iter())
+        .take(query.len())
+        .all(|(&c, &q)| c.to_ascii_lowercase() == q.to_ascii_lowercase())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateStrategy {
     Prefix,
@@ -369,7 +381,7 @@ impl SymbolSearchIndex {
             match candidates {
                 CandidateSource::Ids(ids) => {
                     for &id in ids {
-                        if let Some(score) = self.score_candidate(id, &mut matcher) {
+                        if let Some(score) = self.score_candidate(id, q_bytes, &mut matcher) {
                             push_scored(id, score);
                         }
                     }
@@ -377,7 +389,7 @@ impl SymbolSearchIndex {
                 CandidateSource::FullScan(scan_limit) => {
                     for id in 0..scan_limit {
                         let id = id as SymbolId;
-                        if let Some(score) = self.score_candidate(id, &mut matcher) {
+                        if let Some(score) = self.score_candidate(id, q_bytes, &mut matcher) {
                             push_scored(id, score);
                         }
                     }
@@ -410,20 +422,40 @@ impl SymbolSearchIndex {
         self.search_with_stats(query, limit).0
     }
 
-    fn score_candidate(&self, id: SymbolId, matcher: &mut FuzzyMatcher) -> Option<MatchScore> {
+    fn score_candidate(
+        &self,
+        id: SymbolId,
+        q_bytes: &[u8],
+        matcher: &mut FuzzyMatcher,
+    ) -> Option<MatchScore> {
         let entry = &self.symbols[id as usize];
 
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
         if entry.qualified_name_differs {
             // A prefix match on `name` always beats a fuzzy match on
-            // `qualified_name`, and if `qualified_name` is longer than `name`,
-            // it also can't beat an equivalent prefix match. This avoids a
-            // second scoring pass for the common prefix-query case.
+            // `qualified_name`. For prefix matches we can also cheaply check
+            // whether `qualified_name` could produce a better *prefix* score
+            // (only possible when it is shorter and also a prefix match).
             if let Some(score) = best {
-                if score.kind == MatchKind::Prefix
-                    && entry.symbol.qualified_name.len() >= entry.symbol.name.len()
-                {
+                if score.kind == MatchKind::Prefix {
+                    if entry.symbol.qualified_name.len() >= entry.symbol.name.len() {
+                        return Some(score);
+                    }
+
+                    // qualified is shorter than name; only compute a prefix score if
+                    // it actually starts with the query.
+                    if starts_with_case_insensitive(entry.symbol.qualified_name.as_bytes(), q_bytes)
+                    {
+                        let qual_score = MatchScore {
+                            kind: MatchKind::Prefix,
+                            score: 1_000_000 - entry.symbol.qualified_name.len() as i32,
+                        };
+                        if qual_score.rank_key() > score.rank_key() {
+                            return Some(qual_score);
+                        }
+                    }
+
                     return Some(score);
                 }
             }
@@ -789,7 +821,7 @@ mod tests {
         match candidates {
             CandidateSource::Ids(ids) => {
                 for &id in ids {
-                    if let Some(score) = index.score_candidate(id, &mut matcher) {
+                    if let Some(score) = index.score_candidate(id, q_bytes, &mut matcher) {
                         push_scored(id, score);
                     }
                 }
@@ -797,7 +829,7 @@ mod tests {
             CandidateSource::FullScan(scan_limit) => {
                 for id in 0..scan_limit {
                     let id = id as SymbolId;
-                    if let Some(score) = index.score_candidate(id, &mut matcher) {
+                    if let Some(score) = index.score_candidate(id, q_bytes, &mut matcher) {
                         push_scored(id, score);
                     }
                 }
