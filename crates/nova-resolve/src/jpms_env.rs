@@ -168,13 +168,14 @@ pub fn build_jpms_compilation_environment_with_options(
     let mut env = build_jpms_environment(jdk, workspace, module_path_entries)?;
 
     // Some build tools keep non-modular JARs on the classpath even for JPMS
-    // compilation (e.g. Gradle `modularity.inferModulePath`). In practice they
-    // often apply `--add-reads <module>=ALL-UNNAMED` so that workspace modules can
-    // still access types from the classpath's unnamed module.
+    // compilation. In practice they often apply `--add-reads <module>=ALL-UNNAMED`
+    // so that workspace modules can still access types from the classpath's unnamed
+    // module.
     //
     // Nova's default JPMS model is strict (named modules do not read the unnamed
-    // module). We apply this best-effort behavior only when we're building a
-    // compilation environment for a workspace and a classpath is present.
+    // module). When building a compilation environment with classpath entries, we
+    // model the common `--add-reads <module>=ALL-UNNAMED` behavior by making every
+    // workspace module read the unnamed module.
     if let Some(workspace) = workspace {
         if !classpath_entries.is_empty() {
             for root in &workspace.jpms_modules {
