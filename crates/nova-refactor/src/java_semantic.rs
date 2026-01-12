@@ -4211,6 +4211,9 @@ fn record_qualified_receiver_member_references(
                 ReceiverKind::Super,
                 expr_to_qualified_name(super_expr.qualifier()?)?,
             )),
+            ast::Expression::ParenthesizedExpression(parenthesized) => {
+                qualified_receiver(parenthesized.expression()?)
+            }
             _ => None,
         }
     }
