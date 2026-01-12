@@ -910,6 +910,90 @@ fn preserves_cr_line_endings_for_full_ast_formatting() {
 }
 
 #[test]
+fn pretty_formats_package_and_import_comments() {
+    let input = r#"package  foo.bar; // pkg
+import java.util.List; // list
+// static group comment
+import static java.util.Collections.emptyList; // empty
+class Foo{}
+"#;
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+package foo.bar; // pkg
+
+import java.util.List; // list
+
+// static group comment
+import static java.util.Collections.emptyList; // empty
+
+class Foo {
+}
+"###
+    );
+}
+
+#[test]
+fn pretty_formats_module_declaration() {
+    let input = "module  foo.bar{requires  java.base;exports foo.bar.api  to  other.mod;}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+module foo.bar {
+    requires java.base;
+    exports foo.bar.api to other.mod;
+}
+"###
+    );
+}
+
+#[test]
+fn pretty_formats_top_level_types() {
+    let input = r#"class  Foo{}
+interface  Bar{}
+enum  Color{}
+record  Point( int x,int y){}
+public @interface  MyAnno{}
+"#;
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+}
+interface Bar {
+}
+enum Color {
+}
+record Point(int x, int y) {
+}
+public @interface MyAnno {
+}
+"###
+    );
+}
+
+#[test]
 fn pretty_formats_trivial_class_block() {
     let input = "class Foo{int x;}\n";
     let edits = edits_for_document_formatting_with_strategy(
@@ -1132,6 +1216,7 @@ fn pretty_preserves_trailing_line_comment_after_import() {
         formatted,
         @r###"
 import java.util.List; // c
+
 class Foo {
     int x;
 }

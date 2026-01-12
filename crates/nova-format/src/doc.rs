@@ -356,12 +356,14 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
                             }
                             LineKind::Soft => {}
                             LineKind::Hard => {
+                                trim_trailing_whitespace(&mut out);
                                 out.push_str(config.newline);
                                 push_spaces(&mut out, indent);
                                 pos = indent;
                             }
                         },
                         Mode::Break => {
+                            trim_trailing_whitespace(&mut out);
                             out.push_str(config.newline);
                             push_spaces(&mut out, indent);
                             pos = indent;
@@ -485,6 +487,12 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
 
 fn push_spaces(out: &mut String, count: usize) {
     out.extend(std::iter::repeat(' ').take(count));
+}
+
+fn trim_trailing_whitespace(out: &mut String) {
+    while matches!(out.as_bytes().last(), Some(b' ' | b'\t')) {
+        out.pop();
+    }
 }
 
 fn text_width(text: &str) -> usize {

@@ -65,41 +65,55 @@ impl<'a> JavaPrettyFormatter<'a> {
     }
 
     fn print_compilation_unit(&mut self, node: &SyntaxNode) -> Doc<'a> {
+        let children: Vec<SyntaxNode> = node.children().collect();
+
         let mut parts: Vec<Doc<'a>> = Vec::new();
-        for el in node.children_with_tokens() {
-            if let Some(child) = el.as_node() {
-                if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
-                    push_with_separator(&mut parts, self.print_type_declaration(ty));
-                } else {
-                    // Fallback nodes print verbatim source, including any nested comment tokens.
-                    // Consume those comments so they don't trip the drain assertion.
-                    push_with_separator(
-                        &mut parts,
-                        self.print_verbatim_node_with_boundary_comments(child),
-                    );
+        let mut pending_hardlines: usize = 0;
+
+        let mut idx = 0usize;
+        while idx < children.len() {
+            let child = &children[idx];
+            match child.kind() {
+                SyntaxKind::PackageDeclaration => {
+                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    parts.push(self.print_package_declaration(child));
+                    // Exactly one blank line after a package declaration.
+                    pending_hardlines = 2;
+                    idx += 1;
                 }
-                continue;
+                SyntaxKind::ImportDeclaration => {
+                    let start = idx;
+                    while idx < children.len()
+                        && children[idx].kind() == SyntaxKind::ImportDeclaration
+                    {
+                        idx += 1;
+                    }
+                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    parts.push(self.print_import_block(&children[start..idx]));
+                    if idx < children.len() {
+                        // Blank line between the imports section and the first declaration.
+                        pending_hardlines = 2;
+                    }
+                }
+                SyntaxKind::ModuleDeclaration => {
+                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    parts.push(self.print_module_declaration(child));
+                    pending_hardlines = 1;
+                    idx += 1;
+                }
+                _ => {
+                    flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                    if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
+                        parts.push(self.print_type_declaration(ty));
+                    } else {
+                        // Fallback nodes print verbatim source, including any nested comment tokens.
+                        // Consume those comments so they don't trip the drain assertion.
+                        parts.push(self.print_verbatim_node_with_boundary_comments(child));
+                    }
+                    pending_hardlines = 1;
+                    idx += 1;
+                }
             }
-
-            let Some(tok) = el.as_token() else {
-                continue;
-            };
-            if is_synthetic_missing(tok.kind()) || tok.kind() == SyntaxKind::Eof {
-                continue;
-            }
-            if tok.kind().is_trivia() {
-                // Trivia tokens (whitespace + comments) are printed via `CommentStore` anchors.
-                continue;
-            }
-
-            let key = TokenKey::from(tok);
-            let leading = self.comments.take_leading_doc(key, 0);
-            let trailing = self.comments.take_trailing_doc(key, 0);
-
-            push_with_separator(
-                &mut parts,
-                Doc::concat([leading, fallback::token(self.source, tok), trailing]),
-            );
         }
 
         // Comments at EOF are anchored to the EOF token.
@@ -110,13 +124,173 @@ impl<'a> JavaPrettyFormatter<'a> {
             .filter_map(|el| el.into_token())
             .find(|tok| tok.kind() == SyntaxKind::Eof);
         if let Some(eof) = eof {
-            push_with_separator(
-                &mut parts,
-                self.comments.take_leading_doc(TokenKey::from(&eof), 0),
-            );
+            let trailing = self.comments.take_leading_doc(TokenKey::from(&eof), 0);
+            if !trailing.is_nil() {
+                flush_pending_hardlines(&mut parts, &mut pending_hardlines);
+                parts.push(trailing);
+            }
         }
 
         Doc::concat(parts)
+    }
+
+    fn print_package_declaration(&mut self, node: &SyntaxNode) -> Doc<'a> {
+        let tokens = significant_tokens(node);
+        if tokens.is_empty() {
+            return self.print_verbatim_node_with_boundary_comments(node);
+        }
+        self.print_spaced_tokens(&tokens, 0)
+    }
+
+    fn print_import_block(&mut self, nodes: &[SyntaxNode]) -> Doc<'a> {
+        let mut parts: Vec<Doc<'a>> = Vec::new();
+        let mut last_static: Option<bool> = None;
+        let mut prev_end: Option<u32> = None;
+
+        for (idx, node) in nodes.iter().enumerate() {
+            let is_static = import_is_static(node);
+            if idx > 0 {
+                parts.push(Doc::hardline());
+
+                let mut needs_blank_line = false;
+                if let Some(prev_static) = last_static {
+                    if prev_static != is_static {
+                        needs_blank_line = true;
+                    }
+                }
+                if let Some(prev_end) = prev_end {
+                    let start = u32::from(node.text_range().start());
+                    if has_blank_line_between_offsets(self.source, prev_end, start) {
+                        needs_blank_line = true;
+                    }
+                }
+                if needs_blank_line {
+                    parts.push(Doc::hardline());
+                }
+            }
+
+            parts.push(self.print_import_declaration(node));
+            last_static = Some(is_static);
+            prev_end = Some(u32::from(node.text_range().end()));
+        }
+
+        Doc::concat(parts)
+    }
+
+    fn print_import_declaration(&mut self, node: &SyntaxNode) -> Doc<'a> {
+        let tokens = significant_tokens(node);
+        if tokens.is_empty() {
+            return self.print_verbatim_node_with_boundary_comments(node);
+        }
+        self.print_spaced_tokens(&tokens, 0)
+    }
+
+    fn print_module_declaration(&mut self, node: &SyntaxNode) -> Doc<'a> {
+        let Some(module) = ast::ModuleDeclaration::cast(node.clone()) else {
+            return self.print_verbatim_node_with_boundary_comments(node);
+        };
+        let Some(body) = module.body().map(|b| b.syntax().clone()) else {
+            return self.print_verbatim_node_with_boundary_comments(node);
+        };
+        let Some((l_brace, r_brace)) = find_braces(&body) else {
+            return self.print_verbatim_node_with_boundary_comments(node);
+        };
+
+        let header_end = u32::from(l_brace.text_range().start());
+        let header_tokens: Vec<SyntaxToken> = significant_tokens(node)
+            .into_iter()
+            .filter(|tok| u32::from(tok.text_range().start()) < header_end)
+            .collect();
+        let header = self.print_spaced_tokens(&header_tokens, 0);
+        let l_brace_doc = self.print_token_with_comments(&l_brace, 0);
+        let r_brace_doc = self.print_token_with_comments(&r_brace, 0);
+
+        let directives: Vec<SyntaxNode> = body
+            .children()
+            .filter(|n| n.kind() == SyntaxKind::ModuleDirective)
+            .collect();
+        let inner = self.print_module_directives(&directives);
+
+        Doc::concat([
+            header,
+            print::space(),
+            l_brace_doc,
+            match inner {
+                Some(inner) => Doc::concat([Doc::hardline(), inner]).indent(),
+                None => Doc::hardline(),
+            },
+            Doc::hardline(),
+            r_brace_doc,
+        ])
+    }
+
+    fn print_module_directives(&mut self, directives: &[SyntaxNode]) -> Option<Doc<'a>> {
+        if directives.is_empty() {
+            return None;
+        }
+
+        let mut parts: Vec<Doc<'a>> = Vec::new();
+        let mut prev_end: Option<u32> = None;
+
+        for (idx, directive) in directives.iter().enumerate() {
+            if idx > 0 {
+                parts.push(Doc::hardline());
+                if let Some(prev_end) = prev_end {
+                    let start = u32::from(directive.text_range().start());
+                    if has_blank_line_between_offsets(self.source, prev_end, start) {
+                        parts.push(Doc::hardline());
+                    }
+                }
+            }
+
+            let tokens = significant_tokens(directive);
+            if tokens.is_empty() {
+                parts.push(self.print_verbatim_node_with_boundary_comments(directive));
+            } else {
+                parts.push(self.print_spaced_tokens(&tokens, 0));
+            }
+            prev_end = Some(u32::from(directive.text_range().end()));
+        }
+
+        Some(Doc::concat(parts))
+    }
+
+    fn print_spaced_tokens(&mut self, tokens: &[SyntaxToken], indent: usize) -> Doc<'a> {
+        let mut parts: Vec<Doc<'a>> = Vec::new();
+        let mut last_sig: Option<LastSig<'a>> = None;
+
+        for token in tokens {
+            let key = TokenKey::from(token);
+            let leading = self.comments.take_leading_doc(key, indent);
+            if !leading.is_nil() {
+                parts.push(leading);
+                last_sig = None;
+            }
+
+            let text = token_text(self.source, token);
+            if needs_space_between(last_sig.as_ref(), token.kind(), text) {
+                parts.push(print::space());
+            }
+            parts.push(fallback::token(self.source, token));
+            last_sig = Some(LastSig {
+                kind: token.kind(),
+                text,
+            });
+
+            let trailing = self.comments.take_trailing_doc(key, indent);
+            if !trailing.is_nil() {
+                parts.push(trailing);
+            }
+        }
+
+        Doc::concat(parts)
+    }
+
+    fn print_token_with_comments(&mut self, token: &SyntaxToken, indent: usize) -> Doc<'a> {
+        let key = TokenKey::from(token);
+        let leading = self.comments.take_leading_doc(key, indent);
+        let trailing = self.comments.take_trailing_doc(key, indent);
+        Doc::concat([leading, fallback::token(self.source, token), trailing])
     }
 
     fn print_verbatim_node_with_boundary_comments(&mut self, node: &SyntaxNode) -> Doc<'a> {
@@ -207,14 +381,164 @@ fn boundary_significant_tokens(node: &SyntaxNode) -> Option<(SyntaxToken, Syntax
     Some((first, last))
 }
 
-fn push_with_separator<'a>(out: &mut Vec<Doc<'a>>, doc: Doc<'a>) {
-    if doc.is_nil() {
+fn flush_pending_hardlines<'a>(out: &mut Vec<Doc<'a>>, pending: &mut usize) {
+    if out.is_empty() {
+        *pending = 0;
         return;
     }
-    if !out.is_empty() {
+    for _ in 0..*pending {
         out.push(Doc::hardline());
     }
-    out.push(doc);
+    *pending = 0;
+}
+
+fn significant_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
+    node.descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|tok| tok.kind() != SyntaxKind::Eof)
+        .filter(|tok| !tok.kind().is_trivia())
+        .filter(|tok| !is_synthetic_missing(tok.kind()))
+        .collect()
+}
+
+fn token_text<'a>(source: &'a str, token: &SyntaxToken) -> &'a str {
+    let range = token.text_range();
+    let start = u32::from(range.start()) as usize;
+    let end = u32::from(range.end()) as usize;
+    source.get(start..end).unwrap_or("")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LastSig<'a> {
+    kind: SyntaxKind,
+    text: &'a str,
+}
+
+fn import_is_static(node: &SyntaxNode) -> bool {
+    node.descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+}
+
+fn find_braces(body: &SyntaxNode) -> Option<(SyntaxToken, SyntaxToken)> {
+    let mut l_brace = None;
+    let mut r_brace = None;
+
+    for el in body.children_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        if is_synthetic_missing(tok.kind()) {
+            continue;
+        }
+        match tok.kind() {
+            SyntaxKind::LBrace if l_brace.is_none() => l_brace = Some(tok),
+            SyntaxKind::RBrace => r_brace = Some(tok),
+            _ => {}
+        }
+    }
+
+    match (l_brace, r_brace) {
+        (Some(l), Some(r)) => Some((l, r)),
+        _ => None,
+    }
+}
+
+fn has_blank_line_between_offsets(source: &str, start: u32, end: u32) -> bool {
+    let len = source.len();
+    let mut start = start as usize;
+    let mut end = end as usize;
+    start = start.min(len);
+    end = end.min(len);
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+    let slice = source.get(start..end).unwrap_or("");
+    has_blank_line(slice)
+}
+
+fn has_blank_line(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => i += 1,
+            b'\r' => {
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'\n' {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+
+        let mut j = i;
+        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t') {
+            j += 1;
+        }
+        if j < bytes.len() && matches!(bytes[j], b'\n' | b'\r') {
+            return true;
+        }
+        i = j;
+    }
+
+    false
+}
+
+fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
+    if matches!(
+        kind,
+        SyntaxKind::StringLiteral
+            | SyntaxKind::CharLiteral
+            | SyntaxKind::TextBlock
+            | SyntaxKind::Number
+            | SyntaxKind::IntLiteral
+            | SyntaxKind::LongLiteral
+            | SyntaxKind::FloatLiteral
+            | SyntaxKind::DoubleLiteral
+    ) {
+        return true;
+    }
+    text.chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
+}
+
+fn is_control_keyword(text: &str) -> bool {
+    matches!(
+        text,
+        "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+    )
+}
+
+fn needs_space_between(last: Option<&LastSig<'_>>, next_kind: SyntaxKind, next_text: &str) -> bool {
+    let Some(last) = last else {
+        return false;
+    };
+
+    if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
+        return false;
+    }
+    if matches!(last.text, "(" | "[" | "." | "@" | "::") {
+        return false;
+    }
+    if next_text == "@" {
+        return true;
+    }
+    if is_control_keyword(last.text) && next_text == "(" {
+        return true;
+    }
+    if matches!(last.text, "," | "?") {
+        return true;
+    }
+
+    if last.text == "]" && is_word_token(next_kind, next_text) {
+        return true;
+    }
+    is_word_token(last.kind, last.text) && is_word_token(next_kind, next_text)
 }
 
 pub(crate) fn format_java_pretty(

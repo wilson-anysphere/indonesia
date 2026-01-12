@@ -92,6 +92,22 @@ impl<'a> JavaComments<'a> {
         self.fmt_trailing_comments(&ctx, token, &comments)
     }
 
+    /// Drain trailing comments attached to `token` but format them as *leading* comments.
+    ///
+    /// This is useful when a comment is lexically trailing (e.g. `{\n/*c*/ ...` or `{/*c*/ ...`)
+    /// but should be rendered at the start of the following line/block rather than as an inline
+    /// suffix of the preceding token.
+    #[must_use]
+    pub fn take_trailing_as_leading_doc(&mut self, token: TokenKey, indent: usize) -> Doc<'a> {
+        let comments = self.store.take_trailing(token);
+        if comments.is_empty() {
+            return Doc::nil();
+        }
+
+        let ctx = FmtCtx::new(indent);
+        self.fmt_leading_comments(&ctx, &comments, false)
+    }
+
     pub fn assert_drained(&self) {
         self.store.assert_drained();
     }

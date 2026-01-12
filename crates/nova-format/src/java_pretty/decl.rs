@@ -49,15 +49,6 @@ impl<'a> JavaPrettyFormatter<'a> {
             return self.print_verbatim_node_with_boundary_comments(decl);
         };
 
-        let first_sig = decl
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-            .find(|tok| {
-                tok.kind() != SyntaxKind::Eof
-                    && !tok.kind().is_trivia()
-                    && !is_synthetic_missing(tok.kind())
-            });
-
         let last_sig = decl
             .descendants_with_tokens()
             .filter_map(|el| el.into_token())
@@ -68,19 +59,15 @@ impl<'a> JavaPrettyFormatter<'a> {
             })
             .last();
 
-        let header_start = first_sig
-            .as_ref()
-            .map(|tok| u32::from(tok.text_range().start()))
-            .unwrap_or_else(|| u32::from(decl.text_range().start()));
         let header_end = u32::from(l_brace.text_range().start());
-        let header = self
-            .print_verbatim_tokens(decl, header_start, header_end, true)
-            .unwrap_or_else(|| fallback::byte_range(self.source, header_start, header_end));
-
-        let leading = first_sig
-            .as_ref()
-            .map(|tok| self.comments.take_leading_doc(TokenKey::from(tok), 0))
-            .unwrap_or_else(Doc::nil);
+        let header_tokens: Vec<_> = super::significant_tokens(decl)
+            .into_iter()
+            .filter(|tok| u32::from(tok.text_range().start()) < header_end)
+            .collect();
+        if header_tokens.is_empty() {
+            return self.print_verbatim_node_with_boundary_comments(decl);
+        }
+        let header = self.print_spaced_tokens(&header_tokens, 0);
 
         let body_doc = self.print_brace_body(&body, &l_brace, &r_brace);
         let trailer_start = u32::from(r_brace.text_range().end());
@@ -100,7 +87,7 @@ impl<'a> JavaPrettyFormatter<'a> {
             .map(|tok| self.comments.take_trailing_doc(TokenKey::from(tok), 0))
             .unwrap_or_else(Doc::nil);
 
-        Doc::concat([leading, header, print::space(), body_doc, trailer, trailing])
+        Doc::concat([header, print::space(), body_doc, trailer, trailing])
     }
 
     fn print_brace_body(
@@ -111,7 +98,44 @@ impl<'a> JavaPrettyFormatter<'a> {
     ) -> Doc<'a> {
         let inner_start = u32::from(l_brace.text_range().end());
         let inner_end = u32::from(r_brace.text_range().start());
-        let inner = self.print_verbatim_tokens(body, inner_start, inner_end, false);
+
+        let member_inner = match body.kind() {
+            SyntaxKind::ClassBody => ast::ClassBody::cast(body.clone())
+                .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
+                .and_then(|members| self.print_member_list(&members)),
+            SyntaxKind::InterfaceBody => ast::InterfaceBody::cast(body.clone())
+                .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
+                .and_then(|members| self.print_member_list(&members)),
+            SyntaxKind::RecordBody => ast::RecordBody::cast(body.clone())
+                .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
+                .and_then(|members| self.print_member_list(&members)),
+            SyntaxKind::AnnotationBody => ast::AnnotationBody::cast(body.clone())
+                .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
+                .and_then(|members| self.print_member_list(&members)),
+            // Enum bodies have additional punctuation (constants list + optional semicolon) which is
+            // not handled by the member-splitting logic yet.
+            _ => None,
+        };
+
+        // Inline comments immediately after `{` (e.g. `{/* c */int x;}`) are stored as trailing
+        // comments of the `{` token. When formatting a member list, we want those comments to be
+        // emitted at the start of the first member line instead.
+        let leading_from_l_brace = if member_inner.is_some() {
+            self.comments
+                .take_trailing_as_leading_doc(TokenKey::from(l_brace), 0)
+        } else {
+            Doc::nil()
+        };
+
+        let inner = member_inner
+            .or_else(|| self.print_verbatim_tokens(body, inner_start, inner_end, false))
+            .map(|inner| {
+                if leading_from_l_brace.is_nil() {
+                    inner
+                } else {
+                    Doc::concat([leading_from_l_brace, inner])
+                }
+            });
         if inner.is_none() {
             return Doc::concat([Doc::text("{"), Doc::hardline(), Doc::text("}")]);
         }
@@ -123,6 +147,54 @@ impl<'a> JavaPrettyFormatter<'a> {
             Doc::hardline(),
             Doc::text("}"),
         ])
+    }
+
+    fn print_member_list(&mut self, members: &[SyntaxNode]) -> Option<Doc<'a>> {
+        if members.is_empty() {
+            return None;
+        }
+
+        let mut parts: Vec<Doc<'a>> = Vec::new();
+        let mut prev_end: Option<u32> = None;
+
+        for (idx, member) in members.iter().enumerate() {
+            if idx > 0 {
+                parts.push(Doc::hardline());
+                if let Some(prev_end) = prev_end {
+                    let start = u32::from(member.text_range().start());
+                    if super::has_blank_line_between_offsets(self.source, prev_end, start) {
+                        parts.push(Doc::hardline());
+                    }
+                }
+            }
+
+            parts.push(self.print_member(member));
+            prev_end = Some(u32::from(member.text_range().end()));
+        }
+
+        Some(Doc::concat(parts))
+    }
+
+    fn print_member(&mut self, node: &SyntaxNode) -> Doc<'a> {
+        let Some((first, last)) = super::boundary_significant_tokens(node) else {
+            self.comments.consume_in_range(node.text_range());
+            return fallback::node(self.source, node);
+        };
+
+        let leading = self.comments.take_leading_doc(TokenKey::from(&first), 0);
+
+        let start = u32::from(first.text_range().start());
+        let end = u32::from(node.text_range().end());
+        let content = self
+            .print_verbatim_tokens(node, start, end, false)
+            .unwrap_or_else(|| fallback::node(self.source, node));
+
+        // Any comments printed verbatim from token slices must be marked consumed to avoid the
+        // comment drain assertion.
+        self.comments.consume_in_range(node.text_range());
+
+        let trailing = self.comments.take_trailing_doc(TokenKey::from(&last), 0);
+        Doc::concat([leading, content, trailing])
     }
 
     fn print_verbatim_tokens(
