@@ -270,6 +270,46 @@ class A {
 }
 
 #[test]
+fn completion_includes_chained_call_receiver_members_in_field_initializer() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo { Bar bar(){return null;} }
+class Bar { int x; }
+class A {
+  Bar b = new Foo().bar().<|>;
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"x"),
+        "expected completion list to contain Bar.x after bar() in field initializer; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_string_members_for_string_literal_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    "x-y".<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for string literal receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_if_snippet_template() {
     let (db, file, pos) = fixture(
         r#"

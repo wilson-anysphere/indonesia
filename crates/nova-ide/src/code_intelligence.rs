@@ -2364,7 +2364,11 @@ pub(crate) fn core_completions(
     }
 
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
-        let receiver = receiver_before_dot(text, ctx.dot_offset);
+        let receiver = ctx
+            .receiver
+            .as_ref()
+            .map(|r| r.expr.clone())
+            .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
         let mut items = if receiver.is_empty() {
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
                 .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
@@ -2372,11 +2376,11 @@ pub(crate) fn core_completions(
         } else {
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
         };
-        if let Some(receiver) = ctx.receiver {
+        if let Some(receiver) = ctx.receiver.as_ref() {
             items.extend(postfix_completions(
                 text,
                 &text_index,
-                &receiver,
+                receiver,
                 &prefix,
                 offset,
             ));
@@ -2731,7 +2735,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
-        let receiver = receiver_before_dot(text, ctx.dot_offset);
+        let receiver = ctx
+            .receiver
+            .as_ref()
+            .map(|r| r.expr.clone())
+            .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
         let mut items = if receiver.is_empty() {
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
                 .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
@@ -2739,11 +2747,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         } else {
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
         };
-        if let Some(receiver) = ctx.receiver {
+        if let Some(receiver) = ctx.receiver.as_ref() {
             items.extend(postfix_completions(
                 text,
                 &text_index,
-                &receiver,
+                receiver,
                 &prefix,
                 offset,
             ));
@@ -3958,9 +3966,16 @@ fn infer_receiver_type_before_dot(
         return infer_call_return_type(db, file, text, &analysis, call);
     }
 
+    // Fallback: calls outside method bodies (e.g. field initializers) won't be in `analysis.calls`.
+    // Try to scan the surrounding tokens to recover the call site.
+    if let Some(call) = scan_call_expr_ending_at(text, &analysis, end) {
+        return infer_call_return_type(db, file, text, &analysis, &call);
+    }
+
     // Otherwise, treat as a parenthesized expression like `(foo).<cursor>`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
-    let inner = text.get(open_paren + 1..end - 1)?.trim();
+    let (start, end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    let inner = text.get(start..end)?.trim();
     if inner.is_empty() {
         return None;
     }
@@ -4015,6 +4030,122 @@ fn find_matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usiz
         }
     }
     None
+}
+
+fn unwrap_paren_expr(bytes: &[u8], open_paren: usize, close_paren: usize) -> Option<(usize, usize)> {
+    if bytes.get(open_paren) != Some(&b'(') || bytes.get(close_paren) != Some(&b')') {
+        return None;
+    }
+
+    let mut start = open_paren + 1;
+    let mut end = close_paren;
+    loop {
+        while start < end && (bytes[start] as char).is_ascii_whitespace() {
+            start += 1;
+        }
+        while start < end && (bytes[end - 1] as char).is_ascii_whitespace() {
+            end -= 1;
+        }
+
+        if start < end && bytes.get(start) == Some(&b'(') && bytes.get(end - 1) == Some(&b')') {
+            // Only strip one level when the inner parentheses are a matching pair.
+            let inner_open = find_matching_open_paren(bytes, end - 1)?;
+            if inner_open == start {
+                start += 1;
+                end -= 1;
+                continue;
+            }
+        }
+        break;
+    }
+
+    Some((start, end))
+}
+
+fn scan_call_expr_ending_at(text: &str, analysis: &Analysis, close_paren_end: usize) -> Option<CallExpr> {
+    if close_paren_end == 0 || close_paren_end > text.len() {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    if bytes.get(close_paren_end - 1) != Some(&b')') {
+        return None;
+    }
+
+    let open_paren = find_matching_open_paren(bytes, close_paren_end - 1)?;
+    let open_paren_tok_idx = analysis
+        .tokens
+        .iter()
+        .position(|t| t.kind == TokenKind::Symbol('(') && t.span.start == open_paren)?;
+    let close_paren_tok_idx = analysis
+        .tokens
+        .iter()
+        .position(|t| t.kind == TokenKind::Symbol(')') && t.span.end == close_paren_end)?;
+    if close_paren_tok_idx <= open_paren_tok_idx {
+        return None;
+    }
+
+    let name_tok_idx = open_paren_tok_idx.checked_sub(1)?;
+    let name_tok = analysis.tokens.get(name_tok_idx)?;
+    if name_tok.kind != TokenKind::Ident {
+        return None;
+    }
+
+    let receiver = if name_tok_idx >= 2 {
+        let dot = analysis.tokens.get(name_tok_idx - 1)?;
+        if dot.kind == TokenKind::Symbol('.') {
+            let recv = analysis.tokens.get(name_tok_idx - 2)?;
+            if recv.kind == TokenKind::Ident || recv.kind == TokenKind::StringLiteral {
+                Some(recv.text.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut arg_starts = Vec::new();
+    let mut expecting_arg = true;
+    let mut paren_depth = 1i32;
+    for tok in analysis
+        .tokens
+        .iter()
+        .skip(open_paren_tok_idx + 1)
+        .take(close_paren_tok_idx.saturating_sub(open_paren_tok_idx + 1))
+    {
+        match tok.kind {
+            TokenKind::Symbol('(') => {
+                paren_depth += 1;
+                expecting_arg = true;
+            }
+            TokenKind::Symbol(')') => {
+                paren_depth -= 1;
+                if paren_depth == 0 {
+                    break;
+                }
+            }
+            TokenKind::Symbol(',') if paren_depth == 1 => {
+                expecting_arg = true;
+            }
+            _ => {
+                if paren_depth == 1 && expecting_arg {
+                    arg_starts.push(tok.span.start);
+                    expecting_arg = false;
+                }
+            }
+        }
+    }
+
+    Some(CallExpr {
+        receiver,
+        name: name_tok.text.clone(),
+        name_span: name_tok.span,
+        open_paren,
+        arg_starts,
+        close_paren: close_paren_end,
+    })
 }
 
 fn infer_call_return_type(
@@ -4188,9 +4319,20 @@ fn infer_receiver_type_of_expr_ending_at(
         }
     }
 
+    // Calls outside method bodies won't be in `analysis.calls`. Try scanning tokens.
+    if let Some(call) = scan_call_expr_ending_at(text, analysis, end) {
+        if is_constructor_call(analysis, &call) {
+            return Some(parse_source_type(types, call.name.as_str()));
+        }
+        if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
+            return Some(Type::Named(ty));
+        }
+    }
+
     // Parenthesized expression like `(foo)`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
-    let inner = text.get(open_paren + 1..end - 1)?.trim();
+    let (start, inner_end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    let inner = text.get(start..inner_end)?.trim();
     let (ty, _call_kind) = infer_receiver(types, analysis, file_ctx, inner, expr_end);
     match ty {
         Type::Unknown | Type::Error => None,
