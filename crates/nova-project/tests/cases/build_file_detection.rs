@@ -27,8 +27,6 @@ fn gradle_is_build_file_recognizes_expected_paths() {
     let positives = [
         "gradlew",
         "gradlew.bat",
-        "gradle.lockfile",
-        "gradle/dependency-locks/compileClasspath.lockfile",
         "gradle/wrapper/gradle-wrapper.properties",
         "gradle/wrapper/gradle-wrapper.jar",
         // Dependency locking can change resolved versions/classpaths without touching build scripts.
