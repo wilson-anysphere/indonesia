@@ -34,56 +34,65 @@ impl<'env> TyContext<'env> {
     /// Normalize a receiver type for member lookup (field/method resolution).
     ///
     /// Java allows member access on type variables; those accesses are resolved against the
-    /// type variable's first upper bound (or `Object` if no bound is specified).
+    /// type variable's upper bound(s) (or `Object` if no bound is specified).
     ///
     /// This helper also:
     /// - resolves `Type::Named` into `Type::Class` when possible
-    /// - collapses intersection types to their first component (best-effort)
+    /// - preserves intersection types (best-effort)
     /// - applies capture conversion for wildcard-containing parameterized types
     pub(crate) fn normalize_receiver_for_member_access(&mut self, receiver: &Type) -> Type {
         let object = Type::class(self.well_known().object, vec![]);
-        let mut current = receiver.clone();
 
-        // Follow through `Named` / type-variable bounds so downstream member lookup sees a class
-        // type whenever possible.
-        //
-        // Use a small recursion limit to avoid pathological cycles (`T extends T`) from causing
-        // infinite loops in malformed code.
-        for _ in 0..8 {
-            match &current {
-                Type::Named(name) => {
-                    if let Some(id) = self.lookup_class(name) {
-                        current = Type::class(id, vec![]);
-                        continue;
-                    }
-                }
+        fn normalize_inner(ctx: &mut TyContext<'_>, ty: Type, depth: u8, object: &Type) -> Type {
+            if depth == 0 {
+                return ty;
+            }
+
+            match ty {
+                Type::Named(name) => match ctx.lookup_class(&name) {
+                    Some(id) => normalize_inner(ctx, Type::class(id, vec![]), depth - 1, object),
+                    None => Type::Named(name),
+                },
                 Type::TypeVar(id) => {
-                    current = self
-                        .type_param(*id)
-                        .and_then(|tp| tp.upper_bounds.first())
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    continue;
+                    let bounds = ctx
+                        .type_param(id)
+                        .map(|tp| tp.upper_bounds.clone())
+                        .unwrap_or_default();
+                    let replacement = match bounds.len() {
+                        0 => object.clone(),
+                        1 => bounds[0].clone(),
+                        _ => Type::Intersection(bounds),
+                    };
+                    normalize_inner(ctx, replacement, depth - 1, object)
                 }
-                Type::Intersection(types) => {
-                    current = types.first().cloned().unwrap_or_else(|| object.clone());
-                    continue;
-                }
+                Type::Intersection(types) => Type::Intersection(
+                    types
+                        .into_iter()
+                        .map(|t| normalize_inner(ctx, t, depth - 1, object))
+                        .collect(),
+                ),
                 Type::Wildcard(bound) => {
-                    current = match bound {
+                    let replacement = match bound {
                         WildcardBound::Unbounded => object.clone(),
-                        WildcardBound::Extends(upper) => (**upper).clone(),
-                        // `? super T` has upper bound `Object` for member access.
+                        WildcardBound::Extends(upper) => *upper,
                         WildcardBound::Super(_) => object.clone(),
                     };
-                    continue;
+                    normalize_inner(ctx, replacement, depth - 1, object)
                 }
-                _ => break,
+                other => other,
             }
-            break;
         }
 
-        self.capture_conversion(&current)
+        let normalized = normalize_inner(self, receiver.clone(), 8, &object);
+        match normalized {
+            Type::Intersection(types) => Type::Intersection(
+                types
+                    .into_iter()
+                    .map(|t| self.capture_conversion(&t))
+                    .collect(),
+            ),
+            other => self.capture_conversion(&other),
+        }
     }
 
     /// Clear all context-local allocations.

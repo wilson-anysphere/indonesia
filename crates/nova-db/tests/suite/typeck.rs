@@ -1899,7 +1899,8 @@ fn static_import_resolves_workspace_members_across_files() {
     let util_file = FileId::from_raw(1);
     let use_file = FileId::from_raw(2);
 
-    let src_util = r#"package p; class Util { static int F = 1; static int foo(int x) { return x; } }"#;
+    let src_util =
+        r#"package p; class Util { static int F = 1; static int foo(int x) { return x; } }"#;
     let src_use = r#"package p; import static p.Util.*; class Use { int m() { return foo(F); } }"#;
 
     set_file(&mut db, project, util_file, "src/p/Util.java", src_util);
@@ -2805,6 +2806,32 @@ class Foo {
         .find("substring")
         .expect("snippet should contain substring call")
         + "substring".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn intersection_type_param_bounds_allow_member_calls_from_any_bound() {
+    let src = r#"
+interface I { void a(); }
+interface J { String b(); }
+class C {
+    <T extends I & J> String m(T t) {
+        return t.b();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected intersection-bounded receiver to resolve methods from any bound; got {diags:?}"
+    );
+
+    let offset = src.find("t.b()").expect("snippet should contain call") + "t.b".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");

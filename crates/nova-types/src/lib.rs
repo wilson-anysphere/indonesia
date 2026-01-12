@@ -2753,15 +2753,29 @@ pub fn resolve_field(
         }
     }
 
-    let start = match receiver {
-        Type::Class(_) => receiver,
-        Type::Array(_) => Type::class(env.well_known().object, vec![]),
-        _ => return None,
-    };
-
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
-    queue.push_back(start);
+    match receiver {
+        Type::Intersection(types) => {
+            for ty in types {
+                match ty {
+                    Type::Class(_) => queue.push_back(ty),
+                    Type::Array(_) => queue.push_back(Type::class(env.well_known().object, vec![])),
+                    Type::Named(n) => {
+                        if let Some(id) = env.lookup_class(&n) {
+                            queue.push_back(Type::class(id, vec![]));
+                        } else {
+                            queue.push_back(Type::Named(n));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Type::Class(_) => queue.push_back(receiver),
+        Type::Array(_) => queue.push_back(Type::class(env.well_known().object, vec![])),
+        _ => return None,
+    }
 
     while let Some(current) = queue.pop_front() {
         let Type::Class(ClassType { def, args }) = current.clone() else {
@@ -3173,15 +3187,29 @@ fn collect_method_candidates(
     let mut out = Vec::new();
     let mut seen_sigs: HashSet<(bool, Vec<Type>)> = HashSet::new();
 
-    let start = match receiver {
-        Type::Class(_) => receiver.clone(),
-        Type::Array(_) => Type::class(env.well_known().object, vec![]),
-        _ => return out,
-    };
-
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
-    queue.push_back(start);
+    fn push_receiver_for_lookup(env: &dyn TypeEnv, queue: &mut VecDeque<Type>, ty: &Type) {
+        match ty {
+            Type::Intersection(types) => {
+                for t in types {
+                    push_receiver_for_lookup(env, queue, t);
+                }
+            }
+            Type::Class(_) => queue.push_back(ty.clone()),
+            Type::Array(_) => queue.push_back(Type::class(env.well_known().object, vec![])),
+            Type::Named(n) => {
+                if let Some(id) = env.lookup_class(n) {
+                    queue.push_back(Type::class(id, vec![]));
+                }
+            }
+            _ => {}
+        }
+    }
+    push_receiver_for_lookup(env, &mut queue, receiver);
+    if queue.is_empty() {
+        return out;
+    }
 
     while let Some(current) = queue.pop_front() {
         let Type::Class(ClassType { def, args }) = current.clone() else {
@@ -3693,8 +3721,7 @@ fn collect_arg_constraints(
                         return;
                     }
 
-                    let Some(mapped_args) =
-                        instantiate_as(env, *a_def, a_args.clone(), *p_def)
+                    let Some(mapped_args) = instantiate_as(env, *a_def, a_args.clone(), *p_def)
                     else {
                         return;
                     };
@@ -3847,8 +3874,7 @@ fn collect_return_constraints(
                         return;
                     }
 
-                    let Some(mapped_args) =
-                        instantiate_as(env, *r_def, r_args.clone(), *e_def)
+                    let Some(mapped_args) = instantiate_as(env, *r_def, r_args.clone(), *e_def)
                     else {
                         return;
                     };
