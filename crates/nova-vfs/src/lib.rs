@@ -3,6 +3,7 @@
 //! The VFS is responsible for:
 //! - Reading files from the OS file system.
 //! - Providing in-memory overlays (editor buffers) that take precedence over disk.
+//! - Serving synthesized virtual documents (e.g. `nova:///decompiled/...`) from a bounded in-memory store.
 //! - Stable `FileId` allocation and reverse mapping for diagnostics/LSP.
 //! - Representing file change events and a pluggable watcher interface.
 
