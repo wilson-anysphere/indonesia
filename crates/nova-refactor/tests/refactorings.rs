@@ -1809,6 +1809,7 @@ fn extract_variable_rejects_for_condition() {
             expr_range,
             name: "cond".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1841,6 +1842,7 @@ fn extract_variable_still_works_inside_for_body() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
