@@ -434,11 +434,6 @@ fn join_io_threads_with_timeout(io_threads: lsp_server::IoThreads, timeout: Dura
     }
 }
 
-const EXTENSIONS_STATUS_METHOD: &str = "nova/extensions/status";
-const EXTENSIONS_STATUS_SCHEMA_VERSION: u32 = 1;
-const EXTENSIONS_NAVIGATION_METHOD: &str = "nova/extensions/navigation";
-const EXTENSIONS_NAVIGATION_SCHEMA_VERSION: u32 = 1;
-
 fn initialize_result_json() -> serde_json::Value {
     let mut nova_requests = vec![
         // Testing
@@ -484,8 +479,8 @@ fn initialize_result_json() -> serde_json::Value {
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
         nova_lsp::AI_GENERATE_TESTS_METHOD,
         // Extensions
-        EXTENSIONS_STATUS_METHOD,
-        EXTENSIONS_NAVIGATION_METHOD,
+        nova_lsp::EXTENSIONS_STATUS_METHOD,
+        nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
     ];
 
     #[cfg(feature = "ai")]
@@ -1418,9 +1413,10 @@ fn handle_request_json(
                 }
             })
         }
-        EXTENSIONS_STATUS_METHOD => {
+        nova_lsp::EXTENSIONS_STATUS_METHOD => {
             nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(EXTENSIONS_STATUS_METHOD) {
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::EXTENSIONS_STATUS_METHOD)
+            {
                 let (code, message) = match err {
                     nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
                     nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
@@ -1432,15 +1428,51 @@ fn handle_request_json(
                 }));
             }
 
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct ExtensionsStatusParams {
+                #[serde(default)]
+                schema_version: Option<u32>,
+            }
+
+            // Allow `params` to be `null` or omitted.
+            let params: Option<ExtensionsStatusParams> = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+            if let Some(version) = params.and_then(|p| p.schema_version) {
+                if version != nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32602,
+                            "message": format!(
+                                "unsupported schemaVersion {version} (expected {})",
+                                nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION
+                            )
+                        }
+                    }));
+                }
+            }
+
             Ok(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": extensions_status_json(state),
             }))
         }
-        EXTENSIONS_NAVIGATION_METHOD => {
+        nova_lsp::EXTENSIONS_NAVIGATION_METHOD => {
             nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(EXTENSIONS_NAVIGATION_METHOD) {
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::EXTENSIONS_NAVIGATION_METHOD)
+            {
                 let (code, message) = match err {
                     nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
                     nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
@@ -2101,7 +2133,7 @@ fn extensions_status_json(state: &ServerState) -> serde_json::Value {
     let stats = state.extensions_registry.stats();
 
     json!({
-        "schemaVersion": EXTENSIONS_STATUS_SCHEMA_VERSION,
+        "schemaVersion": nova_lsp::EXTENSIONS_STATUS_SCHEMA_VERSION,
         "enabled": state.config.extensions.enabled,
         "wasmPaths": state.config.extensions.wasm_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "allow": state.config.extensions.allow.clone(),
@@ -2135,9 +2167,10 @@ fn handle_extensions_navigation(
     let params: ExtensionsNavigationParams =
         serde_json::from_value(params).map_err(|e| e.to_string())?;
     if let Some(version) = params.schema_version {
-        if version != EXTENSIONS_NAVIGATION_SCHEMA_VERSION {
+        if version != nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION {
             return Err(format!(
-                "unsupported schemaVersion {version} (expected {EXTENSIONS_NAVIGATION_SCHEMA_VERSION})"
+                "unsupported schemaVersion {version} (expected {})",
+                nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION
             ));
         }
     }
@@ -2145,7 +2178,7 @@ fn handle_extensions_navigation(
     let uri = params.text_document.uri;
     let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!({ "schemaVersion": EXTENSIONS_NAVIGATION_SCHEMA_VERSION, "targets": [] }));
+        return Ok(json!({ "schemaVersion": nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION, "targets": [] }));
     }
 
     let text = state.analysis.file_content(file_id).to_string();
@@ -2184,7 +2217,7 @@ fn handle_extensions_navigation(
         .collect::<Vec<_>>();
 
     Ok(json!({
-        "schemaVersion": EXTENSIONS_NAVIGATION_SCHEMA_VERSION,
+        "schemaVersion": nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION,
         "targets": targets,
     }))
 }

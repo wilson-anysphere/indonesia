@@ -220,6 +220,170 @@ fn stdio_server_handles_safe_mode_status_request() {
 }
 
 #[test]
+fn stdio_server_handles_extensions_status_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // extensions/status
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": nova_lsp::EXTENSIONS_STATUS_METHOD,
+            "params": { "schemaVersion": 1 }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(
+        result.get("schemaVersion").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert!(
+        result.get("enabled").and_then(|v| v.as_bool()).is_some(),
+        "expected result.enabled boolean, got: {result:#}"
+    );
+    assert!(
+        result
+            .get("loadedExtensions")
+            .and_then(|v| v.as_array())
+            .is_some(),
+        "expected result.loadedExtensions array, got: {result:#}"
+    );
+    assert!(
+        result
+            .get("stats")
+            .and_then(|v| v.as_object())
+            .and_then(|o| o.get("navigation"))
+            .is_some(),
+        "expected result.stats.navigation, got: {result:#}"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_handles_extensions_navigation_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let uri = "file:///test/Foo.java";
+    let text = "class Foo {}\n";
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // extensions/navigation
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": nova_lsp::EXTENSIONS_NAVIGATION_METHOD,
+            "params": {
+                "schemaVersion": 1,
+                "textDocument": { "uri": uri }
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    assert_eq!(
+        result.get("schemaVersion").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert!(
+        result.get("targets").and_then(|v| v.as_array()).is_some(),
+        "expected result.targets array, got: {result:#}"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_handles_test_discover_request() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/maven-junit5");

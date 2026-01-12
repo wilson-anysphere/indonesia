@@ -144,6 +144,8 @@ pub const METRICS_METHOD: &str = "nova/metrics";
 pub const RESET_METRICS_METHOD: &str = "nova/resetMetrics";
 pub const SAFE_MODE_STATUS_METHOD: &str = "nova/safeModeStatus";
 pub const SAFE_MODE_CHANGED_NOTIFICATION: &str = "nova/safeModeChanged";
+pub const EXTENSIONS_STATUS_METHOD: &str = "nova/extensions/status";
+pub const EXTENSIONS_NAVIGATION_METHOD: &str = "nova/extensions/navigation";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryStatusResponse {
@@ -153,6 +155,8 @@ pub struct MemoryStatusResponse {
 }
 
 pub const SAFE_MODE_STATUS_SCHEMA_VERSION: u32 = 1;
+pub const EXTENSIONS_STATUS_SCHEMA_VERSION: u32 = 1;
+pub const EXTENSIONS_NAVIGATION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

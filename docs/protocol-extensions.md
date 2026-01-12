@@ -1221,6 +1221,142 @@ Same object as the `nova/safeModeStatus` response.
 
 ---
 
+## Extension system endpoints (`nova-ext`)
+
+### `nova/extensions/status`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+This endpoint returns the current extension system configuration + runtime status: which extension
+bundles were loaded, any load/register errors, and per-provider runtime stats.
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+Optional schema gating:
+
+```json
+{ "schemaVersion": 1 }
+```
+
+When `schemaVersion` is present, it must be `1`.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "wasmPaths": ["/absolute/path/to/extensions"],
+  "allow": null,
+  "deny": [],
+  "loadedExtensions": [],
+  "loadErrors": [],
+  "registerErrors": [],
+  "stats": {
+    "diagnostic": {},
+    "completion": {},
+    "codeAction": {},
+    "navigation": {},
+    "inlayHint": {}
+  }
+}
+```
+
+`loadedExtensions` entries:
+
+```json
+{
+  "id": "com.example.my-extension",
+  "version": "1.2.3",
+  "dir": "/absolute/path/to/extension",
+  "name": "My extension",
+  "description": "optional",
+  "authors": ["optional"],
+  "homepage": "optional",
+  "license": "optional",
+  "abiVersion": 1,
+  "capabilities": ["completion", "navigation"]
+}
+```
+
+`stats.*` values are objects keyed by provider id, with values like:
+
+```json
+{
+  "callsTotal": 0,
+  "timeoutsTotal": 0,
+  "panicsTotal": 0,
+  "invalidResponsesTotal": 0,
+  "skippedTotal": 0,
+  "circuitOpenedTotal": 0,
+  "consecutiveFailures": 0,
+  "circuitOpen": false,
+  "lastError": null,
+  "lastDurationMs": null
+}
+```
+
+#### Safe-mode
+
+This request is guarded by `nova_lsp::hardening::guard_method()` and fails with `-32603` while the
+server is in safe-mode.
+
+---
+
+### `nova/extensions/navigation`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+This endpoint invokes any registered extension navigation providers for a single document and
+returns a list of navigation targets (usually within the same file).
+
+#### Request params
+
+```json
+{
+  "schemaVersion": 1,
+  "textDocument": { "uri": "file:///absolute/path/to/Foo.java" }
+}
+```
+
+- `schemaVersion` is optional; when present, it must be `1`.
+- `textDocument.uri` is required.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "label": "My navigation target",
+      "uri": "file:///absolute/path/to/Foo.java",
+      "fileId": 1,
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } },
+      "span": { "start": 0, "end": 10 }
+    }
+  ]
+}
+```
+
+Notes:
+
+- `targets` may be empty.
+- `range` follows standard LSP conventions (0-based line and UTF-16 `character` offsets) and may be
+  `null` when the target does not include a span.
+- `span` is a UTF-8 byte-offset range `{start,end}` into the document text and may be `null`.
+
+#### Safe-mode
+
+This request is guarded by `nova_lsp::hardening::guard_method()` and fails with `-32603` while the
+server is in safe-mode.
+
 ## Experimental / client-specific methods
 
 ### `nova/completion/more`
