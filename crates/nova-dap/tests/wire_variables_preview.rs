@@ -79,6 +79,12 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
+    let initialized = read_event(&mut reader, "initialized").await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
     send_request(
         &mut writer,
         2,
@@ -94,17 +100,6 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
-
-    let initialized = read_event(&mut reader, "initialized").await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
