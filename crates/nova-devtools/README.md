@@ -66,7 +66,7 @@ cargo run -p nova-devtools -- check-protocol-extensions
 Emits a DOT/GraphViz dependency graph annotated by layer.
 
 Forbidden edges (per `crate-layers.toml`) are rendered in red and labeled as “(violation)” to make
-review discussions concrete.
+review discussions concrete. Nodes are also clustered by layer to improve readability.
 
 ```
 cargo run -p nova-devtools -- graph-deps --output target/nova-deps.dot
@@ -106,6 +106,7 @@ cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 cargo run -p nova-devtools -- check-deps --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
+cargo run -p nova-devtools -- check-protocol-extensions
 ```
 
 For convenience, you can also run:
