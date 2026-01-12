@@ -257,15 +257,11 @@ fn validate_one(ext: &nova_ext::LoadedExtension) -> Result<()> {
     use nova_ext::wasm::{WasmCapabilities, WasmPlugin, WasmPluginConfig};
     use nova_ext::ExtensionCapability;
 
-    let plugin = WasmPlugin::from_wasm_bytes(ext.id(), ext.entry_bytes(), WasmPluginConfig::default())
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "extension {} at {}: {}",
-                ext.id(),
-                ext.dir().display(),
-                err
-            )
-        })?;
+    let plugin =
+        WasmPlugin::from_wasm_bytes(ext.id(), ext.entry_bytes(), WasmPluginConfig::default())
+            .map_err(|err| {
+                anyhow::anyhow!("extension {} at {}: {}", ext.id(), ext.dir().display(), err)
+            })?;
 
     let caps = plugin.capabilities();
     for cap in &ext.manifest().capabilities {

@@ -86,4 +86,3 @@ fn line_index_early_cutoff_reuses_downstream_queries_when_newlines_unchanged() {
         "downstream query should be reused due to early-cutoff"
     );
 }
-

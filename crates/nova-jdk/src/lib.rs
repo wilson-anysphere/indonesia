@@ -284,7 +284,9 @@ impl JdkIndex {
 
     /// Module graph for the underlying JDK, if this index is backed by JMODs.
     pub fn module_graph(&self) -> Option<&ModuleGraph> {
-        self.symbols.as_ref().and_then(|symbols| symbols.module_graph())
+        self.symbols
+            .as_ref()
+            .and_then(|symbols| symbols.module_graph())
     }
 
     /// Retrieve the parsed JPMS module descriptor for `name` (JMOD-backed only).

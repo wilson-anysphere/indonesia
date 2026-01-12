@@ -97,4 +97,3 @@ async fn cached_index_notification_for_wrong_shard_disconnects_worker() -> Resul
     router.shutdown().await?;
     Ok(())
 }
-

@@ -25,8 +25,19 @@ pub const SYNTAX_SCHEMA_VERSION: u32 = 2;
 /// schema version must be bumped so persisted data is not interpreted with the
 /// wrong discriminants.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize_repr, Deserialize_repr,
-    rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize_repr,
+    Deserialize_repr,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
 #[archive(check_bytes)]
 #[repr(u16)]

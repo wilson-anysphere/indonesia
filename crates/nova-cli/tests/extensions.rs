@@ -72,7 +72,10 @@ capabilities = ["diagnostics"]
     );
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["extensions"][0]["id"].as_str().unwrap(), "example.good");
+    assert_eq!(
+        json["extensions"][0]["id"].as_str().unwrap(),
+        "example.good"
+    );
     assert!(json["errors"].as_array().unwrap().is_empty(), "{json:#}");
 }
 
@@ -124,7 +127,10 @@ capabilities = ["diagnostics"]
 "#
         );
         let wasm_bytes = wat::parse_str(&wat).unwrap();
-        ext_dir.child("plugin.wasm").write_binary(&wasm_bytes).unwrap();
+        ext_dir
+            .child("plugin.wasm")
+            .write_binary(&wasm_bytes)
+            .unwrap();
     }
 
     fn write_workspace_config(root: &TempDir) {
@@ -189,8 +195,9 @@ wasm_paths = ["extensions"]
             .assert()
             .failure()
             .stderr(
-                predicate::str::contains("example.bad")
-                    .and(predicate::str::contains("unsupported nova-ext wasm ABI version")),
+                predicate::str::contains("example.bad").and(predicate::str::contains(
+                    "unsupported nova-ext wasm ABI version",
+                )),
             );
     }
 }

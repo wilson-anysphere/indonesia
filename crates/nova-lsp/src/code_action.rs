@@ -252,7 +252,11 @@ fn build_prompt_context(
         privacy_mode,
         /*include_doc_comments=*/ true,
     );
-    Some(builder.build(enrich_context_request(root_uri, file, contents, range, req)).text)
+    Some(
+        builder
+            .build(enrich_context_request(root_uri, file, contents, range, req))
+            .text,
+    )
 }
 
 fn lsp_range_to_offsets(contents: &str, range: Range) -> Option<(usize, usize)> {
@@ -328,9 +332,10 @@ fn project_context_for_path(path: &Path) -> Option<nova_ai::context::ProjectCont
     {
         frameworks.push("Lombok".to_string());
     }
-    if deps.iter().any(|d| {
-        d.group_id.starts_with("org.mapstruct") || d.artifact_id.contains("mapstruct")
-    }) {
+    if deps
+        .iter()
+        .any(|d| d.group_id.starts_with("org.mapstruct") || d.artifact_id.contains("mapstruct"))
+    {
         frameworks.push("MapStruct".to_string());
     }
     if deps
@@ -416,11 +421,11 @@ mod tests {
     use nova_ai::CodeEditPolicyError;
     use nova_ai::PatchSafetyConfig;
     use pretty_assertions::assert_eq;
-    use tempfile::TempDir;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
     };
+    use tempfile::TempDir;
 
     #[derive(Default)]
     struct MockAiProvider {

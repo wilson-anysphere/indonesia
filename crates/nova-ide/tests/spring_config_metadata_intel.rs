@@ -122,9 +122,7 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
     )
     .unwrap();
 
-    let config_path = dir
-        .path()
-        .join("src/main/resources/application.properties");
+    let config_path = dir.path().join("src/main/resources/application.properties");
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
 
     let yaml_path = dir.path().join("src/main/resources/application.yml");
@@ -145,7 +143,9 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
 
     let diags = file_diagnostics(&db, config_file);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY),
         "expected no unknown-key diagnostics for server.port; got {diags:#?}"
     );
 
@@ -153,7 +153,9 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
     db.set_file_text(config_file, "unknown.key=foo\n".to_string());
     let diags = file_diagnostics(&db, config_file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY),
         "expected unknown-key diagnostics for unknown.key; got {diags:#?}"
     );
 
@@ -174,11 +176,8 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
     );
 
     // Value completions in application.properties should use metadata hints.
-    let (db, config_file, pos) = fixture(
-        config_path.clone(),
-        "spring.main.banner-mode=c<|>",
-        vec![],
-    );
+    let (db, config_file, pos) =
+        fixture(config_path.clone(), "spring.main.banner-mode=c<|>", vec![]);
     let items = completions(&db, config_file, pos);
     assert!(
         items.iter().any(|i| i.label == "console"),

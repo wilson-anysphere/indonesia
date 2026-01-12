@@ -178,9 +178,10 @@ mod tests {
                 continue;
             };
             assert!(
-                !path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::CurDir | std::path::Component::ParentDir)),
+                !path.components().any(|c| matches!(
+                    c,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )),
                 "unexpected dot segment in normalized directory entry: {}",
                 path.display()
             );

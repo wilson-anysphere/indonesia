@@ -12,6 +12,7 @@ pub(crate) fn workspace_index(
     file: FileId,
 ) -> Option<Arc<SpringWorkspaceIndex>> {
     db.file_path(file)?;
-    Some(crate::spring_config_intel::workspace_index_for_file(db, file))
+    Some(crate::spring_config_intel::workspace_index_for_file(
+        db, file,
+    ))
 }
-

@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
 use nova_db::{Database, FileId};
-use nova_scheduler::CancellationToken;
 use nova_framework_micronaut::{is_micronaut_applicable, is_micronaut_applicable_with_classpath};
 use nova_framework_micronaut::{AnalysisResult, ConfigFile, JavaSource};
 use nova_project::ProjectConfig;
+use nova_scheduler::CancellationToken;
 
 use crate::framework_cache;
 

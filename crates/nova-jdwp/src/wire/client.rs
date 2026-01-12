@@ -3062,7 +3062,11 @@ mod tests {
         let client = JdwpClient::connect(server.addr()).await.unwrap();
 
         let request_id = client
-            .event_request_set(EVENT_KIND_BREAKPOINT, SUSPEND_POLICY_EVENT_THREAD, Vec::new())
+            .event_request_set(
+                EVENT_KIND_BREAKPOINT,
+                SUSPEND_POLICY_EVENT_THREAD,
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -3093,9 +3097,6 @@ mod tests {
             .unwrap();
 
         let calls = server.dispose_objects_calls().await;
-        assert_eq!(
-            calls,
-            vec![vec![(0x1122_3344, 1), (0x5566_7788, 2)]]
-        );
+        assert_eq!(calls, vec![vec![(0x1122_3344, 1), (0x5566_7788, 2)]]);
     }
 }

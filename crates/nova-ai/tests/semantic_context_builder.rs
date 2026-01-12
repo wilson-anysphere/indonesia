@@ -113,8 +113,7 @@ fn semantic_context_builder_can_index_incrementally() {
     let mut builder = SemanticContextBuilder::new(&cfg);
     builder.index_file(
         PathBuf::from("src/Hello.java"),
-        "public class Hello { public String helloWorld() { return \"hello world\"; } }"
-            .to_string(),
+        "public class Hello { public String helloWorld() { return \"hello world\"; } }".to_string(),
     );
     builder.index_file(
         PathBuf::from("src/Other.java"),

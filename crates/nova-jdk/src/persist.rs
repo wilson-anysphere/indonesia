@@ -186,4 +186,3 @@ fn now_millis() -> u64 {
         .as_millis()
         .min(u64::MAX as u128) as u64
 }
-

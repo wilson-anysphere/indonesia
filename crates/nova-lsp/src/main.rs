@@ -3,11 +3,11 @@ use lsp_server::{Connection, Message, Notification, Request, RequestId, Response
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
-    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
-    DocumentSymbolParams, FileChangeType as LspFileChangeType, Location as LspLocation,
-    Position as LspTypesPosition, Range as LspTypesRange, RenameParams as LspRenameParams,
-    SymbolInformation, SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit,
-    Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
+    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams, DocumentSymbolParams,
+    FileChangeType as LspFileChangeType, Location as LspLocation, Position as LspTypesPosition,
+    Range as LspTypesRange, RenameParams as LspRenameParams, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit, Uri as LspUri,
+    WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
 };
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
@@ -2483,7 +2483,7 @@ fn handle_document_symbol(
 #[serde(rename_all = "camelCase")]
 struct CodeLensParams {
     text_document: TextDocumentIdentifier,
-} 
+}
 
 fn handle_code_lens(
     params: serde_json::Value,
@@ -2881,7 +2881,12 @@ fn handle_completion(
         let runtime = state.runtime.as_ref().ok_or_else(|| {
             "AI completion ranking is enabled but the Tokio runtime is unavailable".to_string()
         })?;
-        runtime.block_on(nova_ide::completions_with_ai(&db, file, position, &state.ai_config))
+        runtime.block_on(nova_ide::completions_with_ai(
+            &db,
+            file,
+            position,
+            &state.ai_config,
+        ))
     } else {
         nova_lsp::completion(&db, file, position)
     };
@@ -4018,9 +4023,10 @@ fn project_context_for_root(root: &std::path::Path) -> Option<nova_ai::context::
     {
         frameworks.push("Lombok".to_string());
     }
-    if deps.iter().any(|d| {
-        d.group_id.starts_with("org.mapstruct") || d.artifact_id.contains("mapstruct")
-    }) {
+    if deps
+        .iter()
+        .any(|d| d.group_id.starts_with("org.mapstruct") || d.artifact_id.contains("mapstruct"))
+    {
         frameworks.push("MapStruct".to_string());
     }
     if deps
@@ -4079,7 +4085,11 @@ fn semantic_context_for_hover(
                 }
             }
             let out = out.trim().to_string();
-            if out.is_empty() { None } else { Some(out) }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
         }
     }
 }

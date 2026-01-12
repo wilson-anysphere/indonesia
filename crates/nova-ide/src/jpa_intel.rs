@@ -6,13 +6,13 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
 use nova_db::{Database as FileDatabase, FileId};
-use nova_scheduler::CancellationToken;
 use nova_framework_jpa::{
     analyze_java_sources, extract_jpql_strings, is_jpa_applicable,
     is_jpa_applicable_with_classpath, tokenize_jpql, AnalysisResult, EntityModel, Span, Token,
     TokenKind,
 };
 use nova_project::ProjectConfig;
+use nova_scheduler::CancellationToken;
 
 const MAX_CACHED_JPA_ROOTS: usize = 16;
 

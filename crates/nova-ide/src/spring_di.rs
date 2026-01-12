@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
 use nova_db::{Database, FileId};
-use nova_scheduler::CancellationToken;
 use nova_framework_spring::AnalysisResult;
+use nova_scheduler::CancellationToken;
 use nova_types::{CompletionItem, Diagnostic, Span};
 
 use crate::framework_cache;

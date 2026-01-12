@@ -2125,7 +2125,10 @@ impl ShardedIndexView {
             );
         }
 
-        merge_sorted_dedup(self.symbol_names_with_prefix(prefix), overlay_names.into_iter())
+        merge_sorted_dedup(
+            self.symbol_names_with_prefix(prefix),
+            overlay_names.into_iter(),
+        )
     }
 
     #[must_use]

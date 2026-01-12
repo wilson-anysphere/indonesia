@@ -509,7 +509,10 @@ fn parse_field_declaration(
     out
 }
 
-fn parse_method_declaration(node: syntax_ast::MethodDeclaration, source: &str) -> Option<MethodData> {
+fn parse_method_declaration(
+    node: syntax_ast::MethodDeclaration,
+    source: &str,
+) -> Option<MethodData> {
     let modifiers = node.modifiers();
     let is_static = modifiers
         .as_ref()
@@ -579,7 +582,10 @@ fn node_text<'a>(source: &'a str, node: &nova_syntax::SyntaxNode) -> &'a str {
     source.get(start..end).unwrap_or("")
 }
 
-fn collect_annotations(modifiers: &syntax_ast::Modifiers, saw_lombok: &mut bool) -> Vec<Annotation> {
+fn collect_annotations(
+    modifiers: &syntax_ast::Modifiers,
+    saw_lombok: &mut bool,
+) -> Vec<Annotation> {
     let mut out = Vec::new();
     for annotation in modifiers.annotations() {
         let Some(name) = annotation.name().map(|name| name.text()) else {
@@ -597,7 +603,10 @@ fn collect_annotations(modifiers: &syntax_ast::Modifiers, saw_lombok: &mut bool)
         let range = annotation.syntax().text_range();
         let start: usize = u32::from(range.start()) as usize;
         let end: usize = u32::from(range.end()) as usize;
-        out.push(Annotation::new_with_span(simple.to_string(), Span::new(start, end)));
+        out.push(Annotation::new_with_span(
+            simple.to_string(),
+            Span::new(start, end),
+        ));
     }
     out
 }

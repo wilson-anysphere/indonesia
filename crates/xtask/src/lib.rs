@@ -1,5 +1,7 @@
 use std::env;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -127,7 +129,36 @@ pub fn generate_ast(grammar_path: &Path) -> Result<String> {
         .with_context(|| format!("failed to read grammar `{}`", grammar_path.display()))?;
     let grammar = parse_grammar(&grammar_src)
         .with_context(|| format!("failed to parse `{}`", grammar_path.display()))?;
-    Ok(render_ast(&grammar))
+    rustfmt(render_ast(&grammar))
+}
+
+fn rustfmt(source: String) -> Result<String> {
+    let mut child = Command::new("rustfmt")
+        .args(["--emit", "stdout", "--edition", "2021"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn rustfmt")?;
+
+    child
+        .stdin
+        .as_mut()
+        .context("failed to open rustfmt stdin")?
+        .write_all(source.as_bytes())
+        .context("failed to write rustfmt stdin")?;
+
+    let output = child
+        .wait_with_output()
+        .context("failed to read rustfmt output")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "rustfmt failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    String::from_utf8(output.stdout).context("rustfmt produced non-utf8 output")
 }
 
 fn strip_comment(line: &str) -> &str {

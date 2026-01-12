@@ -1322,7 +1322,8 @@ mod tests {
         let mut files = BTreeMap::new();
         files.insert(file_id.clone(), source.to_string());
 
-        let updated = crate::edit::apply_workspace_edit(&files, edit).expect("apply workspace edit");
+        let updated =
+            crate::edit::apply_workspace_edit(&files, edit).expect("apply workspace edit");
         updated
             .get(&file_id)
             .cloned()

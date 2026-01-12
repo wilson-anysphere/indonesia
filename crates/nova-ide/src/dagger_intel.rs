@@ -7,8 +7,8 @@ use once_cell::sync::Lazy;
 
 use nova_core::{LineIndex, Position as CorePosition, Range as CoreRange};
 use nova_db::{Database, FileId};
-use nova_scheduler::CancellationToken;
 use nova_framework_dagger::{analyze_java_files, DaggerAnalysis, JavaSourceFile, NavigationKind};
+use nova_scheduler::CancellationToken;
 use nova_types::{Diagnostic, Severity, Span};
 
 use crate::framework_cache;
@@ -302,7 +302,11 @@ fn collect_java_file_ids(
         }
     }
 
-    let mut files = if under_root.is_empty() { all } else { under_root };
+    let mut files = if under_root.is_empty() {
+        all
+    } else {
+        under_root
+    };
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

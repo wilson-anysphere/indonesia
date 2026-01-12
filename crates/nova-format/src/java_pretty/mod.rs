@@ -145,7 +145,11 @@ fn tabs_for_indentation(text: &str, indent_width: usize) -> String {
     for line in split_lines_inclusive(text) {
         let (content, suffix) = strip_line_ending(line);
 
-        let space_count = content.as_bytes().iter().take_while(|b| **b == b' ').count();
+        let space_count = content
+            .as_bytes()
+            .iter()
+            .take_while(|b| **b == b' ')
+            .count();
         let tabs = space_count / indent_width;
         let spaces = space_count % indent_width;
 

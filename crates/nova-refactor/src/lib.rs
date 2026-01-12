@@ -53,9 +53,7 @@ pub use convert_to_record::{convert_to_record, ConvertToRecordError, ConvertToRe
 pub use extract_member::{
     extract_constant, extract_field, ExtractError, ExtractKind, ExtractOptions, ExtractOutcome,
 };
-pub use inline_method::{
-    inline_method, InlineMethodError, InlineMethodOptions,
-};
+pub use inline_method::{inline_method, InlineMethodError, InlineMethodOptions};
 pub use move_java::{
     move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams,
     RefactorError, RefactoringEdit,

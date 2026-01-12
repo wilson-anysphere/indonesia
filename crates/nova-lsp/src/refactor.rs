@@ -9,8 +9,8 @@ use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, extract_variable,
     inline_variable, safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError,
     ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
-    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError,
-    TextDatabase, WorkspaceTextRange,
+    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
+    SemanticRefactorError, TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;

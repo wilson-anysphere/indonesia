@@ -96,9 +96,10 @@ class UserRepository {
         vec![(user_path, user_source), (post_path, post_source)],
     );
 
-    let items = fixture
-        .ide
-        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
 
     assert!(
@@ -113,8 +114,7 @@ class UserRepository {
 
 #[test]
 fn micronaut_value_completions_are_surfaced_via_ide_extensions() {
-    let config_path =
-        PathBuf::from("/micronaut-value/src/main/resources/application.properties");
+    let config_path = PathBuf::from("/micronaut-value/src/main/resources/application.properties");
     let java_path = PathBuf::from("/micronaut-value/src/main/java/com/example/A.java");
 
     let config_text = "greeting.message=Hello\n".to_string();
@@ -126,15 +126,12 @@ class A {
 }
 "#;
 
-    let fixture = fixture_multi(
-        java_path,
-        java_text,
-        vec![(config_path, config_text)],
-    );
+    let fixture = fixture_multi(java_path, java_text, vec![(config_path, config_text)]);
 
-    let items = fixture
-        .ide
-        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert!(
         labels.contains(&"greeting.message"),

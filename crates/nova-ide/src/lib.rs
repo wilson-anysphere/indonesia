@@ -22,9 +22,9 @@ mod file_navigation;
 mod jpa_intel;
 mod micronaut_intel;
 mod project;
-mod spring_config_intel;
 pub mod refactor;
 mod spring_config;
+mod spring_config_intel;
 mod spring_di;
 
 pub use ai::{

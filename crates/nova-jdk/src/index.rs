@@ -387,10 +387,7 @@ impl JdkSymbolIndex {
             .get(&internal)
             .copied()
         {
-            return Ok(self.containers[container_idx]
-                .kind
-                .module_name()
-                .cloned());
+            return Ok(self.containers[container_idx].kind.module_name().cloned());
         }
 
         // Lazily index containers until we locate the class. This mirrors
@@ -411,10 +408,7 @@ impl JdkSymbolIndex {
         }
 
         if let Some(container_idx) = found_container {
-            return Ok(self.containers[container_idx]
-                .kind
-                .module_name()
-                .cloned());
+            return Ok(self.containers[container_idx].kind.module_name().cloned());
         }
 
         self.missing
@@ -528,7 +522,8 @@ impl JdkSymbolIndex {
             .get(internal_name)
             .copied()
         {
-            if let Some(bytes) = self.load_class_bytes_from_container(container_idx, internal_name)?
+            if let Some(bytes) =
+                self.load_class_bytes_from_container(container_idx, internal_name)?
             {
                 return Ok(Some(bytes));
             }

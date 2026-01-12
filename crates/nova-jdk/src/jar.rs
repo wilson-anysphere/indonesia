@@ -29,10 +29,7 @@ pub fn entry_to_internal_name(entry_name: &str) -> Option<&str> {
         .strip_suffix(".class")
 }
 
-pub fn read_class_bytes(
-    jar_path: &Path,
-    internal_name: &str,
-) -> Result<Option<Vec<u8>>, JarError> {
+pub fn read_class_bytes(jar_path: &Path, internal_name: &str) -> Result<Option<Vec<u8>>, JarError> {
     let file = File::open(jar_path)?;
     let mut archive = ZipArchive::new(file)?;
     let entry_name = class_entry_name(internal_name);
@@ -54,4 +51,3 @@ pub fn open_archive(jar_path: &Path) -> Result<ZipArchive<File>, JarError> {
     let file = File::open(jar_path)?;
     Ok(ZipArchive::new(file)?)
 }
-

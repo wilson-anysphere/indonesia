@@ -19,6 +19,7 @@ mod extensions;
 use diagnostics_output::{print_github_annotations, print_sarif, write_sarif, DiagnosticsFormat};
 use nova_deps_cache::DependencyIndexStore;
 use nova_format::{edits_for_document_formatting, edits_for_range_formatting, FormatConfig};
+use nova_index::SymbolLocation;
 use nova_perf::{
     compare_runs, compare_runtime_runs, load_criterion_directory, BenchRun, RuntimeRun,
     RuntimeThresholdConfig, ThresholdConfig,
@@ -35,7 +36,6 @@ use nova_workspace::{
     CacheStatus, DiagnosticsReport, IndexReport, ParseResult, PerfMetrics, Workspace,
     WorkspaceSymbol,
 };
-use nova_index::SymbolLocation;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -1286,7 +1286,10 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
 }
 
 fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymbol>> {
-    let workspace_root = args.path.canonicalize().unwrap_or_else(|_| args.path.clone());
+    let workspace_root = args
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| args.path.clone());
     let worker_command = args
         .distributed_worker_command
         .clone()

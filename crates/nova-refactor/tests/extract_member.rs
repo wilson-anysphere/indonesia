@@ -176,6 +176,7 @@ class A {
 }
 "#
     );
-    assert!(preview.files[0].unified_diff.contains("private static final int VALUE"));
+    assert!(preview.files[0]
+        .unified_diff
+        .contains("private static final int VALUE"));
 }
-

@@ -194,7 +194,8 @@ fn flow_diagnostics_constructor(db: &dyn NovaFlow, ctor: ConstructorId) -> Arc<V
         steps = steps.wrapping_add(1);
     };
 
-    let result = nova_flow::analyze_with(body.as_ref(), FlowConfig::default(), &mut check_cancelled);
+    let result =
+        nova_flow::analyze_with(body.as_ref(), FlowConfig::default(), &mut check_cancelled);
     let diags = Arc::new(result.diagnostics);
     db.record_query_stat("flow_diagnostics_constructor", start.elapsed());
     diags
@@ -259,7 +260,8 @@ fn flow_diagnostics_initializer(db: &dyn NovaFlow, init: InitializerId) -> Arc<V
         steps = steps.wrapping_add(1);
     };
 
-    let result = nova_flow::analyze_with(body.as_ref(), FlowConfig::default(), &mut check_cancelled);
+    let result =
+        nova_flow::analyze_with(body.as_ref(), FlowConfig::default(), &mut check_cancelled);
     let diags = Arc::new(result.diagnostics);
     db.record_query_stat("flow_diagnostics_initializer", start.elapsed());
     diags

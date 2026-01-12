@@ -261,10 +261,7 @@ impl Workspace {
         }
     }
 
-    fn project_java_files_cancelable(
-        &self,
-        cancel: &CancellationToken,
-    ) -> Result<Vec<PathBuf>> {
+    fn project_java_files_cancelable(&self, cancel: &CancellationToken) -> Result<Vec<PathBuf>> {
         Cancelled::check(cancel)?;
 
         match nova_project::load_project_with_workspace_config(&self.root) {
@@ -493,14 +490,13 @@ impl Workspace {
             } else {
                 Cancelled::check(cancel)?;
                 let index_start = Instant::now();
-                let (files_indexed, bytes_indexed, updated_fingerprints) =
-                    self.index_files(
-                        &stamp_snapshot,
-                        &mut shards,
-                        shard_count,
-                        &files_to_index,
-                        cancel,
-                    )?;
+                let (files_indexed, bytes_indexed, updated_fingerprints) = self.index_files(
+                    &stamp_snapshot,
+                    &mut shards,
+                    shard_count,
+                    &files_to_index,
+                    cancel,
+                )?;
                 let index_ms = index_start.elapsed().as_millis();
                 (files_indexed, bytes_indexed, updated_fingerprints, index_ms)
             };

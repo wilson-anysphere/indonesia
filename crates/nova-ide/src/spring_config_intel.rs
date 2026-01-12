@@ -73,7 +73,10 @@ where
 static SPRING_CONFIG_INDEX_CACHE: Lazy<Mutex<LruCache<PathBuf, CachedSpringWorkspaceIndex>>> =
     Lazy::new(|| Mutex::new(LruCache::new(MAX_CACHED_ROOTS)));
 
-pub(crate) fn workspace_index_for_file(db: &dyn Database, file: FileId) -> Arc<SpringWorkspaceIndex> {
+pub(crate) fn workspace_index_for_file(
+    db: &dyn Database,
+    file: FileId,
+) -> Arc<SpringWorkspaceIndex> {
     let Some(path) = db.file_path(file) else {
         return Arc::new(SpringWorkspaceIndex::new(Arc::new(MetadataIndex::new())));
     };
@@ -91,7 +94,10 @@ fn workspace_index_for_root(db: &dyn Database, root: PathBuf) -> Arc<SpringWorks
         let mut cache = SPRING_CONFIG_INDEX_CACHE
             .lock()
             .expect("spring config workspace cache lock poisoned");
-        if let Some(entry) = cache.get_cloned(&root).filter(|e| e.fingerprint == fingerprint) {
+        if let Some(entry) = cache
+            .get_cloned(&root)
+            .filter(|e| e.fingerprint == fingerprint)
+        {
             return entry.index;
         }
     }
@@ -101,7 +107,10 @@ fn workspace_index_for_root(db: &dyn Database, root: PathBuf) -> Arc<SpringWorks
     let mut cache = SPRING_CONFIG_INDEX_CACHE
         .lock()
         .expect("spring config workspace cache lock poisoned");
-    if let Some(entry) = cache.get_cloned(&root).filter(|e| e.fingerprint == fingerprint) {
+    if let Some(entry) = cache
+        .get_cloned(&root)
+        .filter(|e| e.fingerprint == fingerprint)
+    {
         return entry.index;
     }
 
@@ -192,7 +201,8 @@ fn build_workspace_index(
 
 fn is_spring_properties_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with("application") && path.extension().and_then(|e| e.to_str()) == Some("properties")
+    name.starts_with("application")
+        && path.extension().and_then(|e| e.to_str()) == Some("properties")
 }
 
 fn is_spring_yaml_file(path: &Path) -> bool {
@@ -200,7 +210,10 @@ fn is_spring_yaml_file(path: &Path) -> bool {
     if !name.starts_with("application") {
         return false;
     }
-    matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("yml" | "yaml")
+    )
 }
 
 #[cfg(test)]

@@ -1438,8 +1438,7 @@ fn define_source_types<'idx>(
                     field_types.insert(*fid, ty.clone());
                     let is_static =
                         field.modifiers.raw & nova_hir::item_tree::Modifiers::STATIC != 0;
-                    let is_final =
-                        field.modifiers.raw & nova_hir::item_tree::Modifiers::FINAL != 0;
+                    let is_final = field.modifiers.raw & nova_hir::item_tree::Modifiers::FINAL != 0;
                     fields.push(FieldDef {
                         name: field.name.clone(),
                         ty,

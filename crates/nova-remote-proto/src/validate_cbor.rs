@@ -191,10 +191,12 @@ fn limits_for_map_value(key: &str, base: Limits) -> Limits {
         },
 
         // Small strings.
-        "path" | "name" | "auth_token" | "message" | "details" | "worker_build" | "query" => Limits {
-            max_text_len: MAX_SMALL_STRING_BYTES,
-            ..base
-        },
+        "path" | "name" | "auth_token" | "message" | "details" | "worker_build" | "query" => {
+            Limits {
+                max_text_len: MAX_SMALL_STRING_BYTES,
+                ..base
+            }
+        }
 
         // Enum discriminator strings should always be short.
         "type" | "compression" => Limits {

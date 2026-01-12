@@ -175,10 +175,14 @@ pub fn framework_diagnostics(
     }
 
     // Spring DI diagnostics (missing / ambiguous beans, circular deps).
-    diagnostics.extend(crate::spring_di::diagnostics_for_file_with_cancel(db, file, cancel));
+    diagnostics.extend(crate::spring_di::diagnostics_for_file_with_cancel(
+        db, file, cancel,
+    ));
 
     // Dagger/Hilt diagnostics (workspace-scoped).
-    diagnostics.extend(crate::dagger_intel::diagnostics_for_file_with_cancel(db, file, cancel));
+    diagnostics.extend(crate::dagger_intel::diagnostics_for_file_with_cancel(
+        db, file, cancel,
+    ));
 
     // Quarkus CDI diagnostics (workspace-scoped).
     diagnostics.extend(quarkus_diagnostics_for_file(db, file, text, cancel));
@@ -249,7 +253,8 @@ pub fn framework_completions(
                 }
             }
             crate::spring_di::AnnotationStringContext::Profile => {
-                let items = crate::spring_di::profile_completion_items_with_cancel(db, file, cancel);
+                let items =
+                    crate::spring_di::profile_completion_items_with_cancel(db, file, cancel);
                 if !items.is_empty() {
                     return items;
                 }
@@ -277,7 +282,8 @@ pub fn framework_completions(
         }
 
         // Micronaut `@Value("${...}")` completions as a fallback.
-        if let Some(analysis) = crate::micronaut_intel::analysis_for_file_with_cancel(db, file, cancel)
+        if let Some(analysis) =
+            crate::micronaut_intel::analysis_for_file_with_cancel(db, file, cancel)
         {
             let items = nova_framework_micronaut::completions_for_value_placeholder(
                 text,
@@ -484,7 +490,9 @@ impl FrameworkWorkspaceCache {
 
         for file_id in db.all_file_ids() {
             if cancel.is_cancelled() {
-                if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root) {
+                if let Some(existing) =
+                    lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root)
+                {
                     return SpringWorkspace {
                         is_spring: existing.is_spring,
                         index: existing.index,
@@ -492,16 +500,17 @@ impl FrameworkWorkspaceCache {
                 }
                 return SpringWorkspace {
                     is_spring: false,
-                    index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
-                        Arc::new(MetadataIndex::new()),
-                    )),
+                    index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(Arc::new(
+                        MetadataIndex::new(),
+                    ))),
                 };
             }
 
             let Some(path) = db.file_path(file_id) else {
                 continue;
             };
-            if !(path.starts_with(&raw_root) || (has_alt_root && path.starts_with(&canonical_root))) {
+            if !(path.starts_with(&raw_root) || (has_alt_root && path.starts_with(&canonical_root)))
+            {
                 continue;
             }
 
@@ -547,7 +556,9 @@ impl FrameworkWorkspaceCache {
         }
 
         if cancel.is_cancelled() {
-            if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root) {
+            if let Some(existing) =
+                lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root)
+            {
                 return SpringWorkspace {
                     is_spring: existing.is_spring,
                     index: existing.index,
@@ -555,16 +566,16 @@ impl FrameworkWorkspaceCache {
             }
             return SpringWorkspace {
                 is_spring: false,
-                index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
-                    Arc::new(MetadataIndex::new()),
-                )),
+                index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(Arc::new(
+                    MetadataIndex::new(),
+                ))),
             };
         }
 
         if !is_spring {
-            let index = Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
-                Arc::new(MetadataIndex::new()),
-            ));
+            let index = Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(Arc::new(
+                MetadataIndex::new(),
+            )));
             let entry = CachedSpringWorkspace {
                 fingerprint,
                 is_spring,
@@ -579,7 +590,9 @@ impl FrameworkWorkspaceCache {
 
         for (path, file_id, kind) in files {
             if cancel.is_cancelled() {
-                if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root) {
+                if let Some(existing) =
+                    lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root)
+                {
                     return SpringWorkspace {
                         is_spring: existing.is_spring,
                         index: existing.index,
@@ -587,9 +600,9 @@ impl FrameworkWorkspaceCache {
                 }
                 return SpringWorkspace {
                     is_spring: false,
-                    index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
-                        Arc::new(MetadataIndex::new()),
-                    )),
+                    index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(Arc::new(
+                        MetadataIndex::new(),
+                    ))),
                 };
             }
 
@@ -646,7 +659,11 @@ impl FrameworkWorkspaceCache {
             }
         }
 
-        let mut files = if under_root.is_empty() { all } else { under_root };
+        let mut files = if under_root.is_empty() {
+            all
+        } else {
+            under_root
+        };
         if files.is_empty() {
             return None;
         }
@@ -693,7 +710,9 @@ impl FrameworkWorkspaceCache {
         let applicable = is_quarkus_project_with_root(db, &canonical_root, &source_refs);
         let analysis = applicable.then(|| {
             let sources: Vec<&str> = files.iter().map(|(_, id)| db.file_content(*id)).collect();
-            Arc::new(nova_framework_quarkus::analyze_java_sources_with_spans(&sources))
+            Arc::new(nova_framework_quarkus::analyze_java_sources_with_spans(
+                &sources,
+            ))
         });
 
         let file_ids: Vec<FileId> = files.iter().map(|(_, id)| *id).collect();

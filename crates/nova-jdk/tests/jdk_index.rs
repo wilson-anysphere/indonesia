@@ -447,8 +447,8 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn discovery_coerces_java_home_jre_subdir_for_legacy_rt_jar() -> Result<(), Box<dyn std::error::Error>>
-{
+fn discovery_coerces_java_home_jre_subdir_for_legacy_rt_jar(
+) -> Result<(), Box<dyn std::error::Error>> {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let temp = tempdir()?;

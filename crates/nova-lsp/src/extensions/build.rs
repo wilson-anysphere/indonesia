@@ -77,7 +77,8 @@ fn build_orchestrator_for_root(project_root: &Path) -> BuildOrchestrator {
         project_root: canonical.clone(),
         timeout: Some(Duration::from_secs(15 * 60)),
     });
-    let orchestrator = BuildOrchestrator::with_runner_factory(canonical.clone(), cache_dir, runner_factory);
+    let orchestrator =
+        BuildOrchestrator::with_runner_factory(canonical.clone(), cache_dir, runner_factory);
 
     let mut map = build_orchestrators()
         .lock()
@@ -426,75 +427,80 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
     let metadata = load_build_metadata(&params);
 
     let mut status_guard = BuildStatusGuard::new(&project_root);
-    let classpath_result: Result<(Vec<String>, Vec<String>, Vec<String>, LanguageLevel, OutputDirs)> =
-        (|| {
-            let kind = detect_kind(&project_root, params.build_tool)?;
-            let compile_config = match kind {
-                BuildKind::Maven => manager.java_compile_config_maven(
-                    &project_root,
-                    normalize_maven_module_relative(params.module.as_deref()),
-                ),
-                BuildKind::Gradle => {
-                    let project_path = normalize_gradle_project_path(params.project_path.as_deref());
-                    manager.java_compile_config_gradle(&project_root, project_path.as_deref())
-                }
-            };
+    let classpath_result: Result<(
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        LanguageLevel,
+        OutputDirs,
+    )> = (|| {
+        let kind = detect_kind(&project_root, params.build_tool)?;
+        let compile_config = match kind {
+            BuildKind::Maven => manager.java_compile_config_maven(
+                &project_root,
+                normalize_maven_module_relative(params.module.as_deref()),
+            ),
+            BuildKind::Gradle => {
+                let project_path = normalize_gradle_project_path(params.project_path.as_deref());
+                manager.java_compile_config_gradle(&project_root, project_path.as_deref())
+            }
+        };
 
-            Ok(match compile_config {
-                Ok(cfg) => {
-                    let classpath = paths_to_strings(cfg.compile_classpath.iter());
-                    let module_path = if cfg.module_path.is_empty() {
-                        metadata.module_path.clone()
+        Ok(match compile_config {
+            Ok(cfg) => {
+                let classpath = paths_to_strings(cfg.compile_classpath.iter());
+                let module_path = if cfg.module_path.is_empty() {
+                    metadata.module_path.clone()
+                } else {
+                    paths_to_strings(cfg.module_path.iter())
+                };
+                let source_roots = {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut roots = Vec::new();
+                    for root in cfg
+                        .main_source_roots
+                        .iter()
+                        .chain(cfg.test_source_roots.iter())
+                    {
+                        let s = root.to_string_lossy().to_string();
+                        if seen.insert(s.clone()) {
+                            roots.push(s);
+                        }
+                    }
+                    if roots.is_empty() {
+                        metadata.source_roots.clone()
                     } else {
-                        paths_to_strings(cfg.module_path.iter())
-                    };
-                    let source_roots = {
-                        let mut seen = std::collections::HashSet::new();
-                        let mut roots = Vec::new();
-                        for root in cfg
-                            .main_source_roots
-                            .iter()
-                            .chain(cfg.test_source_roots.iter())
-                        {
-                            let s = root.to_string_lossy().to_string();
-                            if seen.insert(s.clone()) {
-                                roots.push(s);
-                            }
-                        }
-                        if roots.is_empty() {
-                            metadata.source_roots.clone()
-                        } else {
-                            roots
-                        }
-                    };
-                    let language_level =
-                        language_level_from_java_compile_config(&cfg).unwrap_or(metadata.language_level);
-                    let output_dirs = output_dirs_from_java_compile_config(&cfg)
-                        .filter(|dirs| !(dirs.main.is_empty() && dirs.test.is_empty()))
-                        .unwrap_or_else(|| metadata.output_dirs.clone());
-                    (
-                        classpath,
-                        module_path,
-                        source_roots,
-                        language_level,
-                        output_dirs,
-                    )
-                }
-                Err(_) => {
-                    // If the richer compile-config extraction fails, fall back to the legacy
-                    // classpath computation so existing clients keep working.
-                    let cp = run_classpath(&manager, &params)?;
-                    let classpath = paths_to_strings(cp.entries.iter());
-                    (
-                        classpath,
-                        metadata.module_path.clone(),
-                        metadata.source_roots.clone(),
-                        metadata.language_level,
-                        metadata.output_dirs.clone(),
-                    )
-                }
-            })
-        })();
+                        roots
+                    }
+                };
+                let language_level = language_level_from_java_compile_config(&cfg)
+                    .unwrap_or(metadata.language_level);
+                let output_dirs = output_dirs_from_java_compile_config(&cfg)
+                    .filter(|dirs| !(dirs.main.is_empty() && dirs.test.is_empty()))
+                    .unwrap_or_else(|| metadata.output_dirs.clone());
+                (
+                    classpath,
+                    module_path,
+                    source_roots,
+                    language_level,
+                    output_dirs,
+                )
+            }
+            Err(_) => {
+                // If the richer compile-config extraction fails, fall back to the legacy
+                // classpath computation so existing clients keep working.
+                let cp = run_classpath(&manager, &params)?;
+                let classpath = paths_to_strings(cp.entries.iter());
+                (
+                    classpath,
+                    metadata.module_path.clone(),
+                    metadata.source_roots.clone(),
+                    metadata.language_level,
+                    metadata.output_dirs.clone(),
+                )
+            }
+        })
+    })();
     status_guard.finish_from_result(&classpath_result);
     let (classpath, module_path, source_roots, language_level, output_dirs) = classpath_result?;
 
@@ -847,9 +853,10 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 .map(|dir| dir.queries_dir().join("bazel.json"))
                 .map_err(|err| NovaLspError::Internal(err.to_string()))?;
             let runner = nova_build_bazel::DefaultCommandRunner::default();
-            let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-                .and_then(|ws| ws.with_cache_path(cache_path))
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            let mut workspace =
+                nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+                    .and_then(|ws| ws.with_cache_path(cache_path))
+                    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
             let info = workspace
                 .target_compile_info(&target)
@@ -1182,9 +1189,10 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 .map(|dir| dir.queries_dir().join("bazel.json"))
                 .map_err(|err| NovaLspError::Internal(err.to_string()))?;
             let runner = nova_build_bazel::DefaultCommandRunner::default();
-            let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-                .and_then(|ws| ws.with_cache_path(cache_path))
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            let mut workspace =
+                nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+                    .and_then(|ws| ws.with_cache_path(cache_path))
+                    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
             let targets = workspace
                 .java_targets()
@@ -1402,8 +1410,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     project_root: project_root.to_string_lossy().to_string(),
                     units,
                 };
-                serde_json::to_value(result)
-                    .map_err(|err| NovaLspError::Internal(err.to_string()))
+                serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
             })();
 
             status_guard.finish_from_result(&value_result);
@@ -1458,7 +1465,8 @@ struct BuildStatusEntry {
     last_error: Option<String>,
 }
 
-static BUILD_STATUS_REGISTRY: OnceLock<Mutex<BTreeMap<PathBuf, BuildStatusEntry>>> = OnceLock::new();
+static BUILD_STATUS_REGISTRY: OnceLock<Mutex<BTreeMap<PathBuf, BuildStatusEntry>>> =
+    OnceLock::new();
 
 fn build_status_registry() -> &'static Mutex<BTreeMap<PathBuf, BuildStatusEntry>> {
     BUILD_STATUS_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -1594,7 +1602,12 @@ impl CommandRunner for BuildStatusCommandRunner {
                             .code()
                             .filter(|code| *code != 0)
                             .map(|code| format!("command exited with status code {code}"))
-                            .or_else(|| Some(format!("command exited with status {status:?}", status = output.status)));
+                            .or_else(|| {
+                                Some(format!(
+                                    "command exited with status {status:?}",
+                                    status = output.status
+                                ))
+                            });
                     }
                 }
             }
@@ -1637,7 +1650,10 @@ struct BuildStatusCommandRunnerFactory {
 }
 
 impl CommandRunnerFactory for BuildStatusCommandRunnerFactory {
-    fn build_runner(&self, cancellation: nova_process::CancellationToken) -> Arc<dyn CommandRunner> {
+    fn build_runner(
+        &self,
+        cancellation: nova_process::CancellationToken,
+    ) -> Arc<dyn CommandRunner> {
         let inner = Arc::new(DefaultCommandRunner {
             timeout: self.timeout,
             cancellation: Some(cancellation),
@@ -1761,14 +1777,14 @@ pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Valu
     );
 
     let (registry_status, registry_last_error) = build_status_snapshot_for_project_root(&key);
-    let status = if registry_status == BuildStatus::Building || orchestrator_building || bazel_building
-    {
-        BuildStatus::Building
-    } else if registry_status == BuildStatus::Failed || orchestrator_failed || bazel_failed {
-        BuildStatus::Failed
-    } else {
-        BuildStatus::Idle
-    };
+    let status =
+        if registry_status == BuildStatus::Building || orchestrator_building || bazel_building {
+            BuildStatus::Building
+        } else if registry_status == BuildStatus::Failed || orchestrator_failed || bazel_failed {
+            BuildStatus::Failed
+        } else {
+            BuildStatus::Idle
+        };
 
     let mut last_error = None;
     if status == BuildStatus::Failed {
@@ -2078,7 +2094,12 @@ mod tests {
         struct FailingRunner;
 
         impl CommandRunner for FailingRunner {
-            fn run(&self, _cwd: &Path, _program: &Path, _args: &[String]) -> io::Result<CommandOutput> {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &Path,
+                _args: &[String],
+            ) -> io::Result<CommandOutput> {
                 Err(io::Error::new(io::ErrorKind::Other, "boom"))
             }
         }

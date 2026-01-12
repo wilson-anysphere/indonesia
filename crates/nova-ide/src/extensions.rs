@@ -1,7 +1,7 @@
 use nova_config::NovaConfig;
 use nova_ext::{
-    CodeAction, CodeActionParams, CompletionItem, CompletionParams, Diagnostic, DiagnosticParams,
-    CompletionProvider, DiagnosticProvider, ExtensionContext, ExtensionRegistry, InlayHint,
+    CodeAction, CodeActionParams, CompletionItem, CompletionParams, CompletionProvider, Diagnostic,
+    DiagnosticParams, DiagnosticProvider, ExtensionContext, ExtensionRegistry, InlayHint,
     InlayHintParams, NavigationParams, NavigationTarget, ProjectId, Span, Symbol,
 };
 use nova_scheduler::CancellationToken;
@@ -154,11 +154,8 @@ where
         file: nova_ext::FileId,
         position: lsp_types::Position,
     ) -> Vec<lsp_types::CompletionItem> {
-        let mut completions = crate::code_intelligence::core_completions(
-            self.db.as_ref(),
-            file,
-            position,
-        );
+        let mut completions =
+            crate::code_intelligence::core_completions(self.db.as_ref(), file, position);
         let text = self.db.file_content(file);
         let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
@@ -298,7 +295,8 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
-        let mut diagnostics = crate::code_intelligence::core_file_diagnostics(self.db.as_ref(), file);
+        let mut diagnostics =
+            crate::code_intelligence::core_file_diagnostics(self.db.as_ref(), file);
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
     }
@@ -492,7 +490,12 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
-        crate::framework_cache::framework_completions(ctx.db.as_ref(), params.file, params.offset, &ctx.cancel)
+        crate::framework_cache::framework_completions(
+            ctx.db.as_ref(),
+            params.file,
+            params.offset,
+            &ctx.cancel,
+        )
     }
 }
 

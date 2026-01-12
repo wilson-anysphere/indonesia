@@ -85,7 +85,10 @@ fn trigram_remove_file_removes_from_results() {
 fn trigram_index_project_matches_repeated_index_file() {
     let db = MemDb(vec![
         (PathBuf::from("src/a.txt"), "hello world".to_string()),
-        (PathBuf::from("src/b.txt"), "helicopter landing pad".to_string()),
+        (
+            PathBuf::from("src/b.txt"),
+            "helicopter landing pad".to_string(),
+        ),
     ]);
 
     let mut by_project = TrigramSemanticSearch::new();
@@ -98,4 +101,3 @@ fn trigram_index_project_matches_repeated_index_file() {
 
     assert_eq!(by_project.search("hello"), by_file.search("hello"));
 }
-

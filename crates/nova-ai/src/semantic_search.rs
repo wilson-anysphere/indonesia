@@ -295,8 +295,8 @@ mod embeddings {
     use super::{SearchResult, SemanticSearch};
     use nova_fuzzy::{fuzzy_match, MatchKind};
     use std::cmp::Ordering;
-    use std::collections::BTreeMap;
     use std::collections::hash_map::DefaultHasher;
+    use std::collections::BTreeMap;
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
@@ -462,7 +462,11 @@ mod embeddings {
             index.dirty = false;
         }
 
-        fn docs_for_file(&self, path: &PathBuf, text: &str) -> Vec<(Range<usize>, String, String, String)> {
+        fn docs_for_file(
+            &self,
+            path: &PathBuf,
+            text: &str,
+        ) -> Vec<(Range<usize>, String, String, String)> {
             if text.is_empty() {
                 return Vec::new();
             }
@@ -654,12 +658,7 @@ mod embeddings {
             let snippet = preview(method_text, 2_000);
             let embed_text = format!("{}\n{doc}\n{signature}\n{body}", path.to_string_lossy());
 
-            out.push((
-                start..end,
-                "method".to_string(),
-                snippet,
-                embed_text,
-            ));
+            out.push((start..end, "method".to_string(), snippet, embed_text));
         }
 
         out

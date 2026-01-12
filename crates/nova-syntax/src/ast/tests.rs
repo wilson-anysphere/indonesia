@@ -1169,7 +1169,7 @@ fn new_expression_anonymous_class_body_is_accessible() {
     assert!(
         body.members()
             .any(|m| matches!(m, ClassMember::FieldDeclaration(_))),
-            "expected a field declaration member in anonymous class"
+        "expected a field declaration member in anonymous class"
     );
 }
 
@@ -1193,12 +1193,7 @@ fn qualified_new_expression_has_qualifier() {
         .expect("expected a qualified new expression");
 
     assert_eq!(
-        new_expr
-            .qualifier()
-            .unwrap()
-            .syntax()
-            .text()
-            .to_string(),
+        new_expr.qualifier().unwrap().syntax().text().to_string(),
         "o"
     );
     assert_eq!(
@@ -1256,12 +1251,7 @@ fn qualified_new_expression_type_arguments_are_accessible() {
         .expect("expected a qualified new expression with type arguments");
 
     assert_eq!(
-        new_expr
-            .qualifier()
-            .unwrap()
-            .syntax()
-            .text()
-            .to_string(),
+        new_expr.qualifier().unwrap().syntax().text().to_string(),
         "o"
     );
 

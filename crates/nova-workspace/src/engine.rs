@@ -1540,7 +1540,11 @@ mod tests {
     fn java_file_outside_source_roots_is_not_added_to_project_files() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("pom.xml"), br#"<?xml version="1.0"?><project></project>"#).unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            br#"<?xml version="1.0"?><project></project>"#,
+        )
+        .unwrap();
 
         let main_dir = root.join("src/main/java/com/example");
         fs::create_dir_all(&main_dir).unwrap();
@@ -1555,7 +1559,10 @@ mod tests {
         let project = ProjectId::from_raw(0);
 
         engine.query_db.with_snapshot(|snap| {
-            assert_eq!(snap.project_config(project).build_system, BuildSystem::Maven);
+            assert_eq!(
+                snap.project_config(project).build_system,
+                BuildSystem::Maven
+            );
             assert_eq!(snap.project_files(project).len(), 1);
         });
 

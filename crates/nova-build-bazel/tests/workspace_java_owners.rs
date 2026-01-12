@@ -304,7 +304,10 @@ fn multiple_owners_direct_and_via_filegroup_chain() {
     let owners = workspace.java_owning_targets_for_file(&file).unwrap();
     assert_eq!(
         owners,
-        vec!["//java:direct_lib".to_string(), "//java:other_lib".to_string()]
+        vec![
+            "//java:direct_lib".to_string(),
+            "//java:other_lib".to_string()
+        ]
     );
 }
 

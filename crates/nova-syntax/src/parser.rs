@@ -1850,10 +1850,8 @@ impl<'a> Parser<'a> {
         }
 
         if self.at_explicit_constructor_invocation_start() {
-            self.builder.start_node_at(
-                checkpoint,
-                SyntaxKind::ExplicitConstructorInvocation.into(),
-            );
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::ExplicitConstructorInvocation.into());
             self.parse_expression(0);
             self.expect(
                 SyntaxKind::Semicolon,
@@ -3125,8 +3123,10 @@ impl<'a> Parser<'a> {
                     }
                     let mut super_lookahead = skip_trivia(&self.tokens, 1);
                     if self.tokens.get(super_lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
-                        super_lookahead =
-                            skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, super_lookahead));
+                        super_lookahead = skip_trivia(
+                            &self.tokens,
+                            skip_type_arguments(&self.tokens, super_lookahead),
+                        );
                     }
                     if self.tokens.get(super_lookahead).map(|t| t.kind) == Some(SyntaxKind::SuperKw)
                     {
@@ -3150,8 +3150,8 @@ impl<'a> Parser<'a> {
                     }
                     if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::NewKw) {
                         self.bump(); // .
-                        // Java allows optional type arguments between `.` and `new` for qualified
-                        // instance creations: `expr.<T>new Foo(...)`.
+                                     // Java allows optional type arguments between `.` and `new` for qualified
+                                     // instance creations: `expr.<T>new Foo(...)`.
                         if self.nth(0) == Some(SyntaxKind::Less) {
                             self.parse_type_arguments();
                         }
@@ -3347,11 +3347,13 @@ impl<'a> Parser<'a> {
                 return self.tokens.get(next).map(|t| t.kind) == Some(SyntaxKind::LParen);
             }
             SyntaxKind::Less => {
-                let after_args = skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, start));
+                let after_args =
+                    skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, start));
                 match self.tokens.get(after_args).map(|t| t.kind) {
                     Some(SyntaxKind::ThisKw) | Some(SyntaxKind::SuperKw) => {
                         let after_kw = skip_trivia(&self.tokens, after_args + 1);
-                        return self.tokens.get(after_kw).map(|t| t.kind) == Some(SyntaxKind::LParen);
+                        return self.tokens.get(after_kw).map(|t| t.kind)
+                            == Some(SyntaxKind::LParen);
                     }
                     _ => {}
                 }
@@ -3377,14 +3379,13 @@ impl<'a> Parser<'a> {
                 if kind == SyntaxKind::Dot {
                     let mut lookahead = skip_trivia(&self.tokens, i + 1);
                     if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
-                        lookahead = skip_trivia(
-                            &self.tokens,
-                            skip_type_arguments(&self.tokens, lookahead),
-                        );
+                        lookahead =
+                            skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, lookahead));
                     }
                     if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::SuperKw) {
                         let after_super = skip_trivia(&self.tokens, lookahead + 1);
-                        if self.tokens.get(after_super).map(|t| t.kind) == Some(SyntaxKind::LParen) {
+                        if self.tokens.get(after_super).map(|t| t.kind) == Some(SyntaxKind::LParen)
+                        {
                             return true;
                         }
                     }
@@ -3526,8 +3527,8 @@ impl<'a> Parser<'a> {
         // or an array creation (`new T[...]` / `new T[] {...}`), and finally wrap the whole thing
         // in the appropriate expression node.
         self.bump(); // new
-        // Java allows explicit type arguments on constructor invocations:
-        // `new <T> Foo(...)`.
+                     // Java allows explicit type arguments on constructor invocations:
+                     // `new <T> Foo(...)`.
         if self.nth(0) == Some(SyntaxKind::Less) {
             self.parse_type_arguments();
         }

@@ -9,7 +9,9 @@ use anyhow::{anyhow, Context};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
-use nova_remote_proto::v3::{HandshakeReject, Notification, RejectCode, RemoteDiagnostic, Request, Response};
+use nova_remote_proto::v3::{
+    HandshakeReject, Notification, RejectCode, RemoteDiagnostic, Request, Response,
+};
 use nova_remote_proto::{FileText, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats};
 use nova_remote_rpc::{
     PendingCall, RouterAdmission, RouterConfig as RpcRouterConfig, RpcConnection,

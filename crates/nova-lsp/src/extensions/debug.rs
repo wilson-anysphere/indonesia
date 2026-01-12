@@ -249,7 +249,10 @@ mod tests {
             "projectRoot": root.to_string_lossy(),
         }))
         .unwrap();
-        assert_eq!(status.get("status").and_then(|v| v.as_str()), Some("building"));
+        assert_eq!(
+            status.get("status").and_then(|v| v.as_str()),
+            Some("building")
+        );
 
         // Allow the runner to return an error so the build finishes.
         let _ = release_tx.send(());
@@ -259,7 +262,10 @@ mod tests {
             "projectRoot": root.to_string_lossy(),
         }))
         .unwrap();
-        assert_eq!(status.get("status").and_then(|v| v.as_str()), Some("failed"));
+        assert_eq!(
+            status.get("status").and_then(|v| v.as_str()),
+            Some("failed")
+        );
         assert!(
             status
                 .get("lastError")

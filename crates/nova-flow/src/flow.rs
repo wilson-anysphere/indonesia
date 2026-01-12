@@ -98,8 +98,12 @@ pub fn analyze_with(
 
     // Keep diagnostic ordering deterministic and stable under minor CFG changes.
     diagnostics.sort_by(|a, b| {
-        let a_span = a.span.unwrap_or(nova_types::Span::new(usize::MAX, usize::MAX));
-        let b_span = b.span.unwrap_or(nova_types::Span::new(usize::MAX, usize::MAX));
+        let a_span = a
+            .span
+            .unwrap_or(nova_types::Span::new(usize::MAX, usize::MAX));
+        let b_span = b
+            .span
+            .unwrap_or(nova_types::Span::new(usize::MAX, usize::MAX));
         a_span
             .start
             .cmp(&b_span.start)

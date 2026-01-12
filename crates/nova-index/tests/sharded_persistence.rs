@@ -430,7 +430,10 @@ fn sharded_index_view_overlay_merges_invalidated_files() {
         vec!["Foo", "NewInA", "OnlyA"]
     );
     assert_eq!(
-        loaded_v2.view.referenced_symbols_merged().collect::<Vec<_>>(),
+        loaded_v2
+            .view
+            .referenced_symbols_merged()
+            .collect::<Vec<_>>(),
         vec!["Foo", "NewInA", "OnlyA"]
     );
     assert_eq!(

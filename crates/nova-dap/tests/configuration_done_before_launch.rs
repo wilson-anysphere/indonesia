@@ -61,4 +61,3 @@ async fn configuration_done_before_java_launch_does_not_deadlock_stop_on_entry()
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

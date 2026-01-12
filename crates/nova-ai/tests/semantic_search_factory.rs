@@ -128,8 +128,7 @@ fn semantic_search_from_config_embeddings_supports_incremental_updates() {
 
     search.index_file(
         path.clone(),
-        "public class Hello { public String helloWorld() { return \"hello world\"; } }"
-            .to_string(),
+        "public class Hello { public String helloWorld() { return \"hello world\"; } }".to_string(),
     );
     let first = search.search("hello world");
     assert!(!first.is_empty());
