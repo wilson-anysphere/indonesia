@@ -1,3 +1,4 @@
+mod cached_index_mismatch;
 mod duplicate_worker_rejected;
 mod handshake_admission;
 mod insecure_tcp;
@@ -7,6 +8,7 @@ mod mtls_shard_allowlist;
 mod rpc_hardening;
 mod shard_integrity;
 mod spawn_workers_tls;
+mod stale_cached_index;
 mod unix_socket_auth_token;
 mod v3_handshake_reject;
 mod worker_supervision;

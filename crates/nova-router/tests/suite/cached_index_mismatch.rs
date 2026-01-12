@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use crate::remote_rpc_util;
 use nova_remote_proto::v3::Notification;
 use nova_remote_proto::ShardIndex;
 use nova_router::{
@@ -10,9 +11,6 @@ use nova_router::{
 };
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-
-mod remote_rpc_util;
-mod suite;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cached_index_notification_for_wrong_shard_disconnects_worker() -> Result<()> {
@@ -98,3 +96,4 @@ async fn cached_index_notification_for_wrong_shard_disconnects_worker() -> Resul
     router.shutdown().await?;
     Ok(())
 }
+
