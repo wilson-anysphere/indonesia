@@ -1850,6 +1850,180 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
 }
 
 #[test]
+fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
+    let _lock = crate::support::stdio_server_lock();
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let src_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let file_path = src_dir.join("Example.java");
+    let file_uri = uri_for_path(&file_path);
+
+    let text = "package com.example;\n\npublic class Example {\n    public int answer() { }\n}\n";
+    std::fs::write(&file_path, text).expect("write file");
+
+    let selection = "public int answer() { }";
+    let selection_start = text.find(selection).expect("selection present");
+    let selection_end = selection_start + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range::new(
+        pos.lsp_position(selection_start).expect("start pos"),
+        pos.lsp_position(selection_end).expect("end pos"),
+    );
+
+    // Build a deterministic patch that inserts `return 42;` inside the braces.
+    let selected = &text[selection_start..selection_end];
+    let open = selected.find('{').expect("open brace");
+    let close = selected.rfind('}').expect("close brace");
+    let insert_start = selection_start + open + 1;
+    let insert_end = selection_start + close;
+    let insert_range = Range::new(
+        pos.lsp_position(insert_start).expect("insert start"),
+        pos.lsp_position(insert_end).expect("insert end"),
+    );
+
+    let patch = json!({
+      "edits": [
+        {
+          "file": "src/main/java/com/example/Example.java",
+          "range": insert_range,
+          "text": "\n        return 42;\n    "
+        }
+      ]
+    })
+    .to_string();
+
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", ai_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
+        .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
+        .env("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize with a workspace root so file paths are relative.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // open document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // Call the custom request endpoint.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "method_signature": "public int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let (messages, resp) = drain_notifications_until_id(&mut stdout, 2);
+    assert!(
+        resp.get("error").is_none(),
+        "expected nova/ai/generateMethodBody success, got: {resp:#?}"
+    );
+    assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
+
+    let apply_edit = find_apply_edit_request(&messages);
+    assert_eq!(
+        apply_edit
+            .get("params")
+            .and_then(|p| p.get("label"))
+            .and_then(|v| v.as_str()),
+        Some("AI: Generate method body")
+    );
+
+    let edit = apply_edit
+        .get("params")
+        .and_then(|p| p.get("edit"))
+        .expect("applyEdit params.edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit.clone()).expect("workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let uri: Uri = file_uri.parse().expect("uri");
+    let edits = changes.get(&uri).expect("edits for file uri");
+    assert!(
+        edits
+            .iter()
+            .any(|edit| edit.new_text.contains("return 42;")),
+        "expected edit to contain return statement, got: {edits:?}"
+    );
+
+    let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": apply_edit_id,
+            "result": { "applied": true }
+        }),
+    );
+
+    ai_server.assert_hits(1);
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");

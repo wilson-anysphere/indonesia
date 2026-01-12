@@ -8016,7 +8016,7 @@ fn handle_ai_custom_request(
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
             let params: AiRequestParams<GenerateMethodBodyArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_method_body_legacy(
+            run_ai_generate_method_body_apply(
                 params.args,
                 params.work_done_token,
                 state,
@@ -8027,7 +8027,7 @@ fn handle_ai_custom_request(
         nova_lsp::AI_GENERATE_TESTS_METHOD => {
             let params: AiRequestParams<GenerateTestsArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_tests_legacy(
+            run_ai_generate_tests_apply(
                 params.args,
                 params.work_done_token,
                 state,
@@ -8503,10 +8503,12 @@ fn run_ai_generate_tests_legacy(
 /// ExecuteCommand implementation for AI code actions that *apply* edits via the
 /// patch-based codegen pipeline (`nova-ai-codegen`).
 ///
-/// Note: the custom request endpoints (`nova/ai/generateMethodBody`,
-/// `nova/ai/generateTests`) intentionally keep their legacy behavior of returning
-/// plain strings (see `docs/protocol-extensions.md`). Only `workspace/executeCommand`
-/// applies edits.
+/// This pipeline is used by both:
+///
+/// - `workspace/executeCommand` commands (`nova.ai.generateMethodBody`, `nova.ai.generateTests`)
+/// - Custom request endpoints (`nova/ai/generateMethodBody`, `nova/ai/generateTests`)
+///
+/// Both variants apply edits via `workspace/applyEdit` and return JSON `null` on success.
 struct LspCodegenProgress<'a, O: RpcOut + Sync> {
     out: &'a O,
     token: Option<&'a serde_json::Value>,
