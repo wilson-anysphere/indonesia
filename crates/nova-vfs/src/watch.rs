@@ -17,6 +17,9 @@
 //!     watching (e.g. `nova-lsp`, `nova-cli`, `nova-workspace`), not by low-level library crates.
 //!   - If you add another backend, keep it in `nova-vfs` and feature-gate it similarly (optional
 //!     dependency + `watch-*` feature), so other crates don't take on extra OS-specific deps.
+//! - Recursion semantics are represented by [`WatchMode`] (recursive vs non-recursive), which is
+//!   also owned by `nova-vfs` so downstream crates don't need to depend on backend-specific enums
+//!   like `notify::RecursiveMode`.
 //! - Move/rename normalization lives here (pairing `from`/`to` where possible) so consumers don't
 //!   need to implement per-platform rename heuristics.
 //!
