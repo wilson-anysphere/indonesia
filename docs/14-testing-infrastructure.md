@@ -503,6 +503,7 @@ RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_literals -- -max_total_time
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_yaml_parse -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_properties_parse -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_config_metadata -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_archive_read -- -max_total_time=60 -max_len=262144
 ```
 
 There are additional targets (e.g. `parse_java`, `format_java`, and `refactor_smoke` which requires

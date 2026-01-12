@@ -211,6 +211,15 @@ cargo +nightly fuzz run fuzz_config_metadata -- -max_total_time=60 -max_len=2621
 This target ingests arbitrary bytes into the Spring configuration metadata index
 (`nova_config_metadata::MetadataIndex::ingest_json_bytes`) and enforces "never panic / never hang".
 
+### Read archives (JARs / directories)
+
+```bash
+cargo +nightly fuzz run fuzz_archive_read -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises `nova_archive::Archive::read` on both ZIP/JAR-backed archives and
+directory-backed archives, enforcing "never panic / never hang" (each input is time-boxed).
+
 ### Optional targets
 
 Nova also has additional fuzz targets for deeper invariants / higher-level smoke tests:

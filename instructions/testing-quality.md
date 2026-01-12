@@ -205,6 +205,9 @@ bash scripts/cargo_agent.sh +nightly fuzz run fuzz_classfile -- -max_total_time=
 # Parse JUnit XML reports.
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 
+# Read archives (ZIP/JAR + directory mode).
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_archive_read -- -max_total_time=60 -max_len=262144
+
 # Optional targets
 bash scripts/cargo_agent.sh +nightly fuzz run parse_java -- -max_total_time=60 -max_len=262144
 bash scripts/cargo_agent.sh +nightly fuzz run format_java -- -max_total_time=60 -max_len=262144
@@ -240,6 +243,7 @@ fuzz/
 │   ├── fuzz_yaml_parse/
 │   ├── fuzz_properties_parse/
 │   ├── fuzz_config_metadata/
+│   ├── fuzz_archive_read/
 │   ├── parse_java/
 │   ├── format_java/
 │   └── refactor_smoke/
@@ -257,6 +261,7 @@ fuzz/
     ├── fuzz_yaml_parse.rs
     ├── fuzz_properties_parse.rs
     ├── fuzz_config_metadata.rs
+    ├── fuzz_archive_read.rs
     ├── parse_java.rs
     ├── format_java.rs                # formatter idempotence
     ├── refactor_smoke.rs             # requires `--features refactor`
