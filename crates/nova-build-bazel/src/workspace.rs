@@ -1166,6 +1166,20 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             let _ = self.bazelrc_imports.take();
         }
 
+        // If BSP previously failed (e.g. default `bsp4bazel` not installed) and `.bsp` connection
+        // files changed, allow retrying with the newly-discovered config.
+        #[cfg(feature = "bsp")]
+        if matches!(self.bsp, BspConnection::Failed)
+            && changed.iter().any(|path| {
+                path.strip_prefix(&self.root)
+                    .ok()
+                    .and_then(|rel| rel.components().next())
+                    .is_some_and(|c| matches!(c, Component::Normal(name) if name == ".bsp"))
+            })
+        {
+            self.bsp = BspConnection::NotTried;
+        }
+
         // Owning-target results are derived from BUILD/BUILD.bazel/.bzl state. Avoid clearing the
         // cache for plain source edits (hot swap calls this frequently) but still invalidate on
         // build definition changes for correctness.
@@ -1938,6 +1952,28 @@ mod bsp_config_tests {
             crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
         assert_eq!(config.program, "bom-prog");
         assert_eq!(config.args, vec!["--arg".to_string()]);
+    }
+
+    #[test]
+    fn invalidate_changed_files_resets_failed_bsp_on_dot_bsp_change() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+        std::fs::write(
+            bsp_dir.join("server.json"),
+            r#"{"argv":["bsp-prog"],"languages":["java"]}"#,
+        )
+        .unwrap();
+
+        let runner = NoopRunner::default();
+        let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+        workspace.bsp = BspConnection::Failed;
+
+        workspace
+            .invalidate_changed_files(&[PathBuf::from(".bsp/server.json")])
+            .unwrap();
+
+        assert!(matches!(workspace.bsp, BspConnection::NotTried));
     }
 
     #[test]
