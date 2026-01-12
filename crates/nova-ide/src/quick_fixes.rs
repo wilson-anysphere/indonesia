@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit};
 use nova_db::{Database, FileId, NovaTypeck};
-use nova_types::Span;
+use nova_types::{Diagnostic, Span};
 
 /// Diagnostic-driven quick fixes.
 ///
@@ -28,6 +28,26 @@ pub fn create_symbol_quick_fixes(
         return Vec::new();
     }
 
+    // Collect just the type-checking diagnostics; create-symbol quick fixes are
+    // driven by (high-signal) type errors, and this avoids the overhead of also
+    // running control-flow diagnostics during `textDocument/codeAction`.
+    let diagnostics =
+        crate::code_intelligence::with_salsa_snapshot_for_single_file(db, file, source, |snap| {
+            snap.type_diagnostics(file)
+        });
+    create_symbol_quick_fixes_from_diagnostics(&uri, source, Some(selection), &diagnostics)
+}
+
+pub(crate) fn create_symbol_quick_fixes_from_diagnostics(
+    uri: &lsp_types::Uri,
+    source: &str,
+    selection: Option<Span>,
+    diagnostics: &[Diagnostic],
+) -> Vec<CodeActionOrCommand> {
+    let Some(selection) = selection else {
+        return Vec::new();
+    };
+
     // All create-symbol fixes insert into the same best-effort location.
     let (insert_offset, indent) = insertion_point(source);
     let insert_position = crate::text::offset_to_position(source, insert_offset);
@@ -39,13 +59,6 @@ pub fn create_symbol_quick_fixes(
     let mut actions = Vec::new();
     let mut seen_titles: HashSet<String> = HashSet::new();
 
-    // Collect just the type-checking diagnostics; create-symbol quick fixes are
-    // driven by (high-signal) type errors, and this avoids the overhead of also
-    // running control-flow diagnostics during `textDocument/codeAction`.
-    let diagnostics =
-        crate::code_intelligence::with_salsa_snapshot_for_single_file(db, file, source, |snap| {
-            snap.type_diagnostics(file)
-        });
     for diagnostic in diagnostics {
         let Some(span) = diagnostic.span else {
             continue;

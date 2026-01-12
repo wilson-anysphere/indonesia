@@ -1070,10 +1070,11 @@ where
                 span,
                 &diagnostics,
             ));
-            actions.extend(crate::quick_fixes::create_symbol_quick_fixes(
-                self.db.as_ref().as_dyn_nova_db(),
-                file,
+            actions.extend(crate::quick_fixes::create_symbol_quick_fixes_from_diagnostics(
+                &uri,
+                source,
                 Some(span),
+                &diagnostics,
             ));
 
             actions.extend(crate::refactor::extract_member_code_actions(
