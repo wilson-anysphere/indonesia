@@ -296,15 +296,19 @@ List<User> findByName(@Param("name") String name);
 1. **Create crate** - `nova-framework-<name>`
 2. **Implement trait** - `FrameworkAnalyzer`
 3. **Register analyzer** - In the consumer's `AnalyzerRegistry`.
-   For Nova’s shipped analyzers, add it to `nova-framework-builtins`. `nova-ide`'s
-   `IdeExtensions::<DB>::with_default_registry` constructs `nova_framework_builtins::builtin_registry()`
-   and registers it via `FrameworkAnalyzerRegistryProvider` (diagnostics/completions/navigation/inlay
-   hints). The default provider is configured with `with_build_metadata_only()` so it only runs on
-   projects with authoritative build metadata (Maven/Gradle/Bazel), avoiding duplicate
-   diagnostics/completions when paired with the legacy
-   `FrameworkDiagnosticProvider`/`FrameworkCompletionProvider` backed by
-   `crates/nova-ide/src/framework_cache.rs`.
-   (If you want a fast no-op provider, `FrameworkAnalyzerRegistryProvider::empty()` is available.)
+    For Nova’s shipped analyzers, add it to `nova-framework-builtins`. `nova-ide`'s
+    `IdeExtensions::<DB>::with_default_registry` wires built-in analyzers into the `nova-ext`
+    registry in two tiers:
+    - **Legacy cache-backed providers** (`FrameworkDiagnosticProvider` / `FrameworkCompletionProvider`)
+      for "simple" projects without authoritative build metadata.
+    - **Per-analyzer providers** via `FrameworkAnalyzerAdapterOnTextDb`, one provider per built-in
+      analyzer, configured with `with_build_metadata_only()` so they only run on projects with
+      Maven/Gradle/Bazel metadata. This avoids duplicate diagnostics/completions when paired with the
+      legacy providers.
+
+    `FrameworkAnalyzerRegistryProvider` still exists as an alternative integration that runs an
+    entire `AnalyzerRegistry` behind a single provider ID (and
+    `FrameworkAnalyzerRegistryProvider::empty()` can be used as a fast no-op placeholder).
 4. **Add tests** - Framework-specific test cases
 5. **Document** - Update framework docs
 

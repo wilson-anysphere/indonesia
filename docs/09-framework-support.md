@@ -292,8 +292,12 @@ In the IDE there are currently two integration paths:
   config files and `@Value("${...}")` placeholders.
 - `crates/nova-ide/src/framework_db.rs` provides a `nova_db::Database` → `nova_framework::Database`
   adapter so `AnalyzerRegistry`-based analyzers can run in-process (see
-  `FrameworkAnalyzerRegistryProvider` in `crates/nova-ide/src/extensions.rs`, which calls the
-  registry’s `*_with_cancel` methods to cooperate with request cancellation/timeouts).
+  `crates/nova-ide/src/extensions.rs` for wiring options:
+  - `FrameworkAnalyzerRegistryProvider` runs an entire `AnalyzerRegistry` behind one `nova-ext`
+    provider ID.
+  - `FrameworkAnalyzerAdapterOnTextDb` exposes a single `FrameworkAnalyzer` as its own `nova-ext`
+    provider (this is the approach used by `IdeExtensions::with_default_registry` for built-in
+    analyzers, allowing per-analyzer isolation and configuration).
 
 ---
 
