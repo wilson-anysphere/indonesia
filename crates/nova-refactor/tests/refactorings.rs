@@ -191,6 +191,45 @@ fn extract_variable_generates_valid_edit() {
 }
 
 #[test]
+fn extract_variable_replaces_whole_expression_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  static class Foo {}
+
+  void m() {
+    new Foo();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("new Foo()").unwrap();
+    let expr_end = expr_start + "new Foo()".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "result".into(),
+            use_var: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  static class Foo {}
+
+  void m() {
+    Foo result = new Foo();
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_splits_multi_declarator_local_declaration() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {

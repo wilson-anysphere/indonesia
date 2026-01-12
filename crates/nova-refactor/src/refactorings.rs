@@ -358,6 +358,31 @@ pub fn extract_variable(
         }
     };
 
+    // Special-case: when extracting the whole expression of an expression statement, the usual
+    // strategy (insert declaration before the statement + replace the selected expression with the
+    // variable name) would leave a bare identifier statement (`name;`), which is not valid Java.
+    //
+    // In this case, replace the entire expression statement with a local variable declaration.
+    if let ast::Statement::ExpressionStatement(expr_stmt) = &stmt {
+        if let Some(stmt_expr) = expr_stmt.expression() {
+            let stmt_expr_range = trim_range(text, syntax_range(stmt_expr.syntax()));
+            if stmt_expr_range.start == selection.start && stmt_expr_range.end == selection.end {
+                let stmt_range = syntax_range(expr_stmt.syntax());
+                let prefix = &text[stmt_range.start..selection.start];
+                let suffix = &text[selection.end..stmt_range.end];
+                let replacement = format!("{prefix}{ty} {name} = {expr_text}{suffix}");
+
+                let mut edit = WorkspaceEdit::new(vec![TextEdit::replace(
+                    params.file.clone(),
+                    stmt_range,
+                    replacement,
+                )]);
+                edit.normalize()?;
+                return Ok(edit);
+            }
+        }
+    }
+
     let newline = NewlineStyle::detect(text).as_str();
 
     // Special-case: extracting inside a multi-declarator local variable declaration needs to
