@@ -963,6 +963,36 @@ class C {
 }
 
 #[test]
+fn conditional_infers_common_superclass_via_lub() {
+    let src = r#"
+class Base {
+    void base() {}
+}
+class A extends Base {}
+class B extends Base {}
+class C {
+    void m(boolean cond) {
+        var o = cond ? new A() : new B();
+        o.base();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method" || !d.message.contains("base")),
+        "expected Base.base() call to resolve, got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Base");
+}
+
+#[test]
 fn plus_unboxes_integer_operands_to_int() {
     let src = r#"
 class C {
