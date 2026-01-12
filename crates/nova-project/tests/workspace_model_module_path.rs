@@ -1,5 +1,8 @@
 use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
+use std::io::Write;
+use std::path::Path;
 use tempfile::tempdir;
+use zip::write::FileOptions;
 
 #[test]
 fn workspace_model_populates_module_path_for_jpms_workspaces() {
@@ -37,6 +40,73 @@ fn workspace_model_populates_module_path_for_jpms_workspaces() {
     assert!(
         !module.classpath.iter().any(|e| e.path == dep_dir),
         "dependency override directory should not remain on the classpath when JPMS is enabled"
+    );
+}
+
+#[test]
+fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("workspace");
+    std::fs::create_dir_all(&root).expect("mkdir root");
+
+    std::fs::write(
+        root.join("pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>app</artifactId>
+              <version>1.0</version>
+
+              <dependencies>
+                <dependency>
+                  <groupId>com.example</groupId>
+                  <artifactId>dep</artifactId>
+                  <version>1.0</version>
+                </dependency>
+              </dependencies>
+            </project>
+        "#,
+    )
+    .expect("write pom.xml");
+
+    let src_dir = root.join("src/main/java");
+    std::fs::create_dir_all(&src_dir).expect("mkdir src");
+    std::fs::write(
+        src_dir.join("module-info.java"),
+        "module com.example.app { requires com.example.dep; }",
+    )
+    .expect("write module-info.java");
+    std::fs::write(src_dir.join("Main.java"), "package com.example.app; class Main {}")
+        .expect("write dummy java");
+
+    let maven_repo = tmp.path().join("maven-repo");
+    let jar_path = maven_repo.join("com/example/dep/1.0/dep-1.0.jar");
+    std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("mkdir jar parent");
+    write_jar_with_manifest(
+        &jar_path,
+        "Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.dep\r\n\r\n",
+    );
+
+    let mut options = LoadOptions::default();
+    options.maven_repo = Some(maven_repo);
+
+    let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Maven);
+    assert_eq!(model.modules.len(), 1);
+    let module = &model.modules[0];
+
+    assert!(
+        module
+            .module_path
+            .iter()
+            .any(|e| e.path == jar_path && e.kind == ClasspathEntryKind::Jar),
+        "Maven dependency jar with Automatic-Module-Name should be on module-path when JPMS is enabled"
+    );
+    assert!(
+        !module.classpath.iter().any(|e| e.path == jar_path),
+        "Maven dependency jar should not remain on classpath when JPMS is enabled"
     );
 }
 
@@ -149,6 +219,16 @@ fn make_module_info_class() -> Vec<u8> {
     assert_eq!(info.name.as_str(), "mod.b");
 
     out
+}
+
+fn write_jar_with_manifest(path: &Path, manifest: &str) {
+    let mut jar = zip::ZipWriter::new(std::fs::File::create(path).expect("create jar"));
+    let options = FileOptions::<()>::default();
+    jar.start_file("META-INF/MANIFEST.MF", options)
+        .expect("start manifest entry");
+    jar.write_all(manifest.as_bytes())
+        .expect("write manifest contents");
+    jar.finish().expect("finish jar");
 }
 
 #[test]
