@@ -881,7 +881,24 @@ fn parse_method_body(
             let next_tok = tokens.get(after_name);
             let next_sym = next_tok.and_then(|t| t.symbol());
             let next_ident = next_tok.and_then(|t| t.ident());
-            if matches!(next_sym, Some('=') | Some(';') | Some(',')) {
+
+            // `Type name, ...` is ambiguous: it can be a comma-separated variable declaration
+            // (`Foo a, b;`) but it also appears in typed lambda parameters (`(Foo a, Foo b) ->`),
+            // which should not be indexed as method-scope locals (and, critically, should not
+            // cause us to scan beyond the parameter list and mis-index unrelated identifiers as
+            // variables).
+            //
+            // Best-effort heuristic: if the comma is followed by something that parses as a type
+            // reference and then an identifier (`Foo b` / `List<String> b` / `var b`), treat it as
+            // a parameter separator instead of a declarator separator.
+            let comma_followed_by_typed_param = next_sym == Some(',')
+                && parse_type_ref(tokens, after_name + 1, body_end)
+                    .and_then(|(_, _, next)| tokens.get(next).and_then(|t| t.ident()))
+                    .is_some();
+
+            if matches!(next_sym, Some('=') | Some(';'))
+                || (next_sym == Some(',') && !comma_followed_by_typed_param)
+            {
                 let stmt_end =
                     find_statement_terminator(tokens, after_name, body_end).unwrap_or(body_end);
                 let mut resolved_ty = ty.clone();
@@ -918,12 +935,21 @@ fn parse_method_body(
                     });
                 }
             } else if matches!(next_sym, Some(':') | Some(')') | Some('&') | Some('?')) {
-                locals.push(VarDef {
-                    ty,
-                    ty_span,
-                    name,
-                    name_span,
-                });
+                // Best-effort: avoid indexing typed lambda parameters like `(Foo x) ->` as
+                // method-scope locals.
+                if next_sym == Some(')')
+                    && tokens.get(after_name + 1).and_then(|t| t.symbol()) == Some('-')
+                    && tokens.get(after_name + 2).and_then(|t| t.symbol()) == Some('>')
+                {
+                    // Likely `(... ) ->` (lambda parameter list).
+                } else {
+                    locals.push(VarDef {
+                        ty,
+                        ty_span,
+                        name,
+                        name_span,
+                    });
+                }
             } else if next_sym == Some('-')
                 && tokens.get(after_name + 1).and_then(|t| t.symbol()) == Some('>')
             {
