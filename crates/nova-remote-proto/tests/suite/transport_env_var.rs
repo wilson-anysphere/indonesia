@@ -1,5 +1,4 @@
 use nova_remote_proto::transport;
-use std::process::Command;
 
 #[test]
 fn transport_respects_max_message_size_env_var() {
@@ -33,13 +32,18 @@ fn transport_respects_max_message_size_env_var() {
     }
 
     let exe = std::env::current_exe().expect("current_exe");
-    let status = Command::new(exe)
+    let output = std::process::Command::new(exe)
         .env(CHILD_ENV, "1")
         .env("NOVA_RPC_MAX_MESSAGE_SIZE", "8")
-        .arg("suite::transport_env_var::transport_respects_max_message_size_env_var")
         .arg("--exact")
-        .status()
+        .arg("suite::transport_env_var::transport_respects_max_message_size_env_var")
+        .output()
         .expect("spawn test subprocess");
 
-    assert!(status.success(), "subprocess test failed");
+    assert!(
+        output.status.success(),
+        "subprocess test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
