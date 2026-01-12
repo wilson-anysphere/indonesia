@@ -254,6 +254,44 @@ fn json_schema_requires_non_empty_extension_patterns() {
 }
 
 #[test]
+fn json_schema_includes_build_integration_config() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert!(
+        value.pointer("/properties/build").is_some(),
+        "root schema should include build property"
+    );
+
+    assert_eq!(
+        value
+            .pointer("/definitions/BuildIntegrationConfig/properties/timeout_ms/minimum")
+            .and_then(|v| v.as_f64()),
+        Some(1.0)
+    );
+
+    assert!(
+        value
+            .pointer("/definitions/BuildIntegrationConfig/properties/maven")
+            .is_some(),
+        "BuildIntegrationConfig should include maven subtable"
+    );
+    assert!(
+        value
+            .pointer("/definitions/BuildIntegrationConfig/properties/gradle")
+            .is_some(),
+        "BuildIntegrationConfig should include gradle subtable"
+    );
+
+    assert_eq!(
+        value
+            .pointer("/definitions/BuildToolConfig/properties/enabled/default")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
 fn json_schema_requires_non_whitespace_api_key_for_cloud_providers() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");
