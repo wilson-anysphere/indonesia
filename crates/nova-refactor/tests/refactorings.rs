@@ -95,6 +95,36 @@ fn rename_updates_all_occurrences_not_strings() {
 }
 
 #[test]
+fn rename_updates_occurrences_in_assert_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int foo = 1;
+    assert foo > 0 : foo;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(after.contains("int bar = 1;"));
+    assert!(after.contains("assert bar > 0 : bar;"), "got: {after}");
+    assert!(!after.contains("foo"), "expected all occurrences to be renamed: {after}");
+}
+
+#[test]
 fn symbol_at_package_decl_returns_package_kind() {
     let file = FileId::new("C.java");
     let src = "package com.example; class C {}";

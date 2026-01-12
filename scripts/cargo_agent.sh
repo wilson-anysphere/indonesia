@@ -283,6 +283,78 @@ run_cargo() {
     export RUST_TEST_THREADS="${rust_test_threads}"
   fi
 
+  # ---------------------------------------------------------------------------
+  # Compatibility shims for consolidated integration test harnesses.
+  # ---------------------------------------------------------------------------
+  #
+  # Some crates (notably `nova-lsp`) consolidate integration tests into a single
+  # `--test tests` harness for compile-time / memory efficiency. Older commands
+  # may still reference legacy per-file integration test binaries.
+  #
+  # Keep `scripts/cargo_agent.sh` flexible by remapping known legacy targets to
+  # the consolidated harness + an equivalent test-name filter.
+  if [[ "${subcommand}" == "test" ]]; then
+    local _args=("$@")
+    local _has_nova_lsp=""
+    local _wants_stdio_type_hierarchy=""
+    local _i
+
+    for ((_i = 0; _i < ${#_args[@]}; _i++)); do
+      case "${_args[${_i}]}" in
+        -p|--package)
+          if [[ "${_args[$((_i + 1))]:-}" == "nova-lsp" ]]; then
+            _has_nova_lsp=1
+          fi
+          ;;
+        -p=nova-lsp|--package=nova-lsp)
+          _has_nova_lsp=1
+          ;;
+        --test)
+          if [[ "${_args[$((_i + 1))]:-}" == "stdio_type_hierarchy" ]]; then
+            _wants_stdio_type_hierarchy=1
+          fi
+          ;;
+        --test=stdio_type_hierarchy)
+          _wants_stdio_type_hierarchy=1
+          ;;
+      esac
+    done
+
+    if [[ -n "${_has_nova_lsp}" && -n "${_wants_stdio_type_hierarchy}" ]]; then
+      echo "cargo_agent: remapping nova-lsp --test stdio_type_hierarchy -> --test tests stdio_type_hierarchy" >&2
+      local _out=()
+      for ((_i = 0; _i < ${#_args[@]}; _i++)); do
+        if [[ "${_args[${_i}]}" == "--test" && "${_args[$((_i + 1))]:-}" == "stdio_type_hierarchy" ]]; then
+          _out+=("--test" "tests")
+          _i=$((_i + 1))
+          continue
+        fi
+        if [[ "${_args[${_i}]}" == "--test=stdio_type_hierarchy" ]]; then
+          _out+=("--test=tests")
+          continue
+        fi
+        _out+=("${_args[${_i}]}")
+      done
+
+      # Add a test-name filter so the remapped harness still runs the intended suite.
+      # Insert before `--` (test runner args) if present.
+      local _sep=-1
+      for ((_i = 0; _i < ${#_out[@]}; _i++)); do
+        if [[ "${_out[${_i}]}" == "--" ]]; then
+          _sep=${_i}
+          break
+        fi
+      done
+      if [[ "${_sep}" -lt 0 ]]; then
+        _out+=("stdio_type_hierarchy")
+      else
+        _out=( "${_out[@]:0:${_sep}}" "stdio_type_hierarchy" "${_out[@]:${_sep}}" )
+      fi
+
+      set -- "${_out[@]}"
+    fi
+  fi
+
   # `cargo fuzz run` defaults to AddressSanitizer, which reserves a huge virtual
   # address range for its shadow memory. Under the default RLIMIT_AS cap enforced
   # by this wrapper, ASAN cannot reserve that shadow memory and crashes before the
