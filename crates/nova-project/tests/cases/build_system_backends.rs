@@ -53,6 +53,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(maven
         .watch_files()
         .contains(&PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.jar")));
+    assert!(maven
+        .watch_files()
+        .contains(&PathPattern::ExactFileName("module-info.java")));
 
     let gradle = GradleBuildSystem::new(LoadOptions::default());
     assert!(gradle
@@ -82,6 +85,12 @@ fn watch_files_contains_canonical_markers() {
     assert!(bazel
         .watch_files()
         .contains(&PathPattern::Glob("**/.bsp/*.json")));
+    assert!(bazel.watch_files().contains(&PathPattern::Glob("**/*.bzl")));
+
+    let simple = SimpleBuildSystem::new(LoadOptions::default());
+    assert!(simple
+        .watch_files()
+        .contains(&PathPattern::ExactFileName("module-info.java")));
 }
 
 #[test]

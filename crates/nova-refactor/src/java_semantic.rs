@@ -1299,7 +1299,8 @@ fn record_body_references(
                     let Some(method) = methods.first().map(|method| method.id) else {
                         return;
                     };
-                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
+                    let Some(&symbol) =
+                        resolution_to_symbol.get(&ResolutionKey::Method(method))
                     else {
                         return;
                     };

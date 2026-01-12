@@ -4,6 +4,30 @@ use nova_build_model::{BuildSystemBackend, BuildSystemError, Classpath, PathPatt
 
 use crate::discover::LoadOptions;
 
+fn common_watch_files() -> Vec<PathPattern> {
+    vec![
+        // JPMS module graph changes should trigger reload.
+        PathPattern::ExactFileName("module-info.java"),
+        // Nova configuration files.
+        PathPattern::ExactFileName("nova.toml"),
+        PathPattern::ExactFileName(".nova.toml"),
+        PathPattern::ExactFileName("nova.config.toml"),
+        PathPattern::Glob("**/.nova/config.toml"),
+        // Generated source roots discovery snapshot.
+        PathPattern::Glob("**/.nova/apt-cache/generated-roots.json"),
+    ]
+}
+
+fn dedup_patterns(patterns: Vec<PathPattern>) -> Vec<PathPattern> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    patterns
+        .into_iter()
+        .filter(|pattern| seen.insert(pattern.clone()))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct MavenBuildSystem {
     options: LoadOptions,
@@ -31,7 +55,8 @@ impl BuildSystemBackend for MavenBuildSystem {
     }
 
     fn watch_files(&self) -> Vec<PathPattern> {
-        vec![
+        dedup_patterns(
+            vec![
             PathPattern::ExactFileName("pom.xml"),
             PathPattern::ExactFileName("mvnw"),
             PathPattern::ExactFileName("mvnw.cmd"),
@@ -41,6 +66,10 @@ impl BuildSystemBackend for MavenBuildSystem {
             PathPattern::Glob("**/.mvn/maven.config"),
             PathPattern::Glob("**/.mvn/jvm.config"),
         ]
+            .into_iter()
+            .chain(common_watch_files())
+            .collect(),
+        )
     }
 }
 
@@ -79,7 +108,8 @@ impl BuildSystemBackend for GradleBuildSystem {
     }
 
     fn watch_files(&self) -> Vec<PathPattern> {
-        vec![
+        dedup_patterns(
+            vec![
             PathPattern::ExactFileName("build.gradle"),
             PathPattern::ExactFileName("build.gradle.kts"),
             PathPattern::ExactFileName("settings.gradle"),
@@ -101,6 +131,10 @@ impl BuildSystemBackend for GradleBuildSystem {
             // file so editors can trigger a reload when it changes.
             PathPattern::Glob("**/.nova/queries/gradle.json"),
         ]
+            .into_iter()
+            .chain(common_watch_files())
+            .collect(),
+        )
     }
 }
 
@@ -131,7 +165,8 @@ impl BuildSystemBackend for BazelBuildSystem {
     }
 
     fn watch_files(&self) -> Vec<PathPattern> {
-        vec![
+        dedup_patterns(
+            vec![
             PathPattern::ExactFileName("WORKSPACE"),
             PathPattern::ExactFileName("WORKSPACE.bazel"),
             PathPattern::ExactFileName("MODULE.bazel"),
@@ -147,6 +182,10 @@ impl BuildSystemBackend for BazelBuildSystem {
             PathPattern::Glob("**/.bsp/*.json"),
             PathPattern::Glob("**/*.bzl"),
         ]
+            .into_iter()
+            .chain(common_watch_files())
+            .collect(),
+        )
     }
 }
 
@@ -177,7 +216,7 @@ impl BuildSystemBackend for SimpleBuildSystem {
     }
 
     fn watch_files(&self) -> Vec<PathPattern> {
-        Vec::new()
+        common_watch_files()
     }
 }
 
