@@ -9,6 +9,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use super::build::BuildStatusGuard;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugConfigurationsParams {
@@ -84,6 +86,7 @@ struct ProjectHotSwapBuild {
 
 impl BuildSystem for ProjectHotSwapBuild {
     fn compile_files(&mut self, files: &[PathBuf]) -> Vec<CompileOutput> {
+        let mut status_guard = BuildStatusGuard::new(&self.project_root);
         let build_result = match self.project.build_system {
             nova_project::BuildSystem::Maven => self.build.build_maven(&self.project_root, None),
             nova_project::BuildSystem::Gradle => self.build.build_gradle(&self.project_root, None),
@@ -95,6 +98,35 @@ impl BuildSystem for ProjectHotSwapBuild {
             )),
         };
 
+        match &build_result {
+            Ok(result) => {
+                let has_errors = result
+                    .diagnostics
+                    .iter()
+                    .any(|diag| diag.severity == nova_core::DiagnosticSeverity::Error);
+                let exit_code = result.exit_code.unwrap_or(0);
+                let failed = exit_code != 0 || has_errors;
+                if failed {
+                    let first_error = result
+                        .diagnostics
+                        .iter()
+                        .find(|diag| diag.severity == nova_core::DiagnosticSeverity::Error)
+                        .map(|diag| diag.message.clone());
+                    let message = first_error.or_else(|| {
+                        if exit_code != 0 {
+                            Some(format!("hot-swap build failed with exit code {exit_code}"))
+                        } else {
+                            Some("hot-swap build failed".to_string())
+                        }
+                    });
+                    status_guard.mark_failure(message);
+                } else {
+                    status_guard.mark_success();
+                }
+            }
+            Err(err) => status_guard.mark_failure(Some(err.to_string())),
+        }
+
         match build_result {
             Ok(result) => self.outputs_for_build(files, result),
             Err(err) => files
@@ -105,6 +137,137 @@ impl BuildSystem for ProjectHotSwapBuild {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    #[derive(Debug)]
+    struct BlockingErrorRunner {
+        started_tx: Mutex<Option<mpsc::Sender<()>>>,
+        release_rx: Mutex<Option<mpsc::Receiver<()>>>,
+    }
+
+    impl nova_build::CommandRunner for BlockingErrorRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &Path,
+            _args: &[String],
+        ) -> std::io::Result<nova_build::CommandOutput> {
+            if let Some(tx) = self
+                .started_tx
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take()
+            {
+                let _ = tx.send(());
+            }
+
+            if let Some(rx) = self
+                .release_rx
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take()
+            {
+                let _ = rx.recv_timeout(Duration::from_secs(2));
+            }
+
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "boom"))
+        }
+    }
+
+    #[test]
+    fn hot_swap_build_marks_build_status_building_then_failed() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("maven-project");
+        std::fs::create_dir_all(&root).unwrap();
+
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</project>
+"#,
+        )
+        .unwrap();
+
+        // Ensure `nova-build` prefers wrapper scripts over requiring a system `mvn`.
+        std::fs::write(root.join("mvnw"), "").unwrap();
+        std::fs::write(root.join("mvnw.cmd"), "").unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let runner = BlockingErrorRunner {
+            started_tx: Mutex::new(Some(started_tx)),
+            release_rx: Mutex::new(Some(release_rx)),
+        };
+
+        let cache_dir = root.join(".nova").join("build-cache");
+        let build = BuildManager::with_runner(cache_dir, Arc::new(runner));
+
+        let project = nova_project::ProjectConfig {
+            workspace_root: root.clone(),
+            build_system: nova_project::BuildSystem::Maven,
+            java: nova_project::JavaConfig::default(),
+            modules: Vec::new(),
+            jpms_modules: Vec::new(),
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let mut build_system = ProjectHotSwapBuild {
+            project_root: root.clone(),
+            project,
+            build,
+        };
+
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            build_system.compile_files(&[root_for_thread.join("Foo.java")]);
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("expected build tool invocation to start");
+
+        let status = super::super::build::handle_build_status(serde_json::json!({
+            "projectRoot": root.to_string_lossy(),
+        }))
+        .unwrap();
+        assert_eq!(status.get("status").and_then(|v| v.as_str()), Some("building"));
+
+        // Allow the runner to return an error so the build finishes.
+        let _ = release_tx.send(());
+        handle.join().unwrap();
+
+        let status = super::super::build::handle_build_status(serde_json::json!({
+            "projectRoot": root.to_string_lossy(),
+        }))
+        .unwrap();
+        assert_eq!(status.get("status").and_then(|v| v.as_str()), Some("failed"));
+        assert!(
+            status
+                .get("lastError")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("boom"),
+            "expected lastError to include the runner error: {status:?}"
+        );
     }
 }
 
