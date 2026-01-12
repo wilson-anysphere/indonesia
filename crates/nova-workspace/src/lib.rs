@@ -22,6 +22,7 @@ use walkdir::WalkDir;
 mod engine;
 mod snapshot;
 mod watch;
+mod watch_roots;
 
 pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
 pub use snapshot::WorkspaceSnapshot;

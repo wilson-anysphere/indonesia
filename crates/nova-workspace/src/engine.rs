@@ -31,6 +31,7 @@ use walkdir::WalkDir;
 use crate::watch::{
     categorize_event, ChangeCategory, NormalizedEvent, WatchConfig,
 };
+use crate::watch_roots::{WatchRootError, WatchRootManager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexProgress {
@@ -290,6 +291,8 @@ impl WorkspaceEngine {
                 (ChangeCategory::Source, Duration::from_millis(200)),
                 (ChangeCategory::Build, Duration::from_millis(200)),
             ]);
+            let mut watch_root_manager = WatchRootManager::new(Duration::from_secs(2));
+            let retry_tick = channel::tick(Duration::from_secs(2));
 
             let mut watcher = match NotifyFileWatcher::new() {
                 Ok(watcher) => watcher,
@@ -321,44 +324,29 @@ impl WorkspaceEngine {
                 }
             }
 
-            let mut watched_roots: HashSet<PathBuf> = HashSet::new();
-            let mut roots: Vec<PathBuf> = Vec::new();
-            roots.push(watch_root.clone());
-            for root in initial_config
-                .source_roots
-                .iter()
-                .chain(initial_config.generated_source_roots.iter())
-            {
-                // If the configured root is outside the workspace root, we need to watch it
-                // explicitly. Roots under the workspace root are already covered by the recursive
-                // watch.
-                if root.starts_with(&watch_root) {
-                    continue;
-                }
-                roots.push(root.clone());
-            }
-
-            roots.sort();
-            roots.dedup();
-
-            for root in roots {
-                if !root.exists() {
-                    continue;
-                }
-                match watcher.watch_root(&root) {
-                    Ok(()) => {
-                        watched_roots.insert(root);
+            let desired_roots = |workspace_root: &Path, config: &WatchConfig| {
+                let mut desired: HashSet<PathBuf> = HashSet::new();
+                desired.insert(workspace_root.to_path_buf());
+                for root in config
+                    .source_roots
+                    .iter()
+                    .chain(config.generated_source_roots.iter())
+                {
+                    if root.starts_with(workspace_root) {
+                        continue;
                     }
-                    Err(err) => {
-                        publish_to_subscribers(
-                            &subscribers,
-                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                                "Failed to watch {}: {err}",
-                                root.display()
-                            ))),
-                        );
-                    }
+                    desired.insert(root.clone());
                 }
+                desired
+            };
+
+            let now = Instant::now();
+            for err in watch_root_manager.set_desired_roots(
+                desired_roots(&watch_root, &initial_config),
+                now,
+                &mut watcher,
+            ) {
+                publish_watch_root_error(&subscribers, err);
             }
 
             loop {
@@ -380,27 +368,22 @@ impl WorkspaceEngine {
                         let Ok(cmd) = msg else { break };
                         match cmd {
                             WatchCommand::Watch(root) => {
-                                if watched_roots.contains(&root) {
-                                    continue;
+                                let now = Instant::now();
+                                let cfg = watch_config
+                                    .read()
+                                    .expect("workspace watch config lock poisoned")
+                                    .clone();
+                                let mut desired = desired_roots(&watch_root, &cfg);
+                                desired.insert(root);
+                                for err in watch_root_manager.set_desired_roots(
+                                    desired,
+                                    now,
+                                    &mut watcher,
+                                ) {
+                                    publish_watch_root_error(&subscribers, err);
                                 }
-                                if !root.exists() {
-                                    continue;
-                                }
-                                match watcher.watch_root(&root) {
-                                    Ok(()) => {
-                                        watched_roots.insert(root);
-                                    }
-                                    Err(err) => {
-                                        publish_to_subscribers(
-                                            &subscribers,
-                                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(
-                                                format!(
-                                                    "Failed to watch {}: {err}",
-                                                    root.display()
-                                                ),
-                                            )),
-                                        );
-                                    }
+                                for err in watch_root_manager.retry_pending(now, &mut watcher) {
+                                    publish_watch_root_error(&subscribers, err);
                                 }
                             }
                         }
@@ -437,6 +420,29 @@ impl WorkspaceEngine {
                     }
                     recv(tick) -> _ => {
                         let now = Instant::now();
+                        for (cat, events) in debouncer.flush_due(now) {
+                            let _ = batch_tx.send((cat, events));
+                        }
+                    }
+                    recv(retry_tick) -> _ => {
+                        let now = Instant::now();
+
+                        let cfg = watch_config
+                            .read()
+                            .expect("workspace watch config lock poisoned")
+                            .clone();
+                        for err in watch_root_manager.set_desired_roots(
+                            desired_roots(&watch_root, &cfg),
+                            now,
+                            &mut watcher,
+                        ) {
+                            publish_watch_root_error(&subscribers, err);
+                        }
+
+                        for err in watch_root_manager.retry_pending(now, &mut watcher) {
+                            publish_watch_root_error(&subscribers, err);
+                        }
+
                         for (cat, events) in debouncer.flush_due(now) {
                             let _ = batch_tx.send((cat, events));
                         }
@@ -1221,6 +1227,32 @@ fn publish_to_subscribers(
         .lock()
         .expect("workspace subscriber mutex poisoned");
     subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+}
+
+fn publish_watch_root_error(
+    subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    err: WatchRootError,
+) {
+    match err {
+        WatchRootError::WatchFailed { root, error } => {
+            publish_to_subscribers(
+                subscribers,
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                    "Failed to watch {}: {error}",
+                    root.display()
+                ))),
+            );
+        }
+        WatchRootError::UnwatchFailed { root, error } => {
+            publish_to_subscribers(
+                subscribers,
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                    "Failed to unwatch {}: {error}",
+                    root.display()
+                ))),
+            );
+        }
+    }
 }
 
 fn order_move_events(mut moves: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
