@@ -412,6 +412,28 @@ test('package.json contributes Nova Project Explorer reveal path command', async
   assert.equal(activationCount, 1);
 });
 
+test('package.json contributes Nova Project Explorer copy path command', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const commandId = 'nova.projectExplorer.copyPath';
+
+  const contributedCount = commands.filter(
+    (entry) => entry && typeof entry === 'object' && (entry as { command?: unknown }).command === commandId,
+  ).length;
+  assert.equal(contributedCount, 1);
+
+  const activationCount = activationEvents.filter((entry) => entry === `onCommand:${commandId}`).length;
+  assert.equal(activationCount, 1);
+});
+
 test('package.json contributes Nova Frameworks + Project Explorer viewsWelcome empty-state guidance', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
