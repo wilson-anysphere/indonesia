@@ -431,7 +431,7 @@ Type {
 PrimitiveType {}
 
 NamedType {
-  type_arguments: TypeArguments?
+  type_arguments: TypeArguments*
 }
 
 TypeArguments {

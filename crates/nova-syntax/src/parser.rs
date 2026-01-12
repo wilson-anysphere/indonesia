@@ -2944,11 +2944,24 @@ impl<'a> Parser<'a> {
                     self.builder
                         .start_node_at(checkpoint, SyntaxKind::NameExpression.into());
                     self.bump();
-                    while self.at(SyntaxKind::Dot)
-                        && self.nth(1).is_some_and(|k| k.is_identifier_like())
-                    {
-                        self.bump();
-                        self.bump();
+                    loop {
+                        // Permit parsing type arguments in a handful of expression contexts where
+                        // the grammar expects a reference type, such as `List<String>::new`.
+                        if self.nth(0) == Some(SyntaxKind::Less)
+                            && self.at_reference_type_arguments_start()
+                        {
+                            self.parse_type_arguments();
+                        }
+
+                        if self.at(SyntaxKind::Dot)
+                            && self.nth(1).is_some_and(|k| k.is_identifier_like())
+                        {
+                            self.bump();
+                            self.bump();
+                            continue;
+                        }
+
+                        break;
                     }
                     if self.at(SyntaxKind::LBracket)
                         && self.nth(1) == Some(SyntaxKind::RBracket)
@@ -3281,6 +3294,59 @@ impl<'a> Parser<'a> {
             || self.nth(offset) == Some(SyntaxKind::DoubleColon)
     }
 
+    fn at_reference_type_arguments_start(&mut self) -> bool {
+        // Determines whether the token stream looks like type arguments that are part of a
+        // reference type suffix, such as:
+        // - `List<String>::new`
+        // - `Outer<String>.Inner::new`
+        // - `List<String>[].class`
+        //
+        // This is intentionally conservative to avoid stealing `<` from binary expressions.
+        let mut idx = skip_trivia(&self.tokens, 0);
+        if self.tokens.get(idx).map(|t| t.kind) != Some(SyntaxKind::Less) {
+            return false;
+        }
+
+        idx = skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, idx));
+
+        // Allow additional `. Ident <...>?` segments (for nested types).
+        loop {
+            let dot = skip_trivia(&self.tokens, idx);
+            if self.tokens.get(dot).map(|t| t.kind) != Some(SyntaxKind::Dot) {
+                idx = dot;
+                break;
+            }
+
+            let seg = skip_trivia(&self.tokens, dot + 1);
+            if !self
+                .tokens
+                .get(seg)
+                .is_some_and(|t| t.kind.is_identifier_like())
+            {
+                idx = dot;
+                break;
+            }
+
+            idx = seg + 1;
+            idx = skip_trivia(&self.tokens, idx);
+            if self.tokens.get(idx).map(|t| t.kind) == Some(SyntaxKind::Less) {
+                idx = skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, idx));
+            }
+        }
+
+        idx = skip_reference_type_array_suffix(&self.tokens, idx);
+        idx = skip_trivia(&self.tokens, idx);
+
+        match self.tokens.get(idx).map(|t| t.kind) {
+            Some(SyntaxKind::DoubleColon) => true,
+            Some(SyntaxKind::Dot) => {
+                let next = skip_trivia(&self.tokens, idx + 1);
+                self.tokens.get(next).map(|t| t.kind) == Some(SyntaxKind::ClassKw)
+            }
+            _ => false,
+        }
+    }
+
     fn parse_instanceof_type_or_pattern(&mut self) {
         self.eat_trivia();
 
@@ -3374,12 +3440,15 @@ impl<'a> Parser<'a> {
         } else {
             self.builder.start_node(SyntaxKind::NamedType.into());
             self.expect_ident_like("expected type name");
+            if self.nth(0) == Some(SyntaxKind::Less) {
+                self.parse_type_arguments();
+            }
             while self.at(SyntaxKind::Dot) && self.nth(1).is_some_and(|k| k.is_identifier_like()) {
                 self.bump();
                 self.expect_ident_like("expected type name segment");
-            }
-            if self.at(SyntaxKind::Less) {
-                self.parse_type_arguments();
+                if self.nth(0) == Some(SyntaxKind::Less) {
+                    self.parse_type_arguments();
+                }
             }
             self.builder.finish_node(); // NamedType
         }
@@ -4362,6 +4431,21 @@ fn skip_type_arguments(tokens: &VecDeque<Token>, mut idx: usize) -> usize {
         }
     }
     idx
+}
+
+fn skip_reference_type_array_suffix(tokens: &VecDeque<Token>, mut idx: usize) -> usize {
+    // Skips a sequence of `[]` pairs (allowing trivia between tokens).
+    loop {
+        let lbracket = skip_trivia(tokens, idx);
+        if tokens.get(lbracket).map(|t| t.kind) != Some(SyntaxKind::LBracket) {
+            return lbracket;
+        }
+        let rbracket = skip_trivia(tokens, lbracket + 1);
+        if tokens.get(rbracket).map(|t| t.kind) != Some(SyntaxKind::RBracket) {
+            return lbracket;
+        }
+        idx = rbracket + 1;
+    }
 }
 
 fn is_primitive_type(kind: SyntaxKind) -> bool {

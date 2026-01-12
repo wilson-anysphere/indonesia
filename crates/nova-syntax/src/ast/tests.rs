@@ -752,6 +752,32 @@ fn method_reference_type_arguments_accessors() {
 }
 
 #[test]
+fn constructor_reference_allows_parameterized_reference_type() {
+    let src = r#"
+        class Foo {
+          void m() {
+            var c = java.util.ArrayList<String>::new;
+          }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let constructor_ref = parse
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::ConstructorReferenceExpression)
+        .expect("expected a constructor reference expression");
+    assert!(
+        constructor_ref
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::TypeArguments),
+        "expected type arguments inside the reference type"
+    );
+}
+
+#[test]
 fn annotation_element_value_pairs() {
     let src = r#"
         @Anno(x = 1)
@@ -979,6 +1005,7 @@ fn type_use_annotations_are_attached_to_types() {
         .named()
         .unwrap()
         .type_arguments()
+        .next()
         .unwrap()
         .arguments()
         .next()

@@ -2064,8 +2064,8 @@ impl AstNode for NamedType {
 }
 
 impl NamedType {
-    pub fn type_arguments(&self) -> Option<TypeArguments> {
-        support::child::<TypeArguments>(&self.syntax)
+    pub fn type_arguments(&self) -> impl Iterator<Item = TypeArguments> + '_ {
+        support::children::<TypeArguments>(&self.syntax)
     }
 
 }

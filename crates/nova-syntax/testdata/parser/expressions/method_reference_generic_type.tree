@@ -1,0 +1,118 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          ExpressionStatement
+            ConstructorReferenceExpression
+              NameExpression
+                Identifier "java"
+                Dot "."
+                Identifier "util"
+                Dot "."
+                Identifier "ArrayList"
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+              DoubleColon "::"
+              NewKw "new"
+            Semicolon ";"
+          Whitespace "\n    "
+          ExpressionStatement
+            ConstructorReferenceExpression
+              NameExpression
+                Identifier "Outer"
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+                Dot "."
+                Identifier "Inner"
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "Integer"
+                  Greater ">"
+              DoubleColon "::"
+              NewKw "new"
+            Semicolon ";"
+          Whitespace "\n    "
+          ExpressionStatement
+            ConstructorReferenceExpression
+              NameExpression
+                Identifier "java"
+                Dot "."
+                Identifier "util"
+                Dot "."
+                Identifier "Map"
+                Dot "."
+                Identifier "Entry"
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Comma ","
+                  Whitespace " "
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "Integer"
+                  Greater ">"
+              DoubleColon "::"
+              NewKw "new"
+            Semicolon ";"
+          Whitespace "\n    "
+          ExpressionStatement
+            ConstructorReferenceExpression
+              NameExpression
+                Identifier "java"
+                Dot "."
+                Identifier "util"
+                Dot "."
+                Identifier "List"
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+                LBracket "["
+                RBracket "]"
+              DoubleColon "::"
+              NewKw "new"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
