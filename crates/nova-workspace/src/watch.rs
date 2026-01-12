@@ -418,6 +418,45 @@ mod tests {
             path.display()
         );
 
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Created(path.clone())),
+            Some(ChangeCategory::Build),
+            "expected {} to be categorized as Build on create",
+            path.display()
+        );
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Deleted(path.clone())),
+            Some(ChangeCategory::Build),
+            "expected {} to be categorized as Build on delete",
+            path.display()
+        );
+
+        let other = root.join("Other.java");
+        assert_eq!(
+            categorize_event(
+                &config,
+                &NormalizedEvent::Moved {
+                    from: path.clone(),
+                    to: other.clone(),
+                }
+            ),
+            Some(ChangeCategory::Build),
+            "expected move from {} to be categorized as Build",
+            path.display()
+        );
+        assert_eq!(
+            categorize_event(
+                &config,
+                &NormalizedEvent::Moved {
+                    from: other,
+                    to: path.clone(),
+                }
+            ),
+            Some(ChangeCategory::Build),
+            "expected move to {} to be categorized as Build",
+            path.display()
+        );
+
         let non_build_files = [
             root.join("generated-roots.json"),
             root.join("apt-cache").join("generated-roots.json"),
