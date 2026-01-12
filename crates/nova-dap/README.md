@@ -12,7 +12,7 @@ stack frames, locals, and best-effort evaluation.
 > **Nova agents:** all `cargo` commands in this repo must be run via the wrapper
 > script from [`AGENTS.md`](../../AGENTS.md):
 >
-> `bash scripts/cargo_agent.sh ...`
+> `bash scripts/cargo_agent.sh <subcommand> --locked ...`
 
 ### Adapter modes
 
