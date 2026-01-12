@@ -9,10 +9,10 @@ set -euo pipefail
 # - Enforce a per-command RAM ceiling via RLIMIT_AS
 #
 # Usage:
-#   scripts/cargo_agent.sh build --release
-#   scripts/cargo_agent.sh check -p nova-syntax
-#   scripts/cargo_agent.sh test -p nova-core --lib
-#   scripts/cargo_agent.sh test -p nova-types --test harness -- --ignored
+#   bash scripts/cargo_agent.sh build --release
+#   bash scripts/cargo_agent.sh check -p nova-syntax
+#   bash scripts/cargo_agent.sh test -p nova-core --lib
+#   bash scripts/cargo_agent.sh test -p nova-types --test harness -- --ignored
 #
 # Tuning knobs (env vars):
 #   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
@@ -20,16 +20,17 @@ set -euo pipefail
 #   NOVA_CARGO_LIMIT_AS     Address-space cap (default: 4G)
 #   NOVA_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #   NOVA_RUST_TEST_THREADS  Default RUST_TEST_THREADS for cargo test (default: min(nproc, 8))
+#   NOVA_CARGO_ALLOW_UNSCOPED_TEST=1  Allow unscoped `cargo test` (not recommended)
 
 usage() {
   cat <<'EOF'
-usage: scripts/cargo_agent.sh <cargo-subcommand> [args...]
+usage: bash scripts/cargo_agent.sh <cargo-subcommand> [args...]
 
 Examples:
-  scripts/cargo_agent.sh check -p nova-syntax --quiet
-  scripts/cargo_agent.sh build --release
-  scripts/cargo_agent.sh test -p nova-core --lib
-  scripts/cargo_agent.sh test -p nova-types --test harness -- --ignored
+  bash scripts/cargo_agent.sh check -p nova-syntax --quiet
+  bash scripts/cargo_agent.sh build --release
+  bash scripts/cargo_agent.sh test -p nova-core --lib
+  bash scripts/cargo_agent.sh test -p nova-types --test harness -- --ignored
 
 Environment:
   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
@@ -43,8 +44,8 @@ Notes:
   - This wrapper enforces RAM caps via RLIMIT_AS (through scripts/run_limited.sh).
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
   - `cargo test` is blocked unless scoped with `-p/--package` or `--manifest-path`.
-    To override (rare): NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 scripts/cargo_agent.sh test ...
-  - For faster iteration, further scope tests with --lib, --bin <name>, or --test=<name>.
+    To override (rare): NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 bash scripts/cargo_agent.sh test ...
+  - For faster iteration, further scope tests with --lib, --bin <name>, or --test <name>.
 EOF
 }
 
@@ -113,10 +114,10 @@ Re-run with an explicit scope selector:
   --manifest-path <path>
 
 Example:
-  scripts/cargo_agent.sh test -p nova-testing --lib
+  bash scripts/cargo_agent.sh test -p nova-testing --lib
 
 To override (rare):
-  NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 scripts/cargo_agent.sh test [...]
+  NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 bash scripts/cargo_agent.sh test [...]
 EOF
     return 2
   fi
