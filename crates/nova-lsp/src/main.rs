@@ -3683,13 +3683,53 @@ fn handle_notification(
                 return Ok(());
             };
 
+            // `workspace/didChangeWatchedFiles` is the only reliable signal some clients provide
+            // when non-Java inputs change (build files, framework config, Nova config, etc).
+            //
+            // Reload `nova_config` when the watched changes include the active config file. We use
+            // `NOVA_CONFIG_PATH` when present (set at startup via `--config` / config discovery),
+            // but also fall back to standard config filenames so creating/removing `nova.toml`
+            // takes effect without requiring a server restart.
+            let configured_config_path = env::var_os("NOVA_CONFIG_PATH")
+                .map(PathBuf::from)
+                .map(|path| path.canonicalize().unwrap_or(path));
+            let mut config_changed = false;
+            let legacy_config_suffix = Path::new(".nova").join("config.toml");
+
             for change in params.changes {
                 let uri = change.uri;
                 let vfs_path = VfsPath::from(&uri);
+                let local_path = vfs_path.as_local_path().map(|p| p.to_path_buf());
+
+                if !config_changed {
+                    let is_standard_config_name = local_path
+                        .as_ref()
+                        .and_then(|path| path.file_name().and_then(|name| name.to_str()))
+                        .is_some_and(|name| matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml"));
+
+                    let is_legacy_config_path = local_path
+                        .as_ref()
+                        .is_some_and(|path| path.ends_with(&legacy_config_suffix));
+
+                    let matches_configured_path = match (&configured_config_path, &local_path) {
+                        (Some(configured), Some(path)) => {
+                            path == configured
+                                || path
+                                    .canonicalize()
+                                    .ok()
+                                    .is_some_and(|resolved| resolved.as_path() == configured.as_path())
+                        }
+                        _ => false,
+                    };
+
+                    if matches_configured_path || is_standard_config_name || is_legacy_config_path {
+                        config_changed = true;
+                    }
+                }
+
                 if state.analysis.vfs.overlay().is_open(&vfs_path) {
                     continue;
                 }
-                let local_path = vfs_path.as_local_path().map(|p| p.to_path_buf());
 
                 let (file_id, _) = state.analysis.file_id_for_uri(&uri);
                 let distributed_update = match change.typ {
@@ -3751,6 +3791,20 @@ fn handle_notification(
                                 }
                             });
                         }
+                    }
+                }
+            }
+
+            if config_changed {
+                match reload_config_best_effort(state.project_root.as_deref()) {
+                    Ok(config) => {
+                        state.config = Arc::new(config);
+                        // Best-effort: extensions configuration is sourced from `nova_config`, so keep
+                        // the registry in sync when users edit `nova.toml`.
+                        state.load_extensions();
+                    }
+                    Err(err) => {
+                        tracing::warn!(target = "nova.lsp", "failed to reload config: {err}");
                     }
                 }
             }
