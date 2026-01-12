@@ -663,7 +663,7 @@ fn looks_like_java_source(text: &str) -> bool {
 
 fn is_application_properties(path: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with("application")
+    starts_with_ignore_ascii_case(name, "application")
         && path
             .extension()
             .and_then(|e| e.to_str())
@@ -672,7 +672,7 @@ fn is_application_properties(path: &Path) -> bool {
 
 fn is_application_yaml(path: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if !name.starts_with("application") {
+    if !starts_with_ignore_ascii_case(name, "application") {
         return false;
     }
     matches!(
@@ -686,10 +686,18 @@ fn is_application_config_file(path: &Path) -> bool {
 }
 
 fn is_spring_metadata_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|s| s.to_str()),
-        Some("spring-configuration-metadata.json" | "additional-spring-configuration-metadata.json")
-    )
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+
+    name.eq_ignore_ascii_case("spring-configuration-metadata.json")
+        || name.eq_ignore_ascii_case("additional-spring-configuration-metadata.json")
+}
+
+fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
+    haystack
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

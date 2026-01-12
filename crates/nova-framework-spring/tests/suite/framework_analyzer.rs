@@ -87,6 +87,43 @@ fn config_diagnostics_report_unknown_keys() {
 }
 
 #[test]
+fn config_diagnostics_are_case_insensitive_for_application_properties() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "org.springframework", "spring-context");
+
+    // Ensure metadata ingestion works even when the metadata file name casing is different.
+    db.add_file_with_path_and_text(
+        project,
+        "SPRING-CONFIGURATION-METADATA.JSON",
+        r#"
+        {
+          "properties": [
+            { "name": "server.port", "type": "java.lang.Integer" }
+          ]
+        }
+        "#,
+    );
+
+    // Non-standard casing for the application config file name and extension.
+    let config = db.add_file_with_path_and_text(
+        project,
+        "src/main/resources/Application.PROPERTIES",
+        "unknown.key=foo\n",
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let diags = registry.framework_diagnostics(&db, config);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
+            && d.message.contains("unknown.key")),
+        "expected SPRING_UNKNOWN_CONFIG_KEY for unknown.key; got {diags:?}"
+    );
+}
+
+#[test]
 fn value_placeholder_completion_includes_replace_span() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();

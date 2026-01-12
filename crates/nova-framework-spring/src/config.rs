@@ -129,12 +129,9 @@ struct ConfigEntry {
 }
 
 fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default();
-    match ext {
-        "properties" => nova_properties::parse(text)
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    if ext.eq_ignore_ascii_case("properties") {
+        return nova_properties::parse(text)
             .entries
             .into_iter()
             .map(|e| ConfigEntry {
@@ -143,19 +140,23 @@ fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
                 key_span: text_range_to_span(e.key_range),
                 value_span: text_range_to_span(e.value_range),
             })
-            .collect(),
-        "yml" | "yaml" => nova_yaml::parse(text)
-            .entries
-            .into_iter()
-            .map(|e| ConfigEntry {
-                key: e.key,
-                value: e.value,
-                key_span: text_range_to_span(e.key_range),
-                value_span: text_range_to_span(e.value_range),
-            })
-            .collect(),
-        _ => Vec::new(),
+            .collect();
     }
+
+    if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml") {
+        return nova_yaml::parse(text)
+            .entries
+            .into_iter()
+            .map(|e| ConfigEntry {
+                key: e.key,
+                value: e.value,
+                key_span: text_range_to_span(e.key_range),
+                value_span: text_range_to_span(e.value_range),
+            })
+            .collect();
+    }
+
+    Vec::new()
 }
 
 fn text_range_to_span(range: TextRange) -> Span {
@@ -177,7 +178,11 @@ pub fn diagnostics_for_config_file(
 
     // Duplicate detection is only meaningful for `.properties`, which Spring
     // resolves sequentially.
-    if path.extension().and_then(|e| e.to_str()) == Some("properties") {
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("properties"))
+    {
         let mut seen: HashMap<&str, Span> = HashMap::new();
         for entry in &entries {
             if let Some(prev_span) = seen.insert(entry.key.as_str(), entry.key_span) {
