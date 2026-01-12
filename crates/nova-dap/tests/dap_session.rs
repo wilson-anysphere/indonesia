@@ -417,6 +417,57 @@ async fn dap_static_scope_can_read_and_set_static_fields() {
 }
 
 #[tokio::test]
+async fn dap_step_in_targets_lists_calls_on_current_line() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    let temp = tempfile::tempdir().unwrap();
+    let main_path = temp.path().join("Main.java");
+    std::fs::write(
+        &main_path,
+        "class Main {\n  void main() {\n    foo(bar(), baz(qux()), corge()).trim();\n  }\n}\n",
+    )
+    .unwrap();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let bp_resp = client
+        .set_breakpoints(main_path.to_str().unwrap(), &[3])
+        .await;
+    assert!(bp_resp
+        .pointer("/body/breakpoints/0/verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    let thread_id = client.first_thread_id().await;
+    client.continue_with_thread_id(Some(thread_id)).await;
+    let _ = client.wait_for_stopped_reason("breakpoint").await;
+
+    let frame_id = client.first_frame_id(thread_id).await;
+    let resp = client
+        .request("stepInTargets", json!({ "frameId": frame_id }))
+        .await;
+    assert_eq!(resp.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    let targets = resp
+        .pointer("/body/targets")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let labels: Vec<_> = targets
+        .iter()
+        .filter_map(|t| t.get("label").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["bar()", "qux()", "baz()", "corge()", "foo()", "trim()"]
+    );
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_can_hot_swap_a_class() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses

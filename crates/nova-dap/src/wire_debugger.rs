@@ -472,6 +472,53 @@ impl Debugger {
         Ok(out)
     }
 
+    pub async fn step_in_targets(
+        &mut self,
+        cancel: &CancellationToken,
+        frame_id: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
+
+        let Some(frame) = self.frame_handles.get(frame_id).copied() else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown frameId {frame_id}"
+            )));
+        };
+
+        let source_file = self.source_file(cancel, frame.location.class_id).await?;
+        let Some(path) = self
+            .resolve_source_path(cancel, frame.location.class_id, &source_file)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let line = self
+            .line_number(
+                cancel,
+                frame.location.class_id,
+                frame.location.method_id,
+                frame.location.index,
+            )
+            .await
+            .unwrap_or(1)
+            .max(1) as u32;
+        let line_idx = (line - 1) as usize;
+
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let line_text = text.lines().nth(line_idx).unwrap_or("");
+        let mut targets = crate::smart_step_into::enumerate_step_in_targets_in_line(line_text);
+        for target in &mut targets {
+            target.line = Some(line);
+            target.end_line = Some(line);
+        }
+        Ok(targets.into_iter().map(|t| json!(t)).collect())
+    }
+
     pub fn scopes(&mut self, frame_id: i64) -> Result<Vec<serde_json::Value>> {
         let Some(frame) = self.frame_handles.get(frame_id).copied() else {
             return Err(DebuggerError::InvalidRequest(format!(

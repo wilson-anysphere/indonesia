@@ -328,6 +328,7 @@ async fn handle_request_inner(
                 "supportsTerminateRequest": true,
                 "supportsRestartRequest": false,
                 "supportsSetVariable": true,
+                "supportsStepInTargetsRequest": true,
                 "supportsStepBack": false,
                 "supportsFunctionBreakpoints": true,
                 "supportsVariablePaging": true,
@@ -1614,6 +1615,73 @@ async fn handle_request_inner(
                     true,
                     Some(json!({ "scopes": scopes })),
                     None,
+                ),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "stepInTargets" => {
+            let Some(frame_id) = request.arguments.get("frameId").and_then(|v| v.as_i64()) else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("stepInTargets.frameId is required".to_string()),
+                );
+                return;
+            };
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "targets": [] })),
+                    None,
+                );
+                return;
+            };
+
+            match dbg.step_in_targets(cancel, frame_id).await {
+                Ok(targets) if cancel.is_cancelled() => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Ok(targets) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "targets": targets })),
+                    None,
+                ),
+                Err(err) if is_cancelled_error(&err) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
                 ),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
