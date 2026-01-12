@@ -200,6 +200,18 @@ impl JdkSymbolIndex {
         }
     }
 
+    /// All class binary names in stable sorted order.
+    ///
+    /// Unlike [`Self::class_names_with_prefix`], this does not allocate/clones a new `Vec<String>`
+    /// for the result set. It may still perform lazy container indexing the first time it is
+    /// called.
+    pub fn binary_class_names(&self) -> Result<&[String], JdkIndexError> {
+        match self {
+            Self::Jmods(index) => Ok(index.binary_names_sorted()?.as_slice()),
+            Self::CtSym(index) => Ok(index.binary_names_sorted()?.as_slice()),
+        }
+    }
+
     /// Approximate heap memory usage of this index in bytes.
     ///
     /// This is intended for best-effort integration with `nova-memory`.

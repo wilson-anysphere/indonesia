@@ -295,6 +295,54 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn builtin_iter_binary_class_names_is_sorted_and_contains_expected() {
+    let index = JdkIndex::new();
+
+    let names: Vec<&str> = index
+        .iter_binary_class_names()
+        .expect("builtin JdkIndex should enumerate names without errors")
+        .collect();
+
+    assert!(
+        names.windows(2).all(|w| w[0] <= w[1]),
+        "expected built-in binary class names to be sorted"
+    );
+    assert!(
+        names.contains(&"java.lang.String"),
+        "built-in index should include java.lang.String"
+    );
+
+    let slice = index
+        .binary_class_names()
+        .expect("builtin index should expose binary_class_names slice");
+    let slice_names: Vec<&str> = slice.iter().map(|s| s.as_str()).collect();
+    assert_eq!(slice_names, names);
+}
+
+#[test]
+fn symbol_iter_binary_class_names_is_sorted_and_contains_expected(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
+
+    assert!(
+        index.binary_class_names().is_none(),
+        "symbol-backed JdkIndex should not report builtin binary_class_names slice"
+    );
+
+    let names: Vec<&str> = index.iter_binary_class_names()?.collect();
+    assert!(
+        names.windows(2).all(|w| w[0] <= w[1]),
+        "expected symbol-backed binary class names to be sorted"
+    );
+    assert!(
+        names.contains(&"java.lang.String"),
+        "expected symbol-backed index to include java.lang.String"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn reads_java_lang_string_class_bytes_from_test_jmod() -> Result<(), Box<dyn std::error::Error>> {
     let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
 

@@ -563,7 +563,7 @@ impl CtSymReleaseIndex {
             .expect("packages OnceLock should be initialized"))
     }
 
-    fn binary_names_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+    pub(crate) fn binary_names_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
         if let Some(names) = self.binary_names_sorted.get() {
             return Ok(names);
         }

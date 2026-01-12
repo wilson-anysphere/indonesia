@@ -422,6 +422,31 @@ impl JdkIndex {
             .then_some(self.builtin_binary_names_sorted.as_slice())
     }
 
+    /// All class binary names in this index, in stable sorted order.
+    ///
+    /// This is intended for bulk iteration (e.g. pre-interning ids into a project-level
+    /// `TypeStore`). For symbol-backed indexes this may perform lazy container indexing the first
+    /// time it is called.
+    pub fn all_binary_class_names(&self) -> Result<&[String], JdkIndexError> {
+        match &self.symbols {
+            Some(symbols) => symbols.binary_class_names(),
+            None => Ok(self.builtin_binary_names_sorted.as_slice()),
+        }
+    }
+
+    /// Iterate all class binary names in this index, in stable sorted order.
+    ///
+    /// This is a zero-allocation view over the in-memory sorted name list (but may trigger lazy
+    /// indexing for symbol-backed indexes).
+    pub fn iter_binary_class_names(
+        &self,
+    ) -> Result<impl Iterator<Item = &str> + '_, JdkIndexError> {
+        Ok(self
+            .all_binary_class_names()?
+            .iter()
+            .map(|name| name.as_str()))
+    }
+
     /// Module graph for the underlying JDK, if this index is backed by JMODs or `ct.sym`.
     pub fn module_graph(&self) -> Option<&ModuleGraph> {
         self.symbols
