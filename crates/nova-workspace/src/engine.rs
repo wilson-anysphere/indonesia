@@ -239,15 +239,127 @@ impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
             };
         }
 
-        // First iteration: treat any eviction request that asks us to shrink as a signal to drop
-        // the in-memory indexes entirely. This is intentionally coarse-grained but ensures we can
-        // shed potentially large allocations under pressure.
-        let should_drop = request.target_bytes == 0
-            || request.target_bytes < before
-            || matches!(request.pressure, nova_memory::MemoryPressure::Critical);
+        if before <= request.target_bytes {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
 
-        if should_drop {
+        // Under critical pressure, drop everything.
+        if request.target_bytes == 0
+            || matches!(request.pressure, nova_memory::MemoryPressure::Critical)
+        {
             self.clear_indexes();
+            let after = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: after,
+            };
+        }
+
+        // Best-effort partial retention: keep the most useful subsets (symbols)
+        // when we can fit them within the requested target.
+        let after_bytes = {
+            let mut guard = self
+                .indexes
+                .lock()
+                .expect("workspace indexes lock poisoned");
+
+            let symbols_bytes = guard.symbols.estimated_bytes();
+            if symbols_bytes > request.target_bytes {
+                // Even the symbol index doesn't fit; fall back to clearing everything.
+                *guard = ProjectIndexes::default();
+                0
+            } else {
+                let references_bytes = guard.references.estimated_bytes();
+                let inheritance_bytes = guard.inheritance.estimated_bytes();
+                let annotations_bytes = guard.annotations.estimated_bytes();
+
+                #[derive(Clone, Copy)]
+                enum OptionalIndex {
+                    References,
+                    Inheritance,
+                    Annotations,
+                }
+
+                impl OptionalIndex {
+                    fn bit(self) -> u8 {
+                        match self {
+                            Self::References => 1,
+                            Self::Inheritance => 2,
+                            Self::Annotations => 4,
+                        }
+                    }
+
+                    fn score(self) -> u8 {
+                        // Prefer keeping symbols; secondary indexes are all
+                        // "optional". The relative ordering here is a heuristic.
+                        match self {
+                            Self::References => 1,
+                            Self::Inheritance => 1,
+                            Self::Annotations => 1,
+                        }
+                    }
+                }
+
+                let optionals = [
+                    (OptionalIndex::References, references_bytes),
+                    (OptionalIndex::Inheritance, inheritance_bytes),
+                    (OptionalIndex::Annotations, annotations_bytes),
+                ];
+
+                // Choose the best subset of optional indexes to keep such that
+                // `symbols + optionals <= target`.
+                //
+                // This is a tiny knapsack (3 items), so brute-force is fine and deterministic.
+                let mut best_mask: u8 = 0;
+                let mut best_score: u8 = 0;
+                let mut best_bytes: u64 = symbols_bytes;
+
+                for mask in 0u8..8 {
+                    let mut bytes = symbols_bytes;
+                    let mut score = 0u8;
+
+                    for (kind, kind_bytes) in optionals {
+                        if mask & kind.bit() != 0 {
+                            bytes = bytes.saturating_add(kind_bytes);
+                            score = score.saturating_add(kind.score());
+                        }
+                    }
+
+                    if bytes > request.target_bytes {
+                        continue;
+                    }
+
+                    if score > best_score || (score == best_score && bytes > best_bytes) {
+                        best_mask = mask;
+                        best_score = score;
+                        best_bytes = bytes;
+                    }
+                }
+
+                // Apply the chosen subset.
+                let keep_references = best_mask & OptionalIndex::References.bit() != 0;
+                let keep_inheritance = best_mask & OptionalIndex::Inheritance.bit() != 0;
+                let keep_annotations = best_mask & OptionalIndex::Annotations.bit() != 0;
+
+                if !keep_references {
+                    guard.references = Default::default();
+                }
+                if !keep_inheritance {
+                    guard.inheritance = Default::default();
+                }
+                if !keep_annotations {
+                    guard.annotations = Default::default();
+                }
+
+                best_bytes
+            }
+        };
+
+        if let Some(tracker) = self.tracker.get() {
+            tracker.set_bytes(after_bytes);
         }
 
         let after = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
@@ -4764,6 +4876,105 @@ mode = "off"
             .find(|c| c.name == "workspace_project_indexes")
             .expect("workspace_project_indexes registered");
         assert_eq!(component.bytes, 0);
+    }
+
+    #[test]
+    fn project_indexes_eviction_preserves_symbols_when_budget_allows() {
+        let mut indexes = ProjectIndexes::default();
+
+        // Populate the index with enough data so:
+        // - the total footprint exceeds the Indexes category budget
+        // - the symbols-only footprint fits under it
+        for idx in 0..64u32 {
+            let sym_name = format!("Symbol{idx}");
+            indexes.symbols.insert(
+                sym_name.clone(),
+                IndexedSymbol {
+                    qualified_name: sym_name,
+                    kind: IndexSymbolKind::Class,
+                    container_name: None,
+                    location: SymbolLocation {
+                        file: "src/Main.java".to_string(),
+                        line: idx,
+                        column: 0,
+                    },
+                    ast_id: idx,
+                },
+            );
+            indexes.references.insert(
+                format!("Symbol{idx}"),
+                ReferenceLocation {
+                    file: "src/Main.java".to_string(),
+                    line: idx,
+                    column: 1,
+                },
+            );
+            indexes.annotations.insert(
+                format!("Annotation{idx}"),
+                AnnotationLocation {
+                    file: "src/Main.java".to_string(),
+                    line: idx,
+                    column: 2,
+                },
+            );
+            indexes.inheritance.insert(InheritanceEdge {
+                file: "src/Main.java".to_string(),
+                subtype: format!("Sub{idx}"),
+                supertype: format!("Super{idx}"),
+            });
+        }
+
+        let total_bytes = indexes.estimated_bytes();
+        let symbols_bytes = indexes.symbols.estimated_bytes();
+        assert!(
+            total_bytes > symbols_bytes,
+            "expected non-symbol indexes to contribute bytes"
+        );
+        assert!(symbols_bytes > 0, "expected symbols to be non-empty");
+
+        // Build a budget whose Indexes category budget equals `symbols_bytes`.
+        let budget_total = symbols_bytes.saturating_mul(5).max(1);
+        let memory = MemoryManager::with_thresholds(
+            MemoryBudget::from_total(budget_total),
+            nova_memory::MemoryPressureThresholds {
+                // Keep pressure deterministically Low even if process RSS dwarfs the synthetic budget.
+                medium: 1e12,
+                high: 1e12,
+                critical: 1e12,
+            },
+        );
+
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: PathBuf::new(),
+            persistence: PersistenceConfig::from_env(),
+            memory: memory.clone(),
+            build_runner: None,
+        });
+        engine.indexes_evictor.replace_indexes(indexes);
+
+        memory.enforce();
+
+        let kept = engine.indexes.lock().unwrap();
+        assert!(
+            !kept.symbols.symbols.is_empty(),
+            "expected symbol index to be preserved"
+        );
+        assert!(kept.references.references.is_empty());
+        assert!(kept.annotations.annotations.is_empty());
+        assert!(kept.inheritance.subtypes.is_empty());
+        assert!(kept.inheritance.supertypes.is_empty());
+        drop(kept);
+
+        let (_report, components) = memory.report_detailed();
+        let component = components
+            .iter()
+            .find(|c| c.name == "workspace_project_indexes")
+            .expect("workspace_project_indexes registered");
+        assert!(
+            component.bytes <= symbols_bytes,
+            "expected eviction to shrink index usage to <= symbols-only footprint (symbols={symbols_bytes}, got={})",
+            component.bytes
+        );
     }
 
     #[test]
