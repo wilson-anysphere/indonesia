@@ -1000,6 +1000,62 @@ fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_
 }
 
 #[test]
+fn extract_variable_allows_name_that_matches_field_in_braced_switch_case_group() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int value = 0;
+
+  void m(int x) {
+    switch (x) {
+      case 1: {
+        int y = /*select*/1 + 2/*end*/;
+        break;
+      }
+      case 2:
+        System.out.println(value);
+        break;
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int value = 0;
+
+  void m(int x) {
+    switch (x) {
+      case 1: {
+        var value = 1 + 2;
+        int y = value;
+        break;
+      }
+      case 2:
+        System.out.println(value);
+        break;
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_dependency_written_earlier_in_same_statement() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
