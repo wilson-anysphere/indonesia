@@ -20,4 +20,21 @@ describe('extension wiring', () => {
     );
     expect(contents).toMatch(/registerNovaProjectExplorer\(\s*context\s*,\s*requestWithFallback\s*,/);
   });
+
+  it('routes Nova framework search requests through sendNovaRequest({allowMethodFallback:true})', async () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const extensionPath = path.join(srcRoot, 'extension.ts');
+    const dashboardPath = path.join(srcRoot, 'frameworkDashboard.ts');
+    const extensionContents = await fs.readFile(extensionPath, 'utf8');
+    const dashboardContents = await fs.readFile(dashboardPath, 'utf8');
+
+    // The framework search command is registered via the Frameworks dashboard module.
+    expect(extensionContents).not.toMatch(/registerNovaFrameworkSearch\(/);
+    expect(extensionContents).toMatch(/registerNovaFrameworkDashboard\(\s*context\s*,\s*sendNovaRequest/);
+
+    // The dashboard should register framework search through an allowMethodFallback wrapper so
+    // it can gracefully fall back (e.g. nova/web/endpoints -> nova/quarkus/endpoints) without
+    // showing unsupported-method popups.
+    expect(dashboardContents).toMatch(/registerNovaFrameworkSearch\([\s\S]*allowMethodFallback:\s*true/);
+  });
 });
