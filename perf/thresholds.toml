@@ -47,6 +47,12 @@ p95_regression = 0.20
 "ide_completion/type_position" = { p50_regression = 0.25, p95_regression = 0.50 }
 "ide_completion/postfix" = { p50_regression = 0.25, p95_regression = 0.50 }
 
+# IDE completion + semantic token critical paths (nova-core/critical_paths).
+"ide_completion/member_access" = { p50_regression = 0.25, p95_regression = 0.50 }
+"ide_completion/type_prefix" = { p50_regression = 0.25, p95_regression = 0.50 }
+"ide_semantic_tokens/medium" = { p50_regression = 0.15, p95_regression = 0.30 }
+"ide_semantic_tokens/large" = { p50_regression = 0.20, p95_regression = 0.40 }
+
 # Fuzzy scoring + trigram candidate generation (very hot paths; allow modest CI noise).
 "fuzzy_score/short" = { p50_regression = 0.15, p95_regression = 0.30 }
 "fuzzy_score/medium" = { p50_regression = 0.15, p95_regression = 0.30 }
