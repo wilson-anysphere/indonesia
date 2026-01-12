@@ -3224,6 +3224,16 @@ function hasExplicitWorkspaceRoutingHint(method: string, params: unknown): boole
       return true;
     }
 
+    const root = obj.root;
+    if (typeof root === 'string' && root.trim().length > 0) {
+      return true;
+    }
+
+    const workspaceRoot = obj.workspaceRoot ?? obj.workspace_root;
+    if (typeof workspaceRoot === 'string' && workspaceRoot.trim().length > 0) {
+      return true;
+    }
+
     const workspaceFolder = obj.workspaceFolder ?? obj.workspace_folder;
     if (typeof workspaceFolder === 'string' && workspaceFolder.trim().length > 0) {
       return true;

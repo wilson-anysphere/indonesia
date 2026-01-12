@@ -98,6 +98,19 @@ function extractRoutingHintFromValue(params: unknown): RoutingHint {
     return { kind: 'projectRoot', projectRoot };
   }
 
+  // Some Nova APIs use `root` / `workspaceRoot` as aliases for projectRoot.
+  const root = normalizeString(record.root);
+  if (root) {
+    return looksLikeUriString(root) ? { kind: 'uri', uri: root } : { kind: 'projectRoot', projectRoot: root };
+  }
+
+  const workspaceRoot = normalizeString(record.workspaceRoot) ?? normalizeString(record.workspace_root);
+  if (workspaceRoot) {
+    return looksLikeUriString(workspaceRoot)
+      ? { kind: 'uri', uri: workspaceRoot }
+      : { kind: 'projectRoot', projectRoot: workspaceRoot };
+  }
+
   const rootUri = normalizeString(record.rootUri) ?? normalizeString(record.root_uri);
   if (rootUri) {
     return { kind: 'uri', uri: rootUri };

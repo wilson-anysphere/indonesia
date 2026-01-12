@@ -85,6 +85,45 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBe(folders[1].uri);
   });
 
+  it('routes by params.root (alias for projectRoot)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/projectConfiguration',
+        params: { root: folders[1].fsPath },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes by params.workspaceRoot', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/projectConfiguration',
+        params: { workspaceRoot: folders[0].fsPath },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
+  it('routes by params.workspace_root (snake_case)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/projectConfiguration',
+        params: { workspace_root: folders[1].fsPath },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
   it('routes by params.rootUri', () => {
     const { folders } = makeWorkspaceFolders();
 
