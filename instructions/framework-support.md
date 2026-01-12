@@ -12,6 +12,7 @@ This workstream owns framework-specific intelligence - understanding Spring, Lom
 | Crate | Purpose |
 |-------|---------|
 | `nova-framework` | Framework analyzer plugin interface |
+| `nova-framework-builtins` | Centralized construction/registration of built-in framework analyzers |
 | `nova-framework-spring` | Spring/Spring Boot support |
 | `nova-framework-lombok` | Lombok annotation processing |
 | `nova-framework-jpa` | JPA/Hibernate entity analysis |
