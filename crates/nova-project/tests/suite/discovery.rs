@@ -1577,6 +1577,145 @@ fn loads_gradle_includebuild_version_catalog_versions_from_included_build_gradle
 }
 
 #[test]
+fn loads_gradle_includebuild_subproject_dependencies_from_included_build_version_catalog() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace_root = tmp.path().canonicalize().expect("canonicalize tempdir");
+
+    // Outer Gradle build with its own version catalog.
+    fs::write(
+        workspace_root.join("settings.gradle"),
+        r#"
+rootProject.name = "demo"
+includeBuild("build-logic")
+"#,
+    )
+    .expect("write settings.gradle");
+    fs::write(workspace_root.join("build.gradle"), "// root build\n").expect("write build.gradle");
+    fs::create_dir_all(workspace_root.join("gradle")).expect("mkdir gradle/");
+    fs::write(
+        workspace_root.join("gradle").join("libs.versions.toml"),
+        r#"
+[versions]
+guava = "33.0.0-jre"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+"#,
+    )
+    .expect("write outer libs.versions.toml");
+
+    // Included build has its own version catalog.
+    fs::create_dir_all(workspace_root.join("build-logic").join("gradle"))
+        .expect("mkdir build-logic/gradle");
+    fs::write(
+        workspace_root
+            .join("build-logic")
+            .join("gradle")
+            .join("libs.versions.toml"),
+        r#"
+[versions]
+guava = "32.0.0-jre"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+"#,
+    )
+    .expect("write build-logic libs.versions.toml");
+
+    // The included build is a multi-project build with a `plugins` subproject that uses `libs.*`.
+    fs::write(
+        workspace_root.join("build-logic").join("settings.gradle"),
+        "include(\"plugins\")\n",
+    )
+    .expect("write build-logic/settings.gradle");
+    fs::write(
+        workspace_root.join("build-logic").join("build.gradle"),
+        "// build-logic root\n",
+    )
+    .expect("write build-logic/build.gradle");
+    fs::create_dir_all(workspace_root.join("build-logic").join("plugins"))
+        .expect("mkdir build-logic/plugins");
+    fs::write(
+        workspace_root
+            .join("build-logic")
+            .join("plugins")
+            .join("build.gradle"),
+        r#"
+dependencies {
+  implementation(libs.guava)
+}
+"#,
+    )
+    .expect("write build-logic/plugins/build.gradle");
+    let java_file = workspace_root
+        .join("build-logic")
+        .join("plugins")
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("example")
+        .join("buildlogic")
+        .join("plugins")
+        .join("Plugin.java");
+    fs::create_dir_all(java_file.parent().unwrap()).expect("mkdir build-logic/plugins sources");
+    fs::write(
+        &java_file,
+        "package com.example.buildlogic.plugins; class Plugin {}",
+    )
+    .expect("write Plugin.java");
+
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let config =
+        load_project_with_options(&workspace_root, &options).expect("load gradle project");
+    assert!(
+        config.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("32.0.0-jre")
+        }),
+        "expected workspace dependency list to include guava from included build version catalog"
+    );
+    assert!(
+        !config.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "did not expect included build deps to resolve libs.guava using the outer version catalog"
+    );
+
+    let model = load_workspace_model_with_options(&workspace_root, &options)
+        .expect("load gradle workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let plugins = model
+        .module_by_id("gradle::__includedBuild_build-logic:plugins")
+        .expect("included build plugins module");
+    assert!(
+        plugins.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("32.0.0-jre")
+        }),
+        "expected included build plugins module to include guava from its own version catalog"
+    );
+    assert!(
+        !plugins.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "did not expect included build plugins module to use the outer version catalog"
+    );
+}
+
+#[test]
 fn loads_gradle_composite_workspace_model() {
     let root = testdata_path("gradle-composite/root");
     let included_root =
