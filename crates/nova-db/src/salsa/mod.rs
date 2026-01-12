@@ -373,6 +373,14 @@ impl SalsaInputFootprint {
             return;
         }
 
+        // Salsa file texts are *inputs* (not caches) and are effectively
+        // non-evictable: they must remain available to compute query results.
+        //
+        // We track them under `Other` rather than `QueryCache` to avoid
+        // conflating inputs with memoized results, but still want them to drive
+        // eviction of query caches/memos under high total pressure. The memory
+        // manager is responsible for compensating across categories when
+        // non-evictable inputs dominate.
         let registration =
             manager.register_tracker("salsa_inputs".to_string(), MemoryCategory::Other);
         self.bind_tracker(registration.tracker());

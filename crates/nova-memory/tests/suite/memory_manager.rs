@@ -1,6 +1,6 @@
 use nova_memory::{
     ComponentUsage, EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvent,
-    MemoryEvictor, MemoryManager,
+    MemoryEvictor, MemoryManager, MemoryPressureThresholds,
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -135,9 +135,15 @@ fn non_evictable_other_can_force_query_cache_eviction_under_high_pressure() {
     // pressure, we still want evictable caches (QueryCache) to shrink, even if
     // they're below their own per-category target.
     //
-    // Use a very large budget to avoid process RSS affecting pressure on Linux.
-    let budget = MemoryBudget::from_total(1_000_000_000_000);
-    let manager = MemoryManager::new(budget);
+    // Use a small synthetic budget and bump the "Critical" threshold very high
+    // so process RSS cannot force `Critical` pressure on Linux. The regression
+    // is about *tracked* non-evictable memory (file texts), not RSS noise.
+    let budget = MemoryBudget::from_total(1_000);
+    let thresholds = MemoryPressureThresholds {
+        critical: 1e12,
+        ..MemoryPressureThresholds::default()
+    };
+    let manager = MemoryManager::with_thresholds(budget, thresholds);
 
     // Simulate file text memory (non-evictable) dominating `Other`.
     let file_texts = manager.register_tracker("file_texts", MemoryCategory::Other);
@@ -146,7 +152,7 @@ fn non_evictable_other_can_force_query_cache_eviction_under_high_pressure() {
     // An evictable cache in QueryCache that is still under its category target
     // at High pressure (targets are scaled to 50%).
     let cache = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
-    let cache_bytes = budget.total * 4 / 100; // total usage = 94% => High (not Critical)
+    let cache_bytes = budget.total * 4 / 100; // total tracked usage = 94% => High (not Critical)
     cache.set_bytes(cache_bytes);
 
     let high_target = ((budget.categories.query_cache as f64) * 0.50).round() as u64;
