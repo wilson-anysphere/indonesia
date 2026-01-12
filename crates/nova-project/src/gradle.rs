@@ -2264,7 +2264,7 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|runtimeOnly|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|compileOnlyApi|providedCompile|runtimeOnly|providedRuntime|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
 type GradleProperties = HashMap<String, String>;
 
@@ -2359,8 +2359,8 @@ fn resolve_gradle_properties_placeholder(
 /// This is best-effort extraction and intentionally collapses many Gradle configurations into
 /// coarse scopes:
 /// - `implementation|api|compile` => `compile`
-/// - `runtimeOnly|runtime` => `runtime`
-/// - `compileOnly` => `provided`
+/// - `runtimeOnly|runtime|providedRuntime` => `runtime`
+/// - `compileOnly|compileOnlyApi|providedCompile` => `provided`
 /// - `testImplementation|testRuntimeOnly|testCompileOnly|testCompile|testRuntime` => `test`
 /// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest` => `annotationProcessor`
 fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
@@ -2374,11 +2374,15 @@ fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> 
 
     if configuration.eq_ignore_ascii_case("runtimeOnly")
         || configuration.eq_ignore_ascii_case("runtime")
+        || configuration.eq_ignore_ascii_case("providedRuntime")
     {
         return Some("runtime");
     }
 
-    if configuration.eq_ignore_ascii_case("compileOnly") {
+    if configuration.eq_ignore_ascii_case("compileOnly")
+        || configuration.eq_ignore_ascii_case("compileOnlyApi")
+        || configuration.eq_ignore_ascii_case("providedCompile")
+    {
         return Some("provided");
     }
 
@@ -3813,6 +3817,11 @@ dependencies {
     compile("g14:a14:14")
     runtime("g15:a15:15")
     compileOnly("g3:a3:3")
+    // Java EE / War plugin style configurations.
+    providedCompile("g18:a18:18")
+    providedRuntime("g19:a19:19")
+    // `java-library` style config for API deps that should still be compile-only.
+    compileOnlyApi("g20:a20:20")
     runtimeOnly("g4:a4:4")
     testImplementation("g5:a5:5")
     testCompile("g16:a16:16")
@@ -3869,6 +3878,9 @@ dependencies {
             ("g15", "a15", "15"),
             ("g16", "a16", "16"),
             ("g17", "a17", "17"),
+            ("g18", "a18", "18"),
+            ("g19", "a19", "19"),
+            ("g20", "a20", "20"),
             ("dup", "dep", "1.0"),
         ]
         .into_iter()
@@ -3884,7 +3896,7 @@ dependencies {
 
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
-        let expected_scopes: [((String, String, Option<String>), &str); 18] = [
+        let expected_scopes: [((String, String, Option<String>), &str); 21] = [
             (
                 (String::from("g1"), String::from("a1"), Some("1".into())),
                 "compile",
@@ -3952,6 +3964,18 @@ dependencies {
             (
                 (String::from("g17"), String::from("a17"), Some("17".into())),
                 "test",
+            ),
+            (
+                (String::from("g18"), String::from("a18"), Some("18".into())),
+                "provided",
+            ),
+            (
+                (String::from("g19"), String::from("a19"), Some("19".into())),
+                "runtime",
+            ),
+            (
+                (String::from("g20"), String::from("a20"), Some("20".into())),
+                "provided",
             ),
             (
                 (String::from("dup"), String::from("dep"), Some("1.0".into())),
