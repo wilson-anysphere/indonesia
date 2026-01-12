@@ -27,6 +27,18 @@ fn store_and_load_round_trip_for_canonical_uri() {
 }
 
 #[test]
+fn load_uri_is_miss_for_invalid_uris() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    assert!(store.load_uri("not-a-uri").unwrap().is_none());
+    assert!(store
+        .load_uri("nova:///something/else")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn store_and_load_round_trip_with_mappings() {
     let uri = decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME);
     let parsed = parse_decompiled_uri(&uri).expect("parse uri");

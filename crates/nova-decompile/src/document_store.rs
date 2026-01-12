@@ -232,9 +232,12 @@ impl DecompiledDocumentStore {
     }
 
     /// Convenience wrapper around [`Self::load_text`] that takes a canonical `nova:///...` URI.
+    ///
+    /// Invalid URIs return `Ok(None)` (best-effort store).
     pub fn load_uri(&self, uri: &str) -> Result<Option<String>, CacheError> {
-        let parsed = crate::parse_decompiled_uri(uri)
-            .ok_or_else(|| io::Error::other("invalid decompiled virtual document URI"))?;
+        let Some(parsed) = crate::parse_decompiled_uri(uri) else {
+            return Ok(None);
+        };
         self.load_text(&parsed.content_hash, &parsed.binary_name)
     }
 
