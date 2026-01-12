@@ -163,8 +163,9 @@ build inputs (with `NUL` separators).
 The path key is:
 
 - the file path **relative to the workspace root** when the file is under the workspace root, or
-- the file’s full path otherwise (for example build inputs from composite builds included via
-  `includeBuild(...)` that live outside the workspace root).
+- the file’s canonical full path otherwise (for example build inputs from composite builds included
+  via `includeBuild(...)` that live outside the workspace root). Canonicalization helps keep the
+  fingerprint stable when callers pass a symlinked/non-canonical workspace root.
 
 The file set is discovered by walking the workspace and **skipping** these directories:
 
