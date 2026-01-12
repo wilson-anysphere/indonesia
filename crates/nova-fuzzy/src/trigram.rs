@@ -797,6 +797,17 @@ mod tests {
 
     #[cfg(feature = "unicode")]
     #[test]
+    fn unicode_nfkc_normalizes_micro_sign_to_greek_mu() {
+        // U+00B5 MICRO SIGN is compatibility-equivalent to U+03BC GREEK SMALL LETTER MU.
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "\u{00B5}aa");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("\u{03BC}aa"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
     fn unicode_hashed_trigrams_are_tagged() {
         // Ensure hashed (non-ASCII) trigram keys cannot collide with packed
         // 3-byte ASCII trigrams.
