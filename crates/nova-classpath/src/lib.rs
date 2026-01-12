@@ -544,6 +544,14 @@ impl ClasspathIndex {
         self.stubs_by_binary.len()
     }
 
+    /// All indexed class binary names (`java.lang.String`, `com.example.Foo`, ...) in sorted order.
+    ///
+    /// This is intended for deterministic pre-interning in `TypeStore` so `ClassId` allocation is
+    /// stable across clones/snapshots.
+    pub fn binary_names_sorted(&self) -> &[String] {
+        &self.binary_names_sorted
+    }
+
     /// Approximate heap memory usage of this index in bytes.
     ///
     /// This is intended for best-effort integration with `nova-memory`.

@@ -21,7 +21,7 @@ use nova_types::{
 };
 use nova_types_bridge::ExternalTypeLoader;
 
-use crate::FileId;
+use crate::{FileId, ProjectId};
 
 use super::cancellation as cancel;
 use super::resolve::NovaResolve;
@@ -92,6 +92,12 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats {
     fn expr_scopes(&self, owner: DefWithBodyId) -> ArcEq<ExprScopes>;
 
     fn typeck_body(&self, owner: DefWithBodyId) -> Arc<BodyTypeckResult>;
+
+    /// Project-scoped base `TypeStore` used as the starting point for per-body type checking.
+    ///
+    /// This store pre-interns external classpath types (by name only) so cloned body-local stores
+    /// allocate stable `ClassId`s independent of per-body loading order.
+    fn project_base_type_store(&self, project: ProjectId) -> ArcEq<TypeStore>;
 
     fn type_of_expr(&self, file: FileId, expr: FileExprId) -> Type;
     fn type_of_def(&self, def: DefWithBodyId) -> Type;
@@ -216,6 +222,31 @@ fn expr_scopes(db: &dyn NovaTypeck, owner: DefWithBodyId) -> ArcEq<ExprScopes> {
     result
 }
 
+fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<TypeStore> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "project_base_type_store", ?project).entered();
+
+    cancel::check_cancelled(db);
+
+    // Start with the built-in minimal JDK so type-system algorithms have
+    // a stable core (`Object`, `String`, boxing types, etc).
+    let mut store = TypeStore::with_minimal_jdk();
+
+    // Pre-intern external classpath types in deterministic order so `ClassId`s are stable
+    // across body-local clones even when external types are loaded in different orders.
+    if let Some(cp) = db.classpath_index(project).as_deref() {
+        for (idx, name) in cp.binary_names_sorted().iter().enumerate() {
+            cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+            store.intern_class_id(name);
+        }
+    }
+
+    db.record_query_stat("project_base_type_store", start.elapsed());
+    ArcEq::new(Arc::new(store))
+}
+
 fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResult> {
     let start = Instant::now();
 
@@ -269,7 +300,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let expr_scopes = db.expr_scopes(owner);
 
     // Build an env for this body.
-    let mut store = TypeStore::with_minimal_jdk();
+    let base_store = db.project_base_type_store(project);
+    let mut store = (&*base_store).clone();
     let provider = if let Some(env) = jpms_env.as_deref() {
         // In JPMS mode, ignore the legacy `classpath_index` input (which may contain
         // module-path entries mixed into the classpath) and instead use the JPMS-aware
