@@ -268,6 +268,7 @@ impl ExtractMethod {
 
         let (method, _method_body) = find_enclosing_method(root.clone(), selection)
             .ok_or("selection must be inside a method")?;
+        let enclosing_method_is_static = method_is_static(&method);
         let class_decl = method
             .syntax()
             .ancestors()
@@ -318,16 +319,23 @@ impl ExtractMethod {
             .join(", ");
 
         let vis_kw = self.visibility.keyword();
-        let signature = if vis_kw.is_empty() {
-            format!(
+        let signature = match (vis_kw.is_empty(), enclosing_method_is_static) {
+            (true, false) => format!(
                 "{method_indent}{return_ty} {}({params_sig}) {{\n",
                 self.name
-            )
-        } else {
-            format!(
+            ),
+            (true, true) => format!(
+                "{method_indent}static {return_ty} {}({params_sig}) {{\n",
+                self.name
+            ),
+            (false, false) => format!(
                 "{method_indent}{vis_kw} {return_ty} {}({params_sig}) {{\n",
                 self.name
-            )
+            ),
+            (false, true) => format!(
+                "{method_indent}{vis_kw} static {return_ty} {}({params_sig}) {{\n",
+                self.name
+            ),
         };
 
         let mut new_method_text = String::new();
@@ -363,6 +371,16 @@ impl ExtractMethod {
         edit.normalize().map_err(|e| e.to_string())?;
         Ok(edit)
     }
+}
+
+fn method_is_static(method: &ast::MethodDeclaration) -> bool {
+    method.modifiers().is_some_and(|modifiers| {
+        modifiers
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+    })
 }
 
 fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
