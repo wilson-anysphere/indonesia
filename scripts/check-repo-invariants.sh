@@ -52,14 +52,10 @@ bash "${ROOT_DIR}/scripts/check-fuzz-java-corpus-sync.sh"
 #
 # This prevents accidental reintroduction of the dependency edge (which risks dependency cycles and
 # heavier builds).
-#
-# Note: we intentionally match any non-comment occurrence of `nova-project` so this also catches:
-# - `nova-project = { ... }`
-# - `[dependencies.nova-project]`
-# - `nova-project.workspace = true`
-if git grep -n -E -- '^[[:space:]]*[^#][^#]*\\bnova-project\\b' -- crates/nova-build/Cargo.toml >/dev/null; then
+nova_project_dep_pattern='^[[:space:]]*(nova-project([[:space:]]|=|\\.)|\\[[^]]*nova-project[^]]*\\])'
+if git grep -n -E -- "${nova_project_dep_pattern}" -- crates/nova-build/Cargo.toml >/dev/null; then
   echo "repo invariant failed: nova-build must not depend on nova-project (use nova-build-model instead)" >&2
-  git grep -n -E -- '^[[:space:]]*[^#][^#]*\\bnova-project\\b' -- crates/nova-build/Cargo.toml >&2
+  git grep -n -E -- "${nova_project_dep_pattern}" -- crates/nova-build/Cargo.toml >&2
   exit 1
 fi
 
@@ -74,10 +70,10 @@ model_only_crates=(
 )
 
 for manifest in "${model_only_crates[@]}"; do
-  if git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- "${manifest}" >/dev/null; then
+  if git grep -n -E -- "${nova_project_dep_pattern}" -- "${manifest}" >/dev/null; then
     crate_name="$(basename "$(dirname "${manifest}")")"
     echo "repo invariant failed: ${crate_name} must not depend on nova-project (use nova-build-model instead)" >&2
-    git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- "${manifest}" >&2
+    git grep -n -E -- "${nova_project_dep_pattern}" -- "${manifest}" >&2
     exit 1
   fi
 done
@@ -111,7 +107,9 @@ fi
 # These crates intentionally consolidate their integration tests into a single root harness for
 # compile-time/memory efficiency (each `tests/*.rs` file is its own integration test binary).
 framework_harness_checks=(
-  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/harness.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
+  # Spring's harness file name has changed a few times; accept either as long as the crate keeps
+  # a single root-level integration test entrypoint.
+  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/harness.rs|crates/nova-framework-spring/tests/integration.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
   "crates/nova-framework-builtins/tests:crates/nova-framework-builtins/tests/builtins_tests.rs:move additional files into crates/nova-framework-builtins/tests/builtins/ and add them to crates/nova-framework-builtins/tests/builtins/mod.rs"
   "crates/nova-framework-micronaut/tests:crates/nova-framework-micronaut/tests/integration_tests.rs:move additional files into crates/nova-framework-micronaut/tests/integration_tests/ and add them to crates/nova-framework-micronaut/tests/integration_tests/mod.rs"
 )
@@ -124,7 +122,16 @@ for check in "${framework_harness_checks[@]}"; do
     root_tests+=("$file")
   done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
 
-  if [[ ${#root_tests[@]} -ne 1 || "${root_tests[0]}" != "${expected_file}" ]]; then
+  expected_ok=false
+  IFS="|" read -r -a expected_files <<<"${expected_file}"
+  for expected in "${expected_files[@]}"; do
+    if [[ "${root_tests[0]:-}" == "${expected}" ]]; then
+      expected_ok=true
+      break
+    fi
+  done
+
+  if [[ ${#root_tests[@]} -ne 1 || "${expected_ok}" != "true" ]]; then
     echo "repo invariant failed: integration tests in ${test_dir} must be consolidated into ${expected_file}" >&2
     if [[ ${#root_tests[@]} -eq 0 ]]; then
       echo "  found: <none>" >&2
