@@ -284,6 +284,88 @@ class C {
         diags.iter().all(|d| d.code.as_ref() != "invalid-cast"),
         "expected no invalid-cast diagnostics; got {diags:?}"
     );
+
+    let offset = src
+        .find("f.apply")
+        .expect("snippet should contain f.apply");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Function<String, Integer>");
+}
+
+#[test]
+fn cast_expression_provides_target_type_for_var_and_constructor_reference() {
+    let src = r#"
+interface Maker { String make(); }
+
+class C {
+    void m() {
+        var m = (Maker) String::new;
+        m.make();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        "expected cast to provide a target type for constructor reference/var inference; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected cast to provide a target type for constructor references; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inferred Maker var to resolve make(); got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-cast"),
+        "expected no invalid-cast diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn cast_expression_provides_target_type_for_var_and_lambda_with_params() {
+    let src = r#"
+import java.util.function.Function;
+
+class C {
+    void m() {
+        var f = (Function<String, Integer>) (s) -> s.length();
+        f.apply("hi");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        "expected cast to provide a target type for lambda/var inference; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inferred Function var to resolve apply()/length(); got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type mismatches; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-cast"),
+        "expected no invalid-cast diagnostics; got {diags:?}"
+    );
+
+    let offset = src
+        .find("f.apply")
+        .expect("snippet should contain f.apply");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Function<String, Integer>");
 }
 
 #[test]

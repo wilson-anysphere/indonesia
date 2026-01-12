@@ -4105,27 +4105,36 @@ impl<'a> Parser<'a> {
         if !self.at(SyntaxKind::LParen) {
             return false;
         }
+        // Track nested parens so we don't stop at a `)` that appears inside a type-use annotation
+        // argument list (e.g. `(@A(x=1) String) expr`).
+        let mut paren_depth = 0usize;
         let mut i = 1usize;
         while let Some(tok) = self.tokens.get(i) {
             if tok.kind.is_trivia() {
                 i += 1;
                 continue;
             }
-            if tok.kind == SyntaxKind::RParen {
-                // Need an expression after ')'.
-                let mut j = i + 1;
-                while let Some(next) = self.tokens.get(j) {
-                    if next.kind.is_trivia() {
-                        j += 1;
-                        continue;
-                    }
-                    return can_start_expression(next.kind);
+            match tok.kind {
+                SyntaxKind::LParen => {
+                    paren_depth += 1;
                 }
-                return false;
-            }
-            // Reject obvious separators that indicate it's a parenthesized expression.
-            if tok.kind == SyntaxKind::Comma {
-                return false;
+                SyntaxKind::RParen => {
+                    if paren_depth > 0 {
+                        paren_depth = paren_depth.saturating_sub(1);
+                    } else {
+                        // Need an expression after ')'.
+                        let mut j = i + 1;
+                        while let Some(next) = self.tokens.get(j) {
+                            if next.kind.is_trivia() {
+                                j += 1;
+                                continue;
+                            }
+                            return can_start_expression(next.kind);
+                        }
+                        return false;
+                    }
+                }
+                _ => {}
             }
             i += 1;
         }
