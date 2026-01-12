@@ -101,8 +101,6 @@ const COMMAND_REFRESH = 'nova.refreshProjectExplorer';
 const COMMAND_SHOW_MODEL = 'nova.showProjectModel';
 const COMMAND_SHOW_CONFIG = 'nova.showProjectConfiguration';
 const COMMAND_REVEAL_PATH = 'nova.projectExplorer.revealPath';
-const COMMAND_BUILD = 'nova.buildProject';
-const COMMAND_RELOAD = 'nova.reloadProject';
 
 const CLASS_PATH_PAGE_SIZE = 200;
 
@@ -137,19 +135,6 @@ export function registerNovaProjectExplorer(context: vscode.ExtensionContext, re
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_REVEAL_PATH, async (uri: vscode.Uri) => {
       await revealPath(uri);
-    }),
-  );
-
-  // Best-effort: these commands may also be used via Project Explorer context menus.
-  context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_BUILD, async (args: unknown) => {
-      await buildProject(request, args);
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_RELOAD, async (args: unknown) => {
-      await reloadProject(request, args);
     }),
   );
 
@@ -667,100 +652,6 @@ async function showProjectConfiguration(request: NovaRequest): Promise<void> {
     }
     void vscode.window.showErrorMessage(`Nova: failed to fetch project configuration: ${formatError(err)}`);
   }
-}
-
-type BuildOrReloadCommandArgs = {
-  projectRoot?: string;
-  module?: string | null;
-  projectPath?: string | null;
-  target?: string | null;
-};
-
-async function buildProject(request: NovaRequest, args: unknown): Promise<void> {
-  const params = parseBuildOrReloadArgs(args);
-  if (!params) {
-    void vscode.window.showErrorMessage('Nova: build command missing project selector.');
-    return;
-  }
-
-  try {
-    const response = await request('nova/buildProject', { buildTool: 'auto', ...params });
-    if (typeof response === 'undefined') {
-      return;
-    }
-    void vscode.window.showInformationMessage('Nova: build queued.');
-  } catch (err) {
-    if (isMethodNotFoundError(err)) {
-      void vscode.window.showInformationMessage('Nova: build endpoint is not supported by this server.');
-      return;
-    }
-    void vscode.window.showErrorMessage(`Nova: build failed: ${formatError(err)}`);
-  }
-}
-
-async function reloadProject(request: NovaRequest, args: unknown): Promise<void> {
-  const params = parseBuildOrReloadArgs(args);
-  if (!params) {
-    void vscode.window.showErrorMessage('Nova: reload command missing project root.');
-    return;
-  }
-
-  try {
-    const response = await request('nova/reloadProject', { buildTool: 'auto', ...params });
-    if (typeof response === 'undefined') {
-      return;
-    }
-    void vscode.window.showInformationMessage('Nova: project reload requested.');
-  } catch (err) {
-    if (isMethodNotFoundError(err)) {
-      void vscode.window.showInformationMessage('Nova: reload endpoint is not supported by this server.');
-      return;
-    }
-    void vscode.window.showErrorMessage(`Nova: reload failed: ${formatError(err)}`);
-  }
-}
-
-function parseBuildOrReloadArgs(args: unknown): BuildOrReloadCommandArgs | null {
-  if (!args || typeof args !== 'object') {
-    return null;
-  }
-
-  const nodeType = (args as { type?: unknown }).type;
-  if (nodeType === 'workspace') {
-    const ws = (args as { workspace?: unknown }).workspace;
-    const workspace = ws as vscode.WorkspaceFolder | undefined;
-    if (!workspace?.uri?.fsPath) {
-      return null;
-    }
-    return { projectRoot: workspace.uri.fsPath, module: null, projectPath: null, target: null };
-  }
-
-  if (nodeType === 'unit') {
-    const u = (args as { unit?: unknown }).unit as ProjectModelUnit | undefined;
-    const projectRoot = (args as { projectRoot?: unknown }).projectRoot;
-    if (typeof projectRoot !== 'string' || projectRoot.trim().length === 0 || !u) {
-      return null;
-    }
-
-    return {
-      projectRoot,
-      module: u.kind === 'maven' || u.kind === 'simple' ? u.module : null,
-      projectPath: u.kind === 'gradle' ? u.projectPath : null,
-      target: u.kind === 'bazel' ? u.target : null,
-    };
-  }
-
-  const raw = args as BuildOrReloadCommandArgs;
-  if (typeof raw.projectRoot !== 'string' || raw.projectRoot.trim().length === 0) {
-    return null;
-  }
-
-  return {
-    projectRoot: raw.projectRoot,
-    module: typeof raw.module === 'string' ? raw.module : raw.module ?? null,
-    projectPath: typeof raw.projectPath === 'string' ? raw.projectPath : raw.projectPath ?? null,
-    target: typeof raw.target === 'string' ? raw.target : raw.target ?? null,
-  };
 }
 
 async function pickWorkspaceFolder(placeHolder: string): Promise<vscode.WorkspaceFolder | undefined> {

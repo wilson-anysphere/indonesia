@@ -46,8 +46,6 @@
     "onCommand:nova.refreshProjectExplorer",
     "onCommand:nova.showProjectModel",
     "onCommand:nova.showProjectConfiguration",
-    "onCommand:nova.buildProject",
-    "onCommand:nova.reloadProject",
     "onDebug"
   ],
   "main": "./out/extension.js",
@@ -164,14 +162,6 @@
       {
         "command": "nova.showProjectConfiguration",
         "title": "Nova: Show Project Configuration"
-      },
-      {
-        "command": "nova.buildProject",
-        "title": "Nova: Build Project"
-      },
-      {
-        "command": "nova.reloadProject",
-        "title": "Nova: Reload Project"
       }
     ],
     "views": {

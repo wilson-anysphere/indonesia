@@ -262,7 +262,7 @@ export async function activate(context: vscode.ExtensionContext) {
       frameworksView.refresh();
     }),
   );
-  registerNovaProjectExplorer(context, sendNovaRequest);
+  registerNovaProjectExplorer(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }));
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');

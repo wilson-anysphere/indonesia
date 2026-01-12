@@ -396,6 +396,132 @@ export function registerNovaBuildIntegration(
     return picked?.folder;
   };
 
+  type ProjectSelector = {
+    workspaceFolder?: vscode.WorkspaceFolder;
+    projectRoot: string;
+    module?: string;
+    projectPath?: string;
+    target?: string;
+  };
+
+  const asObject = (value: unknown): Record<string, unknown> | undefined => {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    return value as Record<string, unknown>;
+  };
+
+  const asNonEmptyString = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const asWorkspaceFolder = (value: unknown): vscode.WorkspaceFolder | undefined => {
+    const obj = asObject(value);
+    if (!obj) {
+      return undefined;
+    }
+    const uri = obj.uri as { fsPath?: unknown } | undefined;
+    if (!uri || typeof uri !== 'object') {
+      return undefined;
+    }
+    return typeof uri.fsPath === 'string' ? (value as vscode.WorkspaceFolder) : undefined;
+  };
+
+  const selectorFromUnit = (unitValue: unknown): Pick<ProjectSelector, 'module' | 'projectPath' | 'target'> => {
+    const unit = asObject(unitValue);
+    if (!unit) {
+      return {};
+    }
+
+    const kind = asNonEmptyString(unit.kind);
+    if (kind === 'maven' || kind === 'simple') {
+      const module = asNonEmptyString(unit.module);
+      return module ? { module } : {};
+    }
+    if (kind === 'gradle') {
+      const projectPath = asNonEmptyString(unit.projectPath);
+      return projectPath ? { projectPath } : {};
+    }
+    if (kind === 'bazel') {
+      const target = asNonEmptyString(unit.target);
+      return target ? { target } : {};
+    }
+    return {};
+  };
+
+  const parseProjectSelector = (value: unknown): ProjectSelector | undefined => {
+    const obj = asObject(value);
+    if (obj) {
+      const nodeType = asNonEmptyString(obj.type);
+
+      // Project Explorer workspace node.
+      if (nodeType === 'workspace') {
+        const workspaceFolder = asWorkspaceFolder(obj.workspace);
+        const projectRoot = workspaceFolder?.uri.fsPath;
+        if (workspaceFolder && projectRoot) {
+          return { workspaceFolder, projectRoot };
+        }
+      }
+
+      // Project Explorer unit node.
+      if (nodeType === 'unit') {
+        const workspaceFolder = asWorkspaceFolder(obj.workspace);
+        const projectRoot = asNonEmptyString(obj.projectRoot) ?? workspaceFolder?.uri.fsPath;
+        if (!projectRoot) {
+          return undefined;
+        }
+        return { workspaceFolder, projectRoot, ...selectorFromUnit(obj.unit) };
+      }
+    }
+
+    // If invoked with a raw WorkspaceFolder, treat it as a workspace-level selector.
+    const asFolder = asWorkspaceFolder(value);
+    if (asFolder) {
+      return { workspaceFolder: asFolder, projectRoot: asFolder.uri.fsPath };
+    }
+
+    // Generic selector object.
+    if (obj) {
+      const projectRoot = asNonEmptyString(obj.projectRoot);
+      if (!projectRoot) {
+        return undefined;
+      }
+      return {
+        projectRoot,
+        module: asNonEmptyString(obj.module),
+        projectPath: asNonEmptyString(obj.projectPath),
+        target: asNonEmptyString(obj.target),
+      };
+    }
+
+    return undefined;
+  };
+
+  const resolveWorkspaceFolderForSelector = async (
+    selector: ProjectSelector | undefined,
+    placeHolder: string,
+  ): Promise<vscode.WorkspaceFolder | undefined> => {
+    if (selector?.workspaceFolder) {
+      return selector.workspaceFolder;
+    }
+    if (selector?.projectRoot) {
+      const uri = vscode.Uri.file(selector.projectRoot);
+      const folder = vscode.workspace.getWorkspaceFolder(uri);
+      if (folder) {
+        return folder;
+      }
+      const folders = getWorkspaceFolders();
+      if (folders.length === 1) {
+        return folders[0];
+      }
+    }
+    return await pickWorkspaceFolder(placeHolder);
+  };
+
   const isBazelWorkspace = async (folder: vscode.WorkspaceFolder): Promise<boolean> => {
     const candidates = ['WORKSPACE', 'WORKSPACE.bazel', 'MODULE.bazel'];
     for (const name of candidates) {
@@ -467,25 +593,40 @@ export function registerNovaBuildIntegration(
   };
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('nova.buildProject', async () => {
+    vscode.commands.registerCommand('nova.buildProject', async (args?: unknown) => {
       startPolling();
 
-      const folder = await pickWorkspaceFolder('Select workspace folder to build');
+      const selector = parseProjectSelector(args);
+
+      const folder = await resolveWorkspaceFolderForSelector(selector, 'Select workspace folder to build');
       if (!folder) {
         void vscode.window.showErrorMessage('Nova: Open a workspace folder to build.');
         return;
       }
 
-      const projectRoot = folder.uri.fsPath;
+      const projectRoot = selector?.projectRoot ?? folder.uri.fsPath;
 
       await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Nova: Build Project (${folder.name})`, cancellable: false },
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: selector?.module
+            ? `Nova: Build ${selector.module} (${folder.name})`
+            : selector?.projectPath
+              ? `Nova: Build ${selector.projectPath} (${folder.name})`
+              : selector?.target
+                ? `Nova: Build ${selector.target} (${folder.name})`
+                : `Nova: Build Project (${folder.name})`,
+          cancellable: false,
+        },
         async () => {
+          const module = selector?.module;
+          const projectPath = selector?.projectPath;
           let target: string | undefined;
+          target = selector?.target;
 
           try {
             const shouldPromptForTarget = await isBazelWorkspace(folder);
-            if (shouldPromptForTarget) {
+            if (shouldPromptForTarget && !target) {
               target = await promptForBazelTarget(folder);
               if (!target) {
                 return;
@@ -496,6 +637,8 @@ export function registerNovaBuildIntegration(
               const response = await request('nova/buildProject', {
                 projectRoot,
                 buildTool: 'auto' satisfies BuildTool,
+                ...(module ? { module } : {}),
+                ...(projectPath ? { projectPath } : {}),
                 ...(target ? { target } : {}),
               });
               if (typeof response === 'undefined') {
@@ -510,22 +653,24 @@ export function registerNovaBuildIntegration(
               }
 
               const message = formatError(err);
-              if (!target && isBazelTargetRequiredMessage(message)) {
-                target = await promptForBazelTarget(folder);
-                if (!target) {
-                  return;
-                }
+                if (!target && isBazelTargetRequiredMessage(message)) {
+                  target = await promptForBazelTarget(folder);
+                  if (!target) {
+                    return;
+                  }
 
-                const response = await request('nova/buildProject', {
-                  projectRoot,
-                  buildTool: 'auto' satisfies BuildTool,
-                  target,
-                });
-                if (typeof response === 'undefined') {
-                  return;
-                }
-              } else {
-                throw err;
+                  const response = await request('nova/buildProject', {
+                    projectRoot,
+                    buildTool: 'auto' satisfies BuildTool,
+                    ...(module ? { module } : {}),
+                    ...(projectPath ? { projectPath } : {}),
+                    target,
+                  });
+                  if (typeof response === 'undefined') {
+                    return;
+                  }
+                } else {
+                  throw err;
               }
             }
 
@@ -559,19 +704,30 @@ export function registerNovaBuildIntegration(
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('nova.reloadProject', async () => {
+    vscode.commands.registerCommand('nova.reloadProject', async (args?: unknown) => {
       startPolling();
 
-      const folder = await pickWorkspaceFolder('Select workspace folder to reload');
+      const selector = parseProjectSelector(args);
+
+      const folder = await resolveWorkspaceFolderForSelector(selector, 'Select workspace folder to reload');
       if (!folder) {
         void vscode.window.showErrorMessage('Nova: Open a workspace folder to reload.');
         return;
       }
 
-      const projectRoot = folder.uri.fsPath;
+      const projectRoot = selector?.projectRoot ?? folder.uri.fsPath;
+      const module = selector?.module;
+      const projectPath = selector?.projectPath;
+      const target = selector?.target;
 
       try {
-        const response = await request('nova/reloadProject', { projectRoot, buildTool: 'auto' satisfies BuildTool });
+        const response = await request('nova/reloadProject', {
+          projectRoot,
+          buildTool: 'auto' satisfies BuildTool,
+          ...(module ? { module } : {}),
+          ...(projectPath ? { projectPath } : {}),
+          ...(target ? { target } : {}),
+        });
         if (typeof response === 'undefined') {
           return;
         }
