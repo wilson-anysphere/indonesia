@@ -6900,23 +6900,11 @@ fn handle_execute_command(
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body_code_action(
-                args,
-                params.work_done_token,
-                state,
-                client,
-                cancel.clone(),
-            )
+            run_ai_generate_method_body(args, params.work_done_token, state, client, cancel.clone())
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests_code_action(
-                args,
-                params.work_done_token,
-                state,
-                client,
-                cancel.clone(),
-            )
+            run_ai_generate_tests(args, params.work_done_token, state, client, cancel.clone())
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
@@ -7138,6 +7126,14 @@ fn method_body_insertion_range(
 }
 
 fn derive_test_file_path(source_text: &str, source_path: &Path) -> Option<String> {
+    // Only attempt to derive a `src/test/java/...` path when the source file looks like it comes
+    // from a standard Maven/Gradle layout (`src/main/java`). For ad-hoc files, fall back to
+    // inserting tests into the current file.
+    let source_path_slash = source_path.to_string_lossy().replace('\\', "/");
+    if !source_path_slash.contains("src/main/java/") {
+        return None;
+    }
+
     let class_name = source_path
         .file_stem()
         .and_then(|s| s.to_str())

@@ -984,11 +984,12 @@ excluded_paths = ["secret/**"]
         .and_then(|v| v.as_array())
         .expect("code actions array");
 
+    // Explain-only actions remain available for excluded paths, but must not include any
+    // file-backed context (code snippet).
     let explain = actions
         .iter()
         .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error"))
         .expect("expected explain-error action to remain available");
-
     // Ensure we don't include a code snippet for excluded files.
     let explain_args = explain
         .get("command")
