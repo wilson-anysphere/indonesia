@@ -584,7 +584,7 @@ In practice, Nova’s CI splits into:
 
 - **PR/push gates**: `ci.yml`, `perf.yml`, `javac.yml`
 - **Scheduled/manual heavy jobs**: `fuzz.yml` (and `real-projects.yml`, which also runs on push for relevant changes)
-- **Main branch health jobs** (no PR gate): `coverage.yml`
+- **Main branch health jobs** (no PR gate): `coverage.yml`, `test-all-features.yml`
 - **Release automation** (not a test gate): `release.yml`
 
 | Workflow | Status | What it runs | Local equivalent |
@@ -595,6 +595,7 @@ In practice, Nova’s CI splits into:
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144` |
 | `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
+| `.github/workflows/test-all-features.yml` | in repo | Workspace tests with `--all-features` (main + schedule + manual; not a PR gate) | `RUST_BACKTRACE=1 cargo nextest run --workspace --profile ci --all-features` (or `cargo test --workspace --all-features`) |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.
 

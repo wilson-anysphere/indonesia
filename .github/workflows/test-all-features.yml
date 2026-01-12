@@ -3,21 +3,38 @@ name: Test (all features)
 on:
   push:
     branches: [main]
-  pull_request:
+  schedule:
+    # Weekly main-branch health check (catches drift even if main is quiet).
+    - cron: "0 3 * * 0"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-all-features:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
+      - name: Install cargo-nextest
+        id: nextest
+        uses: taiki-e/install-action@nextest
+        continue-on-error: true
       - uses: Swatinem/rust-cache@v2
-      - name: test (all features)
+      - name: Run tests (nextest, all features)
+        if: steps.nextest.outcome == 'success'
+        run: cargo nextest run --workspace --profile ci --all-features
+      - name: Run tests (cargo test fallback, all features)
+        if: steps.nextest.outcome != 'success'
         run: cargo test --workspace --all-features
