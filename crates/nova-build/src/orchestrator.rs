@@ -14,16 +14,7 @@ pub type BuildTaskId = u64;
 ///
 /// This is intentionally coarse-grained so it can be surfaced through LSP
 /// endpoints without leaking build-tool specific details.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuildTaskState {
-    Idle,
-    Queued,
-    Running,
-    Success,
-    Failure,
-    Cancelled,
-}
+pub use nova_build_model::BuildTaskState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildRequest {

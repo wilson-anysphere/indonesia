@@ -6,7 +6,7 @@ use nova_build::{
 };
 use nova_build_bazel::{
     BazelBspConfig, BazelBuildDiagnosticsSnapshot, BazelBuildExecutor, BazelBuildOrchestrator,
-    BazelBuildRequest, BazelBuildTaskState, BspCompileOutcome, DefaultBazelBuildExecutor,
+    BazelBuildRequest, BspCompileOutcome, DefaultBazelBuildExecutor,
 };
 use nova_cache::{CacheConfig, CacheDir};
 use nova_project::{load_project_with_options, load_workspace_model_with_options, LoadOptions};
@@ -122,17 +122,6 @@ fn reset_build_orchestrator(project_root: &Path) {
 fn reset_bazel_build_orchestrator(workspace_root: &Path) {
     if let Some(orchestrator) = bazel_build_orchestrator_if_present(workspace_root) {
         orchestrator.reset();
-    }
-}
-
-fn map_bazel_task_state(state: BazelBuildTaskState) -> BuildTaskState {
-    match state {
-        BazelBuildTaskState::Idle => BuildTaskState::Idle,
-        BazelBuildTaskState::Queued => BuildTaskState::Queued,
-        BazelBuildTaskState::Running => BuildTaskState::Running,
-        BazelBuildTaskState::Success => BuildTaskState::Success,
-        BazelBuildTaskState::Failure => BuildTaskState::Failure,
-        BazelBuildTaskState::Cancelled => BuildTaskState::Cancelled,
     }
 }
 
@@ -328,7 +317,7 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
         let resp = NovaBuildProjectResponse {
             schema_version: BUILD_PROJECT_SCHEMA_VERSION,
             build_id,
-            status: map_bazel_task_state(status.state),
+            status: status.state,
             diagnostics: diagnostics
                 .diagnostics
                 .into_iter()
@@ -1834,11 +1823,11 @@ pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Valu
     let bazel_last_error = bazel_snapshot.as_ref().and_then(|s| s.last_error.clone());
     let bazel_building = matches!(
         bazel_state,
-        Some(BazelBuildTaskState::Queued | BazelBuildTaskState::Running)
+        Some(BuildTaskState::Queued | BuildTaskState::Running)
     );
     let bazel_failed = matches!(
         bazel_state,
-        Some(BazelBuildTaskState::Failure | BazelBuildTaskState::Cancelled)
+        Some(BuildTaskState::Failure | BuildTaskState::Cancelled)
     );
 
     let (registry_status, registry_last_error) = build_status_snapshot_for_project_root(&key);
@@ -1946,7 +1935,7 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
             }) => BuildDiagnosticsResult {
                 schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
                 target: req.target.clone().or_else(|| targets.first().cloned()),
-                status: map_bazel_task_state(state),
+                status: state,
                 build_id,
                 diagnostics: diagnostics.into_iter().map(NovaDiagnostic::from).collect(),
                 source: Some("bsp".to_string()),

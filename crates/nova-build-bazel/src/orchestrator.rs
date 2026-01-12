@@ -10,18 +10,8 @@ pub type BazelBuildTaskId = u64;
 
 /// Coarse-grained state for Bazel build tasks.
 ///
-/// Mirrors `nova-build`'s `BuildTaskState` so `nova-lsp` can expose a consistent
-/// schema across build systems.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BazelBuildTaskState {
-    Idle,
-    Queued,
-    Running,
-    Success,
-    Failure,
-    Cancelled,
-}
+/// Re-exported from `nova-build-model` so clients can share a single schema across build systems.
+pub use nova_build_model::BuildTaskState as BazelBuildTaskState;
 
 #[derive(Debug, Clone)]
 pub struct BazelBuildRequest {
