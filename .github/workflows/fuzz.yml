@@ -89,6 +89,10 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
 
+      - name: parse_java (parser entrypoints)
+        run: cargo +nightly fuzz run --codegen-units 16 parse_java -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: fuzz_syntax_literals
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_syntax_literals -- -max_total_time=30 -max_len=262144
         timeout-minutes: 20
