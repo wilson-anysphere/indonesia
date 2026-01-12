@@ -146,6 +146,51 @@ class A {
 }
 
 #[test]
+fn type_mismatch_offers_quickfix_for_cursor_at_span_end() {
+    let source = r#"
+class A {
+  void m() {
+    Object o = null;
+    String s = o;
+  }
+}
+"#;
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(path);
+    db.set_file_text(file, source.to_string());
+
+    let needle = "String s = o;";
+    let stmt_start = source.find(needle).expect("expected assignment in fixture");
+    let expr_start = stmt_start + "String s = ".len();
+    let expr_end = expr_start + "o".len();
+
+    // Cursor selection (zero-length span) at the end of the mismatched expression.
+    let selection = Span::new(expr_end, expr_end);
+
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+
+    let cast_fix = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                && action.title == "Cast to String" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+
+    let cast_fix = cast_fix.expect("expected Cast to String quickfix at cursor boundary");
+    assert!(
+        cast_fix.edit.is_some(),
+        "expected cast quickfix to include an edit"
+    );
+}
+
+#[test]
 fn type_mismatch_offers_string_value_of_quickfix_for_primitive() {
     let source = r#"
 class A {
