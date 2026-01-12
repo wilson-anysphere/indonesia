@@ -12,7 +12,6 @@ mod java_member_selection_rename;
 mod java_semantic_rename;
 mod java_semantic_symbols;
 mod javac_refactors;
-mod javac_refactors;
 mod lsp_utf16;
 mod r#move;
 mod move_java_unicode_block_comment;
