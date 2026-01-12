@@ -9,6 +9,7 @@ import { registerNovaDebugConfigurations } from './debugConfigurations';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaTestDebugRunProfile } from './testDebug';
+import { toDidRenameFilesParams } from './fileOperations';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 import {
@@ -361,6 +362,35 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*.java');
   context.subscriptions.push(fileWatcher);
+
+  // VS Code's file system watcher events may represent renames as delete+create,
+  // and can miss `workspace/didRenameFiles` semantics required by Nova's analysis
+  // layer. Forward explicit rename events for file:// URIs while the client is
+  // running.
+  context.subscriptions.push(
+    vscode.workspace.onDidRenameFiles((event) => {
+      const languageClient = client;
+      if (!languageClient || languageClient.state !== State.Running) {
+        return;
+      }
+
+      // For safety, only forward local file renames. Non-file schemes (e.g.
+      // untitled:) are not meaningful to the server's filesystem-backed analysis.
+      const files = event.files
+        .filter(({ oldUri, newUri }) => oldUri.scheme === 'file' && newUri.scheme === 'file')
+        .map(({ oldUri, newUri }) => ({ oldUri: oldUri.toString(), newUri: newUri.toString() }));
+
+      if (files.length === 0) {
+        return;
+      }
+
+      try {
+        void languageClient.sendNotification('workspace/didRenameFiles', toDidRenameFilesParams(files));
+      } catch {
+        // Best-effort: ignore failures if the client/server is shutting down.
+      }
+    }),
+  );
 
   const clientOptions: LanguageClientOptions = {
     documentSelector,
