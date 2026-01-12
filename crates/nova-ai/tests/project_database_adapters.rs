@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use nova_ai::{DbProjectDatabase, SemanticSearch, TrigramSemanticSearch, VirtualWorkspace};
-use nova_core::FileId;
+use nova_core::{FileId, ProjectDatabase};
 use nova_db::{Database, InMemoryFileStore};
 
 #[test]
@@ -113,4 +113,51 @@ fn db_project_database_indexes_db_without_file_id_lookup() {
     let results = search.search("hello from db");
     assert!(!results.is_empty(), "expected at least one search result");
     assert_eq!(results[0].path, PathBuf::from("src/OnlyPath.java"));
+}
+
+#[test]
+fn virtual_workspace_project_files_are_sorted() {
+    let workspace = VirtualWorkspace::new([
+        ("b.txt".to_string(), "b".to_string()),
+        ("a.txt".to_string(), "a".to_string()),
+    ]);
+
+    let files = ProjectDatabase::project_files(&workspace);
+    assert_eq!(files, vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
+}
+
+#[test]
+fn db_project_database_project_files_are_sorted_and_deduped() {
+    #[derive(Debug)]
+    struct TwoFileDb {
+        a: PathBuf,
+        b: PathBuf,
+    }
+
+    impl Database for TwoFileDb {
+        fn file_content(&self, _file_id: FileId) -> &str {
+            ""
+        }
+
+        fn file_path(&self, file_id: FileId) -> Option<&std::path::Path> {
+            match file_id.to_raw() {
+                0 => Some(self.a.as_path()),
+                1 => Some(self.b.as_path()),
+                _ => None,
+            }
+        }
+
+        fn all_file_ids(&self) -> Vec<FileId> {
+            vec![FileId::from_raw(1), FileId::from_raw(0), FileId::from_raw(1)]
+        }
+    }
+
+    let db = TwoFileDb {
+        a: PathBuf::from("a.txt"),
+        b: PathBuf::from("b.txt"),
+    };
+
+    let db = DbProjectDatabase::new(&db);
+    let files = ProjectDatabase::project_files(&db);
+    assert_eq!(files, vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
 }

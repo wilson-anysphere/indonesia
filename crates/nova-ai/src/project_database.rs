@@ -10,7 +10,7 @@ impl ProjectDatabase for VirtualWorkspace {
             .files()
             .map(|(path, _)| PathBuf::from(path))
             .collect();
-        paths.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        paths.sort();
         paths
     }
 
@@ -43,7 +43,8 @@ impl ProjectDatabase for DbProjectDatabase<'_> {
             .into_iter()
             .filter_map(|file_id| self.db.file_path(file_id).map(Path::to_path_buf))
             .collect();
-        paths.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        paths.sort();
+        paths.dedup();
         paths
     }
 
