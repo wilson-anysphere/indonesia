@@ -2522,6 +2522,37 @@ class C {
 }
 
 #[test]
+fn method_reference_is_typed_from_constructor_argument_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    C(Function<String, Integer> f) {}
+    void m() {
+        new C(String::length);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected method reference to be target-typed from constructor argument, got {diags:?}"
+    );
+
+    let offset = src
+        .find("String::length")
+        .expect("snippet should contain method reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Function<String, Integer>");
+}
+
+#[test]
 fn constructor_reference_is_typed_from_target() {
     let src = r#"
 interface Maker { String make(); }
@@ -2579,6 +2610,37 @@ class C {
 "#;
 
     let (db, file) = setup_db(src);
+    let offset = src
+        .find("String::new")
+        .expect("snippet should contain constructor reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+}
+
+#[test]
+fn constructor_reference_is_typed_from_constructor_argument_target() {
+    let src = r#"
+interface Maker { String make(); }
+class C {
+    C(Maker m) {}
+    void m() {
+        new C(String::new);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected constructor reference to be target-typed from constructor argument, got {diags:?}"
+    );
+
     let offset = src
         .find("String::new")
         .expect("snippet should contain constructor reference")
@@ -8842,6 +8904,34 @@ fn lambda_param_type_is_inferred_from_function_target() {
 class C {
     void m() {
         Function<String, Integer> f = s -> s.length();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected lambda body method call to resolve after parameter inference, got {diags:?}"
+    );
+
+    let offset = src
+        .find("s.length")
+        .expect("snippet should contain lambda parameter usage");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn lambda_param_type_is_inferred_from_constructor_argument_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    C(Function<String, Integer> f) {}
+    void m() {
+        new C(s -> s.length());
     }
 }
 "#;

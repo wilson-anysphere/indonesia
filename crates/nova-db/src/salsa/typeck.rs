@@ -1112,7 +1112,7 @@ fn type_of_expr_demand_result(
 
     let ty = if expr.expr.idx() < body.exprs.len() {
         let target_expr = expr.expr;
-        let is_target_typed = matches!(
+        let target_typed_expr = if matches!(
             body.exprs[target_expr],
             HirExpr::Lambda { .. }
                 | HirExpr::MethodReference { .. }
@@ -1120,27 +1120,45 @@ fn type_of_expr_demand_result(
         ) || matches!(
             &body.exprs[target_expr],
             HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str())
-        );
+        ) {
+            Some(target_expr)
+        } else {
+            // Hovering inside a lambda body should still recover target typing from the enclosing
+            // argument position so lambda parameters have concrete types.
+            let mut best_target_typed: Option<(HirExprId, usize)> = None;
+            find_enclosing_target_typed_expr_in_stmt(
+                &body,
+                body.root,
+                target_expr,
+                &mut best_target_typed,
+            );
+            best_target_typed.map(|(expr, _)| expr)
+        };
 
         // Target-typed expressions like lambdas and method references can pick up their type from
-        // a call argument position. In the demand-driven query we don't type-check the whole body,
-        // but we can still infer the immediate enclosing call to recover the parameter target type.
-        if expected_ty.is_none() && is_target_typed {
-            let mut best_call: Option<(HirExprId, usize)> = None;
-            find_enclosing_call_with_arg_in_stmt(&body, body.root, target_expr, &mut best_call);
-            if let Some((call_expr, _)) = best_call {
-                let _ = checker.infer_expr(&mut loader, call_expr);
-            }
-            checker.infer_expr(&mut loader, target_expr).ty
-        } else {
-            match expected_ty.as_ref() {
-                Some(expected) => {
-                    checker
-                        .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
-                        .ty
+        // an enclosing call argument position. In the demand-driven query we don't type-check the
+        // whole body, but we can still infer the immediate enclosing call to recover the parameter
+        // target type (and seed lambda parameter locals).
+        if expected_ty.is_none() {
+            if let Some(target_typed_expr) = target_typed_expr {
+                let mut best_call: Option<(HirExprId, usize)> = None;
+                find_enclosing_call_with_arg_in_stmt(
+                    &body,
+                    body.root,
+                    target_typed_expr,
+                    &mut best_call,
+                );
+                if let Some((call_expr, _)) = best_call {
+                    let _ = checker.infer_expr(&mut loader, call_expr);
                 }
-                None => checker.infer_expr(&mut loader, target_expr).ty,
             }
+        }
+
+        match expected_ty.as_ref() {
+            Some(expected) => checker
+                .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
+                .ty,
+            None => checker.infer_expr(&mut loader, target_expr).ty,
         }
     } else {
         Type::Unknown
@@ -2742,58 +2760,11 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
 
 fn extend_type_ref_diagnostics(
     out: &mut Vec<Diagnostic>,
-    file_tokens: &[Token],
-    file_text: &str,
+    _file_tokens: &[Token],
+    _file_text: &str,
     diags: Vec<Diagnostic>,
 ) {
-    // NOTE: Type-use annotations are currently ignored by Nova's type checker. The type-ref
-    // parser is resilient to annotations (and can optionally diagnose them when anchored), but we
-    // intentionally suppress diagnostics for annotation *type names* in type-use positions when
-    // reporting type-check diagnostics.
-    //
-    // Example: `List<@Missing String>` should not surface an `unresolved-type` diagnostic for the
-    // annotation name `Missing` in `db.type_diagnostics`.
-    if diags.is_empty() {
-        return;
-    }
-
-    out.extend(diags.into_iter().filter(|d| {
-        let Some(span) = d.span else {
-            return true;
-        };
-        if span.start == 0
-            || span.start > file_text.len()
-            || !file_text.is_char_boundary(span.start)
-        {
-            return true;
-        }
-
-        let start: u32 = match span.start.try_into() {
-            Ok(v) => v,
-            Err(_) => return true,
-        };
-
-        // Find the token that contains the diagnostic span start.
-        let mut idx = file_tokens.partition_point(|tok| tok.range.end <= start);
-        if idx >= file_tokens.len() {
-            return true;
-        }
-        if file_tokens[idx].range.start > start && idx > 0 {
-            idx -= 1;
-        }
-
-        // Walk backwards over trivia to find the previous token and confirm it is `@`.
-        while idx > 0 {
-            idx -= 1;
-            let prev = &file_tokens[idx];
-            if prev.kind.is_trivia() {
-                continue;
-            }
-            return prev.kind != SyntaxKind::At;
-        }
-
-        true
-    }));
+    out.extend(diags);
 }
 
 fn collect_annotation_use_diagnostics<'idx>(
@@ -6755,24 +6726,36 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         args: &[HirExprId],
         expected: Option<&Type>,
     ) -> ExprInfo {
-        let arg_types = args
-            .iter()
-            .map(|arg| match &self.body.exprs[*arg] {
-                // Target-typed expressions need the constructor parameter types to infer correctly;
-                // avoid inferring them eagerly to prevent spurious diagnostics (and allow diamond
-                // inference to use the parameter target type).
-                HirExpr::Lambda { .. } => Type::Unknown,
-                HirExpr::MethodReference { receiver, .. }
-                | HirExpr::ConstructorReference { receiver, .. } => {
-                    let _ = self.infer_expr(loader, *receiver);
-                    Type::Unknown
+        let arg_types = |this: &mut Self, loader: &mut ExternalTypeLoader<'_>| -> Vec<Type> {
+            args.iter()
+                .map(|arg| match &this.body.exprs[*arg] {
+                    // Target-typed expressions need the constructor parameter types to infer
+                    // correctly; avoid inferring them eagerly to prevent spurious diagnostics (and
+                    // allow diamond inference to use the parameter target type).
+                    HirExpr::Lambda { .. } => Type::Unknown,
+                    HirExpr::MethodReference { receiver, .. }
+                    | HirExpr::ConstructorReference { receiver, .. } => {
+                        let _ = this.infer_expr(loader, *receiver);
+                        Type::Unknown
+                    }
+                    HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str()) => {
+                        Type::Unknown
+                    }
+                    _ => this.infer_expr(loader, *arg).ty,
+                })
+                .collect()
+        };
+        let apply_arg_targets =
+            |this: &mut Self, loader: &mut ExternalTypeLoader<'_>, method: &ResolvedMethod| {
+                for (arg, param_ty) in args.iter().zip(method.params.iter()) {
+                    // Target-typed expressions like lambdas and method references may need the full
+                    // functional interface definition (SAM) available. Ensure the parameter type is
+                    // loaded before attempting target typing.
+                    this.ensure_type_loaded(loader, param_ty);
+                    let _ = this.infer_expr_with_expected(loader, *arg, Some(param_ty));
                 }
-                HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str()) => {
-                    Type::Unknown
-                }
-                _ => self.infer_expr(loader, *arg).ty,
-            })
-            .collect::<Vec<_>>();
+            };
+        let arg_types = arg_types(self, loader);
 
         let raw_text = class_text.trim();
         let used_diamond = is_diamond_type_ref_text(raw_text);
@@ -6843,12 +6826,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             let expected_for_call = Some(&receiver_ty);
             match nova_types::resolve_constructor_call(env_ro, def, &arg_types, expected_for_call) {
                 MethodResolution::Found(method) => {
-                    // Target-type arguments now that we know the selected constructor signature.
-                    for (arg, param_ty) in args.iter().zip(method.params.iter()) {
-                        self.ensure_type_loaded(loader, param_ty);
-                        let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
-                    }
-                    self.call_resolutions[expr.idx()] = Some(method);
+                    self.call_resolutions[expr.idx()] = Some(method.clone());
+                    apply_arg_targets(self, loader, &method);
                 }
                 MethodResolution::Ambiguous(amb) => {
                     self.diagnostics.push(self.ambiguous_constructor_diag(
@@ -6858,11 +6837,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         self.body.exprs[expr].range(),
                     ));
                     if let Some(first) = amb.candidates.first() {
-                        for (arg, param_ty) in args.iter().zip(first.params.iter()) {
-                            self.ensure_type_loaded(loader, param_ty);
-                            let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
-                        }
                         self.call_resolutions[expr.idx()] = Some(first.clone());
+                        apply_arg_targets(self, loader, first);
                     }
                 }
                 MethodResolution::NotFound(not_found) => {
@@ -9271,8 +9247,9 @@ fn resolve_type_ref_text<'idx>(
     // possible.
     //
     // We still pass the original text into `resolve_type_ref_text` so the parser can correctly
-    // skip type-use annotations even when `TypeRef.text` is whitespace-stripped (e.g.
-    // `@A String` becomes `@AString`).
+    // skip type-use annotations even when `TypeRef.text` is whitespace-stripped (e.g. `@A String`
+    // becomes `@AString`). Type-use annotations don't currently contribute to `nova_types::Type`,
+    // but we still resolve their annotation type names for signature diagnostics.
     preload_type_names(resolver, scopes, scope_id, loader, text);
     let mut resolved = nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
@@ -10520,6 +10497,275 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
         | HirExpr::This { .. }
         | HirExpr::Super { .. }
         | HirExpr::Missing { .. } => false,
+    }
+}
+
+fn find_enclosing_target_typed_expr_in_stmt(
+    body: &HirBody,
+    stmt: nova_hir::hir::StmtId,
+    target: HirExprId,
+    best: &mut Option<(HirExprId, usize)>,
+) {
+    let target_range = body.exprs[target].range();
+    find_enclosing_target_typed_expr_in_stmt_inner(body, stmt, target, target_range, best);
+}
+
+fn find_enclosing_target_typed_expr_in_stmt_inner(
+    body: &HirBody,
+    stmt: nova_hir::hir::StmtId,
+    target: HirExprId,
+    target_range: Span,
+    best: &mut Option<(HirExprId, usize)>,
+) {
+    let stmt_range = match &body.stmts[stmt] {
+        HirStmt::Block { range, .. }
+        | HirStmt::Let { range, .. }
+        | HirStmt::Expr { range, .. }
+        | HirStmt::Assert { range, .. }
+        | HirStmt::Return { range, .. }
+        | HirStmt::If { range, .. }
+        | HirStmt::While { range, .. }
+        | HirStmt::For { range, .. }
+        | HirStmt::ForEach { range, .. }
+        | HirStmt::Synchronized { range, .. }
+        | HirStmt::Switch { range, .. }
+        | HirStmt::Try { range, .. }
+        | HirStmt::Throw { range, .. }
+        | HirStmt::Break { range, .. }
+        | HirStmt::Continue { range, .. }
+        | HirStmt::Empty { range, .. } => *range,
+    };
+    let may_contain = stmt_range.start <= target_range.start && target_range.end <= stmt_range.end;
+    if !may_contain {
+        return;
+    }
+
+    match &body.stmts[stmt] {
+        HirStmt::Block { statements, .. } => {
+            for stmt in statements {
+                find_enclosing_target_typed_expr_in_stmt_inner(body, *stmt, target, target_range, best);
+            }
+        }
+        HirStmt::Let { initializer, .. } => {
+            if let Some(expr) = initializer {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::Expr { expr, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+        }
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *condition, target, target_range, best);
+            if let Some(expr) = message {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::Return { expr, .. } => {
+            if let Some(expr) = expr {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *condition, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(
+                body,
+                *then_branch,
+                target,
+                target_range,
+                best,
+            );
+            if let Some(branch) = else_branch {
+                find_enclosing_target_typed_expr_in_stmt_inner(
+                    body,
+                    *branch,
+                    target,
+                    target_range,
+                    best,
+                );
+            }
+        }
+        HirStmt::While {
+            condition, body: b, ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *condition, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::For {
+            init,
+            condition,
+            update,
+            body: b,
+            ..
+        } => {
+            for stmt in init {
+                find_enclosing_target_typed_expr_in_stmt_inner(body, *stmt, target, target_range, best);
+            }
+            if let Some(expr) = condition {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+            for expr in update {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+            find_enclosing_target_typed_expr_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::ForEach {
+            iterable, body: b, ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *iterable, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::Synchronized { expr, body: b, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::Switch {
+            selector, body: b, ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::Try {
+            body: b,
+            catches,
+            finally,
+            ..
+        } => {
+            find_enclosing_target_typed_expr_in_stmt_inner(body, *b, target, target_range, best);
+            for catch in catches {
+                find_enclosing_target_typed_expr_in_stmt_inner(
+                    body,
+                    catch.body,
+                    target,
+                    target_range,
+                    best,
+                );
+            }
+            if let Some(finally) = finally {
+                find_enclosing_target_typed_expr_in_stmt_inner(
+                    body,
+                    *finally,
+                    target,
+                    target_range,
+                    best,
+                );
+            }
+        }
+        HirStmt::Throw { expr, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+        }
+        HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
+    }
+}
+
+fn find_enclosing_target_typed_expr_in_expr(
+    body: &HirBody,
+    expr: HirExprId,
+    target: HirExprId,
+    target_range: Span,
+    best: &mut Option<(HirExprId, usize)>,
+) {
+    let range = body.exprs[expr].range();
+    let may_contain = range.start <= target_range.start && target_range.end <= range.end;
+    if !may_contain {
+        return;
+    }
+
+    if matches!(
+        body.exprs[expr],
+        HirExpr::Lambda { .. }
+            | HirExpr::MethodReference { .. }
+            | HirExpr::ConstructorReference { .. }
+    ) && contains_expr_in_expr(body, expr, target)
+    {
+        let len = range.len();
+        let replace = best.map(|(_, best_len)| len < best_len).unwrap_or(true);
+        if replace {
+            *best = Some((expr, len));
+        }
+    }
+
+    match &body.exprs[expr] {
+        HirExpr::Cast { expr: inner, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *inner, target, target_range, best);
+        }
+        HirExpr::FieldAccess { receiver, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *receiver, target, target_range, best);
+        }
+        HirExpr::ArrayAccess { array, index, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *array, target, target_range, best);
+            find_enclosing_target_typed_expr_in_expr(body, *index, target, target_range, best);
+        }
+        HirExpr::MethodReference { receiver, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *receiver, target, target_range, best);
+        }
+        HirExpr::ConstructorReference { receiver, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *receiver, target, target_range, best);
+        }
+        HirExpr::ClassLiteral { ty, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *ty, target, target_range, best);
+        }
+        HirExpr::Call { callee, args, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *callee, target, target_range, best);
+            for arg in args {
+                find_enclosing_target_typed_expr_in_expr(body, *arg, target, target_range, best);
+            }
+        }
+        HirExpr::New { args, .. } => {
+            for arg in args {
+                find_enclosing_target_typed_expr_in_expr(body, *arg, target, target_range, best);
+            }
+        }
+        HirExpr::ArrayCreation { dim_exprs, .. } => {
+            for dim_expr in dim_exprs {
+                find_enclosing_target_typed_expr_in_expr(body, *dim_expr, target, target_range, best);
+            }
+        }
+        HirExpr::Unary { expr, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+        }
+        HirExpr::Instanceof { expr, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+        }
+        HirExpr::Binary { lhs, rhs, .. } | HirExpr::Assign { lhs, rhs, .. } => {
+            find_enclosing_target_typed_expr_in_expr(body, *lhs, target, target_range, best);
+            find_enclosing_target_typed_expr_in_expr(body, *rhs, target, target_range, best);
+        }
+        HirExpr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *condition, target, target_range, best);
+            find_enclosing_target_typed_expr_in_expr(body, *then_expr, target, target_range, best);
+            find_enclosing_target_typed_expr_in_expr(body, *else_expr, target, target_range, best);
+        }
+        HirExpr::Lambda { body: b, .. } => match b {
+            LambdaBody::Expr(expr) => {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+            LambdaBody::Block(stmt) => {
+                find_enclosing_target_typed_expr_in_stmt_inner(body, *stmt, target, target_range, best);
+            }
+        },
+        HirExpr::Invalid { children, .. } => {
+            for child in children {
+                find_enclosing_target_typed_expr_in_expr(body, *child, target, target_range, best);
+            }
+        }
+        HirExpr::Name { .. }
+        | HirExpr::Literal { .. }
+        | HirExpr::Null { .. }
+        | HirExpr::This { .. }
+        | HirExpr::Super { .. }
+        | HirExpr::Missing { .. } => {}
     }
 }
 
