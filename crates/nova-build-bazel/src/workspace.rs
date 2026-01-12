@@ -1725,6 +1725,48 @@ mod bsp_config_tests {
     }
 
     #[test]
+    fn dot_bsp_discovery_allows_null_languages() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+
+        std::fs::write(
+            bsp_dir.join("server.json"),
+            r#"{"argv":["bsp-prog","--arg"],"languages":null,"name":"ignored"}"#,
+        )
+        .unwrap();
+
+        let config =
+            crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
+        assert_eq!(config.program, "bsp-prog");
+        assert_eq!(config.args, vec!["--arg".to_string()]);
+    }
+
+    #[test]
+    fn dot_bsp_discovery_falls_back_to_first_by_path_when_no_java_language() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+
+        // Intentionally create `b.json` first to ensure selection is based on sorting, not FS order.
+        std::fs::write(
+            bsp_dir.join("b.json"),
+            r#"{"argv":["second"],"languages":["scala"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            bsp_dir.join("a.json"),
+            r#"{"argv":["first"],"languages":["kotlin"]}"#,
+        )
+        .unwrap();
+
+        let config =
+            crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
+        assert_eq!(config.program, "first");
+        assert!(config.args.is_empty());
+    }
+
+    #[test]
     fn env_overrides_win_over_dot_bsp_discovery() {
         let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
 
