@@ -43,3 +43,4 @@ fn rename_updates_non_body_expression_references_for_fields() {
     assert_eq!(updated.get(&foo_file).unwrap(), expected_foo);
     assert_eq!(updated.get(&use_file).unwrap(), expected_use);
 }
+
