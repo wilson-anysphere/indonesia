@@ -322,14 +322,14 @@ impl MemoryManager {
 
             // Sum evictable usage for this category.
             let mut evictable_usage = 0u64;
-            let mut candidates = Vec::new();
+            let mut candidates: Vec<(u64, Arc<AtomicU64>, Arc<dyn MemoryEvictor>)> = Vec::new();
             for (_id, entry_category, usage_counter, evictor) in entries {
                 if *entry_category != category {
                     continue;
                 }
                 let component_usage = usage_counter.load(Ordering::Relaxed);
                 evictable_usage = evictable_usage.saturating_add(component_usage);
-                candidates.push((component_usage, evictor.clone()));
+                candidates.push((component_usage, usage_counter.clone(), evictor.clone()));
             }
 
             if evictable_usage == 0 {
@@ -343,12 +343,34 @@ impl MemoryManager {
             let effective_target = category_target.max(non_evictable);
             let evictable_target = effective_target.saturating_sub(non_evictable);
 
-            for (component_usage, evictor) in candidates {
+            // Deterministic ordering within a category:
+            // - larger components first (more likely to bring usage under target quickly)
+            // - stable tie-breaker by evictor name for reproducibility/debuggability
+            candidates.sort_by(
+                |(a_usage, _a_counter, a_evictor), (b_usage, _b_counter, b_evictor)| {
+                    b_usage
+                        .cmp(a_usage)
+                        .then_with(|| a_evictor.name().cmp(b_evictor.name()))
+                },
+            );
+
+            // Stop once we are within the category target to avoid over-evicting.
+            for idx in 0..candidates.len() {
+                let current_evictable: u64 = candidates
+                    .iter()
+                    .map(|(_, counter, _)| counter.load(Ordering::Relaxed))
+                    .sum();
+                let current_usage = non_evictable.saturating_add(current_evictable);
+                if current_usage <= category_target {
+                    break;
+                }
+
+                let (component_usage, _counter, evictor) = &candidates[idx];
                 let component_target = if category_usage == 0 {
                     0
                 } else {
                     // Proportional share of the evictable target.
-                    let numer = (component_usage as u128) * (evictable_target as u128);
+                    let numer = (*component_usage as u128) * (evictable_target as u128);
                     let denom = evictable_usage.max(1) as u128;
                     (numer / denom) as u64
                 };

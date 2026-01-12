@@ -82,6 +82,78 @@ struct OrderingEvictor {
     tracker: OnceLock<nova_memory::MemoryTracker>,
 }
 
+struct RecordingEvictor {
+    name: &'static str,
+    category: MemoryCategory,
+    bytes: Mutex<u64>,
+    calls: Arc<Mutex<Vec<&'static str>>>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+}
+
+impl RecordingEvictor {
+    fn new(
+        manager: &MemoryManager,
+        name: &'static str,
+        category: MemoryCategory,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    ) -> Arc<Self> {
+        let evictor = Arc::new(Self {
+            name,
+            category,
+            bytes: Mutex::new(0),
+            calls,
+            registration: OnceLock::new(),
+            tracker: OnceLock::new(),
+        });
+
+        let registration = manager.register_evictor(name.to_string(), category, evictor.clone());
+        evictor
+            .tracker
+            .set(registration.tracker())
+            .unwrap_or_else(|_| panic!("tracker only set once"));
+        evictor
+            .registration
+            .set(registration)
+            .unwrap_or_else(|_| panic!("registration only set once"));
+
+        evictor
+    }
+
+    fn set_bytes(&self, bytes: u64) {
+        *self.bytes.lock().unwrap() = bytes;
+        self.tracker.get().unwrap().set_bytes(bytes);
+    }
+
+    fn bytes(&self) -> u64 {
+        *self.bytes.lock().unwrap()
+    }
+}
+
+impl MemoryEvictor for RecordingEvictor {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn category(&self) -> MemoryCategory {
+        self.category
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        self.calls.lock().unwrap().push(self.name);
+
+        let mut bytes = self.bytes.lock().unwrap();
+        let before = *bytes;
+        let after = before.min(request.target_bytes);
+        *bytes = after;
+        self.tracker.get().unwrap().set_bytes(after);
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
+    }
+}
+
 impl OrderingEvictor {
     fn new(
         manager: &MemoryManager,
@@ -351,6 +423,47 @@ fn report_detailed_is_sorted_by_bytes_desc() {
                 bytes: 10,
             },
         ]
+    );
+}
+
+#[test]
+fn stops_evicting_within_category_once_under_target() {
+    // Regression test: when multiple evictors exist in the same category, once we have
+    // reduced total category usage under its target we should stop calling additional
+    // evictors. This avoids over-evicting (e.g. rebuilding Salsa memo tables) when a cheaper
+    // evictor already freed enough memory.
+    let budget = MemoryBudget::from_total(1_000);
+    // Keep pressure deterministically Low even if process RSS dwarfs the synthetic budget.
+    let thresholds = MemoryPressureThresholds {
+        medium: 1e12,
+        high: 1e12,
+        critical: 1e12,
+    };
+    let manager = MemoryManager::with_thresholds(budget, thresholds);
+
+    let calls: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let a = RecordingEvictor::new(&manager, "a", MemoryCategory::QueryCache, calls.clone());
+    let b = RecordingEvictor::new(&manager, "b", MemoryCategory::QueryCache, calls.clone());
+
+    // Slightly exceed the query_cache category budget; evicting `a` alone should be enough.
+    a.set_bytes(budget.categories.query_cache + 1);
+    b.set_bytes(1);
+
+    manager.enforce();
+
+    assert!(
+        a.bytes() <= budget.categories.query_cache,
+        "expected primary evictor to shrink under budget"
+    );
+    assert_eq!(
+        b.bytes(),
+        1,
+        "expected secondary evictor to not be called once category is within target"
+    );
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["a"],
+        "expected only the first evictor to be invoked"
     );
 }
 
