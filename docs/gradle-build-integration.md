@@ -157,6 +157,14 @@ Implementation references:
 
 These must remain aligned: if the file set diverges, `nova-project` will treat snapshots as stale.
 
+If you change what counts as a “Gradle build input”, also consider whether file watching should
+treat the same paths as **build changes** (so the workspace reloads when those inputs change). In
+practice this may involve updating:
+
+- `crates/nova-workspace/src/watch.rs:is_build_file` (build vs source change categorization)
+- `crates/nova-project/src/discover.rs:is_build_file` (reload triggers when callers provide changed
+  files)
+
 ### Data model (schema v1)
 
 Top-level fields:
