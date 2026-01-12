@@ -202,6 +202,31 @@ fn fingerprint_ignores_misplaced_maven_wrapper_properties() {
 }
 
 #[test]
+fn fingerprint_ignores_misplaced_maven_jvm_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    // Only `.mvn/jvm.config` should affect the fingerprint.
+    let misplaced = root.join("jvm.config");
+    std::fs::write(&misplaced, "-Xmx1g\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(&misplaced, "-Xmx2g\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_ignores_misplaced_maven_config_and_extensions_files() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
