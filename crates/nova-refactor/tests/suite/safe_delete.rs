@@ -216,3 +216,175 @@ class Derived extends Base {
         "should not leave an empty method name"
     );
 }
+
+#[test]
+fn safe_delete_ignores_other_overload_calls() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    public void foo() {
+    }
+
+    public void foo(int x) {
+    }
+
+    public void entry() {
+        foo(1);
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files.clone());
+    let target = index
+        .method_overloads_by_arity("A", "foo", 0)
+        .into_iter()
+        .next()
+        .expect("foo() exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+
+    let edit = match outcome {
+        SafeDeleteOutcome::Applied { edit } => edit,
+        SafeDeleteOutcome::Preview { report } => {
+            panic!("expected direct application (no usages), got: {report:?}")
+        }
+    };
+
+    let updated = apply_workspace_edit(&files, &edit);
+    let a = updated.get("A.java").unwrap();
+    assert!(!a.contains("void foo()"), "foo() declaration should be removed");
+    assert!(
+        a.contains("void foo(int x)"),
+        "other overload should remain: {a}"
+    );
+    assert!(a.contains("foo(1)"), "call site should remain: {a}");
+}
+
+#[test]
+fn safe_delete_blocks_when_target_overload_called() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    public void foo() {
+    }
+
+    public void foo(int x) {
+    }
+
+    public void entry() {
+        foo(1);
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index
+        .method_overloads_by_arity("A", "foo", 1)
+        .into_iter()
+        .next()
+        .expect("foo(int) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert_eq!(report.usages.len(), 1, "expected one call usage: {report:?}");
+    let usage = &report.usages[0];
+    assert_eq!(usage.file, "A.java");
+    assert_eq!(usage.kind, UsageKind::Call);
+    let text = index.file_text(&usage.file).unwrap();
+    assert_eq!(&text[usage.range.start..usage.range.end], "foo");
+}
+
+#[test]
+fn safe_delete_override_detection_respects_overload_signature() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "Base.java".to_string(),
+        r#"
+class Base {
+    public void foo() {
+    }
+
+    public void foo(int x) {
+    }
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "Derived.java".to_string(),
+        r#"
+class Derived extends Base {
+    @Override
+    public void foo(int x) {
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files.clone());
+    let base_foo0 = index
+        .method_overloads_by_arity("Base", "foo", 0)
+        .into_iter()
+        .next()
+        .expect("foo() exists");
+    let base_foo1 = index
+        .method_overloads_by_arity("Base", "foo", 1)
+        .into_iter()
+        .next()
+        .expect("foo(int) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(base_foo0),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    match outcome {
+        SafeDeleteOutcome::Applied { .. } => {}
+        SafeDeleteOutcome::Preview { report } => {
+            panic!("expected foo() to be deleted safely, got: {report:?}");
+        }
+    }
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(base_foo1),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview for foo(int)"),
+    };
+
+    assert!(
+        report
+            .usages
+            .iter()
+            .any(|usage| usage.kind == UsageKind::Override && usage.file == "Derived.java"),
+        "expected override usage for foo(int): {report:?}"
+    );
+}
