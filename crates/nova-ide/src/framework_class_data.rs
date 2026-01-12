@@ -21,11 +21,17 @@ pub fn extract_classes_from_source(source: &str) -> Vec<ClassData> {
     let parse = nova_syntax::parse_java(source);
 
     for node in parse.syntax().descendants() {
-        let Some(class) = syntax_ast::ClassDeclaration::cast(node) else {
+        if let Some(class) = syntax_ast::ClassDeclaration::cast(node.clone()) {
+            if let Some(class) = parse_class_declaration(class, source) {
+                classes.push(class);
+            }
             continue;
-        };
-        if let Some(class) = parse_class_declaration(class, source) {
-            classes.push(class);
+        }
+
+        if let Some(interface) = syntax_ast::InterfaceDeclaration::cast(node) {
+            if let Some(interface) = parse_interface_declaration(interface, source) {
+                classes.push(interface);
+            }
         }
     }
 
@@ -68,6 +74,47 @@ fn parse_class_declaration(node: syntax_ast::ClassDeclaration, source: &str) -> 
 
     Some(ClassData {
         name: class_name,
+        annotations,
+        fields,
+        methods,
+        constructors,
+    })
+}
+
+fn parse_interface_declaration(
+    node: syntax_ast::InterfaceDeclaration,
+    source: &str,
+) -> Option<ClassData> {
+    let modifiers = node.modifiers();
+    let annotations = modifiers
+        .as_ref()
+        .map(collect_annotations)
+        .unwrap_or_default();
+
+    let interface_name = node.name_token()?.text().to_string();
+    let body = node.body()?;
+
+    let mut fields = Vec::new();
+    let mut methods = Vec::new();
+    let constructors = Vec::new();
+
+    for member in body.members() {
+        match member {
+            syntax_ast::ClassMember::FieldDeclaration(field) => {
+                let mut parsed = parse_field_declaration(field, source);
+                fields.append(&mut parsed);
+            }
+            syntax_ast::ClassMember::MethodDeclaration(method) => {
+                if let Some(method) = parse_method_declaration(method, source) {
+                    methods.push(method);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(ClassData {
+        name: interface_name,
         annotations,
         fields,
         methods,

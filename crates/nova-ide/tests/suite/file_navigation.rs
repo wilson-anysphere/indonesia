@@ -305,6 +305,48 @@ class Main { void test(Foo foo){ foo.$0bar(); } }
 }
 
 #[test]
+fn go_to_implementation_on_final_param_receiver_resolves_receiver_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class Foo { void $1bar() {} }
+//- /Main.java
+class Main { void test(final Foo foo){ foo.$0bar(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_implementation_on_generic_param_receiver_ignores_type_args() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Map.java
+class Map { void $1put() {} }
+//- /Foo.java
+class Foo {}
+//- /Main.java
+class Main { void test(Map<String, Foo> map, Foo foo){ map.$0put(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_on_static_receiver_call_returns_static_method_definition() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -494,6 +536,25 @@ class $1Foo {}
 @interface Ann {}
 //- /Main.java
 class Main { void test(Foo @Ann [] foo){ $0foo.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_type_definition_on_array_param_usage_returns_element_type_definition() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main { void test(Foo[] foos){ $0foos.toString(); } }
 "#,
     );
 
