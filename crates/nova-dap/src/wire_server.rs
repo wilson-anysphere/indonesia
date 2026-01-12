@@ -804,8 +804,19 @@ async fn handle_request_inner(
                             return;
                         }
                     };
+                    let Some(pid) = child.id() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("failed to determine launched process pid".to_string()),
+                        );
+                        return;
+                    };
 
-                    let launched_pid = child.id();
+                    let launched_pid = Some(pid);
                     if let Some(stdout) = child.stdout.take() {
                         spawn_output_task(
                             stdout,
@@ -933,8 +944,19 @@ async fn handle_request_inner(
                             return;
                         }
                     };
+                    let Some(pid) = child.id() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("failed to determine launched process pid".to_string()),
+                        );
+                        return;
+                    };
 
-                    let launched_pid = child.id();
+                    let launched_pid = Some(pid);
                     if let Some(stdout) = child.stdout.take() {
                         spawn_output_task(
                             stdout,
@@ -1249,7 +1271,7 @@ async fn handle_request_inner(
                     return;
                 }
             };
-            let is_local_process = resolved_hosts.iter().any(|host| host.is_loopback());
+            let is_local_process = resolved_hosts.iter().any(|addr| addr.is_loopback());
 
             {
                 let guard = debugger.lock().await;
@@ -1334,8 +1356,9 @@ async fn handle_request_inner(
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
             send_response(out_tx, seq, request, true, None, None);
+            let process_name = format!("{host_label}:{port}");
             let process_event_body =
-                make_process_event_body("java", None, is_local_process, "attach");
+                make_process_event_body(&process_name, None, is_local_process, "attach");
             send_event(out_tx, seq, "process", Some(process_event_body));
         }
         "restart" => {
@@ -1435,7 +1458,8 @@ async fn handle_request_inner(
             }
 
             let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
-            let (attach_hosts, attach_port, attach_target_label) = match mode {
+            let (attach_hosts, attach_port, attach_target_label, process_name, process_pid) =
+                match mode {
                 LaunchMode::Command => {
                     let Some(cwd) = args.cwd.as_deref() else {
                         send_response(
@@ -1519,6 +1543,17 @@ async fn handle_request_inner(
                             return;
                         }
                     };
+                    let Some(pid) = child.id() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("failed to determine launched process pid".to_string()),
+                        );
+                        return;
+                    };
 
                     if let Some(stdout) = child.stdout.take() {
                         spawn_output_task(
@@ -1553,7 +1588,13 @@ async fn handle_request_inner(
                         *guard = Some(proc);
                     }
 
-                    (resolved_hosts, port, attach_target_label)
+                    (
+                        resolved_hosts,
+                        port,
+                        attach_target_label,
+                        command.to_string(),
+                        pid,
+                    )
                 }
                 LaunchMode::Java => {
                     let main_class = args.main_class.as_deref().unwrap_or_default();
@@ -1646,6 +1687,17 @@ async fn handle_request_inner(
                             return;
                         }
                     };
+                    let Some(pid) = child.id() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("failed to determine launched process pid".to_string()),
+                        );
+                        return;
+                    };
 
                     if let Some(stdout) = child.stdout.take() {
                         spawn_output_task(
@@ -1680,9 +1732,22 @@ async fn handle_request_inner(
                         *guard = Some(proc);
                     }
 
-                    (vec![host], port, attach_target_label)
+                    let name = match args.module_name.as_deref() {
+                        Some(module_name) => format!("{module_name}/{main_class}"),
+                        None => main_class.to_string(),
+                    };
+                    let name = if name.is_empty() {
+                        "java".to_string()
+                    } else {
+                        name
+                    };
+
+                    (vec![host], port, attach_target_label, name, pid)
                 }
             };
+
+            let process_event_body =
+                make_process_event_body(&process_name, Some(process_pid), true, "launch");
 
             // Update stored config to reflect any defaults we re-applied during restart.
             {
@@ -1859,6 +1924,7 @@ async fn handle_request_inner(
                 }
 
                 send_response(out_tx, seq, request, true, None, None);
+                send_event(out_tx, seq, "process", Some(process_event_body));
                 send_event(
                     out_tx,
                     seq,
@@ -1867,6 +1933,7 @@ async fn handle_request_inner(
                 );
             } else {
                 send_response(out_tx, seq, request, true, None, None);
+                send_event(out_tx, seq, "process", Some(process_event_body));
                 if !args.stop_on_entry {
                     // The debuggee is expected to be running immediately after attach.
                     send_event(

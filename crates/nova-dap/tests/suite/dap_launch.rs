@@ -103,24 +103,48 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
-    // Ensure at least one stdout/stderr output event is forwarded.
+    // Ensure at least one stdout/stderr output event is forwarded and we observe the `process`
+    // event emitted for the launch.
     let mut saw_output = messages.iter().any(|msg| {
         msg.get("type").and_then(|v| v.as_str()) == Some("event")
             && msg.get("event").and_then(|v| v.as_str()) == Some("output")
     });
+    let mut process_evt = find_event(&messages, "process").cloned();
     for _ in 0..50 {
-        if saw_output {
+        if saw_output && process_evt.is_some() {
             break;
         }
         let msg = read_next(&mut reader).await;
-        saw_output = msg.get("type").and_then(|v| v.as_str()) == Some("event")
-            && msg.get("event").and_then(|v| v.as_str()) == Some("output");
+        if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("output")
+        {
+            saw_output = true;
+        }
+        if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("process")
+        {
+            process_evt = Some(msg.clone());
+        }
         messages.push(msg);
     }
     assert!(
         saw_output,
         "expected at least one output event from launched process"
     );
+    let process_evt = process_evt.expect("expected a process event after launch");
+    let process_name = process_evt
+        .pointer("/body/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !process_name.is_empty(),
+        "process event missing body.name: {process_evt}"
+    );
+    let process_pid = process_evt
+        .pointer("/body/systemProcessId")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .expect("process event missing body.systemProcessId");
 
     // Wait for the pid file to show up so we can assert termination semantics.
     let pid: u32 = {
@@ -136,6 +160,10 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
         }
         pid.expect("pid file should be written by helper process")
     };
+    assert_eq!(
+        process_pid, pid,
+        "process event systemProcessId did not match helper pid file"
+    );
 
     #[cfg(target_os = "linux")]
     assert!(

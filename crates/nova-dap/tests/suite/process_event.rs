@@ -7,6 +7,8 @@ use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+use crate::harness::spawn_wire_server;
+
 async fn send_request(
     writer: &mut DapWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
     seq: i64,
@@ -280,5 +282,36 @@ async fn dap_attach_emits_process_event() {
     }
     assert!(saw_terminated, "expected terminated event after disconnect");
 
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn attach_emits_process_event_with_name() {
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    let _jdwp = client.attach_mock_jdwp().await;
+
+    // `attach_mock_jdwp()` uses the harness `attach()` helper, which already waits for and
+    // records the `process` event in the transcript.
+    let transcript = client.take_transcript().await;
+    let process_evt = transcript
+        .iter()
+        .find(|entry| {
+            entry.message.get("type").and_then(|v| v.as_str()) == Some("event")
+                && entry.message.get("event").and_then(|v| v.as_str()) == Some("process")
+        })
+        .map(|entry| entry.message.clone())
+        .expect("expected a process event after attach");
+    let name = process_evt
+        .pointer("/body/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !name.is_empty(),
+        "process event missing body.name: {process_evt}"
+    );
+
+    client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }

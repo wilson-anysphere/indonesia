@@ -48,7 +48,7 @@ async fn transcript_attach_breakpoints_continue_stop_disconnect() {
         tr::event(
             "process",
             Some(json!({
-                "name": "java",
+                "name": tr::ignore(),
                 "isLocalProcess": true,
                 "startMethod": "attach",
             })),
@@ -156,7 +156,7 @@ async fn transcript_attach_function_breakpoints_continue_stop_disconnect() {
         tr::event(
             "process",
             Some(json!({
-                "name": "java",
+                "name": tr::ignore(),
                 "isLocalProcess": true,
                 "startMethod": "attach",
             })),
@@ -262,7 +262,7 @@ async fn transcript_step_sequences() {
         tr::event(
             "process",
             Some(json!({
-                "name": "java",
+                "name": tr::ignore(),
                 "isLocalProcess": true,
                 "startMethod": "attach",
             })),
@@ -426,7 +426,7 @@ async fn transcript_cancel_delayed_request() {
         tr::event(
             "process",
             Some(json!({
-                "name": "java",
+                "name": tr::ignore(),
                 "isLocalProcess": true,
                 "startMethod": "attach",
             })),
