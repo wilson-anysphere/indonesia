@@ -685,6 +685,18 @@ mod tests {
     }
 
     #[test]
+    fn gradle_build_file_detection_includes_nova_gradle_snapshot() {
+        assert!(
+            is_build_file(BuildSystem::Gradle, Path::new(".nova/queries/gradle.json")),
+            ".nova/queries/gradle.json should be treated as a Gradle build marker"
+        );
+        assert!(
+            !is_build_file(BuildSystem::Gradle, Path::new("gradle.json")),
+            "only the .nova/queries/gradle.json snapshot should be treated as a build file"
+        );
+    }
+
+    #[test]
     fn gradle_build_file_detection_includes_wrapper_jar() {
         assert!(
             is_build_file(
@@ -700,6 +712,74 @@ mod tests {
         assert!(
             !is_build_file(BuildSystem::Gradle, Path::new("gradle-wrapper.jar")),
             "misplaced gradle-wrapper.jar at workspace root should not be treated as a build file"
+        );
+    }
+
+    #[test]
+    fn reload_project_reloads_when_gradle_snapshot_changes() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Minimal Gradle workspace marker.
+        std::fs::write(root.join("build.gradle"), "").expect("write build.gradle");
+
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(root, &options).expect("load project");
+        assert_eq!(cfg.build_system, BuildSystem::Gradle);
+
+        // Write a valid `.nova/queries/gradle.json` snapshot with a build fingerprint that matches
+        // the workspace build files. This should influence Gradle project loading, so we can
+        // observe `reload_project()` reloading configuration when the snapshot changes.
+        let workspace_root = &cfg.workspace_root;
+        let build_gradle = workspace_root.join("build.gradle");
+
+        let mut hasher = Sha256::new();
+        let rel = build_gradle
+            .strip_prefix(workspace_root)
+            .unwrap_or(&build_gradle);
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(std::fs::read(&build_gradle).expect("read build.gradle"));
+        hasher.update([0]);
+        let fingerprint = hex::encode(hasher.finalize());
+
+        let snapshot_src = workspace_root.join("snapshot-src");
+        std::fs::create_dir_all(&snapshot_src).expect("mkdir snapshot-src");
+        assert!(
+            !cfg.source_roots.iter().any(|root| root.path == snapshot_src),
+            "snapshot root should not be present before creating the gradle snapshot"
+        );
+
+        let snapshot_path = workspace_root
+            .join(".nova")
+            .join("queries")
+            .join("gradle.json");
+        std::fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("mkdir .nova/queries");
+
+        let snapshot = serde_json::json!({
+            "schemaVersion": 1,
+            "buildFingerprint": fingerprint,
+            "projects": [{"path": ":", "projectDir": "."}],
+            "javaCompileConfigs": {
+                ":": {
+                    "projectDir": ".",
+                    "mainSourceRoots": ["snapshot-src"]
+                }
+            }
+        });
+        std::fs::write(&snapshot_path, serde_json::to_vec(&snapshot).expect("snapshot json"))
+            .expect("write gradle snapshot");
+
+        let mut options_reload = options.clone();
+        let cfg = reload_project(&cfg, &mut options_reload, &[snapshot_path.clone()])
+            .expect("reload with gradle snapshot change");
+
+        assert!(
+            cfg.source_roots.iter().any(|root| root.path == snapshot_src),
+            "expected Gradle snapshot source root to be present after reload"
         );
     }
 

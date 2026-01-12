@@ -46,7 +46,9 @@ fn loads_maven_multi_module_workspace() {
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("lib/src/main/java"))));
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("app/src/main/java"))));
 
-    // Classpath should omit missing dependency jars (repo is empty).
+    // Classpath jar entries should be synthesized from Maven coordinates. The test repo is empty
+    // (no jars on disk), but the paths should still be rooted in the configured repository so
+    // downstream systems can fetch/populate them.
     let jar_entries = config
         .classpath
         .iter()
@@ -54,8 +56,31 @@ fn loads_maven_multi_module_workspace() {
         .map(|cp| cp.path.clone())
         .collect::<Vec<_>>();
     assert!(
-        jar_entries.is_empty(),
-        "expected no jar entries, found: {jar_entries:?}"
+        !jar_entries.is_empty(),
+        "expected jar entries, found: {jar_entries:?}"
+    );
+    assert!(
+        jar_entries.iter().all(|jar| jar.starts_with(repo_dir.path())),
+        "expected jar paths to start with {:?}, got: {:?}",
+        repo_dir.path(),
+        jar_entries
+    );
+
+    let jar_entries: Vec<String> = jar_entries
+        .iter()
+        .map(|jar| jar.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        jar_entries
+            .iter()
+            .any(|jar| jar.contains("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar")),
+        "expected Guava jar entry to be present; got: {jar_entries:?}"
+    );
+    assert!(
+        jar_entries
+            .iter()
+            .any(|jar| jar.contains("org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.jar")),
+        "expected JUnit jar entry to be present; got: {jar_entries:?}"
     );
 
     // Dependencies should be stable and contain expected coordinates.
@@ -252,20 +277,12 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         .expect("expected managed dependency to be discovered");
     assert_eq!(dep.version, Some("1.2.3".to_string()));
 
-    // Dependency jar paths are only included when the artifact exists on disk.
+    // Dependency jar paths should be synthesized from Maven coordinates so downstream systems can
+    // fetch/populate missing jars.
     let jar_path = repo_dir
         .path()
         .join("com/example/managed-dep/1.2.3/managed-dep-1.2.3.jar");
-    assert!(
-        !config.classpath.iter().any(|cp| cp.path == jar_path),
-        "expected missing jar to be omitted from classpath"
-    );
-
-    std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("mkdir jar parent");
-    std::fs::write(&jar_path, b"").expect("write jar placeholder");
-
-    let config2 = load_project_with_options(&root, &options).expect("reload maven project");
-    let jar_entries: Vec<String> = config2
+    let jar_entries: Vec<String> = config
         .classpath
         .iter()
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
@@ -274,10 +291,26 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
     let jar_path_str = jar_path.to_string_lossy().replace('\\', "/");
     assert!(
         jar_entries.iter().any(|p| p == &jar_path_str),
-        "expected managed-dep jar to be present once created, got: {jar_entries:?}"
+        "expected managed-dep to have a synthesized jar path, got: {jar_entries:?}"
     );
     assert!(jar_path_str.contains("/1.2.3/"), "jar path: {jar_path_str}");
     assert!(!jar_path_str.contains("${"), "jar path: {jar_path_str}");
+
+    // Creating the jar should not change the synthesized path.
+    std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("mkdir jar parent");
+    std::fs::write(&jar_path, b"").expect("write jar placeholder");
+
+    let config2 = load_project_with_options(&root, &options).expect("reload maven project");
+    let jar_entries2: Vec<String> = config2
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        jar_entries2.iter().any(|p| p == &jar_path_str),
+        "expected managed-dep jar to remain present after creation, got: {jar_entries2:?}"
+    );
 }
 
 #[test]
@@ -376,7 +409,6 @@ fn loads_gradle_includeflat_workspace() {
         std::fs::canonicalize(config.workspace_root.join("../app")).expect("canonicalize app root");
     let expected_lib_root =
         std::fs::canonicalize(config.workspace_root.join("../lib")).expect("canonicalize lib root");
-
     assert!(
         config.modules.iter().any(|m| m.root == expected_app_root),
         "expected includeFlat module root to canonicalize to ../app"
@@ -416,7 +448,6 @@ fn loads_gradle_includeflat_kts_workspace() {
         std::fs::canonicalize(config.workspace_root.join("../app")).expect("canonicalize app root");
     let expected_lib_root =
         std::fs::canonicalize(config.workspace_root.join("../lib")).expect("canonicalize lib root");
-
     assert!(
         config.modules.iter().any(|m| m.root == expected_app_root),
         "expected includeFlat module root to canonicalize to ../app"
@@ -735,17 +766,28 @@ fn loads_maven_multi_module_workspace_model() {
     assert_eq!(match_lib.module.id, "maven:com.example:lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 
-    // Non-JPMS Maven workspace model: `module_path` should stay empty, and missing dependency jars
-    // should be omitted from the classpath (repo is empty).
+    // Non-JPMS Maven workspace model: `module_path` should stay empty, but dependency jar paths
+    // should still be synthesized from Maven coordinates even when the repo does not contain the
+    // artifacts yet (the test repo is empty).
     assert!(
         app.module_path.is_empty(),
         "expected module_path to remain empty for non-JPMS workspaces"
     );
+    let jar_entries = app
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
     assert!(
-        !app.classpath
-            .iter()
-            .any(|cp| cp.kind == ClasspathEntryKind::Jar),
-        "expected no dependency jar entries for empty Maven repo"
+        !jar_entries.is_empty(),
+        "expected dependency jar entries to be synthesized"
+    );
+    assert!(
+        jar_entries.iter().all(|jar| jar.starts_with(repo_dir.path())),
+        "expected jar paths to start with {:?}, got: {:?}",
+        repo_dir.path(),
+        jar_entries
     );
 
     // Ensure model is deterministic.
