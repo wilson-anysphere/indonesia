@@ -12,11 +12,15 @@
 //! in isolation while the rest of Nova is under construction.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use nova_core::{Diagnostic as CoreDiagnostic, DiagnosticSeverity, Position, ProjectId, Range};
-use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
-use nova_types::ClassId;
+use nova_core::{
+    Diagnostic as CoreDiagnostic, DiagnosticSeverity, FileId, LineIndex, Position, ProjectId, Range,
+};
+use nova_framework::{Database, FrameworkAnalyzer, NavigationTarget, Symbol, VirtualMember};
+use nova_types::{ClassId, Diagnostic, Severity, Span};
 
 #[derive(Debug, Default)]
 pub struct DaggerAnalyzer;
@@ -43,6 +47,270 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
         // exposed via `analyze_java_files`.
         Vec::new()
     }
+
+    fn diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+        let Some(file_path) = db.file_path(file) else {
+            return Vec::new();
+        };
+        let Some(_file_text) = db.file_text(file) else {
+            return Vec::new();
+        };
+
+        if file_path.extension().and_then(|e| e.to_str()) != Some("java") {
+            return Vec::new();
+        }
+
+        let project = db.project_of_file(file);
+        let Some(project) = project_analysis(db, project) else {
+            return Vec::new();
+        };
+
+        let Some(text) = project.file_text(file_path) else {
+            return Vec::new();
+        };
+
+        project
+            .analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.file == file_path)
+            .map(|d| Diagnostic {
+                severity: match d.severity {
+                    DiagnosticSeverity::Error => Severity::Error,
+                    DiagnosticSeverity::Warning => Severity::Warning,
+                    DiagnosticSeverity::Information | DiagnosticSeverity::Hint => Severity::Info,
+                },
+                code: dagger_code(d.source.as_deref()).into(),
+                message: d.message.clone(),
+                span: core_range_to_span(text, d.range),
+            })
+            .collect()
+    }
+
+    fn navigation(&self, db: &dyn Database, symbol: &Symbol) -> Vec<NavigationTarget> {
+        let Symbol::File(file) = *symbol else {
+            return Vec::new();
+        };
+
+        let Some(file_path) = db.file_path(file) else {
+            return Vec::new();
+        };
+
+        if file_path.extension().and_then(|e| e.to_str()) != Some("java") {
+            return Vec::new();
+        }
+
+        let project_id = db.project_of_file(file);
+        let Some(project) = project_analysis(db, project_id) else {
+            return Vec::new();
+        };
+
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+
+        for link in project.analysis.navigation.iter() {
+            if link.from.file != file_path {
+                continue;
+            }
+
+            if link.to.file == file_path {
+                continue;
+            }
+
+            let Some(dest_file) = db.file_id(&link.to.file) else {
+                continue;
+            };
+
+            let label = match link.kind {
+                NavigationKind::InjectionToProvider => "Provider",
+                NavigationKind::ProviderToInjection => "Injection",
+            };
+
+            let span = project
+                .file_text(&link.to.file)
+                .and_then(|text| core_range_to_span(text, link.to.range));
+
+            let key = (dest_file, span, label);
+            if !seen.insert(key) {
+                continue;
+            }
+
+            out.push(NavigationTarget {
+                file: dest_file,
+                span,
+                label: label.to_string(),
+            });
+        }
+
+        out
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Cached project analysis for `FrameworkAnalyzer` integration.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct CachedDaggerProject {
+    fingerprint: u64,
+    files: Vec<JavaSourceFile>,
+    file_index: HashMap<PathBuf, usize>,
+    analysis: DaggerAnalysis,
+}
+
+impl CachedDaggerProject {
+    fn new(fingerprint: u64, files: Vec<JavaSourceFile>, analysis: DaggerAnalysis) -> Self {
+        let file_index = files
+            .iter()
+            .enumerate()
+            .map(|(idx, f)| (f.path.clone(), idx))
+            .collect();
+        Self {
+            fingerprint,
+            files,
+            file_index,
+            analysis,
+        }
+    }
+
+    fn file_text(&self, path: &Path) -> Option<&str> {
+        let idx = self.file_index.get(path)?;
+        Some(self.files.get(*idx)?.text.as_str())
+    }
+}
+
+fn cache() -> &'static Mutex<HashMap<ProjectId, Arc<CachedDaggerProject>>> {
+    static CACHE: OnceLock<Mutex<HashMap<ProjectId, Arc<CachedDaggerProject>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn project_analysis(db: &dyn Database, project: ProjectId) -> Option<Arc<CachedDaggerProject>> {
+    let mut pairs: Vec<(PathBuf, FileId)> = Vec::new();
+
+    for file in db.all_files(project) {
+        let Some(path) = db.file_path(file).map(Path::to_path_buf) else {
+            continue;
+        };
+
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+
+        let Some(_) = db.file_text(file) else {
+            continue;
+        };
+
+        pairs.push((path.clone(), file));
+    }
+
+    if pairs.is_empty() {
+        return None;
+    }
+
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (path, file) in &pairs {
+        let Some(text) = db.file_text(*file) else {
+            continue;
+        };
+
+        path.hash(&mut hasher);
+        text.len().hash(&mut hasher);
+
+        let ptr = text.as_ptr() as usize;
+        let ptr_again = db.file_text(*file).map(|t| t.as_ptr() as usize);
+        if ptr_again.is_some_and(|p| p == ptr) {
+            ptr.hash(&mut hasher);
+        } else {
+            text.hash(&mut hasher);
+        }
+    }
+    let fingerprint = hasher.finish();
+
+    if let Some(existing) = cache()
+        .lock()
+        .expect("dagger analysis cache mutex poisoned")
+        .get(&project)
+        .cloned()
+    {
+        if existing.fingerprint == fingerprint {
+            return Some(existing);
+        }
+    }
+
+    let mut files: Vec<JavaSourceFile> = Vec::with_capacity(pairs.len());
+    for (path, file_id) in pairs {
+        let Some(text) = db.file_text(file_id) else {
+            continue;
+        };
+        files.push(JavaSourceFile {
+            path,
+            text: text.to_string(),
+        });
+    }
+
+    if files.is_empty() {
+        return None;
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let analysis = analyze_java_files(&files);
+
+    let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
+    cache()
+        .lock()
+        .expect("dagger analysis cache mutex poisoned")
+        .insert(project, Arc::clone(&cached));
+    Some(cached)
+}
+
+fn dagger_code(source: Option<&str>) -> &'static str {
+    match source.unwrap_or("") {
+        "DAGGER_MISSING_BINDING" => "DAGGER_MISSING_BINDING",
+        "DAGGER_DUPLICATE_BINDING" => "DAGGER_DUPLICATE_BINDING",
+        "DAGGER_CYCLE" => "DAGGER_CYCLE",
+        "DAGGER_INCOMPATIBLE_SCOPE" => "DAGGER_INCOMPATIBLE_SCOPE",
+        _ => "DAGGER",
+    }
+}
+
+fn core_range_to_span(text: &str, range: Range) -> Option<Span> {
+    // `nova_core::{Position, Range}` are LSP-compatible and use UTF-16 code units for
+    // the `character` field. Convert to byte offsets for `nova_types::Span` using
+    // `LineIndex`.
+    let index = LineIndex::new(text);
+    if let Some(byte_range) = index.text_range(text, range) {
+        return Some(Span::new(
+            u32::from(byte_range.start()) as usize,
+            u32::from(byte_range.end()) as usize,
+        ));
+    }
+
+    // Fallback: some producers (including older best-effort parsers) may emit
+    // UTF-8 byte columns instead of UTF-16. Interpret `character` as a byte
+    // offset within the line and clamp to valid boundaries.
+    let start = fallback_offset_utf8(text, &index, range.start)?;
+    let end = fallback_offset_utf8(text, &index, range.end)?;
+    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    Some(Span::new(start, end))
+}
+
+fn fallback_offset_utf8(text: &str, index: &LineIndex, pos: Position) -> Option<usize> {
+    let line_start = index.line_start(pos.line)?;
+    let line_end = index.line_end(pos.line)?;
+    let line_start = u32::from(line_start) as usize;
+    let line_end = u32::from(line_end) as usize;
+
+    let line_len = line_end.saturating_sub(line_start);
+    let col = (pos.character as usize).min(line_len);
+    let mut offset = (line_start + col).min(text.len());
+
+    while offset > line_start && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+
+    Some(offset)
 }
 
 /// A Java source file with a stable path for diagnostics/navigation.
