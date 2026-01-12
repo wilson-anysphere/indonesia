@@ -115,11 +115,11 @@ testdata/
 4. Re-run without `BLESS=1` to ensure the expectations are stable
 
 ```bash
-# Run the golden corpus test
-bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
-
 # (Re)generate expected `.tree`/`.errors` outputs
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+
+# Run the golden corpus test
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 ### Java Language Levels
@@ -162,14 +162,14 @@ bash scripts/cargo_agent.sh test -p nova-syntax --lib
 # Parser golden corpus fixtures
 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 
-# Formatter tests (includes insta snapshot tests in `tests/`)
-bash scripts/cargo_agent.sh test -p nova-format --tests
+# Formatter tests (`insta` snapshots)
+bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 
-# Update golden corpus expectations
+# Update / bless expectations:
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
-
-# Update formatter snapshots (insta)
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 ---
