@@ -380,9 +380,13 @@ fn resolve_stream_method_int_stream(name: &str, arg_count: usize) -> Option<Type
 
 fn resolve_stream_method_long_stream(name: &str, arg_count: usize) -> Option<Type> {
     match (name, arg_count) {
-        ("map", 1) | ("filter", 1) | ("distinct", 0) | ("limit", 1) | ("peek", 1) => {
-            Some(Type::Named("java.util.stream.LongStream".to_string()))
-        }
+        ("map", 1)
+        | ("filter", 1)
+        | ("flatMap", 1)
+        | ("sorted", 0)
+        | ("distinct", 0)
+        | ("limit", 1)
+        | ("peek", 1) => Some(Type::Named("java.util.stream.LongStream".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
         _ => None,
     }
@@ -390,9 +394,13 @@ fn resolve_stream_method_long_stream(name: &str, arg_count: usize) -> Option<Typ
 
 fn resolve_stream_method_double_stream(name: &str, arg_count: usize) -> Option<Type> {
     match (name, arg_count) {
-        ("map", 1) | ("filter", 1) | ("distinct", 0) | ("limit", 1) | ("peek", 1) => {
-            Some(Type::Named("java.util.stream.DoubleStream".to_string()))
-        }
+        ("map", 1)
+        | ("filter", 1)
+        | ("flatMap", 1)
+        | ("sorted", 0)
+        | ("distinct", 0)
+        | ("limit", 1)
+        | ("peek", 1) => Some(Type::Named("java.util.stream.DoubleStream".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
         _ => None,
     }
@@ -1114,6 +1122,20 @@ mod tests {
         assert_eq!(chain.stream_kind, StreamValueKind::LongStream);
         assert_eq!(chain.intermediates.len(), 1);
         assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Map);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
+    fn recognizes_long_stream_sorted_chain() {
+        let expr = "LongStream.range(0, 10).sorted().count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        assert_eq!(chain.stream_kind, StreamValueKind::LongStream);
+        assert_eq!(chain.intermediates.len(), 1);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Sorted);
         assert_eq!(
             chain.terminal.as_ref().unwrap().kind,
             StreamOperationKind::Count
