@@ -134,6 +134,38 @@ fn project_indexes_warm_start_avoids_file_fingerprint_for_unchanged_disk_files()
 }
 
 #[test]
+fn project_index_shards_has_fixed_len_and_merges_to_project_indexes() {
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+    let b = FileId::from_raw(2);
+
+    let db = SalsaDatabase::new();
+    db.set_project_files(project, Arc::new(vec![a, b]));
+    db.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db.set_file_text(a, "class A {}".to_string());
+    db.set_file_text(b, "class B {}".to_string());
+
+    let shards = db.with_snapshot(|snap| (*snap.project_index_shards(project)).clone());
+    assert_eq!(shards.len(), nova_index::DEFAULT_SHARD_COUNT as usize);
+
+    let merged = db.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
+    let mut manual = nova_index::ProjectIndexes::default();
+    for shard in &shards {
+        manual.merge_from(shard.clone());
+    }
+    manual.set_generation(0);
+    assert_eq!(manual, merged);
+
+    let shard_id =
+        nova_index::shard_id_for_path("A.java", nova_index::DEFAULT_SHARD_COUNT) as usize;
+    assert!(
+        shards[shard_id].symbols.symbols.contains_key("A"),
+        "expected A.java symbols to be placed in its deterministic shard"
+    );
+}
+
+#[test]
 fn project_indexes_early_cutoff_on_whitespace_edit() {
     let project = ProjectId::from_raw(0);
     let file = FileId::from_raw(1);
