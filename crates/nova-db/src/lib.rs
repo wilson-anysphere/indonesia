@@ -58,6 +58,18 @@ pub struct InMemoryFileStore {
 ///
 /// New code should prefer [`SourceDatabase`], which returns owned values.
 /// Legacy code can run on Salsa snapshots via [`SalsaDbView`].
+///
+/// ```rust,no_run
+/// use nova_db::{Database as _, FileId, SalsaDatabase, SalsaDbView};
+///
+/// let db = SalsaDatabase::new();
+/// let file = FileId::from_raw(0);
+/// db.set_file_text(file, "class Foo {}".to_string());
+///
+/// // Wrap the snapshot so legacy `Database` call sites can safely use `&str`/`&Path`.
+/// let view = SalsaDbView::new(db.snapshot());
+/// assert_eq!(view.file_content(file), "class Foo {}");
+/// ```
 pub trait Database {
     fn file_content(&self, file_id: FileId) -> &str;
 
