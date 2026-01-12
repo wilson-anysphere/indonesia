@@ -4570,10 +4570,15 @@ fn parse_source_type_in_context(
 fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
     const MAX_INDEXED_FILES: usize = 256;
 
+    // Fast-path: reuse the cached completion environment (built from workspace Java files + minimal
+    // JDK stubs) and clone the `TypeStore` so per-request completion logic can freely mutate it
+    // (e.g. lazily loading method stubs from the discovered JDK).
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        return env.types().clone();
+    }
+
     let mut store = TypeStore::with_minimal_jdk();
     let mut provider = SourceTypeProvider::new();
-
-    let root = completion_workspace_root(db, file);
 
     let mut java_files: Vec<(FileId, PathBuf)> = Vec::new();
     for file_id in db.all_file_ids() {
@@ -4582,11 +4587,6 @@ fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
         };
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             continue;
-        }
-        if let Some(root) = root.as_ref() {
-            if !path.starts_with(root) {
-                continue;
-            }
         }
         java_files.push((file_id, path.to_path_buf()));
     }
@@ -4613,39 +4613,6 @@ fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
     }
 
     store
-}
-
-fn completion_workspace_root(db: &dyn Database, file: FileId) -> Option<PathBuf> {
-    let path = db.file_path(file)?;
-
-    if path.exists() {
-        return nova_project::workspace_root(path).or_else(|| {
-            path.parent()
-                .map(|p| p.to_path_buf())
-                .or_else(|| Some(path.to_path_buf()))
-        });
-    }
-
-    // In-memory fixtures often have non-existent paths; treat anything with an
-    // extension as a file and fall back to the nearest `src/` parent.
-    let dir = if path.extension().is_some() {
-        path.parent().unwrap_or(path)
-    } else {
-        path
-    };
-
-    let root = dir
-        .ancestors()
-        .find_map(|ancestor| {
-            if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
-                ancestor.parent().map(Path::to_path_buf)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| dir.to_path_buf());
-
-    Some(root)
 }
 
 fn member_completions(
