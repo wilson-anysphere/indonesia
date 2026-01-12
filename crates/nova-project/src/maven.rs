@@ -385,6 +385,29 @@ pub(crate) fn load_maven_workspace_model(
         .collect::<Vec<_>>();
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
 
+    // JPMS-aware workspace model: if the workspace contains any `module-info.java`, treat jar
+    // dependencies as module-path entries so downstream consumers (e.g. `nova-db`) can build a
+    // module-aware classpath index.
+    if crate::jpms::workspace_uses_jpms(&jpms_modules) {
+        for module in &mut module_configs {
+            let mut module_path = std::mem::take(&mut module.module_path);
+            let mut classpath = Vec::new();
+
+            for entry in std::mem::take(&mut module.classpath) {
+                match entry.kind {
+                    ClasspathEntryKind::Jar => module_path.push(entry),
+                    ClasspathEntryKind::Directory => classpath.push(entry),
+                }
+            }
+
+            sort_dedup_classpath(&mut module_path);
+            sort_dedup_classpath(&mut classpath);
+
+            module.module_path = module_path;
+            module.classpath = classpath;
+        }
+    }
+
     Ok(WorkspaceProjectModel::new(
         root.to_path_buf(),
         BuildSystem::Maven,
