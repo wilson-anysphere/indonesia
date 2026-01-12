@@ -62,6 +62,75 @@ pub struct BazelBspConfig {
     pub args: Vec<String>,
 }
 
+impl From<(String, Vec<String>)> for BazelBspConfig {
+    fn from((program, args): (String, Vec<String>)) -> Self {
+        Self { program, args }
+    }
+}
+
+/// Discover a BSP connection configuration in `workspace_root` by inspecting `.bsp/*.json`.
+///
+/// Returns a `(program, args)` tuple where `program` is `argv[0]` and `args` is `argv[1..]`.
+///
+/// This helper intentionally does not apply environment variable overrides; callers can layer
+/// additional discovery (e.g. `NOVA_BSP_*`) on top.
+#[cfg(feature = "bsp")]
+pub fn discover_bsp_connection(workspace_root: &Path) -> Option<(String, Vec<String>)> {
+    let config = crate::bsp_config::discover_bsp_server_config_from_dot_bsp(workspace_root)?;
+    Some((config.program, config.args))
+}
+
+#[cfg(feature = "bsp")]
+fn parse_bsp_args_env(args_raw: &str) -> Vec<String> {
+    let args_raw = args_raw.trim();
+    if args_raw.is_empty() {
+        return Vec::new();
+    }
+
+    if args_raw.starts_with('[') {
+        serde_json::from_str::<Vec<String>>(args_raw)
+            .unwrap_or_else(|_| args_raw.split_whitespace().map(|s| s.to_string()).collect())
+    } else {
+        args_raw.split_whitespace().map(|s| s.to_string()).collect()
+    }
+}
+
+/// Apply `NOVA_BSP_*` environment variable overrides to a BSP connection tuple.
+///
+/// This is shared by both long-lived BSP workspaces (via [`BspServerConfig`]) and one-shot
+/// builds/diagnostics (via [`BazelBspConfig`]) so behavior stays consistent.
+#[cfg(feature = "bsp")]
+pub(crate) fn apply_bsp_env_overrides(program: &mut String, args: &mut Vec<String>) {
+    if let Ok(program_env) = std::env::var("NOVA_BSP_PROGRAM") {
+        let program_env = program_env.trim();
+        if !program_env.is_empty() {
+            *program = program_env.to_string();
+        }
+    }
+
+    if let Ok(args_raw) = std::env::var("NOVA_BSP_ARGS") {
+        let args_raw = args_raw.trim();
+        if !args_raw.is_empty() {
+            *args = parse_bsp_args_env(args_raw);
+        }
+    }
+}
+
+#[cfg(feature = "bsp")]
+impl BazelBspConfig {
+    /// Discover a Bazel BSP launcher configuration for `workspace_root`.
+    ///
+    /// Discovery sources, in order:
+    /// 1. `.bsp/*.json` (BSP connection files)
+    /// 2. `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS` environment variables (override)
+    pub fn discover(workspace_root: &Path) -> Option<Self> {
+        let (mut program, mut args) =
+            discover_bsp_connection(workspace_root).unwrap_or_else(|| (String::new(), Vec::new()));
+        apply_bsp_env_overrides(&mut program, &mut args);
+        (!program.trim().is_empty()).then_some(Self { program, args })
+    }
+}
+
 /// Spawn a BSP server, compile the requested targets, and collect any published diagnostics.
 ///
 /// The returned diagnostics are the raw `build/publishDiagnostics` notifications received while
@@ -592,6 +661,12 @@ impl Drop for BspClient {
 pub struct BspServerConfig {
     pub program: String,
     pub args: Vec<String>,
+}
+
+impl From<(String, Vec<String>)> for BspServerConfig {
+    fn from((program, args): (String, Vec<String>)) -> Self {
+        Self { program, args }
+    }
 }
 
 impl Default for BspServerConfig {
@@ -1141,6 +1216,41 @@ pub fn target_compile_info_via_bsp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "bsp")]
+    use std::sync::Mutex;
+    #[cfg(feature = "bsp")]
+    use tempfile::tempdir;
+
+    #[cfg(feature = "bsp")]
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(feature = "bsp")]
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    #[cfg(feature = "bsp")]
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(key).ok();
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, previous }
+        }
+    }
+
+    #[cfg(feature = "bsp")]
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn severity_mapping_matches_lsp_conventions() {
@@ -1311,5 +1421,44 @@ mod tests {
         let messages: Vec<_> = mapped.into_iter().map(|d| d.message).collect();
         assert!(messages.contains(&"first".to_string()));
         assert!(messages.contains(&"second".to_string()));
+    }
+
+    #[cfg(feature = "bsp")]
+    #[test]
+    fn bsp_connection_discovery_reads_bsp_json_argv() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir(&bsp_dir).unwrap();
+        std::fs::write(
+            bsp_dir.join("bazel.json"),
+            r#"{ "argv": ["bsp-from-file", "--foo", "bar"] }"#,
+        )
+        .unwrap();
+
+        let (program, args) = discover_bsp_connection(root.path()).unwrap();
+        assert_eq!(program, "bsp-from-file");
+        assert_eq!(args, vec!["--foo".to_string(), "bar".to_string()]);
+    }
+
+    #[cfg(feature = "bsp")]
+    #[test]
+    fn bazel_bsp_config_discover_applies_env_overrides() {
+        let _lock = ENV_LOCK.lock().unwrap();
+
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir(&bsp_dir).unwrap();
+        std::fs::write(
+            bsp_dir.join("bazel.json"),
+            r#"{ "argv": ["bsp-from-file", "--from-file"] }"#,
+        )
+        .unwrap();
+
+        let _program_guard = EnvVarGuard::set("NOVA_BSP_PROGRAM", Some("bsp-from-env"));
+        let _args_guard = EnvVarGuard::set("NOVA_BSP_ARGS", Some(r#"["--from-env"]"#));
+
+        let config = BazelBspConfig::discover(root.path()).unwrap();
+        assert_eq!(config.program, "bsp-from-env");
+        assert_eq!(config.args, vec!["--from-env".to_string()]);
     }
 }

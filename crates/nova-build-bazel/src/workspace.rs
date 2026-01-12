@@ -881,31 +881,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // prefer standard BSP `.bsp/*.json` discovery. This enables "just works" setups for Bazel
         // BSP implementations like `bazel-bsp` that generate connection files.
         if config == crate::bsp::BspServerConfig::default() {
-            if let Some(discovered) =
-                crate::bsp_config::discover_bsp_server_config_from_dot_bsp(&self.root)
-            {
-                config = discovered;
+            if let Some(connection) = crate::bsp::discover_bsp_connection(&self.root) {
+                config = connection.into();
             }
         }
 
-        if let Ok(program) = std::env::var("NOVA_BSP_PROGRAM") {
-            if !program.trim().is_empty() {
-                config.program = program;
-            }
-        }
-
-        if let Ok(args_raw) = std::env::var("NOVA_BSP_ARGS") {
-            let args_raw = args_raw.trim();
-            if !args_raw.is_empty() {
-                config.args = if args_raw.starts_with('[') {
-                    serde_json::from_str::<Vec<String>>(args_raw).unwrap_or_else(|_| {
-                        args_raw.split_whitespace().map(|s| s.to_string()).collect()
-                    })
-                } else {
-                    args_raw.split_whitespace().map(|s| s.to_string()).collect()
-                };
-            }
-        }
+        crate::bsp::apply_bsp_env_overrides(&mut config.program, &mut config.args);
 
         config
     }
