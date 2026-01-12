@@ -723,5 +723,14 @@ uses v3. Mixed v2/v3 router/worker pairs will fail the handshake.
   custom length-delimited, length-checked binary codec with explicit hard limits (lockstep request/response).
 - v3 (this document): length-prefixed stream of CBOR `WireFrame` envelopes, with negotiation + multiplexing.
 
-If mixed-version support is ever needed for a transition period, it SHOULD be implemented explicitly
-(dual-stack listener/connector) rather than heuristic detection.
+For improved diagnostics during a transition period, implementations MAY attempt to detect a legacy
+peer on connect:
+
+- The current reference router implementation (`crates/nova-remote-rpc`) tries to decode the first
+  frame as v3. If that fails *and* it can decode the bytes as a legacy
+  `legacy_v2::RpcMessage::WorkerHello`, it responds with a legacy
+  `legacy_v2::RpcMessage::Error { message: \"router only supports v3\" }` before closing.
+
+This is intended only as a clearer error path. If true mixed-version support is needed (accepting
+both protocols concurrently), it SHOULD be implemented explicitly (dual-stack listener/connector)
+rather than relying on heuristic detection.
