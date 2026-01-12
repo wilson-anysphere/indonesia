@@ -200,6 +200,11 @@ pub fn rename(
         }
         Some(JavaSymbolKind::Field) => rename_field_with_accessors(db, params),
         Some(JavaSymbolKind::Method) => {
+            let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
+            if !conflicts.is_empty() {
+                return Err(RefactorError::Conflicts(conflicts));
+            }
+
             let new_name = params.new_name;
             let mut changes = vec![SemanticChange::Rename {
                 symbol: params.symbol,
@@ -420,6 +425,31 @@ fn check_rename_conflicts(
     };
 
     match db.symbol_kind(symbol) {
+        Some(JavaSymbolKind::Method) => {
+            // Overload-aware collision detection:
+            // Renaming a method to an existing name is OK as long as it doesn't create a duplicate
+            // signature (same parameter type list) in the same owning type.
+            let Some(owner_scope) = db.symbol_scope(symbol) else {
+                return conflicts;
+            };
+            let Some(sig) = db.method_signature(symbol) else {
+                return conflicts;
+            };
+
+            for existing in db.resolve_methods_in_scope(owner_scope, new_name) {
+                if existing == symbol {
+                    continue;
+                }
+                if db.method_signature(existing).as_ref() == Some(&sig) {
+                    conflicts.push(Conflict::NameCollision {
+                        file: def.file.clone(),
+                        name: new_name.to_string(),
+                        existing_symbol: existing,
+                    });
+                    break;
+                }
+            }
+        }
         Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
             let Some(scope) = db.symbol_scope(symbol) else {
                 return conflicts;
@@ -441,16 +471,6 @@ fn check_rename_conflicts(
                         file: def.file.clone(),
                         name: new_name.to_string(),
                         shadowed_symbol: shadowed,
-                    });
-                }
-            }
-
-            for usage in db.find_references(symbol) {
-                if !db.is_visible_from(symbol, &usage.file, new_name) {
-                    conflicts.push(Conflict::VisibilityLoss {
-                        file: usage.file.clone(),
-                        usage_range: usage.range,
-                        name: new_name.to_string(),
                     });
                 }
             }
@@ -486,6 +506,16 @@ fn check_rename_conflicts(
             }
         }
         _ => {}
+    }
+
+    for usage in db.find_references(symbol) {
+        if !db.is_visible_from(symbol, &usage.file, new_name) {
+            conflicts.push(Conflict::VisibilityLoss {
+                file: usage.file.clone(),
+                usage_range: usage.range,
+                name: new_name.to_string(),
+            });
+        }
     }
 
     conflicts
