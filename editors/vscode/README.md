@@ -18,8 +18,8 @@ Nova also manages the `nova-dap` debug adapter binary. When you start a Nova deb
 
 Nova supports VS Code multi-root workspaces by running one `nova-lsp` instance per workspace folder.
 
-- Settings that accept paths (like `nova.server.path`, `nova.dap.path`, and `nova.lsp.configPath`) support `~`, `${workspaceFolder}`, and relative paths. `${workspaceFolder}` and relative paths are resolved against the **target workspace folder**.
-- Requests tied to a file (e.g. editor commands) target the workspace folder that contains that file.
+- Settings that accept paths (like `nova.server.path`, `nova.dap.path`, and `nova.lsp.configPath`) support `~`, `${workspaceFolder}`, and relative paths. `${workspaceFolder}` and relative paths are resolved against the **target workspace folder** (the workspace folder the command/request is routed to).
+- Requests tied to a file (for example, commands that operate on the active editor) target the workspace folder that contains that file.
 - Commands without an obvious target may prompt you to select a workspace folder (for example, **Nova: Generate Bug Report**).
 - `untitled:` Java documents don’t belong to any workspace folder; in multi-root workspaces you may be prompted to pick which workspace folder to use.
 
@@ -170,10 +170,11 @@ npm run compile
   - Also refreshes the VS Code Test Explorer tree.
 
 - **Nova: Run Test** (`nova.runTest`)
+  - Uses the active editor's workspace folder when possible; otherwise prompts you to pick a workspace folder.
   - Prompts for a discovered test ID and runs it via `nova/test/run`.
 
 - **Nova: Add Debug Configuration…** (`nova.addDebugConfiguration`)
-  - Queries `nova/debug/configurations` and appends discovered launch configs to `.vscode/launch.json`.
+  - Queries `nova/debug/configurations` and appends discovered launch configs to `.vscode/launch.json` (prompts to select a workspace folder in multi-root workspaces).
 
 - **Nova: Hot Swap Changed Files** (`nova.hotSwapChangedFiles`)
   - Runs `nova/debug/hotSwap` for recently saved Java files (requires an active Nova debug session).
