@@ -225,6 +225,7 @@ impl<C: JdwpClient> DapServer<C> {
             "supportsConfigurationDoneRequest": true,
             "supportsEvaluateForHovers": true,
             "supportsStepInTargetsRequest": true,
+            "supportsDelayedStackTraceLoading": true,
             // The legacy adapter only supports simple line breakpoints. Conditional
             // breakpoints, hit conditions, and logpoints are implemented in the
             // default wire-level adapter.
@@ -432,6 +433,10 @@ impl<C: JdwpClient> DapServer<C> {
         #[serde(rename_all = "camelCase")]
         struct Args {
             thread_id: i64,
+            #[serde(default)]
+            start_frame: Option<i64>,
+            #[serde(default)]
+            levels: Option<i64>,
         }
 
         let args: Args = serde_json::from_value(
@@ -440,6 +445,13 @@ impl<C: JdwpClient> DapServer<C> {
                 .clone()
                 .context("stackTrace requires arguments")?,
         )?;
+
+        if args.start_frame.is_some_and(|start| start < 0) {
+            anyhow::bail!("stackTrace.startFrame must be >= 0");
+        }
+        if args.levels.is_some_and(|levels| levels < 0) {
+            anyhow::bail!("stackTrace.levels must be >= 0");
+        }
 
         let Some(jdwp_thread_id) = self.thread_ids.get(&args.thread_id).copied() else {
             let body = json!({ "stackFrames": [], "totalFrames": 0 });
@@ -454,10 +466,13 @@ impl<C: JdwpClient> DapServer<C> {
             }
         };
 
+        let start_frame = args.start_frame.unwrap_or(0);
+        let start = usize::try_from(start_frame).unwrap_or(frames.len());
+        let levels = args.levels.and_then(|levels| usize::try_from(levels).ok());
+
+        let total_frames = frames.len();
         let mut dap_frames = Vec::new();
-        self.frame_locations.clear();
-        self.frame_threads.clear();
-        for frame in frames {
+        for frame in frames.into_iter().skip(start).take(levels.unwrap_or(usize::MAX)) {
             let dap_frame_id = self.alloc_frame_id(frame.id);
             let source = frame
                 .source_path
@@ -482,7 +497,7 @@ impl<C: JdwpClient> DapServer<C> {
 
         let body = json!({
             "stackFrames": dap_frames,
-            "totalFrames": dap_frames.len(),
+            "totalFrames": total_frames,
         });
         self.simple_ok(request, Some(body))
     }
@@ -678,6 +693,15 @@ impl<C: JdwpClient> DapServer<C> {
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or(Args { thread_id: None });
+
+        if matches!(
+            request.command.as_str(),
+            "continue" | "next" | "stepIn" | "stepOut"
+        ) {
+            self.frame_ids.clear();
+            self.frame_threads.clear();
+            self.frame_locations.clear();
+        }
 
         let jdwp_thread_id = args
             .thread_id
@@ -1245,6 +1269,129 @@ public class Main {
             .as_array()
             .unwrap();
 
+        let labels: Vec<_> = targets
+            .iter()
+            .map(|t| t["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, vec!["bar()", "qux()", "baz()", "foo()"]);
+    }
+
+    #[test]
+    fn stack_trace_supports_paging_without_invalidating_previous_frame_ids() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let file_path = root.join("Main.java");
+        std::fs::write(
+            &file_path,
+            r#"package com.example;
+
+public class Main {
+  void m() {
+    foo(bar(), baz(qux()));
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut jdwp = MockJdwp::default();
+        jdwp.threads.push(ThreadInfo {
+            id: 99,
+            name: "main".into(),
+        });
+        jdwp.frames.insert(
+            99,
+            vec![
+                StackFrameInfo {
+                    id: 123,
+                    name: "top".into(),
+                    source_path: Some("Main.java".into()),
+                    line: 5,
+                },
+                StackFrameInfo {
+                    id: 124,
+                    name: "bottom".into(),
+                    source_path: Some("Main.java".into()),
+                    line: 5,
+                },
+            ],
+        );
+
+        let mut server = DapServer::new(jdwp);
+
+        // Seed the source path via setBreakpoints so stepInTargets can resolve the
+        // source file name from the stack trace back to an absolute path.
+        let set_bps = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "setBreakpoints".into(),
+            arguments: Some(json!({
+                "source": { "path": file_path.to_string_lossy() },
+                "breakpoints": [],
+            })),
+        };
+        server.handle_request(&set_bps).unwrap();
+
+        let threads_req = Request {
+            seq: 2,
+            type_: "request".into(),
+            command: "threads".into(),
+            arguments: None,
+        };
+        let threads_resp = server.handle_request(&threads_req).unwrap();
+        let threads = response_body(&threads_resp.messages[0]).unwrap()["threads"]
+            .as_array()
+            .unwrap();
+        let dap_thread_id = threads[0]["id"].as_i64().unwrap();
+
+        // Page 1: request the second frame only.
+        let stack_req_page1 = Request {
+            seq: 3,
+            type_: "request".into(),
+            command: "stackTrace".into(),
+            arguments: Some(json!({
+                "threadId": dap_thread_id,
+                "startFrame": 1,
+                "levels": 1,
+            })),
+        };
+        let stack_resp_page1 = server.handle_request(&stack_req_page1).unwrap();
+        let body_page1 = response_body(&stack_resp_page1.messages[0]).unwrap();
+        assert_eq!(body_page1["totalFrames"].as_u64(), Some(2));
+        let frames_page1 = body_page1["stackFrames"].as_array().unwrap();
+        assert_eq!(frames_page1.len(), 1);
+        assert_eq!(frames_page1[0]["name"].as_str(), Some("bottom"));
+        let bottom_frame_id = frames_page1[0]["id"].as_i64().unwrap();
+
+        // Page 0: request the first frame.
+        let stack_req_page0 = Request {
+            seq: 4,
+            type_: "request".into(),
+            command: "stackTrace".into(),
+            arguments: Some(json!({
+                "threadId": dap_thread_id,
+                "startFrame": 0,
+                "levels": 1,
+            })),
+        };
+        let stack_resp_page0 = server.handle_request(&stack_req_page0).unwrap();
+        let body_page0 = response_body(&stack_resp_page0.messages[0]).unwrap();
+        assert_eq!(body_page0["totalFrames"].as_u64(), Some(2));
+        let frames_page0 = body_page0["stackFrames"].as_array().unwrap();
+        assert_eq!(frames_page0.len(), 1);
+        assert_eq!(frames_page0[0]["name"].as_str(), Some("top"));
+
+        // Ensure the frame id from page 1 remains valid after paging.
+        let targets_req = Request {
+            seq: 5,
+            type_: "request".into(),
+            command: "stepInTargets".into(),
+            arguments: Some(json!({ "frameId": bottom_frame_id })),
+        };
+        let targets_resp = server.handle_request(&targets_req).unwrap();
+        let targets = response_body(&targets_resp.messages[0]).unwrap()["targets"]
+            .as_array()
+            .unwrap();
         let labels: Vec<_> = targets
             .iter()
             .map(|t| t["label"].as_str().unwrap())
