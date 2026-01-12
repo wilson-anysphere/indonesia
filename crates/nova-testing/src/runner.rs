@@ -678,6 +678,7 @@ fn capture_stream(mut reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::io::Cursor;
     use tempfile::TempDir;
 
     fn fixture_root(name: &str) -> PathBuf {
@@ -1059,5 +1060,61 @@ mod tests {
         assert_eq!(cases.len(), 2);
         assert_eq!(cases[0].id, "module-a::com.example.DuplicateTest#ok");
         assert_eq!(cases[1].id, "module-b::com.example.DuplicateTest#ok");
+    }
+
+    #[test]
+    fn capture_stream_returns_full_output_when_within_limit() {
+        let max_bytes = 2 * 1024 * 1024;
+        let data: Vec<u8> = (0..max_bytes).map(|i| (i % 251) as u8).collect();
+
+        let out = capture_stream(Cursor::new(data.as_slice())).unwrap();
+        assert_eq!(out.len(), data.len());
+        assert!(out == data);
+    }
+
+    #[test]
+    fn capture_stream_truncates_and_preserves_head_and_tail() {
+        let max_bytes = 2 * 1024 * 1024;
+        let marker: &[u8] = b"\n... <truncated> ...\n";
+
+        let head_cap = max_bytes / 2;
+        let tail_cap = max_bytes - head_cap;
+
+        let data_len = max_bytes + 123;
+        let data: Vec<u8> = (0..data_len).map(|i| (i % 251) as u8).collect();
+
+        let out = capture_stream(Cursor::new(data.as_slice())).unwrap();
+
+        assert_eq!(out.len(), head_cap + marker.len() + tail_cap);
+        assert_eq!(&out[..head_cap], &data[..head_cap]);
+        assert_eq!(&out[head_cap..head_cap + marker.len()], marker);
+        assert_eq!(
+            &out[head_cap + marker.len()..],
+            &data[data.len() - tail_cap..]
+        );
+    }
+
+    #[test]
+    fn append_scoped_output_is_noop_for_single_run_empty_chunk() {
+        let mut out = String::new();
+        append_scoped_output(&mut out, "module-a", Vec::new(), false);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn append_scoped_output_wraps_multi_run_output_and_normalizes_trailing_newline() {
+        let mut out = String::new();
+        append_scoped_output(&mut out, "module-a", b"hello".to_vec(), true);
+        assert_eq!(
+            out,
+            "===== module-a =====\nhello\n===== end module-a =====\n"
+        );
+
+        let mut out = String::new();
+        append_scoped_output(&mut out, "module-a", b"hello\n".to_vec(), true);
+        assert_eq!(
+            out,
+            "===== module-a =====\nhello\n===== end module-a =====\n"
+        );
     }
 }
