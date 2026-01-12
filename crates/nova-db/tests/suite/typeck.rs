@@ -1867,6 +1867,42 @@ class C {
 }
 
 #[test]
+fn var_without_initializer_reports_invalid_var() {
+    let src = r#"
+class C {
+    void m() {
+        var x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
+        "expected invalid-var diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn var_initialized_to_null_reports_invalid_var() {
+    let src = r#"
+class C {
+    void m() {
+        var x = null;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
+        "expected invalid-var diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn foreach_var_infers_element_type_for_array() {
     let src = r#"
 class C {
