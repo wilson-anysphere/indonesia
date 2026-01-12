@@ -178,16 +178,14 @@ impl Debugger {
             _ => simple_name.clone(),
         };
 
-        let mut imports = vec![
-            "import java.util.*;".to_string(),
-            "import java.util.stream.*;".to_string(),
-            "import java.util.function.*;".to_string(),
-            "import static java.util.stream.Collectors.*;".to_string(),
-        ];
-        if let Some(extra) = self.best_effort_imports_for_frame(cancel, &frame).await? {
-            imports.extend(extra);
-        }
-        let imports = dedup_lines(imports);
+        // Collect best-effort imports from the paused source file when available.
+        //
+        // Note: default imports (java.util/java.util.stream/java.util.function + static Collectors.*)
+        // are added by `render_eval_source` so callers can't forget them.
+        let imports = self
+            .best_effort_imports_for_frame(cancel, &frame)
+            .await?
+            .unwrap_or_default();
 
         let stage_exprs: Vec<String> = stage_expressions
             .iter()
@@ -655,7 +653,22 @@ fn render_eval_source(
         }
     }
 
-    for import in imports {
+    // Default imports included in every helper so common stream expressions compile without
+    // fully-qualifying names (e.g. `collect(toList())`).
+    const DEFAULT_IMPORTS: [&str; 4] = [
+        "import java.util.*;",
+        "import java.util.stream.*;",
+        "import java.util.function.*;",
+        "import static java.util.stream.Collectors.*;",
+    ];
+
+    let mut all_imports = Vec::with_capacity(DEFAULT_IMPORTS.len() + imports.len());
+    all_imports.extend(DEFAULT_IMPORTS.iter().map(|s| s.to_string()));
+    all_imports.extend(imports.iter().cloned());
+
+    let all_imports = dedup_lines(all_imports);
+
+    for import in &all_imports {
         out.push_str(import.trim());
         out.push('\n');
     }
@@ -1118,6 +1131,45 @@ mod tests {
                 "import java.util.*;".to_string(),
                 "import static java.util.stream.Collectors.*;".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn render_eval_source_includes_default_imports_and_static_collectors_import() {
+        let src = render_eval_source(None, "NovaStreamEval_Test", &[], &[], &[], None);
+
+        assert!(src.contains("import java.util.*;"));
+        assert!(src.contains("import java.util.stream.*;"));
+        assert!(src.contains("import java.util.function.*;"));
+        assert!(src.contains("import static java.util.stream.Collectors.*;"));
+    }
+
+    #[test]
+    fn render_eval_source_preserves_and_dedupes_provided_import_lines() {
+        let src = render_eval_source(
+            Some("com.example"),
+            "NovaStreamEval_Test",
+            &[
+                "import com.acme.Foo".to_string(),
+                "import static com.acme.Util.*; // trailing comment".to_string(),
+                "import com.acme.Foo;".to_string(),
+            ],
+            &[],
+            &[],
+            None,
+        );
+
+        assert!(src.contains("package com.example;"));
+        assert!(src.contains("import com.acme.Foo;"));
+        assert!(src.contains("import static com.acme.Util.*;"));
+        assert_eq!(src.matches("import com.acme.Foo;").count(), 1);
+
+        // Defaults should come before best-effort file imports.
+        let idx_default = src.find("import java.util.*;").unwrap();
+        let idx_custom = src.find("import com.acme.Foo;").unwrap();
+        assert!(
+            idx_default < idx_custom,
+            "expected default imports before file imports:\n{src}"
         );
     }
 
