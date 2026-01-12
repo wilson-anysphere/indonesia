@@ -609,11 +609,24 @@ impl Debugger {
             }));
         }
 
+        // If `ThreadReference.FrameCount` is not available, only report `totalFrames` when we can
+        // prove it's exact from the windowed `Frames` response.
+        //
+        // - When `levels` is omitted (`length = -1`), the VM returns all frames from `startFrame`.
+        //   This makes `totalFrames = startFrame + returned` exact, except when `startFrame` is
+        //   already past the end of the stack (returned=0). In that case we don't know the real
+        //   total without an explicit frame count, so omit `totalFrames`.
+        // - When `levels` is provided, `totalFrames` is exact only if we received fewer frames
+        //   than requested *and* we received at least one frame (or we started from frame 0, in
+        //   which case an empty result implies there are no frames).
+        let returned = out.len() as i64;
         let total_frames = match total_frames {
             Some(total) => Some(total),
             None => match levels {
-                None => Some(start_frame + out.len() as i64),
-                Some(levels) if (out.len() as i64) < levels => Some(start_frame + out.len() as i64),
+                None if returned > 0 || start_frame == 0 => Some(start_frame + returned),
+                Some(levels) if returned < levels && (returned > 0 || start_frame == 0) => {
+                    Some(start_frame + returned)
+                }
                 _ => None,
             },
         };
@@ -2567,6 +2580,8 @@ impl Debugger {
         if source_sample.element_type.is_none() {
             source_sample.element_type = match analysis.stream_kind {
                 StreamValueKind::IntStream => Some("int".to_string()),
+                StreamValueKind::LongStream => Some("long".to_string()),
+                StreamValueKind::DoubleStream => Some("double".to_string()),
                 StreamValueKind::Stream => None,
             };
         }
