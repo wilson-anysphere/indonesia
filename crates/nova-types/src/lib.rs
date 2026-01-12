@@ -4285,10 +4285,22 @@ pub fn infer_diamond_type_args(
 }
 
 pub fn infer_lambda_param_types(env: &dyn TypeEnv, target: &Type) -> Option<Vec<Type>> {
+    infer_lambda_sam_signature(env, target).map(|sig| sig.params)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaSamSignature {
+    pub params: Vec<Type>,
+    pub return_type: Type,
+}
+
+pub fn infer_lambda_sam_signature(env: &dyn TypeEnv, target: &Type) -> Option<LambdaSamSignature> {
+    let target = canonicalize_named(env, target);
     let Type::Class(ClassType { def, args }) = target else {
         return None;
     };
-    let class_def = env.class(*def)?;
+
+    let class_def = env.class(def)?;
 
     // Build substitution for the interface type parameters.
     let subst = class_def
@@ -4311,7 +4323,12 @@ pub fn infer_lambda_param_types(env: &dyn TypeEnv, target: &Type) -> Option<Vec<
 
     let sam = abstract_methods[0];
     let params = sam.params.iter().map(|t| substitute(t, &subst)).collect();
-    Some(params)
+    let return_type = substitute(&sam.return_type, &subst);
+
+    Some(LambdaSamSignature {
+        params,
+        return_type,
+    })
 }
 
 fn class_substitution_for_owner(
@@ -4755,6 +4772,21 @@ mod tests {
         );
         let params = infer_lambda_param_types(&env, &target).expect("should infer lambda params");
         assert_eq!(params, vec![Type::class(env.well_known().string, vec![])]);
+    }
+
+    #[test]
+    fn lambda_sam_signature_inference_from_function_target() {
+        let env = store();
+        let function = env.class_id("java.util.function.Function").unwrap();
+        let string = Type::class(env.well_known().string, vec![]);
+        let integer = Type::class(env.well_known().integer, vec![]);
+
+        let target = Type::class(function, vec![string.clone(), integer.clone()]);
+        let sig =
+            infer_lambda_sam_signature(&env, &target).expect("should infer lambda SAM signature");
+
+        assert_eq!(sig.params, vec![string]);
+        assert_eq!(sig.return_type, integer);
     }
 }
 
