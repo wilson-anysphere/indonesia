@@ -9,6 +9,7 @@ nova-framework = { path = "../nova-framework" }
 nova-framework-web = { path = "../nova-framework-web" }
 nova-hir = { path = "../nova-hir" }
 nova-properties = { path = "../nova-properties" }
+nova-project = { path = "../nova-project" }
 nova-types = { path = "../nova-types" }
 nova-yaml = { path = "../nova-yaml" }
 regex = "1"
@@ -18,3 +19,4 @@ zip = "0.6"
 
 [dev-dependencies]
 pretty_assertions = "1"
+tempfile.workspace = true

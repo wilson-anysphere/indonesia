@@ -27,6 +27,8 @@ use nova_yaml as yaml;
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 const MAX_CACHED_PROJECTS: usize = 32;
 
 /// Framework analyzer hook used by Nova's resolver for "virtual member" generation.
@@ -108,7 +110,10 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
             return Vec::new();
         };
 
-        let config_keys = self.project_config_keys(db, ctx.project);
+        let fallback_root = db
+            .file_path(ctx.file)
+            .and_then(|path| nova_project::workspace_root(path));
+        let config_keys = self.project_config_keys(db, ctx.project, fallback_root.as_deref());
 
         // Avoid rescanning all Java sources on every completion request by reusing the cached
         // `config_properties` extracted during the project's last analysis.
@@ -195,8 +200,15 @@ impl QuarkusAnalyzer {
         &self,
         db: &dyn Database,
         project: ProjectId,
+        fallback_root: Option<&std::path::Path>,
     ) -> Arc<CachedProjectConfigKeys> {
         let files = collect_project_config_files(db, project);
+        if files.is_empty() {
+            if let Some(root) = fallback_root {
+                return self.project_config_keys_via_filesystem(project, root);
+            }
+        }
+
         let fingerprint = fingerprint_config_files(db, &files);
 
         if let Some(existing) = self
@@ -223,6 +235,57 @@ impl QuarkusAnalyzer {
                 }
                 ConfigFileKind::Yaml => {
                     for entry in yaml::parse(text).entries {
+                        keys.insert(entry.key);
+                    }
+                }
+            }
+        }
+
+        let built = Arc::new(CachedProjectConfigKeys {
+            fingerprint,
+            keys: keys.into_iter().collect(),
+        });
+
+        self.config_cache
+            .lock()
+            .expect("quarkus analyzer config cache mutex poisoned")
+            .insert(project, Arc::clone(&built));
+
+        built
+    }
+
+    fn project_config_keys_via_filesystem(
+        &self,
+        project: ProjectId,
+        root: &std::path::Path,
+    ) -> Arc<CachedProjectConfigKeys> {
+        let files = collect_config_files_from_filesystem(root);
+        let fingerprint = fingerprint_fs_config_files(&files);
+
+        if let Some(existing) = self
+            .config_cache
+            .lock()
+            .expect("quarkus analyzer config cache mutex poisoned")
+            .get_cloned(&project)
+        {
+            if existing.fingerprint == fingerprint {
+                return existing;
+            }
+        }
+
+        let mut keys = BTreeSet::<String>::new();
+        for (path, kind) in &files {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            match kind {
+                ConfigFileKind::Properties => {
+                    for entry in nova_properties::parse(&text).entries {
+                        keys.insert(entry.key);
+                    }
+                }
+                ConfigFileKind::Yaml => {
+                    for entry in yaml::parse(&text).entries {
                         keys.insert(entry.key);
                     }
                 }
@@ -555,10 +618,20 @@ fn fingerprint_config_files(db: &dyn Database, files: &[ConfigFile]) -> u64 {
         file.id.to_raw().hash(&mut hasher);
         (file.kind as u8).hash(&mut hasher);
 
-        let Some(text) = db.file_text(file.id) else {
-            continue;
-        };
-        fingerprint_text(text, &mut hasher);
+        match db.file_text(file.id) {
+            Some(text) => fingerprint_text(text, &mut hasher),
+            None => {
+                // Fall back to on-disk metadata when the host doesn't provide the file's contents.
+                // This makes cache invalidation work for unopened buffers.
+                let Some(path) = db.file_path(file.id) else {
+                    continue;
+                };
+                if let Ok(meta) = std::fs::metadata(path) {
+                    meta.len().hash(&mut hasher);
+                    hash_mtime(&mut hasher, meta.modified().ok());
+                }
+            }
+        }
     }
     hasher.finish()
 }
@@ -579,6 +652,48 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     bytes[suffix_start..].hash(hasher);
 }
 
+fn fingerprint_fs_config_files(files: &[(std::path::PathBuf, ConfigFileKind)]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    files.len().hash(&mut hasher);
+
+    for (path, kind) in files {
+        path.hash(&mut hasher);
+        match kind {
+            ConfigFileKind::Properties => 0u8.hash(&mut hasher),
+            ConfigFileKind::Yaml => 1u8.hash(&mut hasher),
+        }
+
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                meta.len().hash(&mut hasher);
+                hash_mtime(&mut hasher, meta.modified().ok());
+            }
+            Err(_) => {
+                0u64.hash(&mut hasher);
+                0u32.hash(&mut hasher);
+            }
+        }
+    }
+
+    hasher.finish()
+}
+
+fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
+    let Some(time) = time else {
+        0u64.hash(hasher);
+        0u32.hash(hasher);
+        return;
+    };
+
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    duration.as_secs().hash(hasher);
+    duration.subsec_nanos().hash(hasher);
+}
+
 fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
     let mut backslashes = 0usize;
     let mut i = idx;
@@ -591,6 +706,96 @@ fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
         }
     }
     backslashes % 2 == 1
+}
+
+fn collect_config_files_from_filesystem(
+    root: &std::path::Path,
+) -> Vec<(std::path::PathBuf, ConfigFileKind)> {
+    const MAX_FILES: usize = 128;
+
+    let candidates = [
+        root.join("src/main/resources"),
+        root.join("src/test/resources"),
+        root.join("src"),
+        root.to_path_buf(),
+    ];
+
+    let mut files = Vec::new();
+    for candidate in candidates {
+        if files.len() >= MAX_FILES {
+            break;
+        }
+        collect_config_files_inner(&candidate, &mut files, MAX_FILES);
+    }
+
+    files.sort_by(|(a, _), (b, _)| a.cmp(b));
+    files.dedup_by(|(a, a_kind), (b, b_kind)| a == b && a_kind == b_kind);
+    files
+}
+
+fn collect_config_files_inner(
+    root: &std::path::Path,
+    out: &mut Vec<(std::path::PathBuf, ConfigFileKind)>,
+    limit: usize,
+) {
+    if out.len() >= limit {
+        return;
+    }
+    if !root.exists() {
+        return;
+    }
+    if root.is_file() {
+        if let Some((kind, include)) = classify_config_file(root) {
+            if include {
+                out.push((root.to_path_buf(), kind));
+            }
+        }
+        return;
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(
+                name,
+                "target" | "build" | "out" | ".git" | ".gradle" | ".idea"
+            ) {
+                continue;
+            }
+            collect_config_files_inner(&path, out, limit);
+        } else if let Some((kind, include)) = classify_config_file(&path) {
+            if include {
+                out.push((path, kind));
+            }
+        }
+    }
+}
+
+fn classify_config_file(path: &std::path::Path) -> Option<(ConfigFileKind, bool)> {
+    let file_name = path.file_name().and_then(|n| n.to_str())?;
+    let file_name_lower = file_name.to_ascii_lowercase();
+    let ext = path.extension().and_then(|e| e.to_str())?.to_ascii_lowercase();
+
+    if ext == "properties" {
+        let is_application = file_name_lower.starts_with("application");
+        let is_microprofile = file_name_lower == "microprofile-config.properties";
+        return Some((ConfigFileKind::Properties, is_application || is_microprofile));
+    }
+
+    if ext == "yml" || ext == "yaml" {
+        return Some((ConfigFileKind::Yaml, file_name_lower.starts_with("application")));
+    }
+
+    None
 }
 
 fn is_ident_continue(ch: char) -> bool {

@@ -1,6 +1,62 @@
 use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
 use nova_framework_quarkus::{QuarkusAnalyzer, CDI_UNSATISFIED_CODE};
 
+use std::path::Path;
+use tempfile::TempDir;
+
+fn write_file(path: &Path, contents: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+/// Adapter around `MemoryDatabase` that simulates a host that cannot enumerate
+/// `Database::all_files(project)` (which is optional per the framework DB contract).
+struct NoAllFilesDb {
+    inner: MemoryDatabase,
+}
+
+impl nova_framework::Database for NoAllFilesDb {
+    fn class(&self, class: nova_types::ClassId) -> &nova_hir::framework::ClassData {
+        nova_framework::Database::class(&self.inner, class)
+    }
+
+    fn project_of_class(&self, class: nova_types::ClassId) -> nova_core::ProjectId {
+        nova_framework::Database::project_of_class(&self.inner, class)
+    }
+
+    fn project_of_file(&self, file: nova_core::FileId) -> nova_core::ProjectId {
+        nova_framework::Database::project_of_file(&self.inner, file)
+    }
+
+    fn file_text(&self, file: nova_core::FileId) -> Option<&str> {
+        nova_framework::Database::file_text(&self.inner, file)
+    }
+
+    fn file_path(&self, file: nova_core::FileId) -> Option<&std::path::Path> {
+        nova_framework::Database::file_path(&self.inner, file)
+    }
+
+    fn file_id(&self, path: &std::path::Path) -> Option<nova_core::FileId> {
+        nova_framework::Database::file_id(&self.inner, path)
+    }
+
+    fn all_files(&self, _project: nova_core::ProjectId) -> Vec<nova_core::FileId> {
+        Vec::new()
+    }
+
+    fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+        nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
+    }
+
+    fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+        nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
+    }
+
+    fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+        nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
+    }
+}
+
 #[test]
 fn registry_reports_cdi_diagnostics_for_the_correct_file() {
     let mut db = MemoryDatabase::new();
@@ -741,5 +797,57 @@ fn registry_updates_completions_after_config_file_changes() {
     assert!(
         items.iter().any(|c| c.label == "server.ssl.enabled"),
         "expected completion for server.ssl.enabled after config change, got: {items:#?}",
+    );
+}
+
+#[test]
+fn registry_completes_config_property_names_without_db_file_enumeration() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+
+    // Ensure `nova_project::workspace_root` can find the workspace root.
+    std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
+
+    write_file(
+        &root.join("src/main/resources/application.properties"),
+        "server.port=8080\n",
+    );
+
+    let src = r#"
+        import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+        public class MyConfig {
+          @ConfigProperty(name="ser")
+          String prop;
+        }
+    "#;
+    let java_path = root.join("src/main/java/MyConfig.java");
+    write_file(&java_path, src);
+
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_dependency(project, "io.quarkus", "quarkus-smallrye-config");
+
+    let java_file = inner.add_file_with_path_and_text(project, java_path, src);
+
+    let cursor_base = src
+        .find("name=\"")
+        .expect("expected to find ConfigProperty name string")
+        + "name=\"".len();
+    let ctx = CompletionContext {
+        project,
+        file: java_file,
+        offset: cursor_base + 3, // after `ser`
+    };
+
+    let db = NoAllFilesDb { inner };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let items = registry.framework_completions(&db, &ctx);
+    assert!(
+        items.iter().any(|c| c.label == "server.port"),
+        "expected completion for server.port, got: {items:#?}",
     );
 }
