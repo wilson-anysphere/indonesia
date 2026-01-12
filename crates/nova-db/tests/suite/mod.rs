@@ -3,6 +3,7 @@ mod class_id_stability;
 mod class_ids;
 mod hir_lowering;
 mod java_parse_no_reparse;
+mod parse_java_incremental;
 mod line_index;
 mod project_database;
 mod resolve;
