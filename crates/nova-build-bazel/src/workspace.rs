@@ -337,20 +337,21 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         file: &Path,
         run_target: Option<&str>,
     ) -> Result<Option<JavaCompileInfo>> {
-        let Some(file_label) = self.workspace_file_label(file)? else {
+        let Some((file_label, package_rel)) = self.workspace_file_label_and_package(file)? else {
             return Ok(None);
         };
         let cache_key = if let Some(run_target) = run_target {
             format!("{run_target}::{file_label}")
         } else {
-            file_label
+            file_label.clone()
         };
 
-        let mut owners = if let Some(run_target) = run_target {
-            self.java_owning_targets_for_file_in_run_target_closure(file, run_target)?
-        } else {
-            self.java_owning_targets_for_file(file)?
-        };
+        let mut owners = self.java_owning_targets_for_file_label_and_package_with_universe(
+            file,
+            &file_label,
+            &package_rel,
+            run_target,
+        )?;
 
         if owners.is_empty() {
             return Ok(None);
@@ -414,6 +415,23 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(Vec::new());
         };
 
+        self.java_owning_targets_for_file_label_and_package_with_universe(
+            file,
+            &file_label,
+            &package_rel,
+            run_target,
+        )
+    }
+
+    fn java_owning_targets_for_file_label_and_package_with_universe(
+        &mut self,
+        _file: &Path,
+        file_label: &str,
+        package_rel: &str,
+        run_target: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let file_label = file_label.to_string();
+
         let cache_key = if let Some(run_target) = run_target {
             format!("{run_target}::{file_label}")
         } else {
@@ -433,7 +451,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     .unwrap_or(true);
 
                 if prefer_bsp {
-                    if let Some(owners) = self.java_owning_targets_for_file_via_bsp(file) {
+                    if let Some(owners) = self.java_owning_targets_for_file_via_bsp(_file) {
                         self.java_owning_targets_cache
                             .insert(cache_key, owners.clone());
                         return Ok(owners);
