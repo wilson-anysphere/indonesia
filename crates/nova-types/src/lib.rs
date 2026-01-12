@@ -2247,7 +2247,26 @@ fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
         return Type::Intersection(Vec::new());
     }
 
-    uniq.sort_by_cached_key(|a| type_sort_key(env, a));
+    uniq.sort_by_cached_key(|ty| {
+        // Canonical ordering for intersection components.
+        //
+        // Even though intersection types are commutative, Java's erasure rules use the *first*
+        // bound for some computations (notably type variables and some intersection uses),
+        // and Java syntax requires a class bound (if present) to appear first.
+        //
+        // Additionally, we want error recovery types (`Unknown`/`Error`) to dominate so that
+        // we don't accidentally "hide" missing information by returning a concrete bound.
+        let rank: u8 = match ty {
+            Type::Unknown | Type::Error => 0,
+            Type::Class(ClassType { def, .. }) => match env.class(*def).map(|c| c.kind) {
+                Some(ClassKind::Class) | None => 1,
+                Some(ClassKind::Interface) => 2,
+            },
+            Type::Array(_) | Type::Named(_) | Type::VirtualInner { .. } => 1,
+            _ => 2,
+        };
+        (rank, type_sort_key(env, ty))
+    });
 
     // Prune redundant supertypes (e.g. `ArrayList & List` => `ArrayList`), while
     // remaining deterministic in the face of our best-effort subtyping relation

@@ -350,3 +350,81 @@ fn infer_upper_bound_intersection_normalizes_equivalent_intersection_bounds() {
     let expected = Type::Intersection(vec![serializable, cloneable, comparable]);
     assert_eq!(res1.inferred_type_args, vec![expected]);
 }
+
+#[test]
+fn infer_upper_bound_intersection_keeps_class_bound_first() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+
+    let number = env.class_id("java.lang.Number").expect("Number must exist");
+    let number = Type::class(number, vec![]);
+    let serializable = Type::class(env.well_known().serializable, vec![]);
+
+    // Same bounds, but listed in opposite order. The normalized intersection should keep
+    // the class bound (`Number`) first for Java validity/erasure semantics.
+    let t1 = env.add_type_param("T1", vec![number.clone(), serializable.clone()]);
+    let t2 = env.add_type_param("T2", vec![serializable.clone(), number.clone()]);
+
+    let test = env.add_class(ClassDef {
+        name: "com.example.GlbDeterminismClassFirst".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![
+            MethodDef {
+                name: "m1".to_string(),
+                type_params: vec![t1],
+                params: vec![],
+                return_type: Type::Void,
+                is_static: true,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "m2".to_string(),
+                type_params: vec![t2],
+                params: vec![],
+                return_type: Type::Void,
+                is_static: true,
+                is_varargs: false,
+                is_abstract: false,
+            },
+        ],
+    });
+
+    let call1 = MethodCall {
+        receiver: Type::class(test, vec![]),
+        call_kind: CallKind::Static,
+        name: "m1",
+        args: vec![],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+    let call2 = MethodCall {
+        receiver: Type::class(test, vec![]),
+        call_kind: CallKind::Static,
+        name: "m2",
+        args: vec![],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx1 = TyContext::new(&env);
+    let MethodResolution::Found(res1) = resolve_method_call(&mut ctx1, &call1) else {
+        panic!("expected method resolution success for m1");
+    };
+
+    let mut ctx2 = TyContext::new(&env);
+    let MethodResolution::Found(res2) = resolve_method_call(&mut ctx2, &call2) else {
+        panic!("expected method resolution success for m2");
+    };
+
+    assert_eq!(res1.inferred_type_args, res2.inferred_type_args);
+    assert_eq!(
+        res1.inferred_type_args,
+        vec![Type::Intersection(vec![number, serializable])]
+    );
+}
