@@ -1847,6 +1847,19 @@ fn handle_request_json(
             "result": state.semantic_search_workspace_index_status_json(),
         })),
         nova_lsp::MEMORY_STATUS_METHOD => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MEMORY_STATUS_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
             // Force an enforcement pass so the response reflects the current
             // pressure state and triggers evictions in registered components.
             let report = state.memory.enforce();
@@ -2285,6 +2298,19 @@ fn handle_request_json(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::NOVA_COMPLETION_MORE_METHOD)
+            {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
             let result = handle_completion_more(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
@@ -2336,6 +2362,20 @@ fn handle_request_json(
         nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
+            }
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD)
+            {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
             }
             let result = handle_java_organize_imports(params, state, client);
             Ok(match result {
@@ -2542,6 +2582,18 @@ fn handle_request_json(
             }
 
             if method.starts_with("nova/ai/") {
+                nova_lsp::hardening::record_request();
+                if let Err(err) = nova_lsp::hardening::guard_method(method) {
+                    let (code, message) = match err {
+                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                    };
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": code, "message": message }
+                    }));
+                }
                 let result = handle_ai_custom_request(method, params, state, client, cancel);
                 Ok(match result {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),

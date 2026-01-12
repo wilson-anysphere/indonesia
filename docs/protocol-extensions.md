@@ -65,10 +65,9 @@ and a message like:
 
 > “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, `nova/resetMetrics`, and `nova/safeModeStatus` are available for now.”
 
-Note: safe-mode enforcement is currently implemented by `nova_lsp::hardening::guard_method()` and
-is typically enforced by `nova_lsp::handle_custom_request()`, but endpoints handled directly by the
-stdio server must call it explicitly. Some endpoints (e.g. `nova/memoryStatus`,
-`nova/java/organizeImports`) currently bypass that guard and may still succeed during safe-mode.
+Note: safe-mode enforcement is implemented by `nova_lsp::hardening::guard_method()` and is enforced
+by both `nova_lsp::handle_custom_request()` **and** the `nova-lsp` stdio server for stateful
+endpoints implemented directly in `crates/nova-lsp/src/main.rs`.
 
 Safe-mode windows:
 

@@ -23,6 +23,25 @@ static CONFIG: OnceLock<NovaConfig> = OnceLock::new();
 static SAFE_MODE: OnceLock<SafeModeState> = OnceLock::new();
 static WATCHDOG: OnceLock<Watchdog> = OnceLock::new();
 
+// Test-only safety valve: allow integration tests to force safe-mode in a spawned
+// `nova-lsp` process without needing to trigger a real watchdog timeout/panic.
+//
+// This is compiled only in debug builds to avoid introducing an escape hatch in
+// production binaries.
+#[cfg(debug_assertions)]
+const FORCE_SAFE_MODE_ENV: &str = "NOVA_LSP_TEST_FORCE_SAFE_MODE";
+
+#[cfg(debug_assertions)]
+fn force_safe_mode_from_env() -> bool {
+    static FORCE: OnceLock<bool> = OnceLock::new();
+    *FORCE.get_or_init(|| {
+        matches!(
+            std::env::var(FORCE_SAFE_MODE_ENV).as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    })
+}
+
 #[derive(Debug, Default)]
 struct SafeModeState {
     enabled: AtomicBool,
@@ -35,7 +54,26 @@ fn perf() -> &'static PerfStats {
 }
 
 fn safe_mode() -> &'static SafeModeState {
-    SAFE_MODE.get_or_init(SafeModeState::default)
+    let safe_mode = SAFE_MODE.get_or_init(SafeModeState::default);
+
+    // Best-effort test hook: allow integration tests to force safe-mode for a
+    // full stdio server process via an env var. This helps validate that all
+    // `nova/*` endpoints are consistently guarded, including those handled
+    // directly by the stdio server (see `crates/nova-lsp/src/main.rs`).
+    #[cfg(debug_assertions)]
+    if force_safe_mode_from_env() {
+        safe_mode.enabled.store(true, Ordering::Relaxed);
+        *safe_mode
+            .until
+            .lock()
+            .expect("SafeModeState mutex poisoned") = None;
+        *safe_mode
+            .reason
+            .lock()
+            .expect("SafeModeState mutex poisoned") = Some(SafeModeReason::Panic);
+    }
+
+    safe_mode
 }
 
 fn watchdog() -> &'static Watchdog {
