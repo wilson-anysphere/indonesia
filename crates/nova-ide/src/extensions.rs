@@ -50,6 +50,8 @@ impl AsDynNovaDb for dyn nova_db::Database + Send + Sync {
     }
 }
 
+pub use crate::framework_extensions::FrameworkAnalyzerAdapterOnTextDb;
+
 /// Adapter that exposes a `nova-framework` [`FrameworkAnalyzer`] via the unified `nova-ext` traits.
 ///
 /// This allows framework analyzers (Lombok, Spring, etc.) to coexist with third-party `nova-ext`
@@ -1336,9 +1338,6 @@ fn type_mismatch_quick_fixes(
     let mut actions = Vec::new();
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
-        if cancel.is_cancelled() {
-            return Vec::new();
-        }
         if diag.code.as_ref() != "type-mismatch" {
             continue;
         }
@@ -1608,7 +1607,6 @@ fn mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
     let Some(path) = db.file_path(file) else {
         return Vec::new();
     };
-
     let text = db.file_content(file);
     let maybe_mapstruct_file = text.contains("@Mapper")
         || text.contains("@org.mapstruct.Mapper")
@@ -1631,10 +1629,7 @@ fn mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
 
     let has_mapstruct_dependency = config.dependencies.iter().any(|dep| {
         dep.group_id == "org.mapstruct"
-            && matches!(
-                dep.artifact_id.as_str(),
-                "mapstruct" | "mapstruct-processor"
-            )
+            && matches!(dep.artifact_id.as_str(), "mapstruct" | "mapstruct-processor")
     });
     if has_mapstruct_dependency {
         return Vec::new();

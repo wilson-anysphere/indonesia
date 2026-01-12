@@ -117,13 +117,14 @@ install-updater = false
 inherits = "release"
 lto = "thin"
 
+[profile.test]
 # The default `test` profile inherits from `dev`, which includes full debug info.
 # For large crates (like `nova-lsp`) and their transitive WASM/tooling dependencies,
-# debuginfo can produce multi-gigabyte test binaries and push the linker over the
-# 4G RLIMIT_AS budget enforced by `scripts/cargo_agent.sh`.
+# test binaries can be extremely heavy to link and can push the linker over the 4G
+# RLIMIT_AS budget enforced by `scripts/cargo_agent.sh`.
 #
-# Disable debuginfo in `test` profile to keep link-time memory pressure manageable.
-[profile.test]
+# Disable debuginfo in `test` profile to reduce link-time memory pressure and
+# stay under the default `scripts/cargo_agent.sh` RLIMIT_AS budget.
 debug = 0
 # Keep debug/test builds under the default `scripts/cargo_agent.sh` RLIMIT_AS budget
 # when enabling WASM extension validation (Wasmtime + Cranelift are extremely heavy
