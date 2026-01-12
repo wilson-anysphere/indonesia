@@ -5784,11 +5784,6 @@ fn collect_switch_contexts(
                     walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                }
-            }
             hir::Expr::Unary { expr, .. }
             | hir::Expr::Instanceof { expr, .. }
             | hir::Expr::Cast { expr, .. } => {
@@ -6860,6 +6855,32 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
+        Stmt::Assert(assert_stmt) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &assert_stmt.condition,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            if let Some(message) = &assert_stmt.message {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    message,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
         Stmt::Return(ret) => {
             if let Some(expr) = &ret.expr {
                 record_lightweight_expr(
@@ -7267,21 +7288,6 @@ fn record_lightweight_expr(
         }
         Expr::ArrayInitializer(array) => {
             for item in &array.items {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    item,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
-        Expr::ArrayInitializer(init) => {
-            for item in &init.items {
                 record_lightweight_expr(
                     file,
                     text,
