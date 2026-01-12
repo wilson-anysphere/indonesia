@@ -286,6 +286,11 @@
       ],
       "view/item/context": [
         {
+          "command": "nova.frameworks.open",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkEndpoint",
+          "group": "navigation@0"
+        },
+        {
           "command": "nova.frameworks.copyEndpointPath",
           "when": "view == novaFrameworks && viewItem == novaFrameworkEndpoint",
           "group": "clipboard@1"
@@ -309,6 +314,11 @@
           "command": "nova.frameworks.copyBeanType",
           "when": "view == novaFrameworks && viewItem == novaFrameworkBean",
           "group": "clipboard@2"
+        },
+        {
+          "command": "nova.frameworks.open",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkBean",
+          "group": "navigation@0"
         },
         {
           "command": "nova.frameworks.revealInExplorer",

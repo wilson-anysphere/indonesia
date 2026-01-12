@@ -373,8 +373,61 @@ function asFrameworkOpenTarget(value: unknown): FrameworkOpenTarget | undefined 
   return undefined;
 }
 
+function frameworkNodeToOpenTarget(value: unknown): FrameworkOpenTarget | undefined {
+  const obj = asRecord(value);
+  if (!obj) {
+    return undefined;
+  }
+
+  const kind = asNonEmptyString(obj.kind);
+  if (!kind) {
+    return undefined;
+  }
+
+  const baseUri = obj.baseUri instanceof vscode.Uri ? obj.baseUri : undefined;
+  const projectRoot = asNonEmptyString(obj.projectRoot);
+
+  if (kind === 'web-endpoint') {
+    const endpoint = asRecord(obj.endpoint);
+    const file = endpoint?.file;
+    const line = typeof endpoint?.line === 'number' ? endpoint.line : Number(endpoint?.line);
+    const uri = uriFromFileLike(file, { baseUri, projectRoot });
+    if (!uri) {
+      return undefined;
+    }
+    return { kind: 'line', uri, line: Number.isFinite(line) ? line : 1 };
+  }
+
+  if (kind === 'micronaut-endpoint') {
+    const endpoint = asRecord(obj.endpoint);
+    const handler = asRecord(endpoint?.handler);
+    const uri = uriFromFileLike(handler?.file, { baseUri, projectRoot });
+    const span = asRecord(handler?.span);
+    const start = typeof span?.start === 'number' ? span.start : Number(span?.start);
+    const end = typeof span?.end === 'number' ? span.end : Number(span?.end);
+    if (!uri || !Number.isFinite(start)) {
+      return undefined;
+    }
+    return { kind: 'span', uri, span: { start, end: Number.isFinite(end) ? end : start } };
+  }
+
+  if (kind === 'micronaut-bean') {
+    const bean = asRecord(obj.bean);
+    const uri = uriFromFileLike(bean?.file, { baseUri, projectRoot });
+    const span = asRecord(bean?.span);
+    const start = typeof span?.start === 'number' ? span.start : Number(span?.start);
+    const end = typeof span?.end === 'number' ? span.end : Number(span?.end);
+    if (!uri || !Number.isFinite(start)) {
+      return undefined;
+    }
+    return { kind: 'span', uri, span: { start, end: Number.isFinite(end) ? end : start } };
+  }
+
+  return undefined;
+}
+
 async function openFrameworkTarget(value: unknown): Promise<void> {
-  const target = asFrameworkOpenTarget(value);
+  const target = asFrameworkOpenTarget(value) ?? frameworkNodeToOpenTarget(value);
   if (!target) {
     void vscode.window.showErrorMessage('Nova: Unable to open this framework item.');
     return;
