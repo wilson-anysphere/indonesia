@@ -491,7 +491,13 @@ class C {}
     let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Entry"));
     assert_eq!(
         res,
-        Some(Resolution::Type(TypeResolution::External(entry)))
+        Some(Resolution::Type(TypeResolution::External(entry.clone())))
+    );
+
+    // `Entry` should also resolve in the type namespace (ignoring values).
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("Entry")),
+        Some(TypeResolution::External(entry))
     );
 }
 
