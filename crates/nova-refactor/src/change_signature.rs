@@ -211,8 +211,14 @@ pub fn change_signature(
     }
 
     // Call site updates (semantic verification).
-    let call_updates =
-        collect_call_site_updates(index, &target_parsed, &affected_ids, change, &mut conflicts);
+    let call_updates = collect_call_site_updates(
+        index,
+        &target_parsed,
+        &affected,
+        &affected_ids,
+        change,
+        &mut conflicts,
+    );
 
     if !conflicts.is_empty() {
         return Err(ChangeSignatureError { conflicts });
@@ -501,19 +507,13 @@ fn find_methods_by_signature(
     param_types: &[String],
 ) -> Vec<ParsedMethod> {
     let mut out = Vec::new();
-    for sym in index.symbols() {
-        if sym.kind != SymbolKind::Method {
+    for sym_id in index.method_overloads(class, name) {
+        let Some(sym) = index.find_symbol(sym_id) else {
             continue;
-        }
-        if sym.name != name {
-            continue;
-        }
-        if sym.container.as_deref() != Some(class) {
-            continue;
-        }
+        };
+        let id = MethodId(sym_id.0);
 
-        let id = MethodId(sym.id.0);
-        if let Some(sig_types) = index.method_param_types(sym.id) {
+        if let Some(sig_types) = index.method_param_types(sym_id) {
             if sig_types != param_types {
                 continue;
             }
@@ -690,22 +690,16 @@ fn detect_overload_collisions(
     let old_param_types = method_param_types_for_signature(index, method);
     let new_param_types = compute_new_param_types_for_signature(&old_param_types, &change.parameters);
 
-    for sym in index.symbols() {
-        if sym.kind != SymbolKind::Method {
-            continue;
-        }
-        if sym.container.as_deref() != Some(method.class.as_str()) {
-            continue;
-        }
-        let other_id = MethodId(sym.id.0);
+    for sym_id in index.method_overloads(method.class.as_str(), &new_name) {
+        let other_id = MethodId(sym_id.0);
         if affected.contains(&other_id) {
             continue;
         }
-        if sym.name != new_name {
+        let Some(sym) = index.find_symbol(sym_id) else {
             continue;
-        }
+        };
 
-        if let Some(other_types) = index.method_param_types(sym.id) {
+        if let Some(other_types) = index.method_param_types(sym_id) {
             if other_types == new_param_types.as_slice() {
                 conflicts.push(ChangeSignatureConflict::OverloadCollision {
                     method: method.method_id,
@@ -731,6 +725,7 @@ fn detect_overload_collisions(
 fn collect_call_site_updates(
     index: &Index,
     target: &ParsedMethod,
+    affected: &[ParsedMethod],
     affected_ids: &HashSet<MethodId>,
     change: &ChangeSignature,
     conflicts: &mut Vec<ChangeSignatureConflict>,
@@ -759,20 +754,11 @@ fn collect_call_site_updates(
     // candidate collection is intentionally lexical and will report method declarations
     // as call candidates (identifier followed by `(`).
     let mut header_spans_by_file: HashMap<String, Vec<TextRange>> = HashMap::new();
-    for sym in index.symbols() {
-        if sym.kind != SymbolKind::Method {
-            continue;
-        }
-        let id = MethodId(sym.id.0);
-        if !affected_ids.contains(&id) {
-            continue;
-        }
-        if let Ok(parsed) = parse_method(index, sym, id) {
-            header_spans_by_file
-                .entry(parsed.file.clone())
-                .or_default()
-                .push(parsed.header_range);
-        }
+    for m in affected {
+        header_spans_by_file
+            .entry(m.file.clone())
+            .or_default()
+            .push(m.header_range);
     }
 
     let mut updates = Vec::new();
@@ -1485,19 +1471,13 @@ fn resolve_method_in_hierarchy(
     // class table.
     let mut class = receiver_class.to_string();
     loop {
-        for sym in index.symbols() {
-            if sym.kind != SymbolKind::Method {
+        for sym_id in index.method_overloads(class.as_str(), name) {
+            let Some(sym) = index.find_symbol(sym_id) else {
                 continue;
-            }
-            if sym.container.as_deref() != Some(class.as_str()) {
-                continue;
-            }
-            if sym.name != name {
-                continue;
-            }
-            let id = MethodId(sym.id.0);
+            };
+            let id = MethodId(sym_id.0);
 
-            if let Some(sig_types) = index.method_param_types(sym.id) {
+            if let Some(sig_types) = index.method_param_types(sym_id) {
                 if sig_types == param_types {
                     return Some(id);
                 }
@@ -1545,17 +1525,20 @@ fn resolve_method_in_interfaces(
 
     for iface in interfaces {
         let iface = iface.as_ref();
-        for sym in index.symbols() {
-            if sym.kind != SymbolKind::Method {
+        for sym_id in index.method_overloads(iface, name) {
+            let Some(sym) = index.find_symbol(sym_id) else {
                 continue;
+            };
+            let id = MethodId(sym_id.0);
+
+            if let Some(sig_types) = index.method_param_types(sym_id) {
+                if sig_types == param_types {
+                    matches.insert(id);
+                    continue;
+                }
+                // Best-effort: fall back to parsing in case the signature normalization differs.
             }
-            if sym.container.as_deref() != Some(iface) {
-                continue;
-            }
-            if sym.name != name {
-                continue;
-            }
-            let id = MethodId(sym.id.0);
+
             let Ok(parsed) = parse_method(index, sym, id) else {
                 continue;
             };
