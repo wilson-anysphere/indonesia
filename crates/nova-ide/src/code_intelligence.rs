@@ -1290,9 +1290,23 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
     if idx < tokens.len() && tokens[idx].kind == nova_syntax::SyntaxKind::PackageKw {
         idx += 1;
         while idx < tokens.len() {
-            if tokens[idx].kind == nova_syntax::SyntaxKind::Semicolon {
-                idx += 1;
-                break;
+            match tokens[idx].kind {
+                nova_syntax::SyntaxKind::Semicolon => {
+                    idx += 1;
+                    break;
+                }
+                nova_syntax::SyntaxKind::ImportKw
+                | nova_syntax::SyntaxKind::At
+                | nova_syntax::SyntaxKind::ClassKw
+                | nova_syntax::SyntaxKind::InterfaceKw
+                | nova_syntax::SyntaxKind::EnumKw
+                | nova_syntax::SyntaxKind::Eof => {
+                    // Best-effort: package declarations must end with a `;`, but while typing this
+                    // is often missing. Don't consume the rest of the file (or the following import
+                    // block) looking for a semicolon.
+                    break;
+                }
+                _ => {}
             }
             idx += 1;
         }
