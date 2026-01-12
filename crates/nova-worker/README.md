@@ -61,9 +61,9 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 - Max frame length / max packet length offered in `WorkerHello.capabilities`:
   - **64 MiB** max frame (`nova_remote_proto::v3::DEFAULT_MAX_FRAME_LEN`)
   - **64 MiB** max packet (`nova_remote_proto::v3::DEFAULT_MAX_PACKET_LEN`)
-- Compression: always offer `none`; when built with zstd support (`nova-remote-rpc` feature `zstd`),
-  offer `zstd` and compress payloads ≥ **1 KiB** (zstd level 3) when it produces smaller on-wire
-  bytes.
+- Compression: `nova-worker` currently advertises only `none` (no compression). The v3 transport
+  supports optional `zstd` behind the `nova-remote-rpc` Cargo feature `zstd`, but it is only used
+  when **both** peers advertise it.
 - Chunking: supported and advertised by default (`supports_chunking=true`) and used when a single
   frame would exceed the negotiated `max_frame_len`.
 - Cancellation: supported and advertised by default (`supports_cancel=true`). Incoming `Cancel`
