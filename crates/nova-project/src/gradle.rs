@@ -1319,6 +1319,12 @@ fn strip_gradle_comments(contents: &str) -> String {
         }
 
         if b == b'\'' {
+            if bytes.get(i + 1) == Some(&b'\'') && bytes.get(i + 2) == Some(&b'\'') {
+                in_triple_single = true;
+                out.extend_from_slice(b"'''");
+                i += 3;
+                continue;
+            }
             in_single = true;
             out.push(b'\'');
             i += 1;
@@ -1326,6 +1332,12 @@ fn strip_gradle_comments(contents: &str) -> String {
         }
 
         if b == b'"' {
+            if bytes.get(i + 1) == Some(&b'"') && bytes.get(i + 2) == Some(&b'"') {
+                in_triple_double = true;
+                out.extend_from_slice(b"\"\"\"");
+                i += 3;
+                continue;
+            }
             in_double = true;
             out.push(b'"');
             i += 1;
@@ -1995,7 +2007,8 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+const GRADLE_DEPENDENCY_CONFIGS: &str =
+    r"(?:implementation|api|compile|runtime|compileOnly|runtimeOnly|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
 type GradleProperties = HashMap<String, String>;
 
@@ -2064,20 +2077,21 @@ fn resolve_gradle_properties_placeholder(
 ///
 /// This is best-effort extraction and intentionally collapses many Gradle configurations into
 /// coarse scopes:
-/// - `implementation|api` => `compile`
-/// - `runtimeOnly` => `runtime`
+/// - `implementation|api|compile` => `compile`
+/// - `runtimeOnly|runtime` => `runtime`
 /// - `compileOnly` => `provided`
-/// - `testImplementation|testRuntimeOnly|testCompileOnly` => `test`
+/// - `testImplementation|testRuntimeOnly|testCompileOnly|testCompile|testRuntime` => `test`
 /// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest` => `annotationProcessor`
 fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
     let configuration = configuration.trim();
     if configuration.eq_ignore_ascii_case("implementation")
         || configuration.eq_ignore_ascii_case("api")
+        || configuration.eq_ignore_ascii_case("compile")
     {
         return Some("compile");
     }
 
-    if configuration.eq_ignore_ascii_case("runtimeOnly") {
+    if configuration.eq_ignore_ascii_case("runtimeOnly") || configuration.eq_ignore_ascii_case("runtime") {
         return Some("runtime");
     }
 
@@ -2088,6 +2102,8 @@ fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> 
     if configuration.eq_ignore_ascii_case("testImplementation")
         || configuration.eq_ignore_ascii_case("testRuntimeOnly")
         || configuration.eq_ignore_ascii_case("testCompileOnly")
+        || configuration.eq_ignore_ascii_case("testCompile")
+        || configuration.eq_ignore_ascii_case("testRuntime")
     {
         return Some("test");
     }
@@ -3372,9 +3388,14 @@ plugins {
 dependencies {
     implementation("g1:a1:1")
     api("g2:a2:2")
+    // Legacy configurations (pre-Gradle 3.4).
+    compile("g14:a14:14")
+    runtime("g15:a15:15")
     compileOnly("g3:a3:3")
     runtimeOnly("g4:a4:4")
     testImplementation("g5:a5:5")
+    testCompile("g16:a16:16")
+    testRuntime("g17:a17:17")
     testRuntimeOnly("g6:a6:6")
     testCompileOnly("g7:a7:7")
     annotationProcessor("g8:a8:8")
@@ -3423,6 +3444,10 @@ dependencies {
             ("g11", "a11", "11"),
             ("g12", "a12", "12"),
             ("g13", "a13", "13"),
+            ("g14", "a14", "14"),
+            ("g15", "a15", "15"),
+            ("g16", "a16", "16"),
+            ("g17", "a17", "17"),
             ("dup", "dep", "1.0"),
         ]
         .into_iter()
@@ -3438,35 +3463,14 @@ dependencies {
 
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
-        let expected_scopes: [((String, String, Option<String>), &str); 14] = [
-            (
-                (String::from("g1"), String::from("a1"), Some("1".into())),
-                "compile",
-            ),
-            (
-                (String::from("g2"), String::from("a2"), Some("2".into())),
-                "compile",
-            ),
-            (
-                (String::from("g3"), String::from("a3"), Some("3".into())),
-                "provided",
-            ),
-            (
-                (String::from("g4"), String::from("a4"), Some("4".into())),
-                "runtime",
-            ),
-            (
-                (String::from("g5"), String::from("a5"), Some("5".into())),
-                "test",
-            ),
-            (
-                (String::from("g6"), String::from("a6"), Some("6".into())),
-                "test",
-            ),
-            (
-                (String::from("g7"), String::from("a7"), Some("7".into())),
-                "test",
-            ),
+        let expected_scopes: [((String, String, Option<String>), &str); 18] = [
+            ((String::from("g1"), String::from("a1"), Some("1".into())), "compile"),
+            ((String::from("g2"), String::from("a2"), Some("2".into())), "compile"),
+            ((String::from("g3"), String::from("a3"), Some("3".into())), "provided"),
+            ((String::from("g4"), String::from("a4"), Some("4".into())), "runtime"),
+            ((String::from("g5"), String::from("a5"), Some("5".into())), "test"),
+            ((String::from("g6"), String::from("a6"), Some("6".into())), "test"),
+            ((String::from("g7"), String::from("a7"), Some("7".into())), "test"),
             (
                 (String::from("g8"), String::from("a8"), Some("8".into())),
                 "annotationProcessor",
@@ -3483,14 +3487,15 @@ dependencies {
                 (String::from("g11"), String::from("a11"), Some("11".into())),
                 "annotationProcessor",
             ),
-            (
-                (String::from("g12"), String::from("a12"), Some("12".into())),
-                "compile",
-            ),
+            ((String::from("g12"), String::from("a12"), Some("12".into())), "compile"),
             (
                 (String::from("g13"), String::from("a13"), Some("13".into())),
                 "annotationProcessor",
             ),
+            ((String::from("g14"), String::from("a14"), Some("14".into())), "compile"),
+            ((String::from("g15"), String::from("a15"), Some("15".into())), "runtime"),
+            ((String::from("g16"), String::from("a16"), Some("16".into())), "test"),
+            ((String::from("g17"), String::from("a17"), Some("17".into())), "test"),
             (
                 (String::from("dup"), String::from("dep"), Some("1.0".into())),
                 "compile",
@@ -3591,5 +3596,41 @@ dependencies {
             Some("32.0.0".to_string()),
             Some("test".to_string())
         )));
+    }
+
+    #[test]
+    fn strip_gradle_comments_preserves_triple_quoted_strings() {
+        let script = r#"
+val url = """https://example.com//not-a-comment"""
+def other = '''http://example.com//also-not-a-comment'''
+
+// this is a comment
+/* block comment */
+"#;
+
+        let stripped = strip_gradle_comments(script);
+        assert!(stripped.contains("https://example.com//not-a-comment"));
+        assert!(stripped.contains("http://example.com//also-not-a-comment"));
+        assert!(!stripped.contains("this is a comment"));
+        assert!(!stripped.contains("block comment"));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_ignores_commented_out_deps() {
+        let build_script = r#"
+dependencies {
+  // implementation("commented:dep:1")
+  /* runtimeOnly("commented:block:2") */
+  implementation("real:dep:3")
+}
+"#;
+
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(build_script, None, &gradle_properties);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].group_id, "real");
+        assert_eq!(deps[0].artifact_id, "dep");
+        assert_eq!(deps[0].version.as_deref(), Some("3"));
+        assert_eq!(deps[0].scope.as_deref(), Some("compile"));
     }
 }
