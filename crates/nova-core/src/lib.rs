@@ -248,6 +248,30 @@ pub trait TypeIndex {
         let _ = (owner, name);
         None
     }
+
+    /// Enumerate known static members for `owner`.
+    ///
+    /// This is primarily used for member completion (e.g. `Math.<cursor>`).
+    ///
+    /// Implementations are expected to return a *best-effort* list: returning an
+    /// empty list is always valid. Callers should treat the result as incomplete.
+    fn static_members(&self, owner: &TypeName) -> Vec<StaticMemberInfo> {
+        let _ = owner;
+        Vec::new()
+    }
+}
+
+/// A coarse kind for a static member (sufficient for completion item shaping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticMemberKind {
+    Method,
+    Field,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticMemberInfo {
+    pub name: Name,
+    pub kind: StaticMemberKind,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]

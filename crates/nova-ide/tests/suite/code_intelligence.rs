@@ -1611,6 +1611,54 @@ fn completion_includes_workspace_annotation_types_after_at_sign() {
 }
 
 #[test]
+fn completion_includes_math_static_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Math.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"max"),
+        "expected completion list to contain Math.max; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"PI"),
+        "expected completion list to contain Math.PI; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_ranks_math_static_members_for_prefix() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Math.ma<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items.is_empty(),
+        "expected non-empty completion list for Math.ma; got empty"
+    );
+    assert_eq!(
+        items[0].label, "max",
+        "expected Math.max to rank first for prefix 'ma'; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn completion_includes_static_import_members() {
     let (db, file, pos) = fixture(
         r#"

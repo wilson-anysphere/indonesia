@@ -24,7 +24,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nova_cache::CacheConfig;
-use nova_core::{JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
+use nova_core::{
+    JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, StaticMemberInfo,
+    StaticMemberKind, TypeIndex, TypeName,
+};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
@@ -125,12 +128,18 @@ pub struct JdkIndex {
     builtin_packages_sorted: Vec<String>,
     package_to_types: HashMap<String, HashMap<String, TypeName>>,
     packages: HashSet<String>,
-    static_members: HashMap<String, HashMap<String, StaticMemberId>>,
+    static_members: HashMap<String, HashMap<String, StaticMemberEntry>>,
 
     info: JdkIndexInfo,
 
     // Optional richer symbol index backed by platform containers.
     symbols: Option<index::JdkSymbolIndex>,
+}
+
+#[derive(Debug, Clone)]
+struct StaticMemberEntry {
+    id: StaticMemberId,
+    kind: StaticMemberKind,
 }
 
 impl JdkIndex {
@@ -182,12 +191,20 @@ impl JdkIndex {
         this.add_type("java.util.function", "Predicate");
 
         // A tiny set of static members for static-import testing.
-        this.add_static_member("java.lang.Math", "max");
-        this.add_static_member("java.lang.Math", "min");
-        this.add_static_member("java.lang.Math", "PI");
-        this.add_static_member("java.lang.Math", "E");
-        this.add_static_member("java.util.Collections", "emptyList");
-        this.add_static_member("java.util.Collections", "singletonList");
+        this.add_static_member("java.lang.Math", "max", StaticMemberKind::Method);
+        this.add_static_member("java.lang.Math", "min", StaticMemberKind::Method);
+        this.add_static_member("java.lang.Math", "PI", StaticMemberKind::Field);
+        this.add_static_member("java.lang.Math", "E", StaticMemberKind::Field);
+        this.add_static_member(
+            "java.util.Collections",
+            "emptyList",
+            StaticMemberKind::Method,
+        );
+        this.add_static_member(
+            "java.util.Collections",
+            "singletonList",
+            StaticMemberKind::Method,
+        );
 
         // Ensure deterministic ordering for callers that iterate the built-in index.
         this.builtin_binary_names_sorted.sort();
@@ -243,16 +260,16 @@ impl JdkIndex {
 
         bytes = bytes.saturating_add(
             (self.static_members.capacity()
-                * size_of::<(String, HashMap<String, StaticMemberId>)>()) as u64,
+                * size_of::<(String, HashMap<String, StaticMemberEntry>)>()) as u64,
         );
         for (owner, members) in &self.static_members {
             bytes = bytes.saturating_add(owner.capacity() as u64);
             bytes = bytes.saturating_add(
-                (members.capacity() * size_of::<(String, StaticMemberId)>()) as u64,
+                (members.capacity() * size_of::<(String, StaticMemberEntry)>()) as u64,
             );
             for (name, member_id) in members {
                 bytes = bytes.saturating_add(name.capacity() as u64);
-                bytes = bytes.saturating_add(member_id.as_str().len() as u64);
+                bytes = bytes.saturating_add(member_id.id.as_str().len() as u64);
             }
         }
 
@@ -678,14 +695,14 @@ impl JdkIndex {
             .insert(name.to_string(), ty);
     }
 
-    fn add_static_member(&mut self, owner: &str, member: &str) {
+    fn add_static_member(&mut self, owner: &str, member: &str, kind: StaticMemberKind) {
         self.static_members
             .entry(owner.to_string())
             .or_default()
-            .insert(
-                member.to_string(),
-                StaticMemberId::new(format!("{owner}::{member}")),
-            );
+            .insert(member.to_string(), StaticMemberEntry {
+                id: StaticMemberId::new(format!("{owner}::{member}")),
+                kind,
+            });
     }
 }
 
@@ -738,9 +755,8 @@ impl TypeIndex for JdkIndex {
             .static_members
             .get(owner.as_str())
             .and_then(|m| m.get(name.as_str()))
-            .cloned()
         {
-            return Some(found);
+            return Some(found.id.clone());
         }
 
         let symbols = self.symbols.as_ref()?;
@@ -757,6 +773,54 @@ impl TypeIndex for JdkIndex {
                 .any(|m| m.name == needle && is_static(m.access_flags));
 
         found.then(|| StaticMemberId::new(format!("{}::{needle}", owner.as_str())))
+    }
+
+    fn static_members(&self, owner: &TypeName) -> Vec<StaticMemberInfo> {
+        if let Some(symbols) = &self.symbols {
+            if let Ok(Some(stub)) = symbols.lookup_type(owner.as_str()) {
+                let mut seen = HashMap::<Name, StaticMemberKind>::new();
+
+                for f in &stub.fields {
+                    if is_static(f.access_flags) {
+                        seen.insert(Name::from(f.name.as_str()), StaticMemberKind::Field);
+                    }
+                }
+
+                for m in &stub.methods {
+                    if m.name == "<init>" || m.name == "<clinit>" {
+                        continue;
+                    }
+                    if is_static(m.access_flags) {
+                        // Prefer fields if a name is both a field and method (rare but possible).
+                        seen.entry(Name::from(m.name.as_str()))
+                            .or_insert(StaticMemberKind::Method);
+                    }
+                }
+
+                let mut out: Vec<StaticMemberInfo> = seen
+                    .into_iter()
+                    .map(|(name, kind)| StaticMemberInfo { name, kind })
+                    .collect();
+                out.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+                if !out.is_empty() {
+                    return out;
+                }
+            }
+        }
+
+        let Some(members) = self.static_members.get(owner.as_str()) else {
+            return Vec::new();
+        };
+
+        let mut out: Vec<StaticMemberInfo> = members
+            .iter()
+            .map(|(name, entry)| StaticMemberInfo {
+                name: Name::from(name.as_str()),
+                kind: entry.kind,
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        out
     }
 }
 

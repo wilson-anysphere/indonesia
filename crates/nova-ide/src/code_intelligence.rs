@@ -17,13 +17,18 @@ use lsp_types::{
     SignatureHelp, SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
-use nova_core::{path_to_file_uri, AbsPathBuf, QualifiedName, TypeIndex};
+use nova_core::{
+    path_to_file_uri, AbsPathBuf, Name, PackageName, QualifiedName, StaticMemberInfo,
+    StaticMemberKind, TypeIndex, TypeName,
+};
 use nova_db::{
     Database, FileId, NovaFlow, NovaInputs, NovaResolve, NovaSyntax, NovaTypeck, SalsaDatabase,
     Snapshot,
 };
 use nova_fuzzy::FuzzyMatcher;
+use nova_hir::item_tree;
 use nova_jdk::JdkIndex;
+use nova_resolve::{ImportMap, Resolver as ImportResolver};
 use nova_types::{
     CallKind, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution,
     PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeStore,
@@ -796,6 +801,62 @@ fn parse_java_package_name(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn parse_java_type_import_map(text: &str) -> ImportMap {
+    let mut tree = item_tree::ItemTree::default();
+
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("import ") {
+            continue;
+        }
+
+        // Static imports don't influence type name resolution for type receivers.
+        if line.starts_with("import static ") {
+            continue;
+        }
+
+        let mut rest = line["import ".len()..].trim();
+        if let Some(rest2) = rest.strip_suffix(';') {
+            rest = rest2.trim();
+        }
+        if rest.is_empty() {
+            continue;
+        }
+
+        let (path, is_star) = if let Some(pkg) = rest.strip_suffix(".*") {
+            (pkg.trim(), true)
+        } else {
+            (rest, false)
+        };
+
+        if path.is_empty() {
+            continue;
+        }
+
+        tree.imports.push(item_tree::Import {
+            is_static: false,
+            is_star,
+            path: path.to_string(),
+            range: Span::new(0, 0),
+        });
+    }
+
+    ImportMap::from_item_tree(&tree)
+}
+
+fn resolve_type_receiver(
+    resolver: &ImportResolver<'_>,
+    imports: &ImportMap,
+    package: Option<&PackageName>,
+    receiver: &str,
+) -> Option<TypeName> {
+    if receiver.contains('.') {
+        resolver.resolve_qualified_name(&QualifiedName::from_dotted(receiver))
+    } else {
+        resolver.resolve_import(imports, package, &Name::from(receiver))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -5696,10 +5757,20 @@ fn member_completions(
     let (receiver_ty, call_kind) =
         infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        if call_kind == CallKind::Static {
+            return static_member_completions(text, receiver, prefix);
+        }
         return Vec::new();
     }
 
     let mut items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
+    if call_kind == CallKind::Static {
+        let mut baseline = static_member_completions(text, receiver, prefix);
+        if items.is_empty() {
+            return baseline;
+        }
+        items.append(&mut baseline);
+    }
 
     // Lombok virtual members are useful for instance access and are intentionally
     // kept as a fallback/additional completion source.
@@ -5840,6 +5911,56 @@ fn method_reference_completions(
         });
     }
 
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items
+}
+
+fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<CompletionItem> {
+    let receiver = receiver.trim();
+    if receiver.is_empty() {
+        return Vec::new();
+    }
+
+    let package = parse_java_package_name(text)
+        .and_then(|pkg| (!pkg.is_empty()).then(|| PackageName::from_dotted(&pkg)));
+    let imports = parse_java_type_import_map(text);
+
+    let jdk = JdkIndex::new();
+    let resolver = ImportResolver::new(&jdk);
+    let Some(owner) = resolve_type_receiver(&resolver, &imports, package.as_ref(), receiver) else {
+        return Vec::new();
+    };
+
+    let owner_name = owner.as_str().to_string();
+    let members = TypeIndex::static_members(&jdk, &owner);
+    if members.is_empty() {
+        return Vec::new();
+    }
+
+    let mut items = Vec::new();
+    for StaticMemberInfo { name, kind } in members {
+        let label = name.as_str().to_string();
+        let (item_kind, insert_text, insert_text_format) = match kind {
+            StaticMemberKind::Method => (
+                CompletionItemKind::METHOD,
+                Some(format!("{label}($0)")),
+                Some(InsertTextFormat::SNIPPET),
+            ),
+            StaticMemberKind::Field => (CompletionItemKind::CONSTANT, Some(label.clone()), None),
+        };
+
+        items.push(CompletionItem {
+            label,
+            kind: Some(item_kind),
+            detail: Some(owner_name.clone()),
+            insert_text,
+            insert_text_format,
+            ..Default::default()
+        });
+    }
+
+    deduplicate_completion_items(&mut items);
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items
@@ -12988,7 +13109,7 @@ pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
     let mut start = end;
     while start > 0 {
         let ch = bytes.get(start - 1).copied().unwrap_or_default() as char;
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '"' {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '"' || ch == '.' {
             start -= 1;
         } else {
             break;
