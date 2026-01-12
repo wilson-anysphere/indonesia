@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -104,5 +105,64 @@ class A {
     assert!(
         flow_after.validated_memoized > flow_before.validated_memoized,
         "expected flow_diagnostics_for_file to validate memoized results on subsequent calls"
+    );
+}
+
+struct MultiFileDb {
+    files: HashMap<FileId, (PathBuf, String)>,
+    salsa: SalsaDatabase,
+}
+
+impl LegacyDatabase for MultiFileDb {
+    fn file_content(&self, file_id: FileId) -> &str {
+        self.files
+            .get(&file_id)
+            .map(|(_, text)| text.as_str())
+            .unwrap_or("")
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<&Path> {
+        self.files.get(&file_id).map(|(path, _)| path.as_path())
+    }
+
+    fn salsa_db(&self) -> Option<SalsaDatabase> {
+        Some(self.salsa.clone())
+    }
+}
+
+#[test]
+fn file_diagnostics_reuse_caller_provided_salsa_database_for_imports() {
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+    let path_a = PathBuf::from("/src/p/A.java");
+    let path_b = PathBuf::from("/src/q/B.java");
+    let text_a = "package p; public class A {}".to_string();
+    let text_b = "package q; import p.A; class B { A a; }".to_string();
+
+    let project = ProjectId::from_raw(0);
+    let salsa = SalsaDatabase::new();
+    salsa.set_jdk_index(project, Arc::new(JdkIndex::new()));
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file_a, text_a.clone());
+    salsa.set_file_text(file_b, text_b.clone());
+    salsa.set_file_rel_path(file_a, Arc::new("src/p/A.java".to_string()));
+    salsa.set_file_rel_path(file_b, Arc::new("src/q/B.java".to_string()));
+    salsa.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let mut files = HashMap::new();
+    files.insert(file_a, (path_a, text_a));
+    files.insert(file_b, (path_b, text_b));
+
+    let db = MultiFileDb {
+        files,
+        salsa: salsa.clone(),
+    };
+
+    let diags = nova_ide::file_diagnostics(&db, file_b);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected import to resolve using caller-provided Salsa DB; got diagnostics: {diags:#?}"
     );
 }
