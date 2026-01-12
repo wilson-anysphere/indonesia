@@ -1757,9 +1757,21 @@ async fn dap_evaluate_supports_pinned_objects_via_nova_pinned_scope() {
         )
         .await;
     assert_eq!(
+        eval_field.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "evaluate response was not successful: {eval_field}"
+    );
+    assert_eq!(
         eval_field.pointer("/body/result").and_then(|v| v.as_str()),
         Some("7"),
         "expected pinned field eval to return 7: {eval_field}"
+    );
+    assert_eq!(
+        eval_field
+            .pointer("/body/variablesReference")
+            .and_then(|v| v.as_i64()),
+        Some(0),
+        "expected pinned field eval to return a primitive value: {eval_field}"
     );
 
     // Unknown handles should return a friendly result string rather than failing the request.
