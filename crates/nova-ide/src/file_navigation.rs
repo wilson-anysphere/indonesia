@@ -20,6 +20,12 @@ use crate::nav_core;
 use crate::parse::{parse_file, ParsedFile, TypeDef};
 use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
 
+// The file-navigation index cache is a global LRU keyed by workspace root. In debug/test builds we
+// intentionally give it a larger budget so parallel test execution doesn't evict entries between
+// back-to-back requests within a single test (which would make caching tests flaky).
+#[cfg(any(test, debug_assertions))]
+const MAX_CACHED_ROOTS: usize = 256;
+#[cfg(not(any(test, debug_assertions)))]
 const MAX_CACHED_ROOTS: usize = 8;
 
 /// Sentinel root used when the database cannot map a `FileId` to a path (e.g. virtual buffers
