@@ -247,3 +247,41 @@ fn rename_type_can_be_invoked_from_qualified_name_expression_in_static_method_ca
         "{updated_use}"
     );
 }
+
+#[test]
+fn rename_type_does_not_rename_local_variable_qualifier_in_method_call() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {}
+
+class Use {
+  void f() {
+    Foo Foo = new Foo();
+    Foo.toString();
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let updated = out.get(&file).unwrap();
+
+    assert!(updated.contains("class Bar"), "{updated}");
+    assert!(updated.contains("Bar Foo = new Bar();"), "{updated}");
+
+    // The `Foo` in `Foo.toString()` is the local variable, not a type reference.
+    assert!(updated.contains("Foo.toString();"), "{updated}");
+    assert!(!updated.contains("Bar.toString();"), "{updated}");
+}

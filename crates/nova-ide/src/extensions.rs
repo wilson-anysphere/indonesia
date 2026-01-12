@@ -1415,7 +1415,7 @@ fn dedupe_code_actions_by_kind_and_title(actions: &mut Vec<lsp_types::CodeAction
 }
 
 fn type_mismatch_quick_fixes(
-    cancel: &CancellationToken,
+    _cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
     selection: Span,

@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use nova_core::QualifiedName;
+use nova_core::{Name, QualifiedName};
 use nova_hir::ast_id::AstIdMap;
+use nova_hir::hir;
 use nova_hir::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, InitializerId, InterfaceId, ItemId, MethodId,
     RecordId,
 };
 use nova_hir::item_tree::ItemTree;
 use nova_hir::queries::HirDatabase;
-use nova_resolve::{Resolver, TypeResolution, WorkspaceDefMap};
+use nova_resolve::expr_scopes::{ExprScopes, ScopeId as ExprScopeId};
+use nova_resolve::ids::{DefWithBodyId, ParamId};
+use nova_resolve::{Resolution, Resolver, TypeResolution, WorkspaceDefMap};
 use nova_syntax::ast::{self, support, AstNode};
 use nova_syntax::{JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
 use thiserror::Error;
@@ -45,6 +48,7 @@ struct FileAnalysis {
 
 #[derive(Debug)]
 struct WorkspaceAnalysis {
+    db: InMemoryHirDb,
     files: BTreeMap<FileId, FileAnalysis>,
     reverse_file_ids: HashMap<nova_core::FileId, FileId>,
     workspace_def_map: WorkspaceDefMap,
@@ -118,6 +122,7 @@ pub fn rename_type(
         edits.extend(collect_method_call_reference_edits(
             &resolver,
             file,
+            &analysis.db,
             target,
             &params.new_name,
         ));
@@ -182,6 +187,7 @@ impl WorkspaceAnalysis {
         }
 
         Ok(Self {
+            db,
             files: analyses,
             reverse_file_ids,
             workspace_def_map,
@@ -233,6 +239,7 @@ impl WorkspaceAnalysis {
             .ancestors()
             .find_map(ast::Name::cast)
             .map(|name| name.syntax().clone());
+        let mut from_name_expression = false;
 
         // Many type positions are represented by `ast::Type` nodes whose identifier tokens are
         // direct children rather than an explicit `ast::Name`. Handle that shape so rename can be
@@ -263,6 +270,7 @@ impl WorkspaceAnalysis {
                 if segs.len() > 1 {
                     segments = Some(segs);
                     scope_node = Some(expr.syntax().clone());
+                    from_name_expression = true;
                 }
             }
         }
@@ -330,6 +338,39 @@ impl WorkspaceAnalysis {
             .with_classpath(&self.workspace_def_map)
             .with_workspace(&self.workspace_def_map);
 
+        // If the qualified name appears in an expression context (e.g. `Foo.bar()`), prefer value
+        // namespace resolution. This avoids treating local variables/fields as type names when
+        // they share the same identifier as a type.
+        if from_name_expression {
+            if let Some(first) = segments.first() {
+                let name = Name::new(first.text.as_str());
+                let mut body_scopes_cache: HashMap<DefWithBodyId, BodyScopeCacheEntry> =
+                    HashMap::new();
+                if resolves_to_local_or_param(
+                    &self.db,
+                    analysis,
+                    &mut body_scopes_cache,
+                    &scope_node,
+                    offset,
+                    &name,
+                ) {
+                    return Err(RenameTypeError::NoTypeAtOffset {
+                        file: file.clone(),
+                        offset,
+                    });
+                }
+                match resolver.resolve_name(&analysis.scopes.scopes, scope, &name) {
+                    Some(Resolution::Type(_) | Resolution::Package(_)) | None => {}
+                    Some(_) => {
+                        return Err(RenameTypeError::NoTypeAtOffset {
+                            file: file.clone(),
+                            offset,
+                        });
+                    }
+                }
+            }
+        }
+
         let resolved = resolver.resolve_qualified_type_resolution_in_scope(
             &analysis.scopes.scopes,
             scope,
@@ -345,6 +386,7 @@ impl WorkspaceAnalysis {
     }
 }
 
+#[derive(Debug)]
 struct InMemoryHirDb {
     texts: HashMap<nova_core::FileId, Arc<str>>,
 }
@@ -436,14 +478,382 @@ fn collect_name_reference_edits(
     edits
 }
 
+#[derive(Debug)]
+struct BodyScopeCacheEntry {
+    body: Arc<hir::Body>,
+    scopes: ExprScopes,
+}
+
+fn def_with_body_for_node(
+    ast_id_map: &AstIdMap,
+    node: &SyntaxNode,
+    file: nova_core::FileId,
+) -> Option<DefWithBodyId> {
+    for ancestor in node.ancestors() {
+        match ancestor.kind() {
+            SyntaxKind::MethodDeclaration => {
+                let ast_id = ast_id_map.ast_id(&ancestor)?;
+                return Some(DefWithBodyId::Method(MethodId::new(file, ast_id)));
+            }
+            SyntaxKind::ConstructorDeclaration | SyntaxKind::CompactConstructorDeclaration => {
+                let ast_id = ast_id_map.ast_id(&ancestor)?;
+                return Some(DefWithBodyId::Constructor(ConstructorId::new(file, ast_id)));
+            }
+            SyntaxKind::InitializerBlock => {
+                let ast_id = ast_id_map.ast_id(&ancestor)?;
+                return Some(DefWithBodyId::Initializer(InitializerId::new(file, ast_id)));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn build_body_scope_cache_entry(
+    db: &dyn HirDatabase,
+    file: &FileAnalysis,
+    owner: DefWithBodyId,
+) -> BodyScopeCacheEntry {
+    match owner {
+        DefWithBodyId::Method(method) => {
+            let body = db.hir_body(method);
+            let data = file.item_tree.method(method);
+            let params: Vec<ParamId> = (0..data.params.len())
+                .map(|idx| ParamId::new(owner, idx as u32))
+                .collect();
+            let scopes = ExprScopes::new(&body, &params, |param| {
+                let idx = param.index as usize;
+                Name::from(data.params[idx].name.as_str())
+            });
+            BodyScopeCacheEntry { body, scopes }
+        }
+        DefWithBodyId::Constructor(constructor) => {
+            let body = db.hir_constructor_body(constructor);
+            let data = file.item_tree.constructor(constructor);
+            let params: Vec<ParamId> = (0..data.params.len())
+                .map(|idx| ParamId::new(owner, idx as u32))
+                .collect();
+            let scopes = ExprScopes::new(&body, &params, |param| {
+                let idx = param.index as usize;
+                Name::from(data.params[idx].name.as_str())
+            });
+            BodyScopeCacheEntry { body, scopes }
+        }
+        DefWithBodyId::Initializer(initializer) => {
+            let body = db.hir_initializer_body(initializer);
+            let scopes = ExprScopes::new(&body, &[], |_| Name::new(""));
+            BodyScopeCacheEntry { body, scopes }
+        }
+    }
+}
+
+fn expr_scope_for_offset(
+    body: &hir::Body,
+    scopes: &ExprScopes,
+    offset: usize,
+) -> Option<ExprScopeId> {
+    fn contains(range: nova_types::Span, offset: usize) -> bool {
+        range.start <= offset && offset < range.end
+    }
+
+    fn visit_expr(
+        body: &hir::Body,
+        expr_id: hir::ExprId,
+        offset: usize,
+        best_expr: &mut Option<(usize, hir::ExprId)>,
+        best_stmt: &mut Option<(usize, hir::StmtId)>,
+    ) {
+        use hir::Expr;
+
+        let expr = &body.exprs[expr_id];
+        let range = match expr {
+            Expr::Name { range, .. }
+            | Expr::Literal { range, .. }
+            | Expr::Null { range }
+            | Expr::This { range }
+            | Expr::Super { range }
+            | Expr::FieldAccess { range, .. }
+            | Expr::ArrayAccess { range, .. }
+            | Expr::MethodReference { range, .. }
+            | Expr::ConstructorReference { range, .. }
+            | Expr::ClassLiteral { range, .. }
+            | Expr::Cast { range, .. }
+            | Expr::Call { range, .. }
+            | Expr::New { range, .. }
+            | Expr::ArrayCreation { range, .. }
+            | Expr::Unary { range, .. }
+            | Expr::Binary { range, .. }
+            | Expr::Instanceof { range, .. }
+            | Expr::Assign { range, .. }
+            | Expr::Conditional { range, .. }
+            | Expr::Lambda { range, .. }
+            | Expr::Invalid { range, .. }
+            | Expr::Missing { range } => *range,
+        };
+
+        if !contains(range, offset) {
+            return;
+        }
+
+        let len = range.len();
+        if best_expr
+            .map(|(best_len, _)| len < best_len)
+            .unwrap_or(true)
+        {
+            *best_expr = Some((len, expr_id));
+        }
+
+        match expr {
+            Expr::FieldAccess { receiver, .. } => {
+                visit_expr(body, *receiver, offset, best_expr, best_stmt)
+            }
+            Expr::ArrayAccess { array, index, .. } => {
+                visit_expr(body, *array, offset, best_expr, best_stmt);
+                visit_expr(body, *index, offset, best_expr, best_stmt);
+            }
+            Expr::MethodReference { receiver, .. }
+            | Expr::ConstructorReference { receiver, .. } => {
+                visit_expr(body, *receiver, offset, best_expr, best_stmt);
+            }
+            Expr::ClassLiteral { ty, .. } => visit_expr(body, *ty, offset, best_expr, best_stmt),
+            Expr::Cast { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Expr::Call { callee, args, .. } => {
+                visit_expr(body, *callee, offset, best_expr, best_stmt);
+                for arg in args {
+                    visit_expr(body, *arg, offset, best_expr, best_stmt);
+                }
+            }
+            Expr::New { args, .. } => {
+                for arg in args {
+                    visit_expr(body, *arg, offset, best_expr, best_stmt);
+                }
+            }
+            Expr::ArrayCreation { dim_exprs, .. } => {
+                for dim in dim_exprs {
+                    visit_expr(body, *dim, offset, best_expr, best_stmt);
+                }
+            }
+            Expr::Unary { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Expr::Binary { lhs, rhs, .. } => {
+                visit_expr(body, *lhs, offset, best_expr, best_stmt);
+                visit_expr(body, *rhs, offset, best_expr, best_stmt);
+            }
+            Expr::Instanceof { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Expr::Assign { lhs, rhs, .. } => {
+                visit_expr(body, *lhs, offset, best_expr, best_stmt);
+                visit_expr(body, *rhs, offset, best_expr, best_stmt);
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                visit_expr(body, *condition, offset, best_expr, best_stmt);
+                visit_expr(body, *then_expr, offset, best_expr, best_stmt);
+                visit_expr(body, *else_expr, offset, best_expr, best_stmt);
+            }
+            Expr::Lambda {
+                body: lambda_body, ..
+            } => match lambda_body {
+                hir::LambdaBody::Expr(expr) => {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt)
+                }
+                hir::LambdaBody::Block(stmt) => {
+                    visit_stmt(body, *stmt, offset, best_expr, best_stmt)
+                }
+            },
+            Expr::Invalid { children, .. } => {
+                for child in children {
+                    visit_expr(body, *child, offset, best_expr, best_stmt);
+                }
+            }
+            Expr::Name { .. }
+            | Expr::Literal { .. }
+            | Expr::Null { .. }
+            | Expr::This { .. }
+            | Expr::Super { .. }
+            | Expr::Missing { .. } => {}
+        }
+    }
+
+    fn visit_stmt(
+        body: &hir::Body,
+        stmt_id: hir::StmtId,
+        offset: usize,
+        best_expr: &mut Option<(usize, hir::ExprId)>,
+        best_stmt: &mut Option<(usize, hir::StmtId)>,
+    ) {
+        use hir::Stmt;
+
+        let stmt = &body.stmts[stmt_id];
+        let range = match stmt {
+            Stmt::Block { range, .. }
+            | Stmt::Let { range, .. }
+            | Stmt::Expr { range, .. }
+            | Stmt::Return { range, .. }
+            | Stmt::If { range, .. }
+            | Stmt::While { range, .. }
+            | Stmt::For { range, .. }
+            | Stmt::ForEach { range, .. }
+            | Stmt::Synchronized { range, .. }
+            | Stmt::Switch { range, .. }
+            | Stmt::Try { range, .. }
+            | Stmt::Throw { range, .. }
+            | Stmt::Break { range }
+            | Stmt::Continue { range }
+            | Stmt::Empty { range } => *range,
+        };
+
+        if !contains(range, offset) {
+            return;
+        }
+
+        let len = range.len();
+        if best_stmt
+            .map(|(best_len, _)| len < best_len)
+            .unwrap_or(true)
+        {
+            *best_stmt = Some((len, stmt_id));
+        }
+
+        match stmt {
+            Stmt::Block { statements, .. } => {
+                for stmt in statements {
+                    visit_stmt(body, *stmt, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::Let { initializer, .. } => {
+                if let Some(expr) = initializer {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::Expr { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Stmt::Return { expr, .. } => {
+                if let Some(expr) = expr {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                visit_expr(body, *condition, offset, best_expr, best_stmt);
+                visit_stmt(body, *then_branch, offset, best_expr, best_stmt);
+                if let Some(stmt) = else_branch {
+                    visit_stmt(body, *stmt, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::While {
+                condition, body: b, ..
+            } => {
+                visit_expr(body, *condition, offset, best_expr, best_stmt);
+                visit_stmt(body, *b, offset, best_expr, best_stmt);
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body: b,
+                ..
+            } => {
+                for stmt in init {
+                    visit_stmt(body, *stmt, offset, best_expr, best_stmt);
+                }
+                if let Some(expr) = condition {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+                for expr in update {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+                visit_stmt(body, *b, offset, best_expr, best_stmt);
+            }
+            Stmt::ForEach {
+                iterable, body: b, ..
+            } => {
+                visit_expr(body, *iterable, offset, best_expr, best_stmt);
+                visit_stmt(body, *b, offset, best_expr, best_stmt);
+            }
+            Stmt::Synchronized {
+                expr,
+                body: sync_body,
+                ..
+            } => {
+                visit_expr(body, *expr, offset, best_expr, best_stmt);
+                visit_stmt(body, *sync_body, offset, best_expr, best_stmt);
+            }
+            Stmt::Switch {
+                selector, body: b, ..
+            } => {
+                visit_expr(body, *selector, offset, best_expr, best_stmt);
+                visit_stmt(body, *b, offset, best_expr, best_stmt);
+            }
+            Stmt::Try {
+                body: try_body,
+                catches,
+                finally,
+                ..
+            } => {
+                visit_stmt(body, *try_body, offset, best_expr, best_stmt);
+                for catch in catches {
+                    visit_stmt(body, catch.body, offset, best_expr, best_stmt);
+                }
+                if let Some(stmt) = finally {
+                    visit_stmt(body, *stmt, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::Throw { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Empty { .. } => {}
+        }
+    }
+
+    let mut best_expr: Option<(usize, hir::ExprId)> = None;
+    let mut best_stmt: Option<(usize, hir::StmtId)> = None;
+    visit_stmt(body, body.root, offset, &mut best_expr, &mut best_stmt);
+
+    if let Some((_, expr_id)) = best_expr {
+        scopes.scope_for_expr(expr_id)
+    } else if let Some((_, stmt_id)) = best_stmt {
+        scopes.scope_for_stmt(stmt_id)
+    } else {
+        None
+    }
+}
+
+fn resolves_to_local_or_param(
+    db: &dyn HirDatabase,
+    file: &FileAnalysis,
+    cache: &mut HashMap<DefWithBodyId, BodyScopeCacheEntry>,
+    context_node: &SyntaxNode,
+    offset: usize,
+    name: &Name,
+) -> bool {
+    let Some(owner) = def_with_body_for_node(&file.ast_id_map, context_node, file.db_file) else {
+        return false;
+    };
+
+    let entry = cache
+        .entry(owner)
+        .or_insert_with(|| build_body_scope_cache_entry(db, file, owner));
+    let Some(scope) = expr_scope_for_offset(&entry.body, &entry.scopes, offset) else {
+        return false;
+    };
+
+    entry.scopes.resolve_name(scope, name).is_some()
+}
+
 fn collect_method_call_reference_edits(
     resolver: &Resolver<'_>,
     file: &FileAnalysis,
+    db: &dyn HirDatabase,
     target: ItemId,
     new_name: &str,
 ) -> Vec<TextEdit> {
     let mut edits = Vec::new();
     let root = file.parse.syntax();
+    let mut body_scopes_cache: HashMap<DefWithBodyId, BodyScopeCacheEntry> = HashMap::new();
 
     for call in root
         .descendants()
@@ -465,6 +875,27 @@ fn collect_method_call_reference_edits(
                     continue;
                 }
                 let qualifier = &segments[..segments.len() - 1];
+                let Some(first) = qualifier.first() else {
+                    continue;
+                };
+                let name = Name::new(first.text.as_str());
+                if resolves_to_local_or_param(
+                    db,
+                    file,
+                    &mut body_scopes_cache,
+                    call.syntax(),
+                    first.range.start,
+                    &name,
+                ) {
+                    continue;
+                }
+                match resolver.resolve_name(&file.scopes.scopes, scope, &name) {
+                    Some(Resolution::Type(_) | Resolution::Package(_)) | None => {}
+                    Some(_) => continue,
+                }
+                if qualifier.is_empty() {
+                    continue;
+                }
                 record_qualified_type_prefix_matches(
                     resolver,
                     &file.scopes.scopes,
@@ -486,6 +917,27 @@ fn collect_method_call_reference_edits(
                     continue;
                 };
                 let segments = segments_from_syntax(name_expr.syntax());
+                if segments.is_empty() {
+                    continue;
+                }
+                let Some(first) = segments.first() else {
+                    continue;
+                };
+                let name = Name::new(first.text.as_str());
+                if resolves_to_local_or_param(
+                    db,
+                    file,
+                    &mut body_scopes_cache,
+                    call.syntax(),
+                    first.range.start,
+                    &name,
+                ) {
+                    continue;
+                }
+                match resolver.resolve_name(&file.scopes.scopes, scope, &name) {
+                    Some(Resolution::Type(_) | Resolution::Package(_)) | None => {}
+                    Some(_) => continue,
+                }
                 if segments.is_empty() {
                     continue;
                 }
