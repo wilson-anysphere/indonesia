@@ -562,6 +562,21 @@ fn ast_formatting_is_idempotent_on_unterminated_block_comment() {
 }
 
 #[test]
+fn ast_formatting_is_idempotent_on_unterminated_string_literal() {
+    assert_ast_idempotent("class Foo{void m(){System.out.println(\"unterminated\n");
+}
+
+#[test]
+fn ast_formatting_is_idempotent_on_unterminated_char_literal() {
+    assert_ast_idempotent("class Foo{void m(){char c='x\n");
+}
+
+#[test]
+fn ast_formatting_is_idempotent_on_unterminated_text_block() {
+    assert_ast_idempotent("class Foo{String s=\"\"\"\nhello\n");
+}
+
+#[test]
 fn ast_formatting_is_idempotent() {
     assert_ast_idempotent(
         r#"
