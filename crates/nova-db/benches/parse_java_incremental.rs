@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use nova_core::{TextEdit as CoreTextEdit, TextRange as CoreTextRange, TextSize};
 use nova_db::{FileId, NovaSyntax as _, SalsaDatabase};
 use nova_core::{TextEdit, TextRange, TextSize};
 
@@ -52,6 +53,13 @@ fn bench_parse_java_incremental(c: &mut Criterion) {
     let edit_to_0 = TextEdit::new(range, "0");
     let src1 = apply_edit(&src0, &edit_to_1);
 
+    let core_range = CoreTextRange::new(
+        TextSize::from(range.start),
+        TextSize::from(range.end),
+    );
+    let core_edit_to_1 = CoreTextEdit::new(core_range, "1");
+    let core_edit_to_0 = CoreTextEdit::new(core_range, "0");
+
     let mut group = c.benchmark_group("db_parse_java_incremental");
     group.measurement_time(Duration::from_secs(2));
     group.warm_up_time(Duration::from_secs(1));
@@ -93,7 +101,12 @@ fn bench_parse_java_incremental(c: &mut Criterion) {
         let mut toggle = false;
         b.iter(|| {
             toggle = !toggle;
-            db.apply_file_text_edit(file, if toggle { edit_to_1.clone() } else { edit_to_0.clone() });
+            let edit = if toggle {
+                core_edit_to_1.clone()
+            } else {
+                core_edit_to_0.clone()
+            };
+            db.apply_file_text_edit(file, edit);
             let snap = db.snapshot();
             black_box(snap.parse_java(file));
         })

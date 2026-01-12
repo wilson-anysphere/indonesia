@@ -11,7 +11,7 @@ use crossbeam_channel as channel;
 use lsp_types::Position;
 use nova_cache::{normalize_rel_path, Fingerprint};
 use nova_config::EffectiveConfig;
-use nova_core::TextEdit;
+use nova_core::{TextEdit, TextRange, TextSize};
 use nova_db::persistence::PersistenceConfig;
 use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId};
 use nova_ide::{DebugConfiguration, Project};
@@ -558,7 +558,9 @@ impl WorkspaceEngine {
         }
 
         let subscribers = Arc::clone(&self.subscribers);
-        let watcher_thread = thread::spawn(move || {
+        let watcher_thread = thread::Builder::new()
+            .name("workspace-watcher".to_string())
+            .spawn(move || {
             let mut debouncer = Debouncer::new([
                 (ChangeCategory::Source, Duration::from_millis(200)),
                 (ChangeCategory::Build, Duration::from_millis(200)),
@@ -745,10 +747,13 @@ impl WorkspaceEngine {
                     }
                 }
             }
-        });
+        })
+            .context("failed to spawn workspace watcher thread")?;
 
         let (driver_stop_tx, driver_stop_rx) = channel::bounded::<()>(0);
-        let driver_thread = thread::spawn(move || loop {
+        let driver_thread = thread::Builder::new()
+            .name("workspace-watcher-driver".to_string())
+            .spawn(move || loop {
             channel::select! {
                 recv(driver_stop_rx) -> _ => break,
                 recv(batch_rx) -> msg => {
@@ -803,7 +808,8 @@ impl WorkspaceEngine {
                     }
                 }
             }
-        });
+        })
+            .context("failed to spawn workspace watcher driver thread")?;
 
         Ok(WatcherHandle {
             watcher_stop: watcher_stop_tx,
@@ -1099,6 +1105,7 @@ impl WorkspaceEngine {
         new_version: i32,
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
+        let old_text = self.vfs.read_to_string(path).ok();
         let evt = match self
             .vfs
             .apply_document_changes(path, new_version, changes)
@@ -1119,9 +1126,28 @@ impl WorkspaceEngine {
         };
 
         if let Ok(text) = self.vfs.read_to_string(path) {
+            let text_for_db = Arc::new(text);
             self.ensure_file_inputs(file_id, path);
             self.query_db.set_file_exists(file_id, true);
-            self.query_db.set_file_content(file_id, Arc::new(text));
+            match edits.as_slice() {
+                [edit] => {
+                    self.query_db.apply_file_text_edit(file_id, edit.clone());
+                }
+                [] => {
+                    // No-op change batch (shouldn't happen). Treat as a full update.
+                    self.query_db.set_file_content(file_id, text_for_db);
+                }
+                _ => {
+                    let synthetic = old_text
+                        .as_deref()
+                        .and_then(|old| synthetic_single_edit(old, text_for_db.as_str()));
+                    if let Some(edit) = synthetic {
+                        self.query_db.apply_file_text_edit(file_id, edit);
+                    } else {
+                        self.query_db.set_file_content(file_id, text_for_db);
+                    }
+                }
+            }
             self.query_db.set_file_is_dirty(file_id, true);
         }
 
@@ -1667,6 +1693,64 @@ fn offset_to_lsp_position(text: &str, offset: usize) -> Position {
         line,
         character: col_utf16,
     }
+}
+
+fn synthetic_single_edit(old: &str, new: &str) -> Option<TextEdit> {
+    let old_len = old.len();
+    let new_len = new.len();
+    let old_bytes = old.as_bytes();
+    let new_bytes = new.as_bytes();
+
+    // Find the longest common prefix.
+    let mut prefix = 0usize;
+    let max_prefix = old_len.min(new_len);
+    while prefix < max_prefix && old_bytes[prefix] == new_bytes[prefix] {
+        prefix += 1;
+    }
+
+    // Find the longest common suffix without overlapping the prefix.
+    let mut suffix = 0usize;
+    while suffix < old_len.saturating_sub(prefix) && suffix < new_len.saturating_sub(prefix) {
+        if old_bytes[old_len - 1 - suffix] != new_bytes[new_len - 1 - suffix] {
+            break;
+        }
+        suffix += 1;
+    }
+
+    // Ensure the prefix boundary is a UTF-8 character boundary by walking it backwards. This
+    // ensures we never split a multi-byte character (in case the mismatch occurs mid-codepoint).
+    while prefix > 0 && (!old.is_char_boundary(prefix) || !new.is_char_boundary(prefix)) {
+        prefix -= 1;
+    }
+
+    // Ensure the suffix boundary is a UTF-8 character boundary by shrinking it (walking it
+    // forwards). This keeps the suffix bytes a strict subset of the original common suffix.
+    while suffix > 0 {
+        let old_start = old_len - suffix;
+        let new_start = new_len - suffix;
+        if old.is_char_boundary(old_start) && new.is_char_boundary(new_start) {
+            break;
+        }
+        suffix -= 1;
+    }
+
+    let old_end = old_len.saturating_sub(suffix);
+    let new_end = new_len.saturating_sub(suffix);
+
+    if prefix > old_end || prefix > new_end {
+        return None;
+    }
+    if !old.is_char_boundary(old_end) || !new.is_char_boundary(new_end) {
+        return None;
+    }
+
+    let start = u32::try_from(prefix).ok()?;
+    let end = u32::try_from(old_end).ok()?;
+
+    Some(TextEdit::new(
+        TextRange::new(TextSize::from(start), TextSize::from(end)),
+        new[prefix..new_end].to_string(),
+    ))
 }
 
 fn publish_to_subscribers(
