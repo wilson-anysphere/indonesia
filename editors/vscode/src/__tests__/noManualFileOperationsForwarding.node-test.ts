@@ -135,6 +135,43 @@ function resolveNotificationMethod(
     return asString;
   }
 
+  // Handle direct uses of the Did*FilesNotification constants, e.g.
+  //   client.sendNotification(DidRenameFilesNotification as any, ...)
+  if (ts.isIdentifier(expr)) {
+    const importedName = imports.get(expr.text) ?? expr.text;
+    if (importedName in FILE_OPERATION_NOTIFICATION_TYPES) {
+      return FILE_OPERATION_NOTIFICATION_TYPES[importedName];
+    }
+  }
+
+  // Handle ad-hoc NotificationType-like objects, e.g.
+  //   client.sendNotification({ method: 'workspace/didRenameFiles', ... } as any, ...)
+  if (ts.isObjectLiteralExpression(expr)) {
+    for (const entry of expr.properties) {
+      if (!ts.isPropertyAssignment(entry)) {
+        continue;
+      }
+
+      let key: string | undefined;
+      if (ts.isIdentifier(entry.name)) {
+        key = entry.name.text;
+      } else if (ts.isStringLiteral(entry.name) || ts.isNoSubstitutionTemplateLiteral(entry.name)) {
+        key = entry.name.text;
+      } else if (ts.isComputedPropertyName(entry.name)) {
+        key = evalConstString(entry.name.expression, env);
+      }
+
+      if (key !== 'method') {
+        continue;
+      }
+
+      const method = evalConstString(entry.initializer, env);
+      if (typeof method === 'string') {
+        return method;
+      }
+    }
+  }
+
   // Handle bracket access on protocol constants, e.g.
   //   DidRenameFilesNotification['method']
   //   DidRenameFilesNotification['type']
@@ -196,6 +233,53 @@ function unwrapExpression(expr: ts.Expression): ts.Expression {
     return unwrapExpression(expr.expression);
   }
   return expr;
+}
+
+function buildFileOperationNotificationConstantAliases(
+  statements: readonly ts.Statement[],
+  imports: Map<string, string>,
+): Map<string, string> {
+  const declarations: Array<{ name: string; initializer: ts.Expression }> = [];
+
+  for (const statement of statements) {
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    const declList = statement.declarationList;
+    if ((declList.flags & ts.NodeFlags.Const) === 0) {
+      continue;
+    }
+    for (const decl of declList.declarations) {
+      if (!ts.isIdentifier(decl.name) || !decl.initializer) {
+        continue;
+      }
+      declarations.push({ name: decl.name.text, initializer: decl.initializer });
+    }
+  }
+
+  const aliasMap = new Map<string, string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const decl of declarations) {
+      if (aliasMap.has(decl.name)) {
+        continue;
+      }
+
+      const init = unwrapExpression(decl.initializer);
+      if (!ts.isIdentifier(init)) {
+        continue;
+      }
+
+      const localName = init.text;
+      const importedName = aliasMap.get(localName) ?? imports.get(localName) ?? localName;
+      if (importedName in FILE_OPERATION_NOTIFICATION_TYPES) {
+        aliasMap.set(decl.name, importedName);
+        changed = true;
+      }
+    }
+  }
+  return aliasMap;
 }
 
 function isSendNotificationReference(expr: ts.Expression, env: Map<string, string>, aliases: Set<string>): boolean {
@@ -456,8 +540,15 @@ test('extension does not manually forward workspace file operations (vscode-lang
     const raw = await fs.readFile(filePath, 'utf8');
     const sourceFile = ts.createSourceFile(filePath, raw, ts.ScriptTarget.ESNext, true);
     const importAliases = buildImportAliasMap(sourceFile);
+    const fileOpConstantAliases = buildFileOperationNotificationConstantAliases(sourceFile.statements, importAliases);
+    const allAliases = new Map(importAliases);
+    for (const [local, imported] of fileOpConstantAliases) {
+      if (!allAliases.has(local)) {
+        allAliases.set(local, imported);
+      }
+    }
     const fileEnv = new Map<string, string>(
-      buildConstStringEnvFromVariableStatements(sourceFile.statements, importAliases, new Map<string, string>()),
+      buildConstStringEnvFromVariableStatements(sourceFile.statements, allAliases, new Map<string, string>()),
     );
     const fileAliases = new Set<string>(
       buildSendNotificationAliasesFromVariableStatements(sourceFile.statements, fileEnv, new Set<string>()),
@@ -467,7 +558,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
       if (ts.isCallExpression(node)) {
         const methodExpr = getSendNotificationMethodArg(node, env, aliases);
         if (methodExpr) {
-          const method = resolveNotificationMethod(methodExpr, env, importAliases);
+          const method = resolveNotificationMethod(methodExpr, env, allAliases);
           if (method && bannedNotificationMethods.has(method)) {
             const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
             violations.add(
@@ -480,7 +571,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
       let nextEnv = env;
       let nextAliases = aliases;
       if (ts.isBlock(node)) {
-        const blockEnv = buildConstStringEnvFromVariableStatements(node.statements, importAliases, env);
+        const blockEnv = buildConstStringEnvFromVariableStatements(node.statements, allAliases, env);
         const combinedEnv = blockEnv.size > 0 ? new Map<string, string>([...env, ...blockEnv]) : env;
         nextEnv = combinedEnv;
 
@@ -524,7 +615,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
 
       const handlerStatements = ts.isBlock(handlerArg.body) ? handlerArg.body.statements : undefined;
       const handlerEnv = handlerStatements
-        ? buildConstStringEnvFromVariableStatements(handlerStatements, importAliases, fileEnv)
+        ? buildConstStringEnvFromVariableStatements(handlerStatements, allAliases, fileEnv)
         : new Map<string, string>();
       const env = new Map<string, string>([...fileEnv, ...handlerEnv]);
 
@@ -532,7 +623,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
         if (ts.isCallExpression(handlerNode) && getCalledMethodName(handlerNode.expression, env) === 'sendNotification') {
           const arg0 = handlerNode.arguments[0];
           if (arg0) {
-            const resolved = resolveNotificationMethod(arg0, env, importAliases);
+            const resolved = resolveNotificationMethod(arg0, env, allAliases);
             if (resolved === listener.notificationMethod) {
               const loc = sourceFile.getLineAndCharacterOfPosition(handlerNode.getStart(sourceFile));
               violations.add(
