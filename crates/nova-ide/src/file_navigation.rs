@@ -1,16 +1,160 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use lsp_types::{Location, Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_index::{InheritanceEdge, InheritanceIndex};
+use once_cell::sync::Lazy;
 
+use crate::framework_cache;
 use crate::lombok_intel;
 use crate::nav_core;
 use crate::parse::{parse_file, ParsedFile, TypeDef};
 use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
+
+const MAX_CACHED_ROOTS: usize = 8;
+
+/// Sentinel root used when the database cannot map a `FileId` to a path (e.g. virtual buffers
+/// and in-memory fixtures).
+///
+/// This is intentionally stable so identical in-memory setups can reuse the cache within a single
+/// process run.
+const IN_MEMORY_ROOT: &str = "<in-memory>";
+
+#[derive(Debug)]
+struct CacheEntry<V> {
+    fingerprint: u64,
+    value: Arc<V>,
+}
+
+impl<V> Clone for CacheEntry<V> {
+    fn clone(&self) -> Self {
+        Self {
+            fingerprint: self.fingerprint,
+            value: Arc::clone(&self.value),
+        }
+    }
+}
+
+/// Tiny LRU cache used by workspace-scoped indexes.
+///
+/// This is a copy of the minimal implementation used by `spring_di.rs` so file navigation
+/// can keep its own (smaller) cache budget.
+#[derive(Debug)]
+struct LruCache<K, V> {
+    capacity: usize,
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let value = self.map.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&key);
+        }
+    }
+}
+
+/// Workspace-scoped cache for the best-effort cross-file navigation index.
+///
+/// The cache is keyed by a best-effort project root path and invalidated whenever the workspace
+/// fingerprint changes (cheap signal: `(path, len, ptr)` for Java files under the root).
+#[derive(Debug)]
+struct FileNavigationWorkspaceCache {
+    entries: Mutex<LruCache<PathBuf, CacheEntry<FileNavigationIndex>>>,
+}
+
+impl Default for FileNavigationWorkspaceCache {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
+        }
+    }
+}
+
+impl FileNavigationWorkspaceCache {
+    fn get_or_update_with<F>(
+        &self,
+        root: PathBuf,
+        fingerprint: u64,
+        build: F,
+    ) -> Arc<FileNavigationIndex>
+    where
+        F: FnOnce() -> FileNavigationIndex,
+    {
+        {
+            let mut entries = self
+                .entries
+                .lock()
+                .expect("file navigation cache lock poisoned");
+            if let Some(entry) = entries.get_cloned(&root) {
+                if entry.fingerprint == fingerprint {
+                    return entry.value;
+                }
+            }
+        }
+
+        let value = Arc::new(build());
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("file navigation cache lock poisoned");
+        match entries.get_cloned(&root) {
+            Some(entry) if entry.fingerprint == fingerprint => entry.value,
+            _ => {
+                entries.insert(
+                    root,
+                    CacheEntry {
+                        fingerprint,
+                        value: Arc::clone(&value),
+                    },
+                );
+                value
+            }
+        }
+    }
+}
+
+static FILE_NAVIGATION_INDEX_CACHE: Lazy<FileNavigationWorkspaceCache> =
+    Lazy::new(FileNavigationWorkspaceCache::default);
 
 #[derive(Clone, Debug)]
 struct TypeInfo {
@@ -38,10 +182,15 @@ struct FileNavigationIndex {
 }
 
 impl FileNavigationIndex {
+    #[allow(dead_code)]
     fn new(db: &dyn Database) -> Self {
-        let mut files = HashMap::new();
-        let mut file_ids = db.all_file_ids();
+        Self::new_for_file_ids(db, db.all_file_ids())
+    }
+
+    fn new_for_file_ids(db: &dyn Database, mut file_ids: Vec<FileId>) -> Self {
         file_ids.sort_by_key(|id| id.to_raw());
+
+        let mut files = HashMap::new();
 
         let mut uri_to_file_id = HashMap::new();
         for file_id in &file_ids {
@@ -113,10 +262,107 @@ impl FileNavigationIndex {
     }
 }
 
+#[derive(Debug, Clone)]
+struct WorkspaceJavaFile {
+    path: Option<PathBuf>,
+    file_id: FileId,
+}
+
+fn cached_file_navigation_index(db: &dyn Database, file: FileId) -> Arc<FileNavigationIndex> {
+    let root = file_navigation_root_key(db, file);
+    let workspace_files = workspace_java_files(db, &root);
+    let fingerprint = workspace_fingerprint(db, &workspace_files);
+    let file_ids: Vec<FileId> = workspace_files.into_iter().map(|f| f.file_id).collect();
+
+    FILE_NAVIGATION_INDEX_CACHE.get_or_update_with(root, fingerprint, || {
+        FileNavigationIndex::new_for_file_ids(db, file_ids)
+    })
+}
+
+fn file_navigation_root_key(db: &dyn Database, file: FileId) -> PathBuf {
+    match db.file_path(file) {
+        Some(path) => framework_cache::project_root_for_path(path),
+        None => PathBuf::from(IN_MEMORY_ROOT),
+    }
+}
+
+fn workspace_java_files(db: &dyn Database, root: &Path) -> Vec<WorkspaceJavaFile> {
+    use std::cmp::Ordering;
+
+    let mut under_root = Vec::new();
+    let mut all_java = Vec::new();
+    let in_memory = root == Path::new(IN_MEMORY_ROOT);
+
+    for file_id in db.all_file_ids() {
+        match db.file_path(file_id) {
+            Some(path) => {
+                if path.extension().and_then(|e| e.to_str()) != Some("java") {
+                    continue;
+                }
+
+                let entry = WorkspaceJavaFile {
+                    path: Some(path.to_path_buf()),
+                    file_id,
+                };
+
+                if in_memory || path.starts_with(root) {
+                    under_root.push(entry);
+                } else {
+                    all_java.push(entry);
+                }
+            }
+            None => {
+                if in_memory {
+                    under_root.push(WorkspaceJavaFile {
+                        path: None,
+                        file_id,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut files = if in_memory || !under_root.is_empty() {
+        under_root
+    } else {
+        all_java
+    };
+
+    // Deterministic ordering: stable paths first, then virtual buffers (by FileId).
+    files.sort_by(|a, b| match (&a.path, &b.path) {
+        (Some(a_path), Some(b_path)) => a_path
+            .cmp(b_path)
+            .then(a.file_id.to_raw().cmp(&b.file_id.to_raw())),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.file_id.to_raw().cmp(&b.file_id.to_raw()),
+    });
+
+    files
+}
+
+fn workspace_fingerprint(db: &dyn Database, files: &[WorkspaceJavaFile]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for file in files {
+        match &file.path {
+            Some(path) => path.hash(&mut hasher),
+            None => file.file_id.to_raw().hash(&mut hasher),
+        }
+
+        // Avoid hashing full file contents on every request: we only need a cheap signal
+        // that the workspace has changed. For `InMemoryFileStore`, edits replace the
+        // underlying `String`, so `(len, ptr)` acts as a proxy for content identity.
+        let text = db.file_content(file.file_id);
+        text.len().hash(&mut hasher);
+        (text.as_ptr() as usize).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Best-effort `textDocument/implementation` for FileId-based databases.
 #[must_use]
 pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Vec<Location> {
-    let index = FileNavigationIndex::new(db);
+    let index = cached_file_navigation_index(db, file);
     let Some(parsed) = index.file(file) else {
         return Vec::new();
     };
@@ -180,7 +426,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
 /// Best-effort `textDocument/declaration` for FileId-based databases.
 #[must_use]
 pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
-    let index = FileNavigationIndex::new(db);
+    let index = cached_file_navigation_index(db, file);
     let parsed = index.file(file)?;
     let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
@@ -211,7 +457,7 @@ pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Optio
 /// Best-effort `textDocument/typeDefinition` for FileId-based databases.
 #[must_use]
 pub fn type_definition(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
-    let index = FileNavigationIndex::new(db);
+    let index = cached_file_navigation_index(db, file);
     let parsed = index.file(file)?;
     let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
@@ -260,4 +506,3 @@ fn uri_for_path(path: &Path) -> Option<Uri> {
     let uri = path_to_file_uri(&abs).ok()?;
     Uri::from_str(&uri).ok()
 }
-

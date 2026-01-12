@@ -321,6 +321,57 @@ class Main {
     assert_eq!(got.range.start, fixture.marker_position(0));
 }
 
+#[test]
+fn navigation_cache_is_invalidated_when_a_java_file_changes() {
+    let mut fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I {
+    void $0foo();
+}
+//- /C.java
+class C implements I {
+    public void $1foo() {}
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+
+    let got_first = implementation(&fixture.db, file, pos);
+    let got_second = implementation(&fixture.db, file, pos);
+    assert_eq!(got_first, got_second);
+    assert_eq!(got_first.len(), 1);
+    assert_eq!(got_first[0].uri, fixture.marker_uri(1));
+    assert_eq!(got_first[0].range.start, fixture.marker_position(1));
+
+    // Change the implementation location (and length) so the cached workspace fingerprint must
+    // differ, forcing a rebuild.
+    let c_file = fixture.marker_file(1);
+    let c_path = fixture.paths.get(&c_file).unwrap().clone();
+    let (new_text, markers) = strip_markers(
+        r#"
+class C implements I {
+    // added comment to change file length
+    public void $2foo() {}
+}
+"#,
+    );
+    let new_offset = markers
+        .iter()
+        .find(|(id, _)| *id == 2)
+        .map(|(_, offset)| *offset)
+        .expect("expected updated marker");
+
+    fixture.db.set_file_text(c_file, new_text.clone());
+
+    let got_third = implementation(&fixture.db, file, pos);
+    assert_eq!(got_third.len(), 1);
+    assert_eq!(got_third[0].uri, uri_for_path(&c_path));
+    assert_eq!(got_third[0].range.start, offset_to_position(&new_text, new_offset));
+}
+
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");
@@ -379,4 +430,3 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 
     (out, markers)
 }
-
