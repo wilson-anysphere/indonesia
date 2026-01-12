@@ -153,6 +153,23 @@ impl Database for InMemoryFileStore {
     }
 }
 
+impl nova_core::ProjectDatabase for InMemoryFileStore {
+    fn project_files(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = Database::all_file_ids(self)
+            .into_iter()
+            .filter_map(|file_id| Database::file_path(self, file_id).map(Path::to_path_buf))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    fn file_text(&self, path: &Path) -> Option<String> {
+        let file_id = Database::file_id(self, path)?;
+        Some(Database::file_content(self, file_id).to_string())
+    }
+}
+
 impl SourceDatabase for InMemoryFileStore {
     fn file_content(&self, file_id: FileId) -> Arc<String> {
         self.files

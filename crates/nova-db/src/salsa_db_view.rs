@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nova_core::ProjectDatabase;
+
 use crate::{Database, FileId, SourceDatabase};
 
 /// A `Send + Sync` view over a Salsa snapshot that implements the legacy
@@ -104,5 +106,19 @@ impl SourceDatabase for SalsaDbView {
 
     fn file_id(&self, path: &Path) -> Option<FileId> {
         self.path_to_file.get(path).copied()
+    }
+}
+
+impl ProjectDatabase for SalsaDbView {
+    fn project_files(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.file_paths.values().cloned().collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    fn file_text(&self, path: &Path) -> Option<String> {
+        let file_id = Database::file_id(self, path)?;
+        Some(Database::file_content(self, file_id).to_string())
     }
 }
