@@ -761,9 +761,11 @@ fn type_of_expr_demand_result(
             checker.infer_expr(&mut loader, target_expr).ty
         } else {
             match expected_ty.as_ref() {
-                Some(expected) => checker
-                    .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
-                    .ty,
+                Some(expected) => {
+                    checker
+                        .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
+                        .ty
+                }
                 None => checker.infer_expr(&mut loader, target_expr).ty,
             }
         }
@@ -7731,9 +7733,21 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
             ..
         } => {
             find_enclosing_call_with_arg_in_expr(body, *condition, target, target_range, best);
-            find_enclosing_call_with_arg_in_stmt_inner(body, *then_branch, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(
+                body,
+                *then_branch,
+                target,
+                target_range,
+                best,
+            );
             if let Some(branch) = else_branch {
-                find_enclosing_call_with_arg_in_stmt_inner(body, *branch, target, target_range, best);
+                find_enclosing_call_with_arg_in_stmt_inner(
+                    body,
+                    *branch,
+                    target,
+                    target_range,
+                    best,
+                );
             }
         }
         HirStmt::While {
@@ -7780,7 +7794,13 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         } => {
             find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
             for catch in catches {
-                find_enclosing_call_with_arg_in_stmt_inner(body, catch.body, target, target_range, best);
+                find_enclosing_call_with_arg_in_stmt_inner(
+                    body,
+                    catch.body,
+                    target,
+                    target_range,
+                    best,
+                );
             }
             if let Some(finally) = finally {
                 find_enclosing_call_with_arg_in_stmt_inner(
@@ -7813,6 +7833,9 @@ fn find_enclosing_call_with_arg_in_expr(
     }
 
     match &body.exprs[expr] {
+        HirExpr::Cast { expr: inner, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *inner, target, target_range, best);
+        }
         HirExpr::FieldAccess { receiver, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *receiver, target, target_range, best);
         }

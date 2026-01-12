@@ -6,15 +6,15 @@ use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaTypeck};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::ids::{FieldId, ItemId, MethodId};
-use nova_hir::item_tree::{Item, Member};
 use nova_hir::item_tree::Modifiers as HirModifiers;
+use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::HirDatabase;
 use nova_resolve::{
     BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
     ScopeKind, StaticMemberResolution, TypeResolution, WorkspaceDefMap,
 };
-use nova_syntax::{ast, AstNode};
 use nova_syntax::java as java_syntax;
+use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition, TypeSymbolInfo};
@@ -1005,11 +1005,13 @@ impl RefactorDatabase for RefactorJavaDatabase {
         })
     }
 
-    fn find_top_level_type_in_package(&self, package: Option<&str>, name: &str) -> Option<SymbolId> {
+    fn find_top_level_type_in_package(
+        &self,
+        package: Option<&str>,
+        name: &str,
+    ) -> Option<SymbolId> {
         let pkg = package.filter(|p| !p.is_empty()).map(|p| p.to_string());
-        self.top_level_types
-            .get(&(pkg, name.to_string()))
-            .copied()
+        self.top_level_types.get(&(pkg, name.to_string())).copied()
     }
 
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
@@ -3986,6 +3988,30 @@ fn record_lightweight_expr(
 ) {
     use java_syntax::ast::Expr;
     match expr {
+        Expr::Cast(cast) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(cast.ty.range.start, cast.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &cast.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::New(new_expr) => {
             record_type_names_in_range(
                 file,
