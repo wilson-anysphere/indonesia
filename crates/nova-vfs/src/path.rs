@@ -664,6 +664,14 @@ mod tests {
         assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn local_unc_paths_match_file_uris() {
+        let local = VfsPath::local(r"\\server\share\a\b\..\c.java");
+        let uri = VfsPath::uri("file://server/share/a/c.java");
+        assert_eq!(local, uri);
+    }
+
     #[test]
     fn jar_uris_reject_entry_traversal() {
         let dir = tempfile::tempdir().unwrap();
@@ -731,6 +739,21 @@ mod tests {
 
         let a = VfsPath::jar(with_dotdot, "/com/example/Foo.class");
         let b = VfsPath::jar(normalized, "/com/example/Foo.class");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn jmod_constructor_normalizes_archive_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("java.base.jmod");
+        let with_dotdot = dir
+            .path()
+            .join("x")
+            .join("..")
+            .join("java.base.jmod");
+
+        let a = VfsPath::jmod(with_dotdot, "classes/java/lang/String.class");
+        let b = VfsPath::jmod(normalized, "classes/java/lang/String.class");
         assert_eq!(a, b);
     }
 
