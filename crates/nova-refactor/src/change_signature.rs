@@ -880,10 +880,48 @@ fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Opt
     let mut search_pos = before.len();
     while let Some(pos) = before[..search_pos].rfind(&needle) {
         let prefix = before[..pos].trim_end();
+        let bytes = prefix.as_bytes();
+
+        // Scan backwards to extract the `<Type>` in `<Type> <var_name>`. Type tokens can include
+        // generics (`Map<String, Integer>`) where whitespace may legitimately appear inside the
+        // angle brackets.
         let mut start = prefix.len();
-        while start > 0 && is_type_token_char(prefix.as_bytes()[start - 1]) {
-            start -= 1;
+        let mut angle_depth: i32 = 0;
+        while start > 0 {
+            let b = bytes[start - 1];
+            match b {
+                b'>' => {
+                    angle_depth += 1;
+                    start -= 1;
+                    continue;
+                }
+                b'<' => {
+                    if angle_depth > 0 {
+                        angle_depth -= 1;
+                    }
+                    start -= 1;
+                    continue;
+                }
+                _ => {}
+            }
+
+            if angle_depth > 0 {
+                start -= 1;
+                continue;
+            }
+
+            if b.is_ascii_whitespace() {
+                break;
+            }
+
+            if is_type_token_char(b) {
+                start -= 1;
+                continue;
+            }
+
+            break;
         }
+
         let ty = prefix[start..].trim();
         if is_plausible_type_token(ty) {
             return Some(ty.to_string());
