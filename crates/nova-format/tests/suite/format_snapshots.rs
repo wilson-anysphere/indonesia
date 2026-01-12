@@ -1,5 +1,5 @@
 use insta::assert_snapshot;
-use nova_core::{apply_text_edits, LineIndex, Position, Range};
+use nova_core::{apply_text_edits, LineIndex, Position, Range, TextSize};
 use nova_format::{
     edits_for_document_formatting, edits_for_document_formatting_with_strategy,
     edits_for_formatting, edits_for_formatting_ast, edits_for_on_type_formatting,
@@ -1078,6 +1078,39 @@ fn range_formatting_switch_label_does_not_include_case_body_indent() {
         out,
         "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n            foo();\n        break;\n            default:\n            bar();\n        break;\n        }\n    }\n}\n"
     );
+}
+
+#[test]
+fn range_formatting_is_noop_inside_text_blocks() {
+    let input = "class Foo {\n    void m() {\n        String t = \"\"\"\n            foo(1,2);\n            \"\"\";\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    let start_offset = input.find("foo(1,2);").unwrap();
+    let end_offset = start_offset + "foo(1,2);".len();
+    let start = index.position(input, TextSize::from(start_offset as u32));
+    let end = index.position(input, TextSize::from(end_offset as u32));
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    assert!(edits.is_empty(), "expected no edits, got {edits:?}");
+}
+
+#[test]
+fn range_formatting_is_noop_inside_string_templates() {
+    let input =
+        "class Foo {\n    void m() {\n        String t = STR.\"foo(1,2);\";\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    let start_offset = input.find("foo(1,2);").unwrap();
+    let end_offset = start_offset + "foo(1,2);".len();
+    let start = index.position(input, TextSize::from(start_offset as u32));
+    let end = index.position(input, TextSize::from(end_offset as u32));
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    assert!(edits.is_empty(), "expected no edits, got {edits:?}");
 }
 
 #[test]

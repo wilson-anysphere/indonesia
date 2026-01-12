@@ -359,6 +359,17 @@ pub fn edits_for_range_formatting(
     let range = line_index
         .text_range(source, range)
         .ok_or(FormatError::InvalidPosition)?;
+    if range.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Range formatting often targets full lines, but editors can send arbitrary selections. If the
+    // requested range begins inside a comment or string-like token, lexing the snippet in
+    // isolation can reinterpret the literal contents as Java code and corrupt them. Avoid applying
+    // range formatting in that situation.
+    if is_inside_non_code_token(tree, range.start()) {
+        return Ok(Vec::new());
+    }
     let start = u32::from(range.start()) as usize;
     let end = u32::from(range.end()) as usize;
     if start > end || end > source.len() {
