@@ -7,6 +7,7 @@ use nova_refactor::{
 #[test]
 fn rename_type_updates_imports_annotations_and_type_positions() {
     let foo_file = FileId::new("Foo.java");
+    let bar_file = FileId::new("Bar.java");
     let use_file = FileId::new("Use.java");
 
     let foo_src = r#"package p;
@@ -50,7 +51,12 @@ class Use {
     files.insert(use_file.clone(), use_src.to_string());
     let updated = apply_workspace_edit(&files, &edit).unwrap();
 
-    let foo_after = updated.get(&foo_file).expect("updated Foo.java");
+    assert!(
+        !updated.contains_key(&foo_file),
+        "expected Foo.java to be renamed away"
+    );
+
+    let foo_after = updated.get(&bar_file).expect("updated Bar.java");
     let use_after = updated.get(&use_file).expect("updated Use.java");
 
     assert!(foo_after.contains("class Bar"), "{foo_after}");
@@ -69,4 +75,3 @@ class Use {
     assert!(use_after.contains("// Foo"), "{use_after}");
     assert!(!use_after.contains("\"Bar\""), "{use_after}");
 }
-
