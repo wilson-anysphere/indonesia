@@ -1285,6 +1285,13 @@ pub fn extract_variable(
         (stmt_range.start, String::new(), " ")
     };
 
+    let expr_has_side_effects = has_side_effects(expr.syntax());
+
+    // `replace_all` is only safe for side-effect-free expressions. Replacing other occurrences
+    // would reduce the number of evaluations (and thus side effects / thrown exceptions).
+    //
+    // For side-effectful expressions we still compute the candidate ranges so we can detect and
+    // reject unsafe replace-all requests below.
     let mut replacement_ranges = if params.replace_all {
         find_replace_all_occurrences_same_execution_context(text, root.clone(), &stmt, &expr_text)
     } else {
@@ -1393,7 +1400,6 @@ pub fn extract_variable(
     // - Evaluating them once and replacing multiple occurrences is never safe.
     // - Even evaluating them once can be unsafe when extracting to `var` because target typing for
     //   method calls / diamond inference can change without an explicit type.
-    let expr_has_side_effects = has_side_effects(expr.syntax());
     if expr_has_side_effects {
         if params.use_var {
             return Err(RefactorError::ExtractSideEffects);

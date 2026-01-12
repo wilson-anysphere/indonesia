@@ -116,7 +116,7 @@ fn infer_type_at_offsets(
             ty
         };
         if is_valid_signature_type_string(&ty) {
-            return Some(ty);
+            return Some(strip_java_lang_qualifiers(&ty));
         }
     }
     None
@@ -267,6 +267,12 @@ fn binary_name_to_source_qualified(binary_name: &str, elide_java_lang: bool) -> 
     } else {
         out
     }
+}
+
+fn strip_java_lang_qualifiers(ty: &str) -> String {
+    ty.strip_prefix("java.lang.")
+        .unwrap_or(ty)
+        .to_string()
 }
 
 fn item_members<'a>(
