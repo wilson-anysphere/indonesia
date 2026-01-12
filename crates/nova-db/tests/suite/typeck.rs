@@ -478,6 +478,10 @@ class C {
             && d.message.contains("static context")),
         "expected `this` in static initializer to produce a static-context diagnostic; got {diags:?}"
     );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected no unresolved-method diagnostics when `this` is used in a static initializer; got {diags:?}"
+    );
 }
 
 #[test]
@@ -496,6 +500,10 @@ class C {
         diags.iter().any(|d| d.code.as_ref() == "super-in-static-context"
             && d.message.contains("static context")),
         "expected `super` in static initializer to produce a static-context diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected no unresolved-method diagnostics when `super` is used in a static initializer; got {diags:?}"
     );
 }
 
@@ -2364,6 +2372,10 @@ class C {
             .any(|d| d.code.as_ref() == "this-in-static-context"),
         "expected `this-in-static-context` diagnostic; got {diags:?}"
     );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected no unresolved-method diagnostics when `this` is used in a static method; got {diags:?}"
+    );
 }
 
 #[test]
@@ -2383,6 +2395,10 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "super-in-static-context"),
         "expected `super-in-static-context` diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected no unresolved-method diagnostics when `super` is used in a static method; got {diags:?}"
     );
 }
 
