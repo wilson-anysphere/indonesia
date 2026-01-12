@@ -64,7 +64,7 @@ const NOVA_CONFIG_GLOB_PATTERNS = [
   '**/nova.config.toml',
   '**/.nova/apt-cache/generated-roots.json',
   // Legacy workspace-local config (kept for backwards compatibility).
-  '**/.nova/**/*.toml',
+  '**/.nova/config.toml',
 ] as const;
 
 const WATCHED_FILE_GLOB_PATTERNS = [
