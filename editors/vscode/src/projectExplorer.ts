@@ -11,7 +11,11 @@ import {
   type ProjectModelUnit,
 } from './projectModelCache';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaRequest = <R>(
+  method: string,
+  params?: unknown,
+  opts?: { token?: vscode.CancellationToken },
+) => Promise<R | undefined>;
 export type NovaProjectExplorerController = { refresh(): void };
 
 type BuildSystemKind = ProjectModelUnit['kind'];
@@ -177,13 +181,13 @@ export function registerNovaProjectExplorer(
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_SHOW_MODEL, async (arg?: unknown) => {
-      await showProjectModel(projectModelCache, arg ?? view.selection?.[0]);
+      await showProjectModel(projectModelCache, request, arg ?? view.selection?.[0]);
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_SHOW_CONFIG, async (arg?: unknown) => {
-      await showProjectConfiguration(projectModelCache, arg ?? view.selection?.[0]);
+      await showProjectConfiguration(projectModelCache, request, arg ?? view.selection?.[0]);
     }),
   );
 
@@ -1421,7 +1425,7 @@ function extractPathText(arg: unknown): string | undefined {
   return undefined;
 }
 
-async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promise<void> {
+async function showProjectModel(cache: ProjectModelCache, request: NovaRequest, arg?: unknown): Promise<void> {
   const workspace = getWorkspaceFolderFromCommandArg(arg) ?? (await pickWorkspaceFolder('Select workspace folder for project model'));
   if (!workspace) {
     return;
@@ -1433,7 +1437,20 @@ async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promis
       return;
     }
 
-    const model = await cache.getProjectModel(workspace);
+    const model = await vscode.window.withProgress<ProjectModelResult | undefined>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Nova: Loading project model (${workspace.name})…`,
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        return await request<ProjectModelResult>('nova/projectModel', { projectRoot: workspace.uri.fsPath }, { token });
+      },
+    );
+    if (!model) {
+      // Cancellation returns `undefined`. Unsupported methods are reported by `sendNovaRequest`.
+      return;
+    }
     await openJsonDocument(`Nova Project Model (${workspace.name}).json`, model);
   } catch (err) {
     if (isSafeModeError(err)) {
@@ -1454,7 +1471,11 @@ async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promis
   }
 }
 
-async function showProjectConfiguration(cache: ProjectModelCache, arg?: unknown): Promise<void> {
+async function showProjectConfiguration(
+  cache: ProjectModelCache,
+  request: NovaRequest,
+  arg?: unknown,
+): Promise<void> {
   const workspace =
     getWorkspaceFolderFromCommandArg(arg) ?? (await pickWorkspaceFolder('Select workspace folder for project configuration'));
   if (!workspace) {
@@ -1467,7 +1488,24 @@ async function showProjectConfiguration(cache: ProjectModelCache, arg?: unknown)
       return;
     }
 
-    const config = await cache.getProjectConfiguration(workspace);
+    const config = await vscode.window.withProgress<ProjectConfigurationResponse | undefined>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Nova: Loading project configuration (${workspace.name})…`,
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        return await request<ProjectConfigurationResponse>(
+          'nova/projectConfiguration',
+          { projectRoot: workspace.uri.fsPath },
+          { token },
+        );
+      },
+    );
+    if (!config) {
+      // Cancellation returns `undefined`. Unsupported methods are reported by `sendNovaRequest`.
+      return;
+    }
     await openJsonDocument(`Nova Project Configuration (${workspace.name}).json`, config);
   } catch (err) {
     if (isSafeModeError(err)) {
