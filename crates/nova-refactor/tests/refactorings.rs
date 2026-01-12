@@ -4,6 +4,8 @@ use nova_refactor::{
 };
 use pretty_assertions::assert_eq;
 
+mod suite;
+
 #[test]
 fn rename_updates_all_occurrences_not_strings() {
     let file = FileId::new("Test.java");

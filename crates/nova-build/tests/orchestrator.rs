@@ -9,6 +9,8 @@ use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod suite;
+
 #[derive(Debug, Clone)]
 struct Script {
     delay: Duration,
