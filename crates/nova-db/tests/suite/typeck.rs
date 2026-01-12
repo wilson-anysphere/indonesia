@@ -3989,6 +3989,31 @@ class C {
 }
 
 #[test]
+fn unresolved_unqualified_method_call_diagnostic_includes_candidates() {
+    let src = r#"
+class C {
+    void foo() {}
+    void m() {
+        foo(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-method")
+        .expect("expected unresolved-method diagnostic");
+
+    assert!(
+        diag.message.contains("foo") && diag.message.contains("wrong arity"),
+        "expected unresolved-method diagnostic to include candidate arity info, got {:?}",
+        diag.message
+    );
+}
+
+#[test]
 fn type_at_offset_shows_enclosing_class_for_this() {
     let src = r#"
 class C {
