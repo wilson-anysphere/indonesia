@@ -65,4 +65,12 @@ end
 
 lspconfig.nova_lsp.setup({
   on_attach = on_attach,
+  -- Optional: control async multi-token AI completions (method-chain suggestions).
+  --
+  -- This env var is read by `nova-lsp` at process startup, so changes require restarting the server.
+  -- Setting it to "0" disables multi-token completions entirely.
+  --
+  -- cmd_env = {
+  --   NOVA_AI_COMPLETIONS_MAX_ITEMS = "0",
+  -- },
 })

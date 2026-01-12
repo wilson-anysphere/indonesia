@@ -8,6 +8,11 @@
 ;;   (nova-eglot-setup)      ;; recommended (Emacs 29+)
 ;; or:
 ;;   (nova-lsp-mode-setup)   ;; if you prefer lsp-mode
+;;
+;; Optional: control async multi-token AI completions (method-chain suggestions) server-side by
+;; setting the `nova-lsp` startup env var:
+;;   (setenv "NOVA_AI_COMPLETIONS_MAX_ITEMS" "0") ;; disables multi-token completions entirely
+;; Changes require restarting the language server (the env var is read at process start).
 
 (defgroup nova nil
   "Run the Nova language server."
