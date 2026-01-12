@@ -418,6 +418,12 @@ impl NovaDebugAdapter {
 
 ### Hot Code Replacement
 
+Hot code replacement operates at the **JVM class** level. Note that a single `.java` source file can
+compile to **multiple** `.class` files (e.g. nested/inner classes like `Outer$Inner.class` and
+anonymous classes like `Outer$1.class`). When a source file changes, Nova should attempt to redefine
+all compiled classes that are currently loaded in the target VM; classes that are not loaded can be
+skipped.
+
 ```rust
 impl NovaDebugAdapter {
     /// Replace class bytecode while debugging
