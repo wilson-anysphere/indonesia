@@ -11,6 +11,7 @@
 //! source text rather than a full Java parser/HIR. This keeps the crate usable
 //! in isolation while the rest of Nova is under construction.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -80,7 +81,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
                     DiagnosticSeverity::Warning => Severity::Warning,
                     DiagnosticSeverity::Information | DiagnosticSeverity::Hint => Severity::Info,
                 },
-                code: dagger_code(d.source.as_deref()).into(),
+                code: dagger_code(d.source.as_deref()),
                 message: d.message.clone(),
                 span: core_range_to_span(text, d.range),
             })
@@ -265,13 +266,14 @@ fn project_analysis(db: &dyn Database, project: ProjectId) -> Option<Arc<CachedD
     Some(cached)
 }
 
-fn dagger_code(source: Option<&str>) -> &'static str {
-    match source.unwrap_or("") {
-        "DAGGER_MISSING_BINDING" => "DAGGER_MISSING_BINDING",
-        "DAGGER_DUPLICATE_BINDING" => "DAGGER_DUPLICATE_BINDING",
-        "DAGGER_CYCLE" => "DAGGER_CYCLE",
-        "DAGGER_INCOMPATIBLE_SCOPE" => "DAGGER_INCOMPATIBLE_SCOPE",
-        _ => "DAGGER",
+fn dagger_code(source: Option<&str>) -> Cow<'static, str> {
+    match source {
+        Some("DAGGER_MISSING_BINDING") => Cow::Borrowed("DAGGER_MISSING_BINDING"),
+        Some("DAGGER_DUPLICATE_BINDING") => Cow::Borrowed("DAGGER_DUPLICATE_BINDING"),
+        Some("DAGGER_CYCLE") => Cow::Borrowed("DAGGER_CYCLE"),
+        Some("DAGGER_INCOMPATIBLE_SCOPE") => Cow::Borrowed("DAGGER_INCOMPATIBLE_SCOPE"),
+        Some(other) if !other.is_empty() => Cow::Owned(other.to_string()),
+        _ => Cow::Borrowed("DAGGER"),
     }
 }
 
