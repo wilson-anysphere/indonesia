@@ -6,6 +6,7 @@ mod persistence_roundtrip;
 mod reference_kind;
 mod segments_persistence;
 mod sharded_persistence;
+mod hierarchy_queries;
 mod sketch_index;
 mod sketch_parser_hardening;
 mod symbol_at_offset;

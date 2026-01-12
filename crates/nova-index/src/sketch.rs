@@ -3,7 +3,7 @@
 //! This module intentionally favors recall over precision. Refactorings are
 //! expected to follow up with semantic verification passes.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -106,6 +106,12 @@ pub struct Index {
     class_implements: HashMap<String, Vec<String>>,
     interface_extends: HashMap<String, Vec<String>>,
     type_kinds: HashMap<String, TypeKind>,
+    /// Reverse edges for the type hierarchy.
+    ///
+    /// Contains direct edges for:
+    /// - `class Foo extends Bar` (Bar -> Foo), and
+    /// - `class Foo implements Baz` / `interface Foo extends Baz` (Baz -> Foo).
+    subtypes: HashMap<String, Vec<String>>,
 }
 
 impl Index {
@@ -120,6 +126,7 @@ impl Index {
             class_implements: HashMap::new(),
             interface_extends: HashMap::new(),
             type_kinds: HashMap::new(),
+            subtypes: HashMap::new(),
         };
         index.rebuild();
         index
@@ -364,6 +371,7 @@ impl Index {
         self.class_implements.clear();
         self.interface_extends.clear();
         self.type_kinds.clear();
+        self.subtypes.clear();
 
         let mut next_id: u32 = 1;
         for (file, text) in &self.files {
@@ -371,15 +379,31 @@ impl Index {
             for class in parser.parse_types() {
                 self.type_kinds.insert(class.name.clone(), class.kind);
                 if let Some(base) = class.extends.clone() {
-                    self.class_extends.insert(class.name.clone(), base);
+                    self.class_extends.insert(class.name.clone(), base.clone());
+                    self.subtypes
+                        .entry(base)
+                        .or_default()
+                        .push(class.name.clone());
                 }
                 if !class.implements.is_empty() {
                     self.class_implements
                         .insert(class.name.clone(), class.implements.clone());
+                    for iface in &class.implements {
+                        self.subtypes
+                            .entry(iface.clone())
+                            .or_default()
+                            .push(class.name.clone());
+                    }
                 }
                 if !class.extends_interfaces.is_empty() {
                     self.interface_extends
                         .insert(class.name.clone(), class.extends_interfaces.clone());
+                    for iface in &class.extends_interfaces {
+                        self.subtypes
+                            .entry(iface.clone())
+                            .or_default()
+                            .push(class.name.clone());
+                    }
                 }
                 let class_sym = Symbol {
                     id: SymbolId(next_id),
@@ -459,6 +483,20 @@ impl Index {
             }
         }
 
+        // Keep hierarchy maps deterministic.
+        for interfaces in self.class_implements.values_mut() {
+            interfaces.sort();
+            interfaces.dedup();
+        }
+        for interfaces in self.interface_extends.values_mut() {
+            interfaces.sort();
+            interfaces.dedup();
+        }
+        for subs in self.subtypes.values_mut() {
+            subs.sort();
+            subs.dedup();
+        }
+
         // Keep per-file symbol lists stable + enable early-exit scans.
         for indices in self.symbols_by_file.values_mut() {
             indices.sort_by_key(|&idx| {
@@ -499,6 +537,113 @@ impl Index {
 
     pub fn is_interface(&self, type_name: &str) -> bool {
         matches!(self.type_kinds.get(type_name), Some(TypeKind::Interface))
+    }
+
+    /// Returns all transitive subtypes of `ty`.
+    ///
+    /// The result order is deterministic:
+    /// - traversal is breadth-first (nearest subtypes first), and
+    /// - sibling subtypes are ordered lexicographically by type name.
+    #[must_use]
+    pub fn all_subtypes(&self, ty: &str) -> Vec<String> {
+        let Some(direct) = self.subtypes.get(ty) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        queue.extend(direct.iter().cloned());
+
+        while let Some(current) = queue.pop_front() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            out.push(current.clone());
+            if let Some(children) = self.subtypes.get(&current) {
+                queue.extend(children.iter().cloned());
+            }
+        }
+
+        out
+    }
+
+    /// Finds overriding/implementing method declarations in transitive subtypes.
+    ///
+    /// Matching is **overload-safe**: methods are compared by `(name, param_types)`.
+    #[must_use]
+    pub fn find_overrides(&self, method: SymbolId) -> Vec<SymbolId> {
+        let Some(sym) = self.find_symbol(method) else {
+            return Vec::new();
+        };
+        if sym.kind != SymbolKind::Method {
+            return Vec::new();
+        }
+        let Some(container) = sym.container.as_deref() else {
+            return Vec::new();
+        };
+        let Some(param_types) = sym.param_types.as_ref() else {
+            // Unknown signature: be conservative.
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        for subtype in self.all_subtypes(container) {
+            if let Some(id) =
+                self.method_overload_by_param_types(&subtype, &sym.name, param_types)
+            {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// Finds the first overridden/implemented method declaration in supertypes.
+    ///
+    /// Matching is **overload-safe**: methods are compared by `(name, param_types)`.
+    pub fn find_overridden(&self, method: SymbolId) -> Option<SymbolId> {
+        let sym = self.find_symbol(method)?;
+        if sym.kind != SymbolKind::Method {
+            return None;
+        }
+        let container = sym.container.as_deref()?;
+        let param_types = sym.param_types.as_ref()?;
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+
+        // Prefer superclass chain over interfaces when both are at the same distance.
+        if let Some(base) = self.class_extends.get(container) {
+            queue.push_back(base.clone());
+        }
+        if let Some(ifaces) = self.class_implements.get(container) {
+            queue.extend(ifaces.iter().cloned());
+        }
+        if let Some(ifaces) = self.interface_extends.get(container) {
+            queue.extend(ifaces.iter().cloned());
+        }
+
+        while let Some(ty) = queue.pop_front() {
+            if !visited.insert(ty.clone()) {
+                continue;
+            }
+
+            if let Some(id) = self.method_overload_by_param_types(&ty, &sym.name, param_types) {
+                return Some(id);
+            }
+
+            if let Some(base) = self.class_extends.get(&ty) {
+                queue.push_back(base.clone());
+            }
+            if let Some(ifaces) = self.class_implements.get(&ty) {
+                queue.extend(ifaces.iter().cloned());
+            }
+            if let Some(ifaces) = self.interface_extends.get(&ty) {
+                queue.extend(ifaces.iter().cloned());
+            }
+        }
+
+        None
     }
 
     /// Legacy name-only lookup for a method symbol id.
@@ -583,80 +728,6 @@ impl Index {
             return None;
         }
         sym.param_names.as_deref()
-    }
-
-    /// Return all methods in the workspace that override `target`.
-    ///
-    /// This is a best-effort lexical query intended for refactorings. It does *not* require an
-    /// `@Override` annotation.
-    #[must_use]
-    pub fn find_overrides(&self, target: SymbolId) -> Vec<SymbolId> {
-        let Some(target_sym) = self.find_symbol(target) else {
-            return Vec::new();
-        };
-        if target_sym.kind != SymbolKind::Method {
-            return Vec::new();
-        }
-        let Some(target_class) = target_sym.container.as_deref() else {
-            return Vec::new();
-        };
-
-        let target_name = &target_sym.name;
-        let target_param_types = target_sym.param_types.as_deref();
-        let target_arity = target_param_types.map(|tys| tys.len());
-
-        let mut out: Vec<SymbolId> = Vec::new();
-        for sym in &self.symbols {
-            if sym.kind != SymbolKind::Method {
-                continue;
-            }
-            if sym.id == target {
-                continue;
-            }
-            if sym.name != *target_name {
-                continue;
-            }
-            let Some(sym_class) = sym.container.as_deref() else {
-                continue;
-            };
-            if !self.class_inherits_from(sym_class, target_class) {
-                continue;
-            }
-
-            let sym_param_types = sym.param_types.as_deref();
-            if let (Some(target_param_types), Some(sym_param_types)) =
-                (target_param_types, sym_param_types)
-            {
-                if target_param_types != sym_param_types {
-                    continue;
-                }
-            } else if let (Some(target_arity), Some(sym_param_types)) =
-                (target_arity, sym_param_types)
-            {
-                if sym_param_types.len() != target_arity {
-                    continue;
-                }
-            } else {
-                // No signature data; keep the match as best-effort.
-            }
-
-            out.push(sym.id);
-        }
-
-        // Keep ordering stable for deterministic tests.
-        out.sort_by_key(|id| id.0);
-        out
-    }
-
-    fn class_inherits_from(&self, subtype: &str, supertype: &str) -> bool {
-        let mut cur = self.class_extends(subtype);
-        while let Some(next) = cur {
-            if next == supertype {
-                return true;
-            }
-            cur = self.class_extends(next);
-        }
-        false
     }
 }
 
