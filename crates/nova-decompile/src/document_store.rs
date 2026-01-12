@@ -589,19 +589,6 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         return Ok(None);
     }
 
-    // Defense in depth: reject hard-linked cache entries. A malicious local process
-    // could replace a cache file with a hard link to an arbitrary other file on the
-    // same filesystem. Treat that as corruption and delete the entry so cache reads
-    // degrade to misses.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        if meta.nlink() > 1 {
-            remove_corrupt_path(path);
-            return Ok(None);
-        }
-    }
-
     // Cap reads to avoid pathological allocations if the cache is corrupted.
     const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
     if meta.len() > MAX_DOC_BYTES {
@@ -618,9 +605,39 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         }
     };
 
+    let file_meta = match file.metadata() {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            remove_corrupt_path(path);
+            return Ok(None);
+        }
+    };
+
+    // Validate the opened file (defense-in-depth against TOCTOU swaps between the
+    // `symlink_metadata` checks above and the `open`).
+    if !file_meta.is_file() {
+        remove_corrupt_path(path);
+        return Ok(None);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if file_meta.nlink() > 1 {
+            remove_corrupt_path(path);
+            return Ok(None);
+        }
+    }
+
+    if file_meta.len() > MAX_DOC_BYTES {
+        remove_corrupt_path(path);
+        return Ok(None);
+    }
+
     // Use `take` as a defense-in-depth cap against races where a cache file grows
     // after the `symlink_metadata` length check above.
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    let mut bytes = Vec::with_capacity(file_meta.len() as usize);
     match file
         .take(MAX_DOC_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
