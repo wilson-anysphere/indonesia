@@ -342,26 +342,12 @@ async function fetchWebEndpoints(
   const supportedWeb = isNovaRequestSupported(workspaceKey, method);
   const supportedAlias = isNovaRequestSupported(workspaceKey, alias);
 
-  const candidates: string[] = [];
-  if (supportedWeb === true) {
-    candidates.push(method, alias);
-  } else if (supportedAlias === true) {
-    candidates.push(alias);
-    if (supportedWeb === 'unknown') {
-      candidates.push(method);
-    }
-  } else if (supportedWeb === false) {
-    if (supportedAlias !== false) {
-      candidates.push(alias);
-    }
-  } else if (supportedAlias === false) {
-    candidates.push(method);
-  } else {
-    // Prefer the alias when we don't have capability lists (older Nova builds).
-    candidates.push(alias, method);
-  }
+  // Try the canonical method first, falling back to the older Quarkus alias on method-not-found.
+  // When capability lists are available we can skip known-unsupported methods to avoid noisy errors.
+  const candidates = [supportedWeb !== false ? method : undefined, supportedAlias !== false ? alias : undefined].filter(
+    (entry): entry is string => typeof entry === 'string',
+  );
 
-  // De-dup candidates while preserving order.
   const seen = new Set<string>();
   const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
 
