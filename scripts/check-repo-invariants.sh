@@ -164,7 +164,9 @@ framework_harness_checks=(
   "crates/nova-framework-dagger/tests:crates/nova-framework-dagger/tests/integration_tests.rs:move additional files into crates/nova-framework-dagger/tests/integration_tests/ and add them to crates/nova-framework-dagger/tests/integration_tests/mod.rs"
   "crates/nova-framework-jpa/tests:crates/nova-framework-jpa/tests/integration_tests.rs:move additional files into crates/nova-framework-jpa/tests/integration_tests/ and add them to crates/nova-framework-jpa/tests/integration_tests/mod.rs"
   "crates/nova-framework-mapstruct/tests:crates/nova-framework-mapstruct/tests/integration_tests.rs:move additional files into crates/nova-framework-mapstruct/tests/integration_tests/ and add them to crates/nova-framework-mapstruct/tests/integration_tests/mod.rs"
+  "crates/nova-framework-quarkus/tests:crates/nova-framework-quarkus/tests/integration.rs:move additional files into crates/nova-framework-quarkus/tests/suite/ and add them to crates/nova-framework-quarkus/tests/suite/mod.rs"
   "crates/nova-framework-micronaut/tests:crates/nova-framework-micronaut/tests/integration_tests.rs:move additional files into crates/nova-framework-micronaut/tests/integration_tests/ and add them to crates/nova-framework-micronaut/tests/integration_tests/mod.rs"
+  "crates/nova-framework-web/tests:crates/nova-framework-web/tests/endpoints.rs:move additional files into crates/nova-framework-web/tests/endpoints/ and add them to crates/nova-framework-web/tests/endpoints.rs"
 )
 
 for check in "${framework_harness_checks[@]}"; do
