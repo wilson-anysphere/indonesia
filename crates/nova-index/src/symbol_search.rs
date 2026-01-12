@@ -1,6 +1,7 @@
-use crate::indexes::SymbolIndex;
+use crate::indexes::{SymbolIndex, SymbolLocation};
 use nova_core::SymbolId;
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
+use nova_hir::ast_id::AstId;
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -8,6 +9,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Symbol {
     pub name: String,
     pub qualified_name: String,
+    /// Best-effort file/position for the symbol's definition.
+    ///
+    /// This is optional because some callers (e.g. aggregated workspace symbol search)
+    /// may not have a single canonical location.
+    pub location: Option<SymbolLocation>,
+    /// Stable identifier for the definition within a file (when available).
+    pub ast_id: Option<AstId>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +115,9 @@ impl SymbolSearchIndex {
         for entry in &self.symbols {
             bytes = bytes.saturating_add(entry.symbol.name.capacity() as u64);
             bytes = bytes.saturating_add(entry.symbol.qualified_name.capacity() as u64);
+            if let Some(loc) = &entry.symbol.location {
+                bytes = bytes.saturating_add(loc.file.capacity() as u64);
+            }
         }
 
         bytes = bytes.saturating_add(self.trigram.estimated_bytes());
@@ -185,12 +196,26 @@ impl SymbolSearchIndex {
         }
 
         results.sort_by(|a, b| {
-            // Sort by (kind, score), then shorter name, then lexicographic, then id.
+            // Sort by (kind, score), then stable disambiguators.
             b.score
                 .rank_key()
                 .cmp(&a.score.rank_key())
                 .then_with(|| a.symbol.name.len().cmp(&b.symbol.name.len()))
                 .then_with(|| a.symbol.name.cmp(&b.symbol.name))
+                .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
+                .then_with(|| {
+                    a.symbol
+                        .location
+                        .as_ref()
+                        .map(|loc| loc.file.as_str())
+                        .cmp(
+                            &b.symbol
+                                .location
+                                .as_ref()
+                                .map(|loc| loc.file.as_str()),
+                        )
+                })
+                .then_with(|| a.symbol.ast_id.cmp(&b.symbol.ast_id))
                 .then_with(|| a.id.cmp(&b.id))
         });
 
@@ -389,6 +414,8 @@ impl WorkspaceSymbolSearcher {
                     .map(|name| Symbol {
                         name: name.clone(),
                         qualified_name: name.clone(),
+                        location: None,
+                        ast_id: None,
                     })
                     .collect();
 
@@ -467,10 +494,14 @@ mod tests {
             Symbol {
                 name: "HashMap".into(),
                 qualified_name: "java.util.HashMap".into(),
+                location: None,
+                ast_id: None,
             },
             Symbol {
                 name: "HashSet".into(),
                 qualified_name: "java.util.HashSet".into(),
+                location: None,
+                ast_id: None,
             },
         ]);
 
@@ -485,10 +516,14 @@ mod tests {
             Symbol {
                 name: "foobar".into(),
                 qualified_name: "pkg.foobar".into(),
+                location: None,
+                ast_id: None,
             },
             Symbol {
                 name: "barfoo".into(),
                 qualified_name: "pkg.barfoo".into(),
+                location: None,
+                ast_id: None,
             },
         ]);
 
@@ -502,10 +537,14 @@ mod tests {
             Symbol {
                 name: "HashMap".into(),
                 qualified_name: "java.util.HashMap".into(),
+                location: None,
+                ast_id: None,
             },
             Symbol {
                 name: "Hmac".into(),
                 qualified_name: "crypto.Hmac".into(),
+                location: None,
+                ast_id: None,
             },
         ]);
 
@@ -521,6 +560,8 @@ mod tests {
         let index = SymbolSearchIndex::build(vec![Symbol {
             name: "FooBar".into(),
             qualified_name: "pkg.FooBar".into(),
+            location: None,
+            ast_id: None,
         }]);
 
         let results = index.search("fb", 10);
@@ -542,12 +583,16 @@ mod tests {
             symbols.push(Symbol {
                 name: "aa".into(),
                 qualified_name: "bb".into(),
+                location: None,
+                ast_id: None,
             });
         }
         // Put the only matching symbol after the bounded scan window.
         symbols.push(Symbol {
             name: "Foo".into(),
             qualified_name: "com.example.Foo".into(),
+            location: None,
+            ast_id: None,
         });
 
         let index = SymbolSearchIndex::build(symbols);
@@ -558,5 +603,31 @@ mod tests {
                 .any(|r| r.symbol.qualified_name.starts_with("com.")),
             "expected query to match via qualified_name, got: {results:?}"
         );
+    }
+
+    #[test]
+    fn search_tiebreaks_by_qualified_name_for_duplicate_names() {
+        // Insert in the opposite order of the qualified-name lexicographic sort
+        // so we can detect accidental insertion-order tie-breaking.
+        let index = SymbolSearchIndex::build(vec![
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.b.Foo".into(),
+                location: None,
+                ast_id: None,
+            },
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.a.Foo".into(),
+                location: None,
+                ast_id: None,
+            },
+        ]);
+
+        let results = index.search("Foo", 10);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].score.rank_key(), results[1].score.rank_key());
+        assert_eq!(results[0].symbol.qualified_name, "com.a.Foo");
+        assert_eq!(results[1].symbol.qualified_name, "com.b.Foo");
     }
 }
