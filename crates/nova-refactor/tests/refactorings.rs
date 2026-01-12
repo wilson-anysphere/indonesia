@@ -1821,6 +1821,51 @@ class Test {
 }
 
 #[test]
+fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
+    // Regression test: parser-only type inference for `+` should only infer `String` when either
+    // operand is already inferred `String` (not when a nested string literal exists somewhere in
+    // the expression subtree).
+    //
+    // Use `TextDatabase` so we exercise the parser-only inference path (no typeck).
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int foo(String s) { return 1; }
+
+  void m() {
+    System.out.println(/*start*/1 + foo("x")/*end*/);
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = TextDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int foo(String s) { return 1; }
+
+  void m() {
+    Object tmp = 1 + foo("x");
+    System.out.println(tmp);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_trims_whitespace_in_selection_range() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
