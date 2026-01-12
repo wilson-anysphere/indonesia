@@ -667,7 +667,7 @@ async function showProjectModel(cache: ProjectModelCache): Promise<void> {
 
   try {
     if (cache.isProjectModelUnsupported()) {
-      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
+      void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
 
@@ -675,7 +675,7 @@ async function showProjectModel(cache: ProjectModelCache): Promise<void> {
     await openJsonDocument(`Nova Project Model (${workspace.name}).json`, model);
   } catch (err) {
     if (cache.isProjectModelUnsupported() || isNovaMethodNotFoundError(err)) {
-      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
+      void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
     void vscode.window.showErrorMessage(`Nova: failed to fetch project model: ${formatError(err)}`);
@@ -690,7 +690,7 @@ async function showProjectConfiguration(cache: ProjectModelCache): Promise<void>
 
   try {
     if (cache.isProjectConfigurationUnsupported()) {
-      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
+      void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }
 
@@ -698,7 +698,7 @@ async function showProjectConfiguration(cache: ProjectModelCache): Promise<void>
     await openJsonDocument(`Nova Project Configuration (${workspace.name}).json`, config);
   } catch (err) {
     if (cache.isProjectConfigurationUnsupported() || isNovaMethodNotFoundError(err)) {
-      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
+      void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }
     void vscode.window.showErrorMessage(`Nova: failed to fetch project configuration: ${formatError(err)}`);
