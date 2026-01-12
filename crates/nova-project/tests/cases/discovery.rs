@@ -327,6 +327,23 @@ fn loads_maven_multi_module_workspace_model() {
         .module_by_id("maven:com.example:lib")
         .expect("lib module");
 
+    // App depends on lib; ensure the lib output directory is on app's classpath.
+    let app_classpath_dirs: BTreeSet<_> = app
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Directory)
+        .map(|cp| {
+            cp.path
+                .strip_prefix(&model.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
+        .collect();
+    assert!(
+        app_classpath_dirs.contains(&PathBuf::from("lib/target/classes")),
+        "expected app classpath to contain lib/target/classes"
+    );
+
     let app_source_roots: BTreeSet<_> = app
         .source_roots
         .iter()

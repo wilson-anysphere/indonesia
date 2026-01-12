@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -21,6 +21,10 @@ pub(crate) fn load_maven_project(
     let include_root_module =
         root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
 
+    let maven_repo = discover_maven_repo(root, options);
+    let mut resolver = MavenResolver::new(maven_repo.clone());
+    resolver.cache_raw_pom(&root_pom_path, root_pom.clone());
+
     let mut modules = Vec::new();
     let mut source_roots = Vec::new();
     let mut output_dirs = Vec::new();
@@ -28,17 +32,32 @@ pub(crate) fn load_maven_project(
     let mut classpath = Vec::new();
     let mut dependency_entries = Vec::new();
 
-    let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
+    let root_effective = resolver
+        .effective_pom_from_path(&root_pom_path)
+        .unwrap_or_else(|| {
+            let mut visiting = HashSet::new();
+            Arc::new(EffectivePom::from_raw(
+                &root_pom,
+                None,
+                &mut resolver,
+                &mut visiting,
+            ))
+        });
+
     let mut discovered_modules =
-        discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective))?;
+        discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective), &mut resolver)?;
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
+
+    let workspace_modules = build_workspace_module_index(
+        root,
+        include_root_module,
+        &discovered_modules,
+    );
 
     // Workspace-level Java config: take the maximum across modules so we don't
     // under-report language features used anywhere in the workspace.
     let mut workspace_java = root_effective.java.unwrap_or_default();
-
-    let maven_repo = discover_maven_repo(root, options);
 
     for module in &discovered_modules {
         let module_root = &module.root;
@@ -144,14 +163,20 @@ pub(crate) fn load_maven_project(
             path: test_output,
         });
 
-        // Dependencies.
-        for dep in &effective.dependencies {
+        // Dependencies (direct + transitive, resolved from local Maven repo).
+        let resolved_deps = resolver.resolve_dependency_closure(&effective.dependencies);
+        for dep in &resolved_deps {
             if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
                 continue;
             }
             dependencies.push(dep.clone());
 
-            if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, &dep) {
+            if is_workspace_module_dependency(dep, &workspace_modules) {
+                // Workspace module outputs are already on the classpath.
+                continue;
+            }
+
+            if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
                 dependency_entries.push(ClasspathEntry {
                     kind: ClasspathEntryKind::Jar,
                     path: jar_path,
@@ -206,13 +231,32 @@ pub(crate) fn load_maven_workspace_model(
     let include_root_module =
         root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
 
-    let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
+    let maven_repo = discover_maven_repo(root, options);
+    let mut resolver = MavenResolver::new(maven_repo.clone());
+    resolver.cache_raw_pom(&root_pom_path, root_pom.clone());
+
+    let root_effective = resolver
+        .effective_pom_from_path(&root_pom_path)
+        .unwrap_or_else(|| {
+            let mut visiting = HashSet::new();
+            Arc::new(EffectivePom::from_raw(
+                &root_pom,
+                None,
+                &mut resolver,
+                &mut visiting,
+            ))
+        });
+
     let mut discovered_modules =
-        discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective))?;
+        discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective), &mut resolver)?;
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
-    let maven_repo = discover_maven_repo(root, options);
+    let workspace_modules = build_workspace_module_index(
+        root,
+        include_root_module,
+        &discovered_modules,
+    );
 
     let mut module_configs = Vec::new();
     for module in &discovered_modules {
@@ -333,12 +377,29 @@ pub(crate) fn load_maven_workspace_model(
             },
         ];
 
-        let mut dependencies = Vec::new();
-        for dep in &effective.dependencies {
+        let dependencies = effective.dependencies.clone();
+
+        // Add workspace module outputs for direct workspace dependencies.
+        for dep in &dependencies {
+            if let Some(output) = workspace_module_main_output_dir(dep, &workspace_modules) {
+                classpath.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Directory,
+                    path: output,
+                });
+            }
+        }
+
+        // Resolve direct + transitive external dependencies from local Maven repo.
+        let resolved_deps = resolver.resolve_dependency_closure(&dependencies);
+        for dep in &resolved_deps {
             if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
                 continue;
             }
-            dependencies.push(dep.clone());
+
+            if is_workspace_module_dependency(dep, &workspace_modules) {
+                // Use workspace output directories instead of `.m2` jar placeholders.
+                continue;
+            }
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
                 classpath.push(ClasspathEntry {
@@ -351,6 +412,7 @@ pub(crate) fn load_maven_workspace_model(
         sort_dedup_source_roots(&mut source_roots);
         sort_dedup_output_dirs(&mut output_dirs);
         sort_dedup_classpath(&mut classpath);
+        let mut dependencies = dependencies;
         sort_dedup_dependencies(&mut dependencies);
 
         module_configs.push(WorkspaceModuleConfig {
@@ -420,6 +482,7 @@ fn discover_modules_recursive(
     workspace_root: &Path,
     root_pom: &RawPom,
     root_effective: Arc<EffectivePom>,
+    resolver: &mut MavenResolver,
 ) -> Result<Vec<DiscoveredModule>, ProjectError> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     // `workspace_root` is canonicalized by `load_project_with_options`.
@@ -430,16 +493,16 @@ fn discover_modules_recursive(
         raw_pom: root_pom.clone(),
         effective: Arc::clone(&root_effective),
     }];
-    let mut queue: VecDeque<(PathBuf, Arc<EffectivePom>)> = VecDeque::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
     let mut root_modules = root_pom.modules.clone();
     root_modules.sort();
     root_modules.dedup();
     for module in root_modules {
-        queue.push_back((workspace_root.join(module), Arc::clone(&root_effective)));
+        queue.push_back(workspace_root.join(module));
     }
 
-    while let Some((module_root, parent_effective)) = queue.pop_front() {
+    while let Some(module_root) = queue.pop_front() {
         let module_root = canonicalize_or_fallback(&module_root);
         if !visited.insert(module_root.clone()) {
             continue;
@@ -449,21 +512,44 @@ fn discover_modules_recursive(
         let raw_pom = if module_pom_path.is_file() {
             // Module discovery should be best-effort; some workspaces have missing or invalid
             // POM files for optional modules (e.g. profile-only modules).
-            parse_pom(&module_pom_path).unwrap_or_default()
+            match parse_pom(&module_pom_path) {
+                Ok(raw) => {
+                    resolver.cache_raw_pom(&module_pom_path, raw.clone());
+                    raw
+                }
+                Err(_) => RawPom::default(),
+            }
         } else {
             RawPom::default()
         };
 
-        let effective = Arc::new(EffectivePom::from_raw(
-            &raw_pom,
-            Some(parent_effective.as_ref()),
-        ));
+        let effective = if module_pom_path.is_file() {
+            resolver
+                .effective_pom_from_path(&module_pom_path)
+                .unwrap_or_else(|| {
+                    let mut visiting = HashSet::new();
+                    Arc::new(EffectivePom::from_raw(
+                        &raw_pom,
+                        None,
+                        resolver,
+                        &mut visiting,
+                    ))
+                })
+        } else {
+            let mut visiting = HashSet::new();
+            Arc::new(EffectivePom::from_raw(
+                &raw_pom,
+                None,
+                resolver,
+                &mut visiting,
+            ))
+        };
 
         let mut child_modules = raw_pom.modules.clone();
         child_modules.sort();
         child_modules.dedup();
         for child in child_modules {
-            queue.push_back((module_root.join(child), Arc::clone(&effective)));
+            queue.push_back(module_root.join(child));
         }
 
         out.push(DiscoveredModule {
@@ -492,12 +578,23 @@ struct RawPom {
     dependency_management: Vec<Dependency>,
     modules: Vec<String>,
     parent: Option<PomParent>,
+    profiles: Vec<RawProfile>,
 }
 
 #[derive(Debug, Clone)]
 struct PomParent {
     group_id: Option<String>,
+    artifact_id: Option<String>,
     version: Option<String>,
+    relative_path: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RawProfile {
+    active_by_default: bool,
+    properties: BTreeMap<String, String>,
+    dependencies: Vec<Dependency>,
+    dependency_management: Vec<Dependency>,
 }
 
 #[derive(Debug, Clone)]
@@ -512,7 +609,14 @@ struct EffectivePom {
 }
 
 impl EffectivePom {
-    fn from_raw(raw: &RawPom, parent: Option<&EffectivePom>) -> Self {
+    fn from_raw(
+        raw: &RawPom,
+        parent: Option<&EffectivePom>,
+        resolver: &mut MavenResolver,
+        visiting: &mut HashSet<PathBuf>,
+    ) -> Self {
+        let raw = raw.with_active_profiles_applied();
+
         let group_id = raw
             .group_id
             .clone()
@@ -544,21 +648,100 @@ impl EffectivePom {
             properties.insert("pom.version".to_string(), v.clone());
         }
 
+        // Parent properties are commonly referenced.
+        if let Some(parent_coords) = raw.parent.as_ref() {
+            if let Some(v) = parent_coords.group_id.as_ref() {
+                properties.insert("project.parent.groupId".to_string(), v.clone());
+            }
+            if let Some(v) = parent_coords.artifact_id.as_ref() {
+                properties.insert("project.parent.artifactId".to_string(), v.clone());
+            }
+            if let Some(v) = parent_coords.version.as_ref() {
+                properties.insert("project.parent.version".to_string(), v.clone());
+            }
+        } else if let Some(parent) = parent {
+            if let Some(v) = parent.group_id.as_ref() {
+                properties.insert("project.parent.groupId".to_string(), v.clone());
+            }
+            if let Some(v) = parent.artifact_id.as_ref() {
+                properties.insert("project.parent.artifactId".to_string(), v.clone());
+            }
+            if let Some(v) = parent.version.as_ref() {
+                properties.insert("project.parent.version".to_string(), v.clone());
+            }
+        }
+
         // Resolve Java config after properties are merged.
-        let java = raw
-            .java
-            .or_else(|| parent.and_then(|p| p.java))
-            .or_else(|| java_from_properties(&properties));
+        let java = java_from_properties(&properties)
+            .or(raw.java)
+            .or_else(|| parent.and_then(|p| p.java));
 
         let mut dependency_management = parent
             .map(|p| p.dependency_management.clone())
             .unwrap_or_default();
+
+        // Apply imported BOMs (in order) before this module's own managed deps.
+        let mut imported_boms = Vec::new();
+        let mut local_managed = Vec::new();
         for dep in &raw.dependency_management {
-            // Preserve raw placeholders in dependency management and resolve them using the
-            // current module's merged properties when applying versions to dependencies. This
-            // matches Maven's effective POM interpolation semantics where inherited values may be
-            // influenced by child property overrides.
             let dep = dep.clone();
+            if is_bom_import(&dep) {
+                imported_boms.push(dep);
+            } else {
+                // Preserve raw placeholders in dependency management and resolve them using the
+                // current module's merged properties when applying versions to dependencies. This
+                // matches Maven's effective POM interpolation semantics where inherited values may be
+                // influenced by child property overrides.
+                local_managed.push(dep);
+            }
+        }
+
+        for bom in imported_boms {
+            let group_id = bom.group_id.clone();
+            let artifact_id = bom.artifact_id.clone();
+            if group_id.is_empty() || artifact_id.is_empty() {
+                continue;
+            }
+
+            let mut version = bom
+                .version
+                .as_deref()
+                .map(|v| resolve_placeholders(v, &properties))
+                .or_else(|| {
+                    dependency_management
+                        .get(&(group_id.clone(), artifact_id.clone()))
+                        .and_then(|managed| managed.version.clone())
+                });
+
+            if version
+                .as_deref()
+                .is_some_and(|v| v.contains("${") || v.trim().is_empty())
+            {
+                version = None;
+            }
+
+            let Some(version) = version else {
+                continue;
+            };
+
+            let Some(bom_effective) =
+                resolver.effective_pom_from_gav_inner(&group_id, &artifact_id, &version, visiting)
+            else {
+                continue;
+            };
+
+            // Imported BOM-managed deps should be resolved in the BOM's property context.
+            for (k, v) in &bom_effective.dependency_management {
+                let mut managed = v.clone();
+                managed.version = managed
+                    .version
+                    .as_deref()
+                    .map(|v| resolve_placeholders(v, &bom_effective.properties));
+                dependency_management.insert(k.clone(), managed);
+            }
+        }
+
+        for dep in local_managed {
             dependency_management.insert((dep.group_id.clone(), dep.artifact_id.clone()), dep);
         }
 
@@ -590,6 +773,284 @@ impl EffectivePom {
     }
 }
 
+impl RawPom {
+    fn with_active_profiles_applied(&self) -> RawPom {
+        let mut merged = self.clone();
+        for profile in &self.profiles {
+            if !profile.active_by_default {
+                continue;
+            }
+            merged.properties.extend(profile.properties.clone());
+            merged.dependencies.extend(profile.dependencies.clone());
+            merged
+                .dependency_management
+                .extend(profile.dependency_management.clone());
+        }
+        merged
+    }
+}
+
+fn is_bom_import(dep: &Dependency) -> bool {
+    dep.type_.as_deref() == Some("pom") && dep.scope.as_deref() == Some("import")
+}
+
+#[derive(Debug)]
+struct MavenResolver {
+    maven_repo: PathBuf,
+    raw_cache: HashMap<PathBuf, RawPom>,
+    effective_cache: HashMap<PathBuf, Arc<EffectivePom>>,
+}
+
+impl MavenResolver {
+    fn new(maven_repo: PathBuf) -> Self {
+        Self {
+            maven_repo,
+            raw_cache: HashMap::new(),
+            effective_cache: HashMap::new(),
+        }
+    }
+
+    fn cache_raw_pom(&mut self, pom_path: &Path, raw: RawPom) {
+        let pom_path = canonicalize_or_fallback(pom_path);
+        self.raw_cache.insert(pom_path, raw);
+    }
+
+    fn effective_pom_from_path(&mut self, pom_path: &Path) -> Option<Arc<EffectivePom>> {
+        let mut visiting = HashSet::new();
+        self.effective_pom_from_path_inner(pom_path, &mut visiting)
+    }
+
+    fn effective_pom_from_gav(&mut self, group_id: &str, artifact_id: &str, version: &str) -> Option<Arc<EffectivePom>> {
+        let mut visiting = HashSet::new();
+        self.effective_pom_from_gav_inner(group_id, artifact_id, version, &mut visiting)
+    }
+
+    fn effective_pom_from_gav_inner(
+        &mut self,
+        group_id: &str,
+        artifact_id: &str,
+        version: &str,
+        visiting: &mut HashSet<PathBuf>,
+    ) -> Option<Arc<EffectivePom>> {
+        if group_id.is_empty() || artifact_id.is_empty() || version.is_empty() {
+            return None;
+        }
+        if group_id.contains("${") || artifact_id.contains("${") || version.contains("${") {
+            return None;
+        }
+
+        let pom_path = self.pom_path_in_repo(group_id, artifact_id, version);
+        if !pom_path.is_file() {
+            return None;
+        }
+
+        self.effective_pom_from_path_inner(&pom_path, visiting)
+    }
+
+    fn effective_pom_from_path_inner(
+        &mut self,
+        pom_path: &Path,
+        visiting: &mut HashSet<PathBuf>,
+    ) -> Option<Arc<EffectivePom>> {
+        let pom_path = canonicalize_or_fallback(pom_path);
+
+        if let Some(cached) = self.effective_cache.get(&pom_path) {
+            return Some(Arc::clone(cached));
+        }
+
+        if !visiting.insert(pom_path.clone()) {
+            return None;
+        }
+
+        let raw = match self.raw_cache.get(&pom_path).cloned() {
+            Some(raw) => raw,
+            None => {
+                let raw = match parse_pom(&pom_path) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        visiting.remove(&pom_path);
+                        return None;
+                    }
+                };
+                self.raw_cache.insert(pom_path.clone(), raw.clone());
+                raw
+            }
+        };
+
+        let module_root = pom_path.parent().unwrap_or(Path::new("."));
+        let parent = self.resolve_parent_effective(&raw, module_root, visiting);
+
+        let effective = Arc::new(EffectivePom::from_raw(
+            &raw,
+            parent.as_deref(),
+            self,
+            visiting,
+        ));
+        self.effective_cache
+            .insert(pom_path.clone(), Arc::clone(&effective));
+
+        visiting.remove(&pom_path);
+        Some(effective)
+    }
+
+    fn resolve_parent_effective(
+        &mut self,
+        raw: &RawPom,
+        module_root: &Path,
+        visiting: &mut HashSet<PathBuf>,
+    ) -> Option<Arc<EffectivePom>> {
+        let parent = raw.parent.as_ref()?;
+
+        // 1) Explicit relativePath (if present and non-empty).
+        if let Some(relative_path) = parent
+            .relative_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            let candidate = module_root.join(relative_path);
+            if candidate.is_file() {
+                return self.effective_pom_from_path_inner(&candidate, visiting);
+            }
+        }
+
+        // 2) Maven default: ../pom.xml.
+        let default_candidate = module_root.join("../pom.xml");
+        if default_candidate.is_file() {
+            return self.effective_pom_from_path_inner(&default_candidate, visiting);
+        }
+
+        // 3) Local repository (best-effort).
+        let group_id = parent.group_id.as_deref()?;
+        let artifact_id = parent.artifact_id.as_deref()?;
+        let version = parent.version.as_deref()?;
+        self.effective_pom_from_gav_inner(group_id, artifact_id, version, visiting)
+    }
+
+    fn pom_path_in_repo(&self, group_id: &str, artifact_id: &str, version: &str) -> PathBuf {
+        let group_path = group_id.replace('.', "/");
+        self.maven_repo
+            .join(group_path)
+            .join(artifact_id)
+            .join(version)
+            .join(format!("{artifact_id}-{version}.pom"))
+    }
+
+    fn resolve_dependency_closure(&mut self, deps: &[Dependency]) -> Vec<Dependency> {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        struct DepKey {
+            group_id: String,
+            artifact_id: String,
+            classifier: Option<String>,
+            type_: Option<String>,
+        }
+
+        let mut out = Vec::new();
+        let mut queue: VecDeque<Dependency> = deps.iter().cloned().collect();
+        let mut seen: HashSet<DepKey> = HashSet::new();
+
+        while let Some(dep) = queue.pop_front() {
+            if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
+                continue;
+            }
+
+            let key = DepKey {
+                group_id: dep.group_id.clone(),
+                artifact_id: dep.artifact_id.clone(),
+                classifier: dep.classifier.clone(),
+                type_: dep.type_.clone(),
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+
+            out.push(dep.clone());
+
+            let Some(version) = dep.version.as_deref() else {
+                continue;
+            };
+            if version.contains("${") {
+                continue;
+            }
+
+            let Some(effective) = self.effective_pom_from_gav(&dep.group_id, &dep.artifact_id, version) else {
+                continue;
+            };
+
+            for child in &effective.dependencies {
+                queue.push_back(child.clone());
+            }
+        }
+
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceModuleInfo {
+    root: PathBuf,
+    version: Option<String>,
+}
+
+type WorkspaceModuleIndex = HashMap<(String, String), WorkspaceModuleInfo>;
+
+fn build_workspace_module_index(
+    workspace_root: &Path,
+    include_root_module: bool,
+    modules: &[DiscoveredModule],
+) -> WorkspaceModuleIndex {
+    let mut out = WorkspaceModuleIndex::new();
+    for module in modules {
+        if module.root == workspace_root && !include_root_module {
+            continue;
+        }
+
+        let group_id = module.effective.group_id.clone().unwrap_or_default();
+        let artifact_id = module.effective.artifact_id.clone().unwrap_or_default();
+        if group_id.is_empty() || artifact_id.is_empty() {
+            continue;
+        }
+
+        out.insert(
+            (group_id, artifact_id),
+            WorkspaceModuleInfo {
+                root: module.root.clone(),
+                version: module.effective.version.clone(),
+            },
+        );
+    }
+    out
+}
+
+fn is_workspace_module_dependency(dep: &Dependency, modules: &WorkspaceModuleIndex) -> bool {
+    modules
+        .get(&(dep.group_id.clone(), dep.artifact_id.clone()))
+        .is_some_and(|m| versions_compatible(dep.version.as_deref(), m.version.as_deref()))
+}
+
+fn workspace_module_main_output_dir(dep: &Dependency, modules: &WorkspaceModuleIndex) -> Option<PathBuf> {
+    let info = modules.get(&(dep.group_id.clone(), dep.artifact_id.clone()))?;
+    if !versions_compatible(dep.version.as_deref(), info.version.as_deref()) {
+        return None;
+    }
+    Some(info.root.join("target/classes"))
+}
+
+fn versions_compatible(requested: Option<&str>, available: Option<&str>) -> bool {
+    let Some(requested) = requested.filter(|v| !v.trim().is_empty()) else {
+        return true;
+    };
+    if requested.contains("${") {
+        // Best-effort: if we couldn't resolve the version, treat it as compatible.
+        return true;
+    }
+
+    let Some(available) = available.filter(|v| !v.trim().is_empty()) else {
+        return true;
+    };
+    requested == available
+}
+
 fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
     let contents = std::fs::read_to_string(path).map_err(|source| ProjectError::Io {
         path: path.to_path_buf(),
@@ -612,17 +1073,14 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
     if let Some(parent_node) = child_element(&project, "parent") {
         pom.parent = Some(PomParent {
             group_id: child_text(&parent_node, "groupId"),
+            artifact_id: child_text(&parent_node, "artifactId"),
             version: child_text(&parent_node, "version"),
+            relative_path: child_text(&parent_node, "relativePath"),
         });
     }
 
     if let Some(props_node) = child_element(&project, "properties") {
-        for child in props_node.children().filter(|n| n.is_element()) {
-            let key = child.tag_name().name().to_string();
-            if let Some(value) = child.text().map(str::trim).filter(|t| !t.is_empty()) {
-                pom.properties.insert(key, value.to_string());
-            }
-        }
+        pom.properties = parse_properties(&props_node);
     }
 
     pom.java = java_from_properties(&pom.properties);
@@ -662,9 +1120,57 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
         }
     }
 
+    // profiles (minimum viable: activeByDefault)
+    if let Some(profiles_node) = child_element(&project, "profiles") {
+        pom.profiles = profiles_node
+            .children()
+            .filter(|n| n.is_element() && n.has_tag_name("profile"))
+            .map(parse_profile)
+            .collect();
+    }
+
     Ok(pom)
 }
 
+fn parse_properties(node: &roxmltree::Node<'_, '_>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for child in node.children().filter(|n| n.is_element()) {
+        let key = child.tag_name().name().to_string();
+        if let Some(value) = child.text().map(str::trim).filter(|t| !t.is_empty()) {
+            out.insert(key, value.to_string());
+        }
+    }
+    out
+}
+
+fn parse_profile(profile_node: roxmltree::Node<'_, '_>) -> RawProfile {
+    let active_by_default = child_element(&profile_node, "activation")
+        .and_then(|activation| child_text(&activation, "activeByDefault"))
+        .is_some_and(|t| t.eq_ignore_ascii_case("true"));
+
+    let properties = child_element(&profile_node, "properties")
+        .map(|n| parse_properties(&n))
+        .unwrap_or_default();
+
+    let dependencies = child_element(&profile_node, "dependencies")
+        .map(|n| parse_dependencies(&n))
+        .unwrap_or_default();
+
+    let dependency_management = if let Some(dep_mgmt) = child_element(&profile_node, "dependencyManagement") {
+        child_element(&dep_mgmt, "dependencies")
+            .map(|deps| parse_dependencies(&deps))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    RawProfile {
+        active_by_default,
+        properties,
+        dependencies,
+        dependency_management,
+    }
+}
 fn parse_modules_list(modules_node: &roxmltree::Node<'_, '_>) -> Vec<String> {
     modules_node
         .children()
