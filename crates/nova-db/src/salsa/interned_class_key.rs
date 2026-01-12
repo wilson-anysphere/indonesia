@@ -327,7 +327,7 @@ mod tests {
                 syntax_trees: total / 2,
                 indexes: 0,
                 type_info: 0,
-                other: total - (total / 2) - 1,
+                other: total - (total / 2),
             },
         });
 
