@@ -6941,12 +6941,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         text: &str,
         base_span: Option<Span>,
     ) -> Type {
-        preload_type_names(self.resolver, self.scopes, self.scope_id, loader, text);
-        let resolved = nova_resolve::type_ref::resolve_type_ref_text(
+        let resolved = resolve_type_ref_text(
             self.resolver,
             self.scopes,
             self.scope_id,
-            &*loader.store,
+            loader,
             &self.type_vars,
             text,
             base_span,
@@ -7176,7 +7175,7 @@ fn resolve_type_ref_text<'idx>(
     // We still pass the original text into `resolve_type_ref_text` so unresolved type-use
     // annotation names (e.g. `List<@Missing String>`) can be diagnosed when anchored.
     preload_type_names(resolver, scopes, scope_id, loader, text);
-    nova_resolve::type_ref::resolve_type_ref_text(
+    let mut resolved = nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
         scopes,
         scope_id,
@@ -7184,7 +7183,46 @@ fn resolve_type_ref_text<'idx>(
         type_vars,
         text,
         base_span,
-    )
+    );
+    strip_type_use_annotation_type_diagnostics(text, base_span, &mut resolved.diagnostics);
+    resolved
+}
+
+fn strip_type_use_annotation_type_diagnostics(
+    text: &str,
+    base_span: Option<Span>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(base_span) = base_span else {
+        return;
+    };
+
+    diagnostics.retain(|diag| {
+        let Some(span) = diag.span else {
+            return true;
+        };
+        if span.start < base_span.start {
+            return true;
+        }
+        let local_start = span.start - base_span.start;
+        if local_start == 0 || local_start > text.len() || !text.is_char_boundary(local_start) {
+            return true;
+        }
+
+        // Type-use annotations appear inline in `TypeRef.text`, so missing annotation types can
+        // produce `unresolved-type` diagnostics during type-ref parsing. Until Nova models
+        // type-use annotations, suppress those diagnostics to avoid noise (they are still parsed
+        // so the underlying type can be resolved).
+        let mut prev_non_ws = None;
+        for ch in text[..local_start].chars().rev() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            prev_non_ws = Some(ch);
+            break;
+        }
+        !matches!(prev_non_ws, Some('@'))
+    });
 }
 
 #[derive(Default)]
