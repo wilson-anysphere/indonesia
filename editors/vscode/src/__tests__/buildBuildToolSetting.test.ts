@@ -17,6 +17,22 @@ describe('nova.build.buildTool setting', () => {
     expect(contents).toMatch(/request\(\s*['"]nova\/reloadProject['"][\s\S]*?buildTool\s*,/);
   });
 
+  it('skips the build tool picker when invoking build/reload for Bazel targets', async () => {
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
+    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
+
+    const buildProjectIdx = contents.search(/registerCommand\(\s*['"]nova\.buildProject['"]/);
+    expect(buildProjectIdx).toBeGreaterThanOrEqual(0);
+    const afterBuildProject = contents.slice(buildProjectIdx);
+    expect(afterBuildProject).toMatch(/target\s*\?\s*['"]auto['"]\s*:\s*await\s+getBuildBuildTool\(\s*folder\s*\)/);
+
+    const reloadProjectIdx = contents.search(/registerCommand\(\s*['"]nova\.reloadProject['"]/);
+    expect(reloadProjectIdx).toBeGreaterThanOrEqual(0);
+    const afterReloadProject = contents.slice(reloadProjectIdx);
+    expect(afterReloadProject).toMatch(/target\s*\?\s*['"]auto['"]\s*:\s*await\s+getBuildBuildTool\(\s*folder\s*\)/);
+  });
+
   it('build-file auto reload uses nova.build.buildTool (without prompting)', async () => {
     const testDir = path.dirname(fileURLToPath(import.meta.url));
     const buildFileWatchPath = path.resolve(testDir, '..', 'buildFileWatch.ts');
@@ -30,4 +46,3 @@ describe('nova.build.buildTool setting', () => {
     expect(contents).not.toMatch(/showQuickPick/);
   });
 });
-
