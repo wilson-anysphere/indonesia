@@ -30,7 +30,7 @@ fn harness_is_single_root_test_file() {
 
     assert_eq!(
         root_rs_files,
-        ["tests.rs"],
-        "expected a single root integration test harness file (tests/tests.rs); found: {root_rs_files:?}"
+        ["real_jvm.rs"],
+        "expected a single root integration test harness file (tests/real_jvm.rs); found: {root_rs_files:?}"
     );
 }
