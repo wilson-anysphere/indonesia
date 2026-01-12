@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
-use nova_db::Database;
+use nova_db::{Database, FileId};
 
 /// Best-effort workspace Java type index built purely from the in-memory `Database`.
 ///
@@ -16,8 +17,7 @@ pub(crate) struct WorkspaceJavaIndex {
 
 impl WorkspaceJavaIndex {
     pub(crate) fn build(db: &dyn Database) -> Self {
-        let mut index = Self::default();
-
+        let mut java_files = Vec::new();
         for file_id in db.all_file_ids() {
             let Some(path) = db.file_path(file_id) else {
                 continue;
@@ -25,8 +25,16 @@ impl WorkspaceJavaIndex {
             if path.extension().and_then(|e| e.to_str()) != Some("java") {
                 continue;
             }
+            java_files.push((path.to_path_buf(), file_id));
+        }
+        Self::build_for_files(db, &java_files)
+    }
 
-            let text = db.file_content(file_id);
+    pub(crate) fn build_for_files(db: &dyn Database, java_files: &[(PathBuf, FileId)]) -> Self {
+        let mut index = Self::default();
+
+        for (_path, file_id) in java_files {
+            let text = db.file_content(*file_id);
             let package = parse_package_name(text).unwrap_or_default();
             index.add_package_hierarchy(&package);
 

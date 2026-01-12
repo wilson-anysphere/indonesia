@@ -41,6 +41,7 @@ use serde_json::json;
 use crate::completion_cache;
 use crate::framework_cache;
 use crate::java_completion::workspace_index::{parse_package_name, WorkspaceJavaIndex};
+use crate::java_completion::workspace_index_cache;
 use crate::java_semantics::source_types::SourceTypeProvider;
 use crate::lombok_intel;
 use crate::micronaut_intel;
@@ -3092,13 +3093,14 @@ const MAX_IMPORT_JDK_TYPES: usize = 500;
 
 fn import_path_completions(
     db: &dyn Database,
+    file: FileId,
     text: &str,
     offset: usize,
     prefix: &str,
 ) -> Option<Vec<CompletionItem>> {
     let parent = import_completion_parent_package(text, offset)?;
 
-    let workspace = WorkspaceJavaIndex::build(db);
+    let workspace = workspace_index_cache::workspace_index_for_file(db, file);
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
@@ -4085,7 +4087,7 @@ fn import_completions(
         });
     }
 
-    let workspace = WorkspaceJavaIndex::build(db);
+    let workspace = workspace_index_cache::workspace_index_for_file(db, file);
 
     let jdk = JDK_INDEX
         .as_ref()
@@ -6028,7 +6030,7 @@ pub(crate) fn core_completions(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-    if let Some(items) = import_path_completions(db, text, offset, &prefix) {
+    if let Some(items) = import_path_completions(db, file, text, offset, &prefix) {
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -6724,7 +6726,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         );
     }
 
-    if let Some(items) = import_path_completions(db, text, offset, &prefix) {
+    if let Some(items) = import_path_completions(db, file, text, offset, &prefix) {
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
