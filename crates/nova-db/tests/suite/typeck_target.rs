@@ -256,3 +256,20 @@ class C {
         "expected Exception to resolve from built-in JDK index; got {diags:?}"
     );
 }
+
+#[test]
+fn varargs_method_call_resolves() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {}
+    static void m() { foo(1, 2, 3); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected varargs call to resolve, got {diags:?}"
+    );
+}
