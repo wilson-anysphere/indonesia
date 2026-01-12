@@ -122,6 +122,10 @@ pub trait FrameworkAnalyzer: Send + Sync {
 }
 ```
 
+The `Database` surface is intentionally small and partially-optional: `file_text(file)` may be
+`None`, and `all_files(project)`/`all_classes(project)` may be empty when project-wide enumeration
+is not available. Analyzers should treat these as "no data" and return best-effort results.
+
 ### IDE Integration Constraint (Database Adapter)
 
 `nova_framework::FrameworkAnalyzer` runs on `nova_framework::Database`, which requires structural

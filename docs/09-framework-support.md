@@ -376,6 +376,11 @@ Also note that optional `nova_framework::Database` methods may not be implemente
 Analyzers are expected to degrade gracefully by skipping file-text parsing and cross-file scanning
 when that information is unavailable.
 
+`nova_framework::Database` is intentionally minimal. Implementations may return `None` for
+`file_text`/`file_path` and may return an empty list from `all_files(project)`/`all_classes(project)`
+when project-wide enumeration is not available. Analyzers should degrade gracefully in those cases
+(skip cross-file scans and return no project-wide diagnostics/completions).
+
 ```rust
 use nova_framework::{AnalyzerRegistry, MemoryDatabase};
 use nova_framework_lombok::LombokAnalyzer;
