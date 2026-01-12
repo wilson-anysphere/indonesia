@@ -295,11 +295,17 @@ fn select_model(task: &AiTask, available: &[Arc<dyn AiModel>]) -> Arc<dyn AiMode
 ## Testing
 
 ```bash
-# AI tests
+# AI core tests
 bash scripts/cargo_agent.sh test -p nova-ai --lib
+
+# AI evaluation / regression suite (privacy filtering, patch safety, completion validation)
+bash scripts/cargo_agent.sh test -p nova-ai --test ai_eval
 
 # Code generation tests
 bash scripts/cargo_agent.sh test -p nova-ai-codegen --lib
+
+# LSP integration tests for AI features (code actions / completion wiring)
+bash scripts/cargo_agent.sh test -p nova-lsp --lib
 ```
 
 ### Mock Models

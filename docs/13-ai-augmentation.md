@@ -444,8 +444,16 @@ multi_token_completion_ms = 250
 ### Code-editing policy (patches / file edits)
 
 Nova treats **patch-based code edits** (anything that applies edits to files) as higher risk than
-explain-only AI actions. In particular, anonymizing identifiers is great for privacy, but it makes
-LLM-generated patches impossible to apply reliably to the original source.
+explain-only AI actions.
+
+In the LSP integration, AI code-editing features (for example: **"Generate method body with AI"**
+and **"Generate tests with AI"**) work by asking the model for a **structured patch** (JSON patch or
+unified diff) and applying it as an editor workspace edit. Because these operations must round-trip
+exact source text, they are subject to the `allow_cloud_code_edits` + anonymization policy described
+below.
+
+In particular, anonymizing identifiers is great for privacy, but it makes LLM-generated patches
+impossible to apply reliably to the original source.
 
 As a result, Nova refuses AI code edits when:
 
@@ -475,6 +483,31 @@ Depending on the editor integration, these may be surfaced as settings prefixed 
 (for example: `nova.ai.privacy.allow_cloud_code_edits`).
 
 Explain-only actions are always allowed regardless of these settings.
+
+---
+
+### Excluding files from AI (`ai.privacy.excluded_paths`)
+
+`ai.privacy.excluded_paths` is a list of glob patterns for files whose contents must **never** be
+sent to an LLM provider (local or cloud).
+
+**Path matching semantics:**
+
+- Patterns are intended to be **workspace-relative**. Prefer `src/**`-style globs (or more specific
+  ones like `src/secrets/**`) over absolute filesystem paths.
+- The LSP layer typically works with **absolute** on-disk paths (decoded from `file://` URIs). Nova
+  normalizes those into workspace-relative paths for matching, so a pattern like `src/**` will match
+  an absolute LSP path like `/home/alice/project/src/Main.java`.
+
+**Behavior:**
+
+When a file matches `excluded_paths`, Nova automatically disables AI features that would need to
+include that file’s contents in a prompt, including:
+
+- multi-token completions
+- AI code actions that produce patches / file edits
+
+Explain-only actions may still be available, but they will omit code context from excluded files.
 
 ---
 
