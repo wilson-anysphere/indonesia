@@ -502,7 +502,12 @@ fn initialize_result_json() -> serde_json::Value {
 
     json!({
         "capabilities": {
-            "textDocumentSync": { "openClose": true, "change": 2, "save": { "includeText": false } },
+            "textDocumentSync": {
+                "openClose": true,
+                "change": 2,
+                "willSave": true,
+                "save": { "includeText": false }
+            },
             "workspace": {
                 // Advertise workspace folder support so editors can send
                 // `workspace/didChangeWorkspaceFolders` when the user switches projects.
@@ -2381,6 +2386,16 @@ fn handle_notification(
                 .unwrap_or_else(|| uri_string);
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
+        }
+        "textDocument/willSave" => {
+            let Ok(_params) =
+                serde_json::from_value::<lsp_types::WillSaveTextDocumentParams>(params)
+            else {
+                return Ok(());
+            };
+
+            // Best-effort support: today we don't need to do anything on will-save, but parsing the
+            // message keeps the server compatible with clients that send it.
         }
         "textDocument/didSave" => {
             let Ok(params) = serde_json::from_value::<lsp_types::DidSaveTextDocumentParams>(params)
