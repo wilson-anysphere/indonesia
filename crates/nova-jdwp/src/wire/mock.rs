@@ -263,6 +263,10 @@ impl MockJdwpServer {
         self.state.create_string_calls.lock().await.clone()
     }
 
+    pub async fn define_class_calls(&self) -> Vec<DefineClassCall> {
+        self.state.define_class_calls.lock().await.clone()
+    }
+
     pub async fn stack_frame_set_values_calls(&self) -> Vec<StackFrameSetValuesCall> {
         self.state.stack_frame_set_values_calls.lock().await.clone()
     }
@@ -460,6 +464,7 @@ struct State {
     redefine_classes_error_code: AtomicU16,
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
     create_string_calls: tokio::sync::Mutex<Vec<CreateStringCall>>,
+    define_class_calls: tokio::sync::Mutex<Vec<DefineClassCall>>,
     stack_frame_set_values_calls: tokio::sync::Mutex<Vec<StackFrameSetValuesCall>>,
     object_reference_set_values_calls: tokio::sync::Mutex<Vec<ObjectReferenceSetValuesCall>>,
     class_type_set_values_calls: tokio::sync::Mutex<Vec<ClassTypeSetValuesCall>>,
@@ -553,6 +558,7 @@ impl State {
             redefine_classes_error_code: AtomicU16::new(0),
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
             create_string_calls: tokio::sync::Mutex::new(Vec::new()),
+            define_class_calls: tokio::sync::Mutex::new(Vec::new()),
             stack_frame_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
             object_reference_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
             class_type_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
@@ -679,6 +685,13 @@ pub struct CreateStringCall {
     pub returned_id: ObjectId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefineClassCall {
+    pub loader: ObjectId,
+    pub name: String,
+    pub bytecode_len: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrameSetValuesCall {
     pub thread: ThreadId,
@@ -755,6 +768,7 @@ const SMART_STEP_BAZ_METHOD_ID: u64 = 0x4005;
 const SMART_STEP_CORGE_METHOD_ID: u64 = 0x4006;
 const SMART_STEP_FOO_METHOD_ID: u64 = 0x4007;
 const SMART_STEP_TRIM_METHOD_ID: u64 = 0x4008;
+const DEFINED_STAGE0_METHOD_ID: u64 = 0x4009;
 const SMART_STEP_METHOD_IDS: [u64; 6] = [
     SMART_STEP_BAR_METHOD_ID,
     SMART_STEP_QUX_METHOD_ID,
@@ -1481,6 +1495,14 @@ async fn handle_packet(
             let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             match class_id {
+                DEFINED_CLASS_ID => {
+                    w.write_u32(1);
+
+                    w.write_id(DEFINED_STAGE0_METHOD_ID, sizes.method_id);
+                    w.write_string("stage0");
+                    w.write_string("()Ljava/lang/Object;");
+                    w.write_u32(1);
+                }
                 CLASS_ID => {
                     w.write_u32(7);
 
@@ -2213,19 +2235,29 @@ async fn handle_packet(
         // ClassLoaderReference.DefineClass
         (14, 2) => {
             let res = (|| {
-                let _loader = r.read_object_id(sizes)?;
-                let _name = r.read_string()?;
+                let loader = r.read_object_id(sizes)?;
+                let name = r.read_string()?;
                 let len = r.read_u32()? as usize;
                 let _bytes = r.read_bytes(len)?;
-                Ok::<_, super::types::JdwpError>(())
+                Ok::<_, super::types::JdwpError>((loader, name, len))
             })();
 
-            if res.is_err() {
-                (1, Vec::new())
-            } else {
-                let mut w = JdwpWriter::new();
-                w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
-                (0, w.into_vec())
+            match res {
+                Ok((loader, name, len)) => {
+                    state
+                        .define_class_calls
+                        .lock()
+                        .await
+                        .push(DefineClassCall {
+                            loader,
+                            name,
+                            bytecode_len: len,
+                        });
+                    let mut w = JdwpWriter::new();
+                    w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
             }
         }
         // ClassType.Superclass
