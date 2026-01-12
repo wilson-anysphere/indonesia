@@ -12,7 +12,7 @@ import { formatError, isSafeModeError } from './safeMode';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
-const NOT_SUPPORTED_MESSAGE = 'Not supported by this Nova version';
+const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
 type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
 };
@@ -351,7 +351,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
   private async loadCategoryChildren(element: CategoryNode): Promise<FrameworkNode[]> {
     if (!isFrameworkCategorySupported(element)) {
-      return [messageNode(NOT_SUPPORTED_MESSAGE, undefined, new vscode.ThemeIcon('warning'))];
+      return [unsupportedCategoryNode(element.category)];
     }
 
     switch (element.category) {
@@ -381,7 +381,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      return [messageNode('No endpoints found')];
+      return [messageNode('No endpoints found.')];
     }
 
     const normalized = endpoints
@@ -444,7 +444,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      return [messageNode('No endpoints found')];
+      return [messageNode('No endpoints found.')];
     }
 
     const normalized = endpoints
@@ -479,7 +479,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const beans = Array.isArray(response.beans) ? response.beans : [];
     if (beans.length === 0) {
-      return [messageNode('No beans found')];
+      return [messageNode('No beans found.')];
     }
 
     const normalized = beans
@@ -583,6 +583,17 @@ function messageNode(label: string, description?: string, icon: vscode.ThemeIcon
 
 function unsupportedMethodNode(method: string): MessageNode {
   return messageNode(NOT_SUPPORTED_MESSAGE, method, new vscode.ThemeIcon('warning'));
+}
+
+function unsupportedCategoryNode(category: FrameworkCategory): MessageNode {
+  switch (category) {
+    case 'web-endpoints':
+      return unsupportedMethodNode('nova/web/endpoints');
+    case 'micronaut-endpoints':
+      return unsupportedMethodNode('nova/micronaut/endpoints');
+    case 'micronaut-beans':
+      return unsupportedMethodNode('nova/micronaut/beans');
+  }
 }
 
 function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
