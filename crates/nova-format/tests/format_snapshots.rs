@@ -306,6 +306,42 @@ class Foo {
 }
 
 #[test]
+fn formats_parameterized_varargs_spacing() {
+    let input = "class Foo{void m(java.util.List<String>...args){}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    void m(java.util.List<String>... args) {
+    }
+}
+"###
+    );
+}
+
+#[test]
+fn formats_instanceof_pattern_with_generic_type() {
+    let input = "class Foo{void m(Object x){if(x instanceof java.util.List<String>xs){}}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    void m(Object x) {
+        if (x instanceof java.util.List<String> xs) {
+        }
+    }
+}
+"###
+    );
+}
+
+#[test]
 fn formats_annotated_type_arguments() {
     let input = "class Foo{java.util.List<@Deprecated String>xs;}\n";
     let parse = parse_java(input);
