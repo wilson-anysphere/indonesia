@@ -7,10 +7,9 @@ use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
 use nova_core::ClassId;
 use nova_jdk::{JdkIndex, BUILTIN_JDK_BINARY_NAMES};
 use nova_project::{
-    BuildSystem, JavaConfig, JavaLanguageLevel, JpmsModuleRoot, JpmsWorkspace,
-    LanguageLevelProvenance, Module, ModuleLanguageLevel, ProjectConfig, SourceRoot,
-    SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
-    WorkspaceProjectModel,
+    BuildSystem, JavaConfig, JavaLanguageLevel, JpmsModuleRoot, LanguageLevelProvenance, Module,
+    ModuleLanguageLevel, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
+    WorkspaceModuleBuildId, WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 use thiserror::Error;
 use walkdir::WalkDir;
