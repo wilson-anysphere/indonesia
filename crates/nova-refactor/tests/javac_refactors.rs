@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
 use nova_refactor::{
     apply_workspace_edit, extract_constant, move_class_workspace_edit, rename, ExtractOptions,
-    FileId, MoveClassParams, RefactorJavaDatabase, RenameParams, TextRange,
+    extract_variable, inline_variable, ExtractVariableParams, FileId, InlineVariableParams,
+    MoveClassParams, RefactorJavaDatabase, RenameParams, TextRange,
 };
 use nova_test_utils::javac::{javac_available, run_javac_files};
 
@@ -195,4 +196,83 @@ public class B {
 
     let updated = apply_workspace_edit(&workspace_files, &edit).expect("apply workspace edit");
     assert_javac_ok(&updated, "after move class");
+}
+
+#[test]
+#[ignore]
+fn javac_refactor_extract_variable_compiles_before_after() {
+    if !javac_available() {
+        eprintln!("javac not available; skipping test");
+        return;
+    }
+
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+    System.out.println(x);
+  }
+}
+"#;
+
+    let files = BTreeMap::from([(file.clone(), src.to_string())]);
+    assert_javac_ok(&files, "before extract variable");
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let start = src.find("1 + 2").expect("selection");
+    let end = start + "1 + 2".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: TextRange::new(start, end),
+            name: "sum".into(),
+            // Use an explicit type rather than `var` so this stays compatible with older JDKs.
+            use_var: false,
+        },
+    )
+    .expect("extract variable should succeed");
+
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
+    assert_javac_ok(&updated, "after extract variable");
+}
+
+#[test]
+#[ignore]
+fn javac_refactor_inline_variable_compiles_before_after() {
+    if !javac_available() {
+        eprintln!("javac not available; skipping test");
+        return;
+    }
+
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int foo = 1 + 2;
+    int x = foo * 3;
+    System.out.println(x);
+  }
+}
+"#;
+
+    let files = BTreeMap::from([(file.clone(), src.to_string())]);
+    assert_javac_ok(&files, "before inline variable");
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("foo = 1 + 2").expect("foo declaration");
+    let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .expect("inline variable should succeed");
+
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
+    assert_javac_ok(&updated, "after inline variable");
 }
