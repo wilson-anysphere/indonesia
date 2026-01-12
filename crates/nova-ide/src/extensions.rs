@@ -753,7 +753,6 @@ where
         this
     }
 }
-
 #[allow(private_bounds)]
 impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
     pub fn with_default_registry(
