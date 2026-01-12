@@ -16,6 +16,7 @@ pub use cdi::{CdiAnalysis, CdiAnalysisWithSources, CdiModel, SourceDiagnostic, S
 pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
 pub use config::{collect_config_property_names, config_property_completions};
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -224,17 +225,26 @@ impl QuarkusAnalyzer {
 
         let mut keys = BTreeSet::<String>::new();
         for file in &files {
-            let Some(text) = db.file_text(file.id) else {
-                continue;
+            let text = match db.file_text(file.id) {
+                Some(text) => Cow::Borrowed(text),
+                None => {
+                    let Some(path) = db.file_path(file.id) else {
+                        continue;
+                    };
+                    let Ok(text) = std::fs::read_to_string(path) else {
+                        continue;
+                    };
+                    Cow::Owned(text)
+                }
             };
             match file.kind {
                 ConfigFileKind::Properties => {
-                    for entry in nova_properties::parse(text).entries {
+                    for entry in nova_properties::parse(text.as_ref()).entries {
                         keys.insert(entry.key);
                     }
                 }
                 ConfigFileKind::Yaml => {
-                    for entry in yaml::parse(text).entries {
+                    for entry in yaml::parse(text.as_ref()).entries {
                         keys.insert(entry.key);
                     }
                 }
@@ -574,9 +584,6 @@ fn collect_project_config_files(db: &dyn Database, project: ProjectId) -> Vec<Co
 
     for file in db.all_files(project) {
         let Some(path) = db.file_path(file) else {
-            continue;
-        };
-        let Some(_) = db.file_text(file) else {
             continue;
         };
 
