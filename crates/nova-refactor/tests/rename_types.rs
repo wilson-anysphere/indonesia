@@ -53,9 +53,8 @@ class Use {
 
     assert!(
         !updated.contains_key(&foo_file),
-        "expected Foo.java to be renamed away"
+        "expected Foo.java to be renamed to Bar.java"
     );
-
     let foo_after = updated.get(&bar_file).expect("updated Bar.java");
     let use_after = updated.get(&use_file).expect("updated Use.java");
 

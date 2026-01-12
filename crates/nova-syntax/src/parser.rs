@@ -1868,12 +1868,15 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::Block.into());
         self.expect(SyntaxKind::LBrace, "expected `{`");
 
-        let block_indent = if self.last_non_trivia_kind == SyntaxKind::LBrace {
-            self.line_indent(self.last_non_trivia_range.start)
+        let (block_indent, _brace_is_first_token_on_line) =
+            if self.last_non_trivia_kind == SyntaxKind::LBrace {
+            let start = self.last_non_trivia_range.start;
+            let (indent, is_first) = self.line_indent_and_is_first_token(start);
+            (indent, is_first)
         } else {
             // `{` is missing; fall back to the indent of the first token in the block.
             let start = self.current_range().start;
-            self.line_indent(start)
+            (self.line_indent(start), false)
         };
         // `block_indent` is a best-effort heuristic used for error recovery (to avoid consuming
         // outer-closing braces when an inner `}` is missing). However, it can be misleading when
