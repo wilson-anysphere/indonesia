@@ -839,6 +839,35 @@ fn owning_targets_cache_is_not_cleared_by_invalidate_changed_files_in_bazelignor
 }
 
 #[test]
+fn owning_targets_cache_is_cleared_by_invalidate_changed_files_on_bazelignore() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+
+    let runner = QueryRunner::new([(
+        format!("same_pkg_direct_rdeps({file_label})"),
+        MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+    )]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners1 = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners1, vec!["//java:hello_lib".to_string()]);
+
+    // Add `.bazelignore` to exclude the `java/` package and notify the workspace; cached owning
+    // targets should be invalidated.
+    std::fs::write(dir.path().join(".bazelignore"), "java\n").unwrap();
+    workspace
+        .invalidate_changed_files(&[PathBuf::from(".bazelignore")])
+        .unwrap();
+
+    let owners2 = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert!(owners2.is_empty());
+
+    // The second lookup should return early (ignored path) without invoking Bazel.
+    assert_eq!(runner.calls().len(), 1);
+}
+
+#[test]
 fn owning_targets_cache_is_not_cleared_by_invalidate_changed_files_on_source_edits() {
     let dir = tempdir().unwrap();
     let file = minimal_java_package(dir.path());
