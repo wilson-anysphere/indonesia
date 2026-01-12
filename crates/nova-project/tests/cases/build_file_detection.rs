@@ -141,6 +141,40 @@ fn maven_is_build_file_recognizes_expected_paths() {
 }
 
 #[test]
+fn build_markers_under_ignored_dirs_are_not_build_files() {
+    let cases = [
+        (
+            BuildSystem::Gradle,
+            PathBuf::from("node_modules").join("foo").join("build.gradle"),
+        ),
+        (
+            BuildSystem::Bazel,
+            PathBuf::from("bazel-out").join("foo").join("BUILD"),
+        ),
+        (
+            BuildSystem::Bazel,
+            PathBuf::from("bazel-bin").join("foo").join("BUILD.bazel"),
+        ),
+        (
+            BuildSystem::Bazel,
+            PathBuf::from("bazel-testlogs").join("foo").join("rules.bzl"),
+        ),
+        (
+            BuildSystem::Bazel,
+            PathBuf::from("bazel-myws").join("foo").join("WORKSPACE"),
+        ),
+    ];
+
+    for (build_system, path) in cases {
+        assert!(
+            !is_build_file(build_system, &path),
+            "expected {} not to be treated as a build file for {build_system:?}",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn reload_project_reloads_on_gradle_wrapper_file_change() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize");

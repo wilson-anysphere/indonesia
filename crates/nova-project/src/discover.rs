@@ -507,11 +507,60 @@ pub fn is_bazel_workspace(root: &Path) -> bool {
     nova_build_model::is_bazel_workspace(root)
 }
 
+fn is_in_noisy_dir(path: &Path) -> bool {
+    path.components().any(|c| {
+        let component = c.as_os_str();
+        if component == std::ffi::OsStr::new(".git")
+            || component == std::ffi::OsStr::new(".gradle")
+            || component == std::ffi::OsStr::new(".idea")
+            || component == std::ffi::OsStr::new(".nova")
+            || component == std::ffi::OsStr::new("build")
+            || component == std::ffi::OsStr::new("target")
+            || component == std::ffi::OsStr::new("node_modules")
+            || component == std::ffi::OsStr::new("bazel-out")
+            || component == std::ffi::OsStr::new("bazel-bin")
+            || component == std::ffi::OsStr::new("bazel-testlogs")
+        {
+            return true;
+        }
+
+        component
+            .to_str()
+            .is_some_and(|component| component.starts_with("bazel-"))
+    })
+}
+
 /// Check whether a file change should trigger a full project reload for a given build system.
 pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
+    // `.nova/queries/gradle.json` is a file-based handoff from `nova-build` to `nova-project`
+    // that contains a Gradle snapshot (classpath, source roots, etc).
+    //
+    // Treat it as a build file so project reloads are triggered immediately when the snapshot is
+    // updated.
+    if matches!(build_system, BuildSystem::Gradle)
+        && path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)
+    {
+        return true;
+    }
+
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
+
+    // Nova internal config/snapshots live under `.nova/`, which is otherwise treated as a noisy
+    // directory. Keep these files as reload triggers.
+    if name == "config.toml" && path.ends_with(&Path::new(".nova").join("config.toml")) {
+        return true;
+    }
+    if name == "generated-roots.json"
+        && path.ends_with(&Path::new(".nova").join("apt-cache").join("generated-roots.json"))
+    {
+        return true;
+    }
+
+    if is_in_noisy_dir(path) {
+        return false;
+    }
 
     match build_system {
         BuildSystem::Maven => {
@@ -531,15 +580,6 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             }
         }
         BuildSystem::Gradle => {
-            // `.nova/queries/gradle.json` is a file-based handoff from `nova-build` to
-            // `nova-project` that contains a Gradle snapshot (classpath, source roots, etc).
-            //
-            // Treat it as a build file so project reloads are triggered immediately when the
-            // snapshot is updated.
-            if path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH) {
-                return true;
-            }
-
             // Gradle project structure is extremely flexible:
             // - "script plugins" (`apply from: "deps.gradle"`) are often used to share config
             // - version catalogs (`*.versions.toml`) can change dependency resolution + plugins

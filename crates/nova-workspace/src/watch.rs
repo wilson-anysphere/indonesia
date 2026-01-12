@@ -186,6 +186,32 @@ fn is_within_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
+fn is_in_noisy_dir(path: &Path) -> bool {
+    path.components().any(|c| {
+        let component = c.as_os_str();
+        if component == std::ffi::OsStr::new(".git")
+            || component == std::ffi::OsStr::new(".gradle")
+            || component == std::ffi::OsStr::new(".idea")
+            || component == std::ffi::OsStr::new(".nova")
+            || component == std::ffi::OsStr::new("build")
+            || component == std::ffi::OsStr::new("target")
+            || component == std::ffi::OsStr::new("node_modules")
+            || component == std::ffi::OsStr::new("bazel-out")
+            || component == std::ffi::OsStr::new("bazel-bin")
+            || component == std::ffi::OsStr::new("bazel-testlogs")
+        {
+            return true;
+        }
+
+        // Best-effort skip for Bazel output trees. Bazel creates `bazel-<workspace>` symlinks at
+        // the workspace root, but in practice these entries can appear at arbitrary depths in
+        // large repos, so ignore them wherever they show up.
+        component
+            .to_str()
+            .is_some_and(|component| component.starts_with("bazel-"))
+    })
+}
+
 pub fn is_build_file(path: &Path) -> bool {
     if path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH) {
         return true;
@@ -195,39 +221,36 @@ pub fn is_build_file(path: &Path) -> bool {
         return false;
     };
 
-    // Mirror `nova-build` Gradle build-file fingerprinting exclusions to avoid
-    // treating build output / cache directories as project-changing inputs.
-    let root_component_is_bazel_output = match path.components().next() {
-        Some(std::path::Component::Normal(name)) => name.to_string_lossy().starts_with("bazel-"),
-        _ => false,
-    };
-    let in_ignored_dir = root_component_is_bazel_output
-        || path.components().any(|c| {
-            c.as_os_str() == std::ffi::OsStr::new(".git")
-                || c.as_os_str() == std::ffi::OsStr::new(".gradle")
-                || c.as_os_str() == std::ffi::OsStr::new("build")
-                || c.as_os_str() == std::ffi::OsStr::new("target")
-                || c.as_os_str() == std::ffi::OsStr::new(".nova")
-                || c.as_os_str() == std::ffi::OsStr::new(".idea")
-                || c.as_os_str() == std::ffi::OsStr::new("node_modules")
-        });
-
     // Nova's generated-source roots discovery reads a snapshot under
     // `.nova/apt-cache/generated-roots.json`. Updates to this file should
     // trigger a project reload so newly discovered generated roots are watched.
     if name == "generated-roots.json"
-        && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
+        && path.ends_with(&Path::new(".nova").join("apt-cache").join("generated-roots.json"))
     {
         return true;
     }
 
+    // Nova internal config is stored under `.nova/config.toml`. This is primarily a legacy
+    // fallback for `nova_config::discover_config_path`, but still needs to be watched so changes
+    // take effect without restarting.
+    if name == "config.toml" && path.ends_with(&Path::new(".nova").join("config.toml")) {
+        return true;
+    }
+
+    // Ignore build markers under commonly noisy directories (e.g. Bazel output trees). This
+    // mirrors `nova-build` build-file fingerprinting behavior so that generated / cached files do
+    // not trigger workspace reloads.
+    if is_in_noisy_dir(path) {
+        return false;
+    }
+
     // Gradle script plugins can influence dependencies and tasks.
-    if !in_ignored_dir && (name.ends_with(".gradle") || name.ends_with(".gradle.kts")) {
+    if name.ends_with(".gradle") || name.ends_with(".gradle.kts") {
         return true;
     }
 
     // Gradle version catalogs can define dependency versions.
-    if !in_ignored_dir && name.ends_with(".versions.toml") {
+    if name.ends_with(".versions.toml") {
         return true;
     }
 
@@ -238,11 +261,10 @@ pub fn is_build_file(path: &Path) -> bool {
     // - `gradle.lockfile` at any depth.
     // - `*.lockfile` under any `dependency-locks/` directory (covers Gradle's default
     //   `gradle/dependency-locks/` location).
-    if !in_ignored_dir && name == "gradle.lockfile" {
+    if name == "gradle.lockfile" {
         return true;
     }
-    if !in_ignored_dir
-        && name.ends_with(".lockfile")
+    if name.ends_with(".lockfile")
         && path
             .ancestors()
             .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
@@ -251,11 +273,10 @@ pub fn is_build_file(path: &Path) -> bool {
     }
 
     // Bazel BSP server discovery uses `.bsp/*.json` connection files (optional).
-    if !in_ignored_dir
-        && path
-            .parent()
-            .and_then(|p| p.file_name())
-            .is_some_and(|dir| dir == ".bsp")
+    if path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|dir| dir == ".bsp")
         && path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -264,29 +285,24 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
-    if !in_ignored_dir
-        && (name == "pom.xml"
-            || name == "module-info.java"
-            || name == "nova.toml"
-            || name == ".nova.toml"
-            || name == "nova.config.toml"
-            || name == ".bazelrc"
-            || name.starts_with(".bazelrc.")
-            || name == ".bazelversion"
-            || name == "MODULE.bazel.lock"
-            || name == "bazelisk.rc"
-            || name == ".bazelignore"
-            || name.starts_with("build.gradle")
-            || name.starts_with("settings.gradle")
-            || matches!(
-                name,
-                "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel"
-            ))
+    if name == "pom.xml"
+        || name == "module-info.java"
+        || name == "nova.toml"
+        || name == ".nova.toml"
+        || name == "nova.config.toml"
+        || name == ".bazelrc"
+        || name.starts_with(".bazelrc.")
+        || name == ".bazelversion"
+        || name == "MODULE.bazel.lock"
+        || name == "bazelisk.rc"
+        || name == ".bazelignore"
+        || name.starts_with("build.gradle")
+        || name.starts_with("settings.gradle")
+        || matches!(
+            name,
+            "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel"
+        )
     {
-        return true;
-    }
-
-    if name == "config.toml" && path.ends_with(Path::new(".nova/config.toml")) {
         return true;
     }
 
@@ -435,10 +451,15 @@ mod tests {
             root.join("node_modules").join("pom.xml"),
             root.join("node_modules").join("build.gradle"),
             root.join("node_modules").join("deps.versions.toml"),
+            root.join("node_modules").join("foo").join("build.gradle"),
             root.join("bazel-out").join("pom.xml"),
+            root.join("bazel-out").join("foo").join("BUILD"),
             root.join("bazel-bin").join("build.gradle"),
+            root.join("bazel-bin").join("foo").join("BUILD.bazel"),
             root.join("bazel-testlogs").join("pom.xml"),
+            root.join("bazel-testlogs").join("foo").join("rules.bzl"),
             root.join("bazel-myworkspace").join("pom.xml"),
+            root.join("bazel-myws").join("foo").join("WORKSPACE"),
         ];
 
         for path in non_build_files {
@@ -582,6 +603,32 @@ mod tests {
         let config = WatchConfig::new(root.clone());
         let path = root.join("Example.java");
         assert!(!is_build_file(&path));
+        let event = NormalizedEvent::Modified(path);
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
+    }
+
+    #[test]
+    fn java_changes_under_generated_roots_in_bazel_outputs_remain_source_changes() {
+        let root = PathBuf::from("/tmp/workspace");
+        let mut config = WatchConfig::new(root.clone());
+        config.generated_source_roots = vec![root.join("bazel-out").join("gen-src")];
+
+        let path = root
+            .join("bazel-out")
+            .join("gen-src")
+            .join("com")
+            .join("example")
+            .join("Generated.java");
+
+        assert!(
+            !is_build_file(&path),
+            "expected {} not to be treated as a build file",
+            path.display()
+        );
+
         let event = NormalizedEvent::Modified(path);
         assert_eq!(
             categorize_event(&config, &event),

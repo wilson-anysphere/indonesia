@@ -17,8 +17,11 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
 
     let maven_repo = root.join("m2");
     fs::create_dir_all(&maven_repo).expect("mkdir m2");
-    // Create a fake Guava jar in the local repo so dependency resolution is deterministic and
-    // doesn't rely on the host machine's `~/.m2/repository`.
+    // `nova-project` is intentionally offline (it does not invoke Maven), so dependency jars must
+    // already exist in the configured local repository for them to appear on classpaths.
+    //
+    // Create a placeholder Guava jar so this test is deterministic and doesn't rely on the host
+    // machine's `~/.m2/repository`.
     let guava_jar = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
     fs::create_dir_all(guava_jar.parent().expect("guava jar parent"))
         .expect("mkdir guava jar parent");
