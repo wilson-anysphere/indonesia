@@ -751,12 +751,14 @@ impl ExtractMethod {
 
                 let replacement = if let Some(ret) = &analysis.return_value {
                     if ret.declared_in_selection {
-                        let modifiers = local_var_modifiers_text_in_selection(
-                            source,
-                            &method_body,
-                            selection,
-                            &ret.name,
-                        );
+                        let modifiers = find_statement_selection(&method_body, selection)
+                            .and_then(|sel| {
+                                local_var_modifiers_text_in_selection(
+                                    source,
+                                    &sel.statements,
+                                    &ret.name,
+                                )
+                            });
                         if let Some(modifiers) = modifiers {
                             format!("{modifiers} {} {} = {call_expr};", ret.ty, ret.name)
                         } else {
@@ -3406,25 +3408,20 @@ fn infer_expression_return_type(
 
 fn local_var_modifiers_text_in_selection(
     source: &str,
-    body: &ast::Block,
-    selection: TextRange,
+    selection_statements: &[ast::Statement],
     name: &str,
 ) -> Option<String> {
-    for stmt in body
-        .syntax()
-        .descendants()
-        .filter_map(ast::LocalVariableDeclarationStatement::cast)
-    {
+    for stmt in selection_statements {
+        let ast::Statement::LocalVariableDeclarationStatement(stmt) = stmt else {
+            continue;
+        };
         let Some(list) = stmt.declarator_list() else {
             continue;
         };
-        let declares_name_in_selection = list.declarators().any(|decl| {
-            let Some(tok) = decl.name_token() else {
-                return false;
-            };
-            tok.text() == name && span_within_range(span_of_token(&tok), selection)
+        let declares_name = list.declarators().any(|decl| {
+            decl.name_token().is_some_and(|tok| tok.text() == name)
         });
-        if !declares_name_in_selection {
+        if !declares_name {
             continue;
         }
         let mods = stmt.modifiers()?;

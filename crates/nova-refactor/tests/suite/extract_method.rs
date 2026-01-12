@@ -2211,6 +2211,55 @@ class C {
 }
 
 #[test]
+fn extract_method_preserves_final_for_declared_return_value_when_name_is_shadowed_in_nested_scope() {
+    let fixture = r#"
+class C {
+    void m(boolean cond) {
+        /*start*/if (cond) {
+            int x = 1;
+            System.out.println(x);
+        }
+        final int x = 2;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "initX".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(boolean cond) {
+        final int x = initX(cond);
+        System.out.println(x);
+    }
+
+    private int initX(boolean cond) {
+        if (cond) {
+            int x = 1;
+            System.out.println(x);
+        }
+        final int x = 2;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_preserves_annotations_on_declared_return_value() {
     let fixture = r#"
 @interface A {}
