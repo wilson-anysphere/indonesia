@@ -890,11 +890,12 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
             match ident {
                 "abstract" => pending_mods.is_abstract = true,
                 "final" => pending_mods.is_final = true,
-                "class" | "interface" => {
-                    let kind = if ident == "class" {
-                        TypeKind::Class
-                    } else {
+                "class" | "interface" | "enum" | "record" => {
+                    let kind = if ident == "interface" {
                         TypeKind::Interface
+                    } else {
+                        // Best-effort: treat `enum` and `record` as `class`-like types.
+                        TypeKind::Class
                     };
 
                     let (name, name_span) = match tokens.get(i + 1).and_then(|t| t.ident()) {
@@ -917,6 +918,14 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                     let mut super_class = None;
                     let mut interfaces: Vec<String> = Vec::new();
 
+                    // Records have a mandatory header: `( ... )`. Skip it so we can find
+                    // `implements` and the type body.
+                    if ident == "record" && tokens.get(j).and_then(|t| t.symbol()) == Some('(') {
+                        if let Some(end) = find_matching(&tokens, j, '(', ')') {
+                            j = end + 1;
+                        }
+                    }
+
                     while j < tokens.len() {
                         if tokens.get(j).and_then(|t| t.symbol()) == Some('{') {
                             break;
@@ -925,6 +934,17 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                         match tokens.get(j).and_then(|t| t.ident()) {
                             Some("extends") => {
                                 j += 1;
+
+                                // `enum` and `record` cannot explicitly `extends`; ignore.
+                                if ident == "enum" || ident == "record" {
+                                    if let Some((_ty, _span, next)) =
+                                        parse_type_ref(&tokens, j, tokens.len())
+                                    {
+                                        j = next;
+                                    }
+                                    continue;
+                                }
+
                                 if kind == TypeKind::Class {
                                     if let Some((ty, _span, next)) =
                                         parse_type_ref(&tokens, j, tokens.len())
@@ -1032,7 +1052,7 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                         kind,
                         modifiers: pending_mods,
                         body_span,
-                        super_class: (kind == TypeKind::Class).then_some(super_class).flatten(),
+                        super_class: (ident == "class").then_some(super_class).flatten(),
                         interfaces,
                         methods,
                         fields,
@@ -1108,6 +1128,32 @@ interface J extends A<String>, pkg.B {}
             vec!["A".to_string(), "B".to_string()]
         );
         assert_eq!(parsed.types[0].super_class, None);
+    }
+
+    #[test]
+    fn enum_declarations_are_indexed_as_types() {
+        let uri = Uri::from_str("file:///Color.java").unwrap();
+        let text = r#"
+enum Color { RED }
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].name, "Color");
+    }
+
+    #[test]
+    fn record_declarations_are_indexed_as_types() {
+        let uri = Uri::from_str("file:///Point.java").unwrap();
+        let text = r#"
+record Point(int x, int y) {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].name, "Point");
     }
 
     #[test]

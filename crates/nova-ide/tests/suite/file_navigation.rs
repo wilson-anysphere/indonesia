@@ -482,6 +482,30 @@ class Main {
 }
 
 #[test]
+fn go_to_type_definition_on_variable_returns_enum() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Color.java
+enum $1Color { RED }
+//- /Main.java
+class Main {
+    void test() {
+        Color c = Color.RED;
+        $0c.toString();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_type_definition_on_dollar_identifier_returns_class() {
     // NOTE: `$<digits>` sequences are reserved for fixture markers; use `$$0` to place a marker
     // after a literal `$` in the source.
