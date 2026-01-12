@@ -5215,6 +5215,7 @@ fn record_lightweight_expr(
     spans: &mut Vec<(FileId, TextRange, SymbolId)>,
 ) {
     use java_syntax::ast::Expr;
+
     match expr {
         Expr::Cast(cast) => {
             record_type_names_in_range(
