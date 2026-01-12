@@ -883,12 +883,11 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     };
 
     let resolver = if let Some(index) = jpms_index.as_ref() {
-        nova_resolve::Resolver::new(index).with_workspace(&workspace)
+        nova_resolve::Resolver::new(index)
     } else {
-        nova_resolve::Resolver::new(&*jdk)
-            .with_classpath(&workspace_index)
-            .with_workspace(&workspace)
-    };
+        nova_resolve::Resolver::new(&*jdk).with_classpath(&workspace_index)
+    }
+    .with_workspace(&workspace);
 
     let scopes = db.scope_graph(file);
     let body_scope = match owner {
