@@ -267,6 +267,24 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             "false" => Some(ConstValue::Boolean(false)),
             _ => None,
         },
+        HirExpr::Unary { op, expr, .. } => {
+            let inner = const_value_for_expr(body, *expr)?;
+            match (*op, inner) {
+                (UnaryOp::Plus, v) => Some(v),
+                (UnaryOp::Minus, nova_types::ConstValue::Int(v)) => {
+                    Some(nova_types::ConstValue::Int(-v))
+                }
+                (UnaryOp::BitNot, nova_types::ConstValue::Int(v)) => {
+                    // Java bitwise operators on `int` operate on 32-bit two's complement values.
+                    let v32 = v as i32;
+                    Some(nova_types::ConstValue::Int(i64::from(!v32)))
+                }
+                (UnaryOp::Not, nova_types::ConstValue::Boolean(v)) => {
+                    Some(nova_types::ConstValue::Boolean(!v))
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -3421,7 +3439,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
 
                     let env_ro: &dyn TypeEnv = &*loader.store;
-                    if assignment_conversion(env_ro, &element_ty, &decl_ty).is_none() {
+                    if assignment_conversion_with_const(env_ro, &element_ty, &decl_ty, None)
+                        .is_none()
+                    {
                         let expected = format_type(env_ro, &decl_ty);
                         let found = format_type(env_ro, &element_ty);
                         self.diagnostics.push(Diagnostic::error(
@@ -4218,7 +4238,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             && !body_info.ty.is_errorish()
                         {
                             let env_ro: &dyn TypeEnv = &*loader.store;
-                            if assignment_conversion(env_ro, &body_info.ty, &sam_return).is_none() {
+                            if assignment_conversion_with_const(
+                                env_ro,
+                                &body_info.ty,
+                                &sam_return,
+                                const_value_for_expr(self.body, *expr_id),
+                            )
+                            .is_none()
+                            {
                                 let expected = format_type(env_ro, &sam_return);
                                 let found = format_type(env_ro, &body_info.ty);
                                 self.diagnostics.push(Diagnostic::error(
