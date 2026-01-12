@@ -124,12 +124,7 @@ fn record_compact_constructor_member_accessors() {
             _ => None,
         })
         .unwrap();
-    let record_name = record
-        .syntax()
-        .children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .find(|tok| tok.kind() == SyntaxKind::Identifier)
-        .expect("record name token");
+    let record_name = record.name_token().expect("record name token");
     assert_eq!(record_name.text(), "Point");
 
     let compact = record

@@ -35,9 +35,15 @@ pub mod support {
             .filter(move |tok| tok.kind() == kind)
     }
 
-    /// Returns the first identifier-like token among the node's direct children.
+    /// Returns an identifier-like token among the node's direct children.
     pub fn ident_token(node: &SyntaxNode) -> Option<SyntaxToken> {
-        ident_tokens(node).next()
+        // Java has a number of "contextual keywords" (e.g. `record`, `yield`, `var`) which the
+        // lexer still classifies as dedicated token kinds. For many syntax nodes (notably record
+        // declarations), those keywords appear before the actual identifier token.
+        //
+        // Prefer the last identifier-like token among the node's *direct* children, which is
+        // typically the declared name in Nova's current tree shapes.
+        ident_tokens(node).last()
     }
 
     pub fn ident_tokens(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + '_ {
