@@ -2467,21 +2467,30 @@ impl GlobalSymbolIndex {
             return self.finish(scored, limit);
         }
 
-        let mut candidates = self.trigram.candidates(query);
-        if candidates.is_empty() {
-            if let Some(b0) = query_first {
-                let bucket = &self.prefix1[b0 as usize];
-                if !bucket.is_empty() {
-                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
-                    return self.finish(scored, limit);
-                }
-            }
+        let mut candidate_scratch = Vec::new();
+        let candidates = self
+            .trigram
+            .candidates_with_scratch(query, &mut candidate_scratch);
 
-            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
-            candidates = (0..scan_limit as u32).collect();
+        if !candidates.is_empty() {
+            self.score_candidates(candidates.iter().copied(), &mut matcher, &mut scored);
+            return self.finish(scored, limit);
         }
 
-        self.score_candidates(candidates.into_iter(), &mut matcher, &mut scored);
+        if let Some(b0) = query_first {
+            let bucket = &self.prefix1[b0 as usize];
+            if !bucket.is_empty() {
+                self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
+                return self.finish(scored, limit);
+            }
+        }
+
+        let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+        self.score_candidates(
+            (0..scan_limit).map(|id| id as u32),
+            &mut matcher,
+            &mut scored,
+        );
         self.finish(scored, limit)
     }
 
@@ -2502,25 +2511,33 @@ impl GlobalSymbolIndex {
     }
 
     fn finish(&self, mut scored: Vec<LocalScoredSymbol>, limit: usize) -> Vec<Symbol> {
-        scored.sort_by(|a, b| {
-            b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
-                let a_sym = &self.symbols[a.id as usize];
-                let b_sym = &self.symbols[b.id as usize];
-                a_sym
-                    .name
-                    .len()
-                    .cmp(&b_sym.name.len())
-                    .then_with(|| a_sym.name.cmp(&b_sym.name))
-                    .then_with(|| a_sym.path.cmp(&b_sym.path))
-                    .then_with(|| a.id.cmp(&b.id))
-            })
-        });
+        if scored.len() > limit {
+            // Avoid sorting the entire result set on every keystroke.
+            scored.select_nth_unstable_by(limit - 1, |a, b| self.cmp_scored(a, b));
+            scored.truncate(limit);
+        }
+
+        scored.sort_by(|a, b| self.cmp_scored(a, b));
 
         scored
             .into_iter()
             .take(limit)
             .filter_map(|s| self.symbols.get(s.id as usize).cloned())
             .collect()
+    }
+
+    fn cmp_scored(&self, a: &LocalScoredSymbol, b: &LocalScoredSymbol) -> std::cmp::Ordering {
+        b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
+            let a_sym = &self.symbols[a.id as usize];
+            let b_sym = &self.symbols[b.id as usize];
+            a_sym
+                .name
+                .len()
+                .cmp(&b_sym.name.len())
+                .then_with(|| a_sym.name.cmp(&b_sym.name))
+                .then_with(|| a_sym.path.cmp(&b_sym.path))
+                .then_with(|| a.id.cmp(&b.id))
+        })
     }
 }
 
@@ -2655,5 +2672,61 @@ mod tests {
         let results = index.search("Hash", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "HashMap");
+    }
+
+    #[test]
+    fn global_symbol_search_top_k_orders_ties_correctly() {
+        let mut symbols = Vec::new();
+
+        // Craft a large candidate set where every symbol is a prefix match for "foo" and has the
+        // same length, so ranking falls through to the name/path/id tie-breakers.
+        //
+        // Include duplicates for the lexicographically-first name to ensure path/id tie-breaking
+        // is exercised.
+        symbols.push(Symbol {
+            name: "fooaa".into(),
+            path: "b.java".into(),
+        }); // id 0
+        symbols.push(Symbol {
+            name: "fooaa".into(),
+            path: "a.java".into(),
+        }); // id 1
+        symbols.push(Symbol {
+            name: "fooaa".into(),
+            path: "a.java".into(),
+        }); // id 2 (duplicate name+path, should be ordered by id)
+
+        for a in b'a'..=b'z' {
+            for b in b'a'..=b'z' {
+                // Skip "fooaa" because we inserted a few duplicates above.
+                if a == b'a' && b == b'a' {
+                    continue;
+                }
+                let name = format!("foo{}{}", a as char, b as char);
+                symbols.push(Symbol {
+                    name,
+                    path: format!("{a}{b}.java"),
+                });
+            }
+        }
+
+        let index = GlobalSymbolIndex::new(symbols);
+        let results = index.search("foo", 5);
+
+        let formatted: Vec<(String, String)> = results
+            .into_iter()
+            .map(|s| (s.name.to_string(), s.path.to_string()))
+            .collect();
+
+        assert_eq!(
+            formatted,
+            vec![
+                ("fooaa".into(), "a.java".into()),
+                ("fooaa".into(), "a.java".into()),
+                ("fooaa".into(), "b.java".into()),
+                ("fooab".into(), "9798.java".into()),
+                ("fooac".into(), "9799.java".into()),
+            ]
+        );
     }
 }
