@@ -800,6 +800,38 @@ class A {
 }
 
 #[test]
+fn completion_local_method_snippet_escapes_dollar_in_param_name() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void foo(int arg$0) {}
+  void m(){ fo<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "foo")
+        .expect("expected foo completion item");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected foo completion to use snippet format; got {item:#?}"
+    );
+    let insert = item
+        .insert_text
+        .as_deref()
+        .expect("expected foo completion to have insert_text");
+    assert!(
+        insert.contains("${1:arg\\$0}"),
+        "expected snippet placeholder to escape '$' in param name; got {insert:?}"
+    );
+}
+
+#[test]
 fn completion_member_method_uses_snippet_placeholders_for_arity() {
     let (db, file, pos) = fixture(
         r#"
@@ -1901,6 +1933,35 @@ class A {
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
     assert_eq!(edit.new_text, "@param ${1:x} $0");
+}
+
+#[test]
+fn completion_includes_javadoc_param_snippet_with_dollar_param_name() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  /**
+   * @par<|>
+   */
+  void m(int arg$0) {}
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "@param arg$0")
+        .expect("expected @param completion to include method parameter name `arg$0`");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "@param ${1:arg\\$0} $0");
 }
 
 #[test]

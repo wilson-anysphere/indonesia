@@ -3462,6 +3462,32 @@ fn mark_workspace_completion_item(item: &mut CompletionItem) {
     item.data = Some(json!({ "nova": { "origin": "code_intelligence", "workspace_local": true } }));
 }
 
+fn escape_snippet_placeholder_text(text: &str) -> Cow<'_, str> {
+    // LSP snippets use TextMate-style syntax where `$` and `}` have special meaning. While Java
+    // identifiers cannot contain `}` (or `\`), they *can* contain `$` (e.g. synthetic parameters
+    // like `arg$0`), so we must escape it in placeholder default text.
+    //
+    // See: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#snippet_syntax
+    let needs_escape = text
+        .bytes()
+        .any(|b| matches!(b, b'$' | b'\\' | b'}'));
+    if !needs_escape {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '$' | '\\' | '}' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            other => out.push(other),
+        }
+    }
+    Cow::Owned(out)
+}
+
 fn call_insert_text_with_named_params(
     name: &str,
     params: &[ParamDecl],
@@ -3478,7 +3504,8 @@ fn call_insert_text_with_named_params(
             snippet.push_str(", ");
         }
         let tab = idx + 1;
-        snippet.push_str(&format!("${{{tab}:{}}}", param.name));
+        let escaped = escape_snippet_placeholder_text(&param.name);
+        snippet.push_str(&format!("${{{tab}:{}}}", escaped.as_ref()));
     }
     snippet.push(')');
     snippet.push_str("$0");
@@ -4948,10 +4975,11 @@ fn javadoc_tag_snippet_completions(
                     if !between.contains('{') && !between.contains('}') && !between.contains(';') {
                         for param in &next_method.params {
                             let name = &param.name;
+                            let escaped = escape_snippet_placeholder_text(name);
                             items.push(CompletionItem {
                                 label: format!("@param {name}"),
                                 kind: Some(CompletionItemKind::SNIPPET),
-                                insert_text: Some(format!("@param ${{1:{name}}} $0")),
+                                insert_text: Some(format!("@param ${{1:{}}} $0", escaped.as_ref())),
                                 insert_text_format: Some(InsertTextFormat::SNIPPET),
                                 ..Default::default()
                             });
