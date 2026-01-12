@@ -640,6 +640,22 @@ impl ClasspathIndex {
         self.lookup_binary(binary)
     }
 
+    /// All indexed class binary names (`java.lang.String`) in **stable sorted order**.
+    ///
+    /// This is a zero-allocation view over the internal index data and is intended
+    /// for bulk iteration (e.g. pre-interning ids into a project-level `TypeStore`).
+    pub fn binary_class_names(&self) -> &[String] {
+        &self.binary_names_sorted
+    }
+
+    /// Iterate all indexed class binary names (`java.lang.String`) in **stable sorted order**.
+    ///
+    /// This is equivalent to `self.binary_class_names().iter().map(|s| s.as_str())` but
+    /// more convenient at call sites.
+    pub fn iter_binary_class_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.binary_names_sorted.iter().map(|s| s.as_str())
+    }
+
     pub fn class_names_with_prefix(&self, prefix: &str) -> Vec<String> {
         let prefix = normalize_binary_prefix(prefix);
         let names = &self.binary_names_sorted;
@@ -2003,6 +2019,47 @@ mod tests {
         let pref = index.class_names_with_prefix("com.example.dep.F");
         assert!(pref.contains(&"com.example.dep.Foo".to_string()));
         assert!(pref.contains(&"com.example.dep.Foo$Inner".to_string()));
+    }
+
+    #[test]
+    fn iter_binary_class_names_is_sorted_and_deterministic() {
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
+
+        let expected = vec![
+            "com.example.dep.Bar",
+            "com.example.dep.Foo",
+            "com.example.dep.Foo$Inner",
+        ];
+
+        let names: Vec<&str> = index.iter_binary_class_names().collect();
+        assert_eq!(names, expected);
+
+        // Repeated iteration should yield identical results.
+        let names_again: Vec<&str> = index.iter_binary_class_names().collect();
+        assert_eq!(names_again, expected);
+
+        // Slice view should match the iterator view.
+        let slice_names: Vec<&str> = index.binary_class_names().iter().map(|s| s.as_str()).collect();
+        assert_eq!(slice_names, expected);
+
+        // A rebuild of the index should produce the same stable ordering.
+        let index_rebuilt = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
+        assert_eq!(index_rebuilt.binary_class_names(), index.binary_class_names());
     }
 
     #[test]

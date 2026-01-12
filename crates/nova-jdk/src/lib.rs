@@ -121,6 +121,7 @@ impl From<&JdkClassStub> for TypeDefStub {
 pub struct JdkIndex {
     // Built-in, dependency-free index used for unit tests / bootstrapping.
     types: HashMap<String, TypeName>,
+    builtin_binary_names_sorted: Vec<String>,
     package_to_types: HashMap<String, HashMap<String, TypeName>>,
     packages: HashSet<String>,
     static_members: HashMap<String, HashMap<String, StaticMemberId>>,
@@ -160,6 +161,9 @@ impl JdkIndex {
         // A tiny set of static members for static-import testing.
         this.add_static_member("java.lang.Math", "max");
         this.add_static_member("java.lang.Math", "PI");
+
+        // Ensure deterministic ordering for callers that iterate the built-in index.
+        this.builtin_binary_names_sorted.sort();
 
         this
     }
@@ -391,8 +395,7 @@ impl JdkIndex {
             Some(symbols) => symbols.class_names_with_prefix(prefix),
             None => {
                 let prefix = normalize_binary_prefix(prefix);
-                let mut names: Vec<String> = self.types.keys().cloned().collect();
-                names.sort();
+                let names = &self.builtin_binary_names_sorted;
 
                 let start = names.partition_point(|name| name.as_str() < prefix.as_ref());
                 let mut out = Vec::new();
@@ -406,6 +409,17 @@ impl JdkIndex {
                 Ok(out)
             }
         }
+    }
+
+    /// All class binary names present in the *built-in* (dependency-free) index, in stable sorted
+    /// order.
+    ///
+    /// When this `JdkIndex` is backed by a real JDK symbol index (`symbols` is `Some`), callers
+    /// should use [`JdkIndex::class_names_with_prefix`] or other symbol-backed APIs instead.
+    pub fn binary_class_names(&self) -> Option<&[String]> {
+        self.symbols
+            .is_none()
+            .then_some(self.builtin_binary_names_sorted.as_slice())
     }
 
     /// Module graph for the underlying JDK, if this index is backed by JMODs or `ct.sym`.
@@ -513,6 +527,7 @@ impl JdkIndex {
             format!("{package}.{name}")
         };
         let ty = TypeName::new(fq.clone());
+        self.builtin_binary_names_sorted.push(fq.clone());
         self.types.insert(fq.clone(), ty.clone());
         self.packages.insert(package.to_string());
         self.package_to_types
