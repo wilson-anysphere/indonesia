@@ -345,7 +345,9 @@ mod tests {
         let path = root.join("Example.java");
         assert!(!is_build_file(&path));
         let event = NormalizedEvent::Modified(path);
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 }
-

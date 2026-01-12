@@ -25,7 +25,9 @@ use nova_vfs::{
 };
 use walkdir::WalkDir;
 
-use crate::watch::{categorize_event, ChangeCategory, EventNormalizer, NormalizedEvent, WatchConfig};
+use crate::watch::{
+    categorize_event, ChangeCategory, EventNormalizer, NormalizedEvent, WatchConfig,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexProgress {
@@ -451,13 +453,9 @@ impl WorkspaceEngine {
                     state.pending_build_changes.drain().collect::<Vec<_>>()
                 };
 
-                if let Err(err) = reload_project_and_sync(
-                    &root,
-                    &changed,
-                    &vfs,
-                    &query_db,
-                    &project_state,
-                ) {
+                if let Err(err) =
+                    reload_project_and_sync(&root, &changed, &vfs, &query_db, &project_state)
+                {
                     publish_to_subscribers(
                         &subscribers,
                         WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
@@ -661,8 +659,7 @@ impl WorkspaceEngine {
             None
         }
         .unwrap_or_else(|| normalize_rel_path(&path.to_string()));
-        self.query_db
-            .set_file_rel_path(file_id, Arc::new(rel_path));
+        self.query_db.set_file_rel_path(file_id, Arc::new(rel_path));
     }
 
     fn apply_path_event(&self, path: &Path) {
@@ -683,7 +680,8 @@ impl WorkspaceEngine {
                     exists = false;
                 }
                 Err(_) if !was_known => {
-                    self.query_db.set_file_content(file_id, Arc::new(String::new()));
+                    self.query_db
+                        .set_file_content(file_id, Arc::new(String::new()));
                 }
                 Err(_) => {
                     // Best-effort: keep the previous contents if we fail to read during a transient
@@ -693,7 +691,9 @@ impl WorkspaceEngine {
         }
 
         self.update_project_files_membership(&vfs_path, file_id, exists);
-        self.publish(WorkspaceEvent::FileChanged { file: vfs_path.clone() });
+        self.publish(WorkspaceEvent::FileChanged {
+            file: vfs_path.clone(),
+        });
         self.publish_diagnostics(vfs_path);
     }
 
@@ -727,7 +727,8 @@ impl WorkspaceEngine {
             match fs::read_to_string(to) {
                 Ok(text) => self.query_db.set_file_content(file_id, Arc::new(text)),
                 Err(_) if is_new_id => {
-                    self.query_db.set_file_content(file_id, Arc::new(String::new()));
+                    self.query_db
+                        .set_file_content(file_id, Arc::new(String::new()));
                 }
                 Err(_) => {}
             }
@@ -737,8 +738,12 @@ impl WorkspaceEngine {
 
         // Surface both paths as changed so consumers can react to deletions at `from` and
         // creations at `to`.
-        self.publish(WorkspaceEvent::FileChanged { file: from_vfs.clone() });
-        self.publish(WorkspaceEvent::FileChanged { file: to_vfs.clone() });
+        self.publish(WorkspaceEvent::FileChanged {
+            file: from_vfs.clone(),
+        });
+        self.publish(WorkspaceEvent::FileChanged {
+            file: to_vfs.clone(),
+        });
         self.publish_diagnostics(from_vfs);
         self.publish_diagnostics(to_vfs);
     }
@@ -966,8 +971,8 @@ fn reload_project_and_sync(
     }
 
     // Snapshot previous project files so we can mark removed ones as non-existent.
-    let previous_files: Vec<FileId> = query_db
-        .with_snapshot(|snap| snap.project_files(project).as_ref().clone());
+    let previous_files: Vec<FileId> =
+        query_db.with_snapshot(|snap| snap.project_files(project).as_ref().clone());
     let previous_set: HashSet<FileId> = previous_files.iter().copied().collect();
 
     // Scan Java files under declared roots.
@@ -1202,7 +1207,10 @@ mod tests {
         let project = ProjectId::from_raw(0);
 
         engine.query_db.with_snapshot(|snap| {
-            assert_eq!(snap.project_config(project).build_system, BuildSystem::Simple);
+            assert_eq!(
+                snap.project_config(project).build_system,
+                BuildSystem::Simple
+            );
             assert_eq!(snap.project_files(project).len(), 1);
         });
 
@@ -1212,7 +1220,10 @@ mod tests {
         engine.reload_project_now(&[pom]).unwrap();
 
         engine.query_db.with_snapshot(|snap| {
-            assert_eq!(snap.project_config(project).build_system, BuildSystem::Maven);
+            assert_eq!(
+                snap.project_config(project).build_system,
+                BuildSystem::Maven
+            );
             assert_eq!(snap.project_files(project).len(), 1);
             let file_id = snap.project_files(project)[0];
             assert!(snap.file_exists(file_id));
