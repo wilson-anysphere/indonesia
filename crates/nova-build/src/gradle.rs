@@ -201,12 +201,10 @@ impl GradleBuild {
                 main_output_fallback,
                 test_output_fallback,
             );
-            if config.main_source_roots.is_empty() {
-                config.main_source_roots = collect_source_roots(&project_dir, "main");
-            }
-            if config.test_source_roots.is_empty() {
-                config.test_source_roots = collect_source_roots(&project_dir, "test");
-            }
+            augment_java_compile_config_with_conventional_gradle_source_roots(
+                &project_dir,
+                &mut config,
+            );
 
             if is_root {
                 root_config = Some(config.clone());
@@ -370,12 +368,12 @@ impl GradleBuild {
         };
         let mut config =
             normalize_gradle_java_compile_config(json, main_output_fallback, test_output_fallback);
-        if config.main_source_roots.is_empty() {
-            config.main_source_roots = collect_source_roots(&project_dir, "main");
-        }
-        if config.test_source_roots.is_empty() {
-            config.test_source_roots = collect_source_roots(&project_dir, "test");
-        }
+        // Gradle config extraction only reports `sourceSets.main` / `sourceSets.test`, but
+        // conventional layouts commonly add source sets like `integrationTest`.
+        //
+        // Always augment the config with conventional `src/<sourceSet>/java` roots so downstream
+        // consumers relying on build-derived roots don't drop these source sets.
+        augment_java_compile_config_with_conventional_gradle_source_roots(&project_dir, &mut config);
 
         cache.update_module(
             project_root,
@@ -817,11 +815,74 @@ fn collect_source_roots(project_dir: &Path, source_set: &str) -> Vec<PathBuf> {
     }
 }
 
+fn discover_conventional_gradle_source_roots(project_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let src_dir = project_dir.join("src");
+    if !src_dir.is_dir() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut main_roots = Vec::new();
+    let mut test_roots = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(&src_dir) else {
+        return (main_roots, test_roots);
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        // We only care about the conventional `src/<sourceSet>/java` layout.
+        let java_dir = path.join("java");
+        if !java_dir.is_dir() {
+            continue;
+        }
+
+        let source_set_name = entry.file_name().to_string_lossy().to_string();
+        if source_set_name.to_ascii_lowercase().contains("test") {
+            test_roots.push(java_dir);
+        } else {
+            main_roots.push(java_dir);
+        }
+    }
+
+    // Stabilize ordering across filesystems.
+    main_roots.sort();
+    test_roots.sort();
+
+    (main_roots, test_roots)
+}
+
+fn augment_java_compile_config_with_conventional_gradle_source_roots(
+    project_dir: &Path,
+    config: &mut JavaCompileConfig,
+) {
+    let (mut main_roots, mut test_roots) = discover_conventional_gradle_source_roots(project_dir);
+
+    // Preserve existing ordering by appending the newly discovered entries.
+    config.main_source_roots.append(&mut main_roots);
+    config.test_source_roots.append(&mut test_roots);
+
+    dedupe_paths(&mut config.main_source_roots);
+    dedupe_paths(&mut config.test_source_roots);
+
+    // Backwards compat: if we still have no roots, fall back to the historical main/test defaults.
+    if config.main_source_roots.is_empty() {
+        config.main_source_roots = collect_source_roots(project_dir, "main");
+    }
+    if config.test_source_roots.is_empty() {
+        config.test_source_roots = collect_source_roots(project_dir, "test");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::ExitStatus;
     use std::sync::Mutex;
+    use tempfile::tempdir;
 
     #[test]
     fn gradle_output_dir_maps_project_path_to_directory() {
@@ -1157,6 +1218,34 @@ NOVA_JSON_END
         assert!(invocations[0]
             .iter()
             .any(|arg| arg == ":app:printNovaJavaCompileConfig"));
+    }
+
+    #[test]
+    fn augments_gradle_java_compile_config_with_custom_source_sets() {
+        let dir = tempdir().expect("tempdir");
+        let project_dir = dir.path();
+
+        std::fs::create_dir_all(project_dir.join("src/main/java")).expect("create main");
+        std::fs::create_dir_all(project_dir.join("src/test/java")).expect("create test");
+        std::fs::create_dir_all(project_dir.join("src/integrationTest/java"))
+            .expect("create integrationTest");
+
+        let mut cfg = JavaCompileConfig {
+            main_source_roots: vec![project_dir.join("src/main/java")],
+            test_source_roots: vec![project_dir.join("src/test/java")],
+            ..JavaCompileConfig::default()
+        };
+
+        augment_java_compile_config_with_conventional_gradle_source_roots(project_dir, &mut cfg);
+
+        assert_eq!(cfg.main_source_roots, vec![project_dir.join("src/main/java")]);
+        assert_eq!(
+            cfg.test_source_roots,
+            vec![
+                project_dir.join("src/test/java"),
+                project_dir.join("src/integrationTest/java")
+            ]
+        );
     }
 }
 
