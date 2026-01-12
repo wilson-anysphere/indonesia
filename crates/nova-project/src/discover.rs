@@ -966,7 +966,8 @@ mod tests {
             .expect("reload with gradle.lockfile change");
         assert_eq!(cfg2.build_system, BuildSystem::Gradle);
         assert!(
-            !cfg2.source_roots
+            !cfg2
+                .source_roots
                 .iter()
                 .any(|root| root.path == snapshot_src),
             "expected Gradle snapshot to be ignored after lockfile change invalidated fingerprint"

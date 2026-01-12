@@ -6888,7 +6888,13 @@ fn resolve_method_call_demand_resolves_record_canonical_constructor_call() {
     let file_record = FileId::from_raw(1);
     let file_use = FileId::from_raw(2);
 
-    set_file(&mut db, project, file_record, "src/R.java", "record R(int x) {}");
+    set_file(
+        &mut db,
+        project,
+        file_record,
+        "src/R.java",
+        "record R(int x) {}",
+    );
     set_file(
         &mut db,
         project,

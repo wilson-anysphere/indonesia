@@ -6054,11 +6054,15 @@ class B {
     let member_range = WorkspaceTextRange::new(member_start, member_start + "foo".len());
 
     let field_offset = a_src.find("static int foo").unwrap() + "static int ".len() + 1;
-    let field_symbol = db.symbol_at(&a_file, field_offset).expect("symbol at field foo");
+    let field_symbol = db
+        .symbol_at(&a_file, field_offset)
+        .expect("symbol at field foo");
     assert_eq!(db.symbol_kind(field_symbol), Some(JavaSymbolKind::Field));
 
     let method_offset = a_src.find("static void foo").unwrap() + "static void ".len() + 1;
-    let method_symbol = db.symbol_at(&a_file, method_offset).expect("symbol at method foo");
+    let method_symbol = db
+        .symbol_at(&a_file, method_offset)
+        .expect("symbol at method foo");
     assert_eq!(db.symbol_kind(method_symbol), Some(JavaSymbolKind::Method));
 
     let field_refs = db.find_references(field_symbol);

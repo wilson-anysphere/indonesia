@@ -260,9 +260,7 @@ fn code_actions_with_context_includes_return_mismatch_quickfix_for_cursor_at_spa
 "#;
     db.set_file_text(file, source.to_string());
 
-    let stmt_start = source
-        .find("return o;")
-        .expect("expected return statement");
+    let stmt_start = source.find("return o;").expect("expected return statement");
     let expr_start = stmt_start + "return ".len();
     let expr_end = expr_start + "o".len();
 

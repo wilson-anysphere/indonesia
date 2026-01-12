@@ -827,14 +827,8 @@ fn infer_expr_type(
                                 "double" | "Double" => saw_double = true,
                                 "float" | "Float" => saw_float = true,
                                 "long" | "Long" => saw_long = true,
-                                "byte"
-                                | "Byte"
-                                | "short"
-                                | "Short"
-                                | "int"
-                                | "Integer"
-                                | "char"
-                                | "Character" => saw_int = true,
+                                "byte" | "Byte" | "short" | "Short" | "int" | "Integer"
+                                | "char" | "Character" => saw_int = true,
                                 _ => {}
                             }
                         }
@@ -1113,7 +1107,10 @@ fn infer_type_from_enclosing_return(
             continue;
         }
 
-        let method = return_stmt.syntax().ancestors().find_map(ast::MethodDeclaration::cast)?;
+        let method = return_stmt
+            .syntax()
+            .ancestors()
+            .find_map(ast::MethodDeclaration::cast)?;
         let return_ty = method.syntax().children().find_map(ast::Type::cast)?;
         let rendered = render_java_type(return_ty.syntax());
         if rendered == "void" {
@@ -1186,7 +1183,10 @@ fn collect_method_type_parameter_names(container: &nova_syntax::SyntaxNode) -> H
 fn collect_local_type_names(container: &nova_syntax::SyntaxNode) -> HashSet<String> {
     let mut out = HashSet::new();
 
-    for decl in container.descendants().filter_map(ast::ClassDeclaration::cast) {
+    for decl in container
+        .descendants()
+        .filter_map(ast::ClassDeclaration::cast)
+    {
         if let Some(name) = decl.name_token() {
             out.insert(name.text().to_string());
         }
@@ -1199,12 +1199,18 @@ fn collect_local_type_names(container: &nova_syntax::SyntaxNode) -> HashSet<Stri
             out.insert(name.text().to_string());
         }
     }
-    for decl in container.descendants().filter_map(ast::EnumDeclaration::cast) {
+    for decl in container
+        .descendants()
+        .filter_map(ast::EnumDeclaration::cast)
+    {
         if let Some(name) = decl.name_token() {
             out.insert(name.text().to_string());
         }
     }
-    for decl in container.descendants().filter_map(ast::RecordDeclaration::cast) {
+    for decl in container
+        .descendants()
+        .filter_map(ast::RecordDeclaration::cast)
+    {
         if let Some(name) = decl.name_token() {
             out.insert(name.text().to_string());
         }

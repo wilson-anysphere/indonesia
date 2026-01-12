@@ -80,10 +80,7 @@ fn stdio_server_handles_type_hierarchy_requests() {
     );
 
     // Prepare type hierarchy for B, then fetch supertypes -> A.
-    let b_offset = file_text
-        .find("class B")
-        .expect("class B decl exists")
-        + "class ".len();
+    let b_offset = file_text.find("class B").expect("class B decl exists") + "class ".len();
     let b_pos = utf16_position(file_text, b_offset);
     write_jsonrpc_message(
         &mut stdin,
@@ -124,10 +121,7 @@ fn stdio_server_handles_type_hierarchy_requests() {
     assert_eq!(supers[0].get("name").and_then(|v| v.as_str()), Some("A"));
 
     // Prepare type hierarchy for A, then fetch subtypes -> B.
-    let a_offset = file_text
-        .find("class A")
-        .expect("class A decl exists")
-        + "class ".len();
+    let a_offset = file_text.find("class A").expect("class A decl exists") + "class ".len();
     let a_pos = utf16_position(file_text, a_offset);
     write_jsonrpc_message(
         &mut stdin,

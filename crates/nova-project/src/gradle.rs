@@ -2011,8 +2011,7 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-const GRADLE_DEPENDENCY_CONFIGS: &str =
-    r"(?:implementation|api|compile|runtime|compileOnly|runtimeOnly|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|runtimeOnly|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
 type GradleProperties = HashMap<String, String>;
 
@@ -2095,7 +2094,9 @@ fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> 
         return Some("compile");
     }
 
-    if configuration.eq_ignore_ascii_case("runtimeOnly") || configuration.eq_ignore_ascii_case("runtime") {
+    if configuration.eq_ignore_ascii_case("runtimeOnly")
+        || configuration.eq_ignore_ascii_case("runtime")
+    {
         return Some("runtime");
     }
 
@@ -3468,13 +3469,34 @@ dependencies {
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
         let expected_scopes: [((String, String, Option<String>), &str); 18] = [
-            ((String::from("g1"), String::from("a1"), Some("1".into())), "compile"),
-            ((String::from("g2"), String::from("a2"), Some("2".into())), "compile"),
-            ((String::from("g3"), String::from("a3"), Some("3".into())), "provided"),
-            ((String::from("g4"), String::from("a4"), Some("4".into())), "runtime"),
-            ((String::from("g5"), String::from("a5"), Some("5".into())), "test"),
-            ((String::from("g6"), String::from("a6"), Some("6".into())), "test"),
-            ((String::from("g7"), String::from("a7"), Some("7".into())), "test"),
+            (
+                (String::from("g1"), String::from("a1"), Some("1".into())),
+                "compile",
+            ),
+            (
+                (String::from("g2"), String::from("a2"), Some("2".into())),
+                "compile",
+            ),
+            (
+                (String::from("g3"), String::from("a3"), Some("3".into())),
+                "provided",
+            ),
+            (
+                (String::from("g4"), String::from("a4"), Some("4".into())),
+                "runtime",
+            ),
+            (
+                (String::from("g5"), String::from("a5"), Some("5".into())),
+                "test",
+            ),
+            (
+                (String::from("g6"), String::from("a6"), Some("6".into())),
+                "test",
+            ),
+            (
+                (String::from("g7"), String::from("a7"), Some("7".into())),
+                "test",
+            ),
             (
                 (String::from("g8"), String::from("a8"), Some("8".into())),
                 "annotationProcessor",
@@ -3491,15 +3513,30 @@ dependencies {
                 (String::from("g11"), String::from("a11"), Some("11".into())),
                 "annotationProcessor",
             ),
-            ((String::from("g12"), String::from("a12"), Some("12".into())), "compile"),
+            (
+                (String::from("g12"), String::from("a12"), Some("12".into())),
+                "compile",
+            ),
             (
                 (String::from("g13"), String::from("a13"), Some("13".into())),
                 "annotationProcessor",
             ),
-            ((String::from("g14"), String::from("a14"), Some("14".into())), "compile"),
-            ((String::from("g15"), String::from("a15"), Some("15".into())), "runtime"),
-            ((String::from("g16"), String::from("a16"), Some("16".into())), "test"),
-            ((String::from("g17"), String::from("a17"), Some("17".into())), "test"),
+            (
+                (String::from("g14"), String::from("a14"), Some("14".into())),
+                "compile",
+            ),
+            (
+                (String::from("g15"), String::from("a15"), Some("15".into())),
+                "runtime",
+            ),
+            (
+                (String::from("g16"), String::from("a16"), Some("16".into())),
+                "test",
+            ),
+            (
+                (String::from("g17"), String::from("a17"), Some("17".into())),
+                "test",
+            ),
             (
                 (String::from("dup"), String::from("dep"), Some("1.0".into())),
                 "compile",

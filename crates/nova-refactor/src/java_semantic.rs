@@ -3713,11 +3713,7 @@ fn resolve_static_import_member_in_type(
         return None;
     }
 
-    let field = ty
-        .fields
-        .get(&name)
-        .filter(|f| f.is_static)
-        .map(|f| f.id);
+    let field = ty.fields.get(&name).filter(|f| f.is_static).map(|f| f.id);
 
     let mut methods: Vec<MethodId> = ty
         .methods
