@@ -2555,8 +2555,9 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
             let Some((args, _end)) = extract_balanced_parens(contents, cursor) else {
                 continue;
             };
-            // Maintain existing behavior: only accept `File(settingsDir, "...")`.
-            if !args.trim_start().starts_with("settingsDir") {
+            // Best-effort: accept `File(settingsDir, "...")` and `File(rootDir, "...")`.
+            let args_trim = args.trim_start();
+            if !(args_trim.starts_with("settingsDir") || args_trim.starts_with("rootDir")) {
                 continue;
             }
             extract_quoted_strings(&args).into_iter().next()
@@ -4303,6 +4304,19 @@ def tripleGroovy = '''project(':app').projectDir = file('modules/app')'''
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].project_path, ":app");
         assert_eq!(modules[0].dir_rel, "app");
+    }
+
+    #[test]
+    fn parse_gradle_settings_projects_parses_projectdir_override_with_rootdir_file_constructor() {
+        let settings = r#"
+include ':app'
+project(':app').projectDir = new File(rootDir, 'modules/app')
+"#;
+
+        let modules = parse_gradle_settings_projects(settings);
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].project_path, ":app");
+        assert_eq!(modules[0].dir_rel, "modules/app");
     }
 
     #[test]
