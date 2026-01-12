@@ -264,17 +264,8 @@ To run the same suite locally:
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
 
-# Local dev
-cargo bench --locked -p nova-core --bench critical_paths
-cargo bench --locked -p nova-syntax --bench parse_java
-cargo bench --locked -p nova-format --bench format
-cargo bench --locked -p nova-refactor --bench refactor
-cargo bench --locked -p nova-classpath --bench index
-cargo bench --locked -p nova-ide --bench completion
-cargo bench --locked -p nova-fuzzy --bench fuzzy
-cargo bench --locked -p nova-index --bench symbol_search
-
-# Agent / multi-runner
+# Agent / multi-runner (required) — also works fine on workstations.
+# (Workstation equivalent: replace bash scripts/cargo_agent.sh with cargo.)
 bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
 bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
 bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
