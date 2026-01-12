@@ -312,6 +312,7 @@ struct SalsaMemoFootprintInner {
 struct SalsaInputFootprintInner {
     file_text_by_file: HashMap<FileId, FileTextBytes>,
     file_rel_path_by_file: HashMap<FileId, u64>,
+    all_file_ids_bytes: u64,
     project_config_by_project: HashMap<ProjectId, u64>,
     project_files_by_project: HashMap<ProjectId, u64>,
     project_class_ids_by_project: HashMap<ProjectId, u64>,
@@ -508,6 +509,15 @@ impl SalsaInputFootprint {
         let mut inner = self.lock_inner();
         let prev = inner.file_rel_path_by_file.insert(file, len).unwrap_or(0);
         inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(len);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record_all_file_ids_bytes(&self, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let prev = inner.all_file_ids_bytes;
+        inner.all_file_ids_bytes = bytes;
+        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(bytes);
         drop(inner);
         self.refresh_tracker();
     }
@@ -1880,12 +1890,15 @@ impl Database {
                 None
             } else {
                 inputs.file_ids_dirty = false;
-                Some(Arc::new(inputs.file_ids.iter().copied().collect()))
+                Some(Arc::new(inputs.file_ids.iter().copied().collect::<Vec<_>>()))
             }
         };
 
         let mut db = self.inner.lock();
         if let Some(all_file_ids) = all_file_ids {
+            let bytes =
+                (all_file_ids.len() as u64) * (std::mem::size_of::<FileId>() as u64);
+            self.input_footprint.record_all_file_ids_bytes(bytes);
             db.set_all_file_ids(all_file_ids);
         }
         db.snapshot()
