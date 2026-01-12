@@ -2366,7 +2366,17 @@ fn goto_definition_jdk(
     position: lsp_types::Position,
 ) -> Option<lsp_types::Location> {
     if state.jdk_index.is_none() {
-        state.jdk_index = nova_jdk::JdkIndex::discover(None).ok();
+        // Try to honor workspace JDK overrides (nova.toml `[jdk]`) when present. If the configured
+        // JDK is invalid/unavailable, fall back to environment-based discovery so the feature keeps
+        // working in partially configured environments.
+        let configured = state.project_root.as_deref().and_then(|root| {
+            let workspace_root = nova_project::workspace_root(root).unwrap_or_else(|| root.to_path_buf());
+            let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
+            let jdk_config = config.jdk_config();
+            nova_jdk::JdkIndex::discover(Some(&jdk_config)).ok()
+        });
+
+        state.jdk_index = configured.or_else(|| nova_jdk::JdkIndex::discover(None).ok());
     }
     let jdk = state.jdk_index.as_ref()?;
     let text = state.analysis.file_content(file);
