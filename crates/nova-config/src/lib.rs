@@ -76,6 +76,50 @@ pub struct JdkConfig {
     pub toolchains: Vec<JdkToolchainConfig>,
 }
 
+/// Configuration for optional integration with external build tools (Maven/Gradle).
+///
+/// When enabled, Nova may invoke external build tool processes during workspace load/reload to
+/// compute accurate classpaths and source roots. This is disabled by default because it can be
+/// slow, spawn subprocesses, and may be undesirable in some environments.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct BuildIntegrationConfig {
+    /// Whether Nova is allowed to invoke build tools during workspace load/reload.
+    ///
+    /// Defaults to `false` for safety/performance.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Timeout for build tool invocations during workspace load/reload (in milliseconds).
+    ///
+    /// Note: a value of `0` is treated as `1` millisecond at runtime.
+    #[serde(default = "default_build_timeout_ms")]
+    #[schemars(range(min = 1))]
+    pub timeout_ms: u64,
+}
+
+fn default_build_timeout_ms() -> u64 {
+    30_000
+}
+
+impl Default for BuildIntegrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_ms: default_build_timeout_ms(),
+        }
+    }
+}
+
+impl BuildIntegrationConfig {
+    /// Effective timeout for build tool invocations.
+    ///
+    /// This uses `max(1)` so even misconfigured values remain time-bounded.
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms.max(1))
+    }
+}
+
 fn default_generated_sources_enabled() -> bool {
     true
 }
@@ -361,6 +405,10 @@ pub struct NovaConfig {
     #[serde(default)]
     pub jdk: JdkConfig,
 
+    /// Optional integration with external build tools (Maven/Gradle).
+    #[serde(default)]
+    pub build: BuildIntegrationConfig,
+
     /// Workspace extensions (WASM bundles) configuration.
     #[serde(default)]
     pub extensions: ExtensionsConfig,
@@ -384,6 +432,7 @@ impl Default for NovaConfig {
         Self {
             generated_sources: GeneratedSourcesConfig::default(),
             jdk: JdkConfig::default(),
+            build: BuildIntegrationConfig::default(),
             extensions: ExtensionsConfig::default(),
             logging: LoggingConfig::default(),
             memory: MemoryConfig::default(),
@@ -1811,6 +1860,55 @@ mod tests {
         assert!(config.extensions.deny.is_empty());
         assert!(config.extensions.wasm_memory_limit_bytes.is_none());
         assert!(config.extensions.wasm_timeout_ms.is_none());
+    }
+
+    #[test]
+    fn toml_without_build_table_uses_defaults() {
+        let config: NovaConfig = toml::from_str("").expect("config should parse");
+
+        assert!(!config.build.enabled);
+        assert_eq!(config.build.timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn toml_build_table_parses_enabled_and_timeout() {
+        let text = r#"
+[build]
+enabled = true
+timeout_ms = 12345
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        assert!(config.build.enabled);
+        assert_eq!(config.build.timeout_ms, 12_345);
+
+        let round_trip = toml::to_string(&config).expect("serialize");
+        let decoded: NovaConfig = toml::from_str(&round_trip).expect("deserialize");
+        assert_eq!(decoded.build, config.build);
+    }
+
+    #[test]
+    fn build_timeout_ms_zero_is_invalid_when_enabled() {
+        let text = r#"
+[build]
+enabled = true
+timeout_ms = 0
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+
+        // `BuildIntegrationConfig::timeout()` normalizes the effective value.
+        assert_eq!(config.build.timeout(), Duration::from_millis(1));
+
+        let diagnostics = config.validate();
+        assert!(diagnostics.errors.is_empty());
+        assert_eq!(
+            diagnostics.warnings,
+            vec![ConfigWarning::InvalidValue {
+                toml_path: "build.timeout_ms".to_string(),
+                message: "must be >= 1 when build.enabled is true (0 is treated as 1)".to_string(),
+            }]
+        );
     }
 
     #[test]

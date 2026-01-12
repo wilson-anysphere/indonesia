@@ -39,12 +39,26 @@ impl NovaConfig {
         let mut out = ValidationDiagnostics::default();
 
         validate_ai(self, ctx, &mut out);
+        validate_build(self, &mut out);
         validate_extensions(self, ctx, &mut out);
         validate_generated_sources(self, &mut out);
         validate_jdk(self, ctx, &mut out);
         validate_logging(self, &mut out);
 
         out
+    }
+}
+
+fn validate_build(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    if !config.build.enabled {
+        return;
+    }
+
+    if config.build.timeout_ms == 0 {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "build.timeout_ms".to_string(),
+            message: "must be >= 1 when build.enabled is true (0 is treated as 1)".to_string(),
+        });
     }
 }
 

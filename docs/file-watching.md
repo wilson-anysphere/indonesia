@@ -43,6 +43,27 @@ which keeps “generated sources not created yet” from breaking file watching.
 
 Implementation reference: `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`).
 
+## Optional build-tool invocation during workspace load/reload
+
+By default, Nova does **not** invoke external build tools during workspace load/reload. This keeps
+startup fast and avoids spawning subprocesses unexpectedly, but it can result in a best-effort
+classpath/source root model in some Maven/Gradle workspaces.
+
+To allow Nova to invoke Maven/Gradle during workspace load/reload (to compute accurate classpaths
+and source roots), opt in via `nova.toml`:
+
+```toml
+[build]
+enabled = true
+timeout_ms = 30000
+```
+
+Tradeoffs:
+
+- Enabling build integration may be **slow** (build tools can take seconds to minutes).
+- It may spawn external processes and can download/update dependency caches.
+- `timeout_ms` exists to keep workspace loading time-bounded.
+
 ## Feature flags
 
 `nova-vfs` keeps OS watcher dependencies behind feature flags:
