@@ -182,7 +182,9 @@ impl JdkIndex {
 
         // A tiny set of static members for static-import testing.
         this.add_static_member("java.lang.Math", "max");
+        this.add_static_member("java.lang.Math", "min");
         this.add_static_member("java.lang.Math", "PI");
+        this.add_static_member("java.lang.Math", "E");
         this.add_static_member("java.util.Collections", "emptyList");
         this.add_static_member("java.util.Collections", "singletonList");
 

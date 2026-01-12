@@ -863,12 +863,20 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
-            fields: vec![FieldDef {
-                name: "PI".to_string(),
-                ty: Type::Primitive(PrimitiveType::Double),
-                is_static: true,
-                is_final: true,
-            }],
+            fields: vec![
+                FieldDef {
+                    name: "PI".to_string(),
+                    ty: Type::Primitive(PrimitiveType::Double),
+                    is_static: true,
+                    is_final: true,
+                },
+                FieldDef {
+                    name: "E".to_string(),
+                    ty: Type::Primitive(PrimitiveType::Double),
+                    is_static: true,
+                    is_final: true,
+                },
+            ],
             constructors: vec![],
             methods: vec![
                 MethodDef {
@@ -909,6 +917,54 @@ impl TypeStore {
                 },
                 MethodDef {
                     name: "max".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Double),
+                        Type::Primitive(PrimitiveType::Double),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Double),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "min".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Int),
+                        Type::Primitive(PrimitiveType::Int),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Int),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "min".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Long),
+                        Type::Primitive(PrimitiveType::Long),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Long),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "min".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Float),
+                        Type::Primitive(PrimitiveType::Float),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Float),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "min".to_string(),
                     type_params: vec![],
                     params: vec![
                         Type::Primitive(PrimitiveType::Double),

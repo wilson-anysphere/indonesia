@@ -2980,6 +2980,21 @@ class C { int m(){ return max(1,2); } }
 }
 
 #[test]
+fn static_imported_math_min_resolves() {
+    let src = r#"
+import static java.lang.Math.min;
+class C { int m(){ return min(1,2); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static-imported Math.min call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_imported_math_max_long_resolves() {
     let src = r#"
 import static java.lang.Math.max;
@@ -3082,6 +3097,31 @@ class C { double m(){ return PI; } }
     let offset = src
         .find("return PI")
         .expect("snippet should contain PI return")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "double");
+}
+
+#[test]
+fn static_imported_math_e_resolves() {
+    let src = r#"
+import static java.lang.Math.E;
+class C { double m(){ return E; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
+            && d.code.as_ref() != "unresolved-field"),
+        "expected static-imported Math.E to resolve; got {diags:?}"
+    );
+
+    let offset = src
+        .find("return E")
+        .expect("snippet should contain E return")
         + "return ".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
