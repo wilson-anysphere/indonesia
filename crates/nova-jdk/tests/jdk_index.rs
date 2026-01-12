@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use nova_classfile::ClassFile;
-use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
+use nova_core::{JdkConfig, Name, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_jdk::{
     internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkIndexBacking, JdkIndexError,
     JdkInstallation,
@@ -15,6 +15,24 @@ use nova_types::TypeProvider;
 use tempfile::tempdir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn builtin_index_resolves_minimal_fixture_types() {
+    let index = JdkIndex::new();
+
+    assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.util.function.Function")),
+        Some(TypeName::new("java.util.function.Function"))
+    );
+    assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.util.Collections")),
+        Some(TypeName::new("java.util.Collections"))
+    );
+    assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.lang.Iterable")),
+        Some(TypeName::new("java.lang.Iterable"))
+    );
+}
 
 fn fake_jdk_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/fake-jdk")

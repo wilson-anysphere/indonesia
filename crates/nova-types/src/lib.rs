@@ -865,6 +865,22 @@ impl TypeStore {
             },
         );
 
+        // java.lang.Iterable<T>
+        //
+        // This is used by richer typeck tests (e.g. foreach element inference)
+        // without requiring a full on-disk JDK model.
+        let iterable_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let iterable = store.add_class(ClassDef {
+            name: "java.lang.Iterable".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![iterable_t],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![],
+        });
+
         // java.util.List<E>
         let list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
         let list = store.add_class(ClassDef {
@@ -872,7 +888,7 @@ impl TypeStore {
             kind: ClassKind::Interface,
             type_params: vec![list_e],
             super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
+            interfaces: vec![Type::class(iterable, vec![Type::TypeVar(list_e)])],
             fields: vec![],
             constructors: vec![],
             methods: vec![
@@ -931,7 +947,11 @@ impl TypeStore {
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![Type::class(list, vec![Type::TypeVar(array_list_e)])],
             fields: vec![],
-            constructors: vec![],
+            constructors: vec![ConstructorDef {
+                params: vec![],
+                is_varargs: false,
+                is_accessible: true,
+            }],
             methods: vec![],
         });
 
@@ -4585,6 +4605,27 @@ mod tests {
 
         assert_eq!(sig.params, vec![string]);
         assert_eq!(sig.return_type, integer);
+    }
+
+    #[test]
+    fn collections_empty_list_infers_type_from_expected_return() {
+        let env = store();
+        let collections = env.class_id("java.util.Collections").unwrap();
+        let list = env.class_id("java.util.List").unwrap();
+        let string = Type::class(env.well_known().string, vec![]);
+
+        let expected_return = Type::class(list, vec![string.clone()]);
+        let call = MethodCall {
+            receiver: Type::class(collections, vec![]),
+            call_kind: CallKind::Static,
+            name: "emptyList",
+            args: vec![],
+            expected_return: Some(expected_return),
+            explicit_type_args: vec![],
+        };
+        let method = &env.class(collections).unwrap().methods[0];
+        let inferred = infer_type_arguments(&env, &call, collections, method);
+        assert_eq!(inferred, vec![string]);
     }
 }
 
