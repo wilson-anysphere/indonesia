@@ -1523,7 +1523,7 @@ fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
 
 pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    collect_maven_build_files_rec(root, root, &mut out)?;
+    collect_maven_build_files_rec(root, &mut out)?;
     // Stable sort for hashing.
     out.sort_by(|a, b| {
         let ra = a.strip_prefix(root).unwrap_or(a);
@@ -1603,7 +1603,7 @@ fn discover_maven_modules(root: &Path, _build_files: &[PathBuf]) -> Vec<PathBuf>
     out
 }
 
-fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_maven_build_files_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -1662,7 +1662,7 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
             {
                 continue;
             }
-            collect_maven_build_files_rec(root, &path, out)?;
+            collect_maven_build_files_rec(&path, out)?;
             continue;
         }
 
