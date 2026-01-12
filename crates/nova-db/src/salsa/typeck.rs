@@ -661,62 +661,43 @@ fn type_of_expr_demand_result(
             let mut stack = vec![body.root];
             while let Some(stmt) = stack.pop() {
                 match &body.stmts[stmt] {
-                HirStmt::Block { statements, .. } => {
-                    stack.extend(statements.iter().rev().copied());
-                }
-                HirStmt::Let {
-                    local, initializer, ..
-                } => {
-                    if let Some(init) = initializer {
-                        let local_data = &body.locals[*local];
-                        let is_infer_var =
-                            local_data.ty_text.trim() == "var" && checker.var_inference_enabled();
+                    HirStmt::Block { statements, .. } => {
+                        stack.extend(statements.iter().rev().copied());
+                    }
+                    HirStmt::Let {
+                        local, initializer, ..
+                    } => {
+                        if let Some(init) = initializer {
+                            let local_data = &body.locals[*local];
+                            let is_infer_var = local_data.ty_text.trim() == "var"
+                                && checker.var_inference_enabled();
 
-                        // The initializer expression is a statement-level typing boundary; inferring
-                        // it with an expected type (when available) target-types nested lambdas and
-                        // improves generic/diamond inference.
-                        {
-                            let init_range = body.exprs[*init].range();
-                            let may_contain = init_range.start <= target_range.start
-                                && target_range.end <= init_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
-                                let expected_init = if is_infer_var {
-                                    None
-                                } else {
-                                    let decl_ty = checker.resolve_source_type(
-                                        &mut loader,
-                                        local_data.ty_text.as_str(),
-                                        Some(local_data.ty_range),
-                                    );
-                                    (!decl_ty.is_errorish() && decl_ty != Type::Void)
-                                        .then_some(decl_ty)
-                                };
-                                update_inference_root(*init, expected_init);
+                            // The initializer expression is a statement-level typing boundary; inferring
+                            // it with an expected type (when available) target-types nested lambdas and
+                            // improves generic/diamond inference.
+                            {
+                                let init_range = body.exprs[*init].range();
+                                let may_contain = init_range.start <= target_range.start
+                                    && target_range.end <= init_range.end;
+                                if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
+                                    let expected_init = if is_infer_var {
+                                        None
+                                    } else {
+                                        let decl_ty = checker.resolve_source_type(
+                                            &mut loader,
+                                            local_data.ty_text.as_str(),
+                                            Some(local_data.ty_range),
+                                        );
+                                        (!decl_ty.is_errorish() && decl_ty != Type::Void)
+                                            .then_some(decl_ty)
+                                    };
+                                    update_inference_root(*init, expected_init);
+                                }
                             }
-                        }
 
-                        // If the target expression is the initializer of an explicitly-typed local,
-                        // use the declared type as the expected type.
-                        if *init == target_expr && !is_infer_var {
-                            let data = local_data;
-                            let decl_ty = checker.resolve_source_type(
-                                &mut loader,
-                                data.ty_text.as_str(),
-                                Some(data.ty_range),
-                            );
-                            if !decl_ty.is_errorish() && decl_ty != Type::Void {
-                                expected_ty = Some(decl_ty);
-                            }
-                        }
-
-                        // If the target expression is inside a lambda initializer that has an
-                        // explicit target type, seed the lambda parameter locals from the SAM
-                        // signature without type-checking the entire lambda body.
-                        if matches!(body.exprs[*init], HirExpr::Lambda { .. }) && !is_infer_var {
-                            let init_range = body.exprs[*init].range();
-                            let may_contain = init_range.start <= target_range.start
-                                && target_range.end <= init_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
+                            // If the target expression is the initializer of an explicitly-typed local,
+                            // use the declared type as the expected type.
+                            if *init == target_expr && !is_infer_var {
                                 let data = local_data;
                                 let decl_ty = checker.resolve_source_type(
                                     &mut loader,
@@ -724,97 +705,187 @@ fn type_of_expr_demand_result(
                                     Some(data.ty_range),
                                 );
                                 if !decl_ty.is_errorish() && decl_ty != Type::Void {
+                                    expected_ty = Some(decl_ty);
+                                }
+                            }
+
+                            // If the target expression is inside a lambda initializer that has an
+                            // explicit target type, seed the lambda parameter locals from the SAM
+                            // signature without type-checking the entire lambda body.
+                            if matches!(body.exprs[*init], HirExpr::Lambda { .. }) && !is_infer_var
+                            {
+                                let init_range = body.exprs[*init].range();
+                                let may_contain = init_range.start <= target_range.start
+                                    && target_range.end <= init_range.end;
+                                if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
+                                    let data = local_data;
+                                    let decl_ty = checker.resolve_source_type(
+                                        &mut loader,
+                                        data.ty_text.as_str(),
+                                        Some(data.ty_range),
+                                    );
+                                    if !decl_ty.is_errorish() && decl_ty != Type::Void {
+                                        seed_lambda_params_from_target(
+                                            &mut checker,
+                                            &mut loader,
+                                            *init,
+                                            &decl_ty,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HirStmt::Return { expr, .. } => {
+                        if let Some(ret) = expr {
+                            // Returning expressions are a statement-level typing boundary; infer the
+                            // returned expression using the method's expected return type when
+                            // available so nested poly expressions (lambdas/method refs) have a target.
+                            {
+                                let ret_range = body.exprs[*ret].range();
+                                let may_contain = ret_range.start <= target_range.start
+                                    && target_range.end <= ret_range.end;
+                                if may_contain && contains_expr_in_expr(&body, *ret, target_expr) {
+                                    let expected_ret = (!checker.expected_return.is_errorish()
+                                        && checker.expected_return != Type::Void)
+                                        .then_some(checker.expected_return.clone());
+                                    update_inference_root(*ret, expected_ret);
+                                }
+                            }
+
+                            if *ret == target_expr
+                                && !checker.expected_return.is_errorish()
+                                && checker.expected_return != Type::Void
+                            {
+                                expected_ty = Some(checker.expected_return.clone());
+                            }
+
+                            // If we are hovering inside a returned lambda, seed the lambda parameters
+                            // from the method's return type (target typing) without walking the entire
+                            // body.
+                            if matches!(body.exprs[*ret], HirExpr::Lambda { .. }) {
+                                let ret_range = body.exprs[*ret].range();
+                                let may_contain = ret_range.start <= target_range.start
+                                    && target_range.end <= ret_range.end;
+                                if may_contain
+                                    && contains_expr_in_expr(&body, *ret, target_expr)
+                                    && !checker.expected_return.is_errorish()
+                                {
+                                    let expected_return = checker.expected_return.clone();
                                     seed_lambda_params_from_target(
                                         &mut checker,
                                         &mut loader,
-                                        *init,
-                                        &decl_ty,
+                                        *ret,
+                                        &expected_return,
                                     );
                                 }
                             }
                         }
                     }
-                }
-                HirStmt::Return { expr, .. } => {
-                    if let Some(ret) = expr {
-                        // Returning expressions are a statement-level typing boundary; infer the
-                        // returned expression using the method's expected return type when
-                        // available so nested poly expressions (lambdas/method refs) have a target.
-                        {
-                            let ret_range = body.exprs[*ret].range();
-                            let may_contain = ret_range.start <= target_range.start
-                                && target_range.end <= ret_range.end;
-                            if may_contain && contains_expr_in_expr(&body, *ret, target_expr) {
-                                let expected_ret = (!checker.expected_return.is_errorish()
-                                    && checker.expected_return != Type::Void)
-                                    .then_some(checker.expected_return.clone());
-                                update_inference_root(*ret, expected_ret);
+                    HirStmt::If {
+                        then_branch,
+                        else_branch,
+                        ..
+                    } => {
+                        stack.push(*then_branch);
+                        if let Some(else_branch) = else_branch {
+                            stack.push(*else_branch);
+                        }
+                    }
+                    HirStmt::While { body: b, .. } => stack.push(*b),
+                    HirStmt::For {
+                        init,
+                        update,
+                        body: b,
+                        ..
+                    } => {
+                        stack.extend(init.iter().rev().copied());
+
+                        // The `for` update list can contain multiple expressions; if the target lies
+                        // within one of them, infer that expression first.
+                        for upd in update {
+                            let upd_range = body.exprs[*upd].range();
+                            let may_contain = upd_range.start <= target_range.start
+                                && target_range.end <= upd_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *upd, target_expr) {
+                                update_inference_root(*upd, None);
                             }
                         }
 
-                        if *ret == target_expr
-                            && !checker.expected_return.is_errorish()
-                            && checker.expected_return != Type::Void
-                        {
-                            expected_ty = Some(checker.expected_return.clone());
-                        }
+                        // Assignment statements inside `for` update clauses should still get expected
+                        // type seeding (e.g. `f = s -> s.length()`).
+                        for upd in update {
+                            let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*upd] else {
+                                continue;
+                            };
+                            if *op != AssignOp::Assign {
+                                continue;
+                            }
 
-                        // If we are hovering inside a returned lambda, seed the lambda parameters
-                        // from the method's return type (target typing) without walking the entire
-                        // body.
-                        if matches!(body.exprs[*ret], HirExpr::Lambda { .. }) {
-                            let ret_range = body.exprs[*ret].range();
-                            let may_contain = ret_range.start <= target_range.start
-                                && target_range.end <= ret_range.end;
-                            if may_contain
-                                && contains_expr_in_expr(&body, *ret, target_expr)
-                                && !checker.expected_return.is_errorish()
-                            {
-                                let expected_return = checker.expected_return.clone();
+                            let rhs_range = body.exprs[*rhs].range();
+                            let may_contain = rhs_range.start <= target_range.start
+                                && target_range.end <= rhs_range.end;
+                            if !may_contain || !contains_expr_in_expr(&body, *rhs, target_expr) {
+                                continue;
+                            }
+
+                            let lhs_ty = checker.infer_expr(&mut loader, *lhs).ty;
+                            if lhs_ty.is_errorish() {
+                                continue;
+                            }
+
+                            if *rhs == target_expr {
+                                expected_ty = Some(lhs_ty.clone());
+                            }
+
+                            if matches!(body.exprs[*rhs], HirExpr::Lambda { .. }) {
                                 seed_lambda_params_from_target(
                                     &mut checker,
                                     &mut loader,
-                                    *ret,
-                                    &expected_return,
+                                    *rhs,
+                                    &lhs_ty,
                                 );
                             }
                         }
-                    }
-                }
-                HirStmt::If {
-                    then_branch,
-                    else_branch,
-                    ..
-                } => {
-                    stack.push(*then_branch);
-                    if let Some(else_branch) = else_branch {
-                        stack.push(*else_branch);
-                    }
-                }
-                HirStmt::While { body: b, .. } => stack.push(*b),
-                HirStmt::For {
-                    init,
-                    update,
-                    body: b,
-                    ..
-                } => {
-                    stack.extend(init.iter().rev().copied());
 
-                    // The `for` update list can contain multiple expressions; if the target lies
-                    // within one of them, infer that expression first.
-                    for upd in update {
-                        let upd_range = body.exprs[*upd].range();
-                        let may_contain = upd_range.start <= target_range.start
-                            && target_range.end <= upd_range.end;
-                        if may_contain && contains_expr_in_expr(&body, *upd, target_expr) {
-                            update_inference_root(*upd, None);
+                        stack.push(*b);
+                    }
+                    HirStmt::ForEach { body: b, .. } => stack.push(*b),
+                    HirStmt::Synchronized { body: b, .. } => stack.push(*b),
+                    HirStmt::Switch { body: b, .. } => stack.push(*b),
+                    HirStmt::Try {
+                        body: b,
+                        catches,
+                        finally,
+                        ..
+                    } => {
+                        stack.push(*b);
+                        for catch in catches.iter().rev() {
+                            stack.push(catch.body);
+                        }
+                        if let Some(finally) = finally {
+                            stack.push(*finally);
                         }
                     }
+                    HirStmt::Expr {
+                        expr: stmt_expr, ..
+                    } => {
+                        // Expression statements are also typing boundaries (e.g. method calls with
+                        // lambda arguments). Infer the full expression statement first so nested
+                        // target-typed expressions can see their context.
+                        {
+                            let stmt_range = body.exprs[*stmt_expr].range();
+                            let may_contain = stmt_range.start <= target_range.start
+                                && target_range.end <= stmt_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *stmt_expr, target_expr)
+                            {
+                                update_inference_root(*stmt_expr, None);
+                            }
+                        }
 
-                    // Assignment statements inside `for` update clauses should still get expected
-                    // type seeding (e.g. `f = s -> s.length()`).
-                    for upd in update {
-                        let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*upd] else {
+                        // Best-effort: propagate expected types through simple assignments in
+                        // expression statements, primarily so target-typed lambdas get parameter types.
+                        let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*stmt_expr] else {
                             continue;
                         };
                         if *op != AssignOp::Assign {
@@ -846,73 +917,11 @@ fn type_of_expr_demand_result(
                             );
                         }
                     }
-
-                    stack.push(*b);
-                }
-                HirStmt::ForEach { body: b, .. } => stack.push(*b),
-                HirStmt::Synchronized { body: b, .. } => stack.push(*b),
-                HirStmt::Switch { body: b, .. } => stack.push(*b),
-                HirStmt::Try {
-                    body: b,
-                    catches,
-                    finally,
-                    ..
-                } => {
-                    stack.push(*b);
-                    for catch in catches.iter().rev() {
-                        stack.push(catch.body);
-                    }
-                    if let Some(finally) = finally {
-                        stack.push(*finally);
-                    }
-                }
-                HirStmt::Expr { expr: stmt_expr, .. } => {
-                    // Expression statements are also typing boundaries (e.g. method calls with
-                    // lambda arguments). Infer the full expression statement first so nested
-                    // target-typed expressions can see their context.
-                    {
-                        let stmt_range = body.exprs[*stmt_expr].range();
-                        let may_contain = stmt_range.start <= target_range.start
-                            && target_range.end <= stmt_range.end;
-                        if may_contain && contains_expr_in_expr(&body, *stmt_expr, target_expr) {
-                            update_inference_root(*stmt_expr, None);
-                        }
-                    }
-
-                    // Best-effort: propagate expected types through simple assignments in
-                    // expression statements, primarily so target-typed lambdas get parameter types.
-                    let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*stmt_expr] else {
-                        continue;
-                    };
-                    if *op != AssignOp::Assign {
-                        continue;
-                    }
-
-                    let rhs_range = body.exprs[*rhs].range();
-                    let may_contain =
-                        rhs_range.start <= target_range.start && target_range.end <= rhs_range.end;
-                    if !may_contain || !contains_expr_in_expr(&body, *rhs, target_expr) {
-                        continue;
-                    }
-
-                    let lhs_ty = checker.infer_expr(&mut loader, *lhs).ty;
-                    if lhs_ty.is_errorish() {
-                        continue;
-                    }
-
-                    if *rhs == target_expr {
-                        expected_ty = Some(lhs_ty.clone());
-                    }
-
-                    if matches!(body.exprs[*rhs], HirExpr::Lambda { .. }) {
-                        seed_lambda_params_from_target(&mut checker, &mut loader, *rhs, &lhs_ty);
-                    }
-                }
-                HirStmt::Assert { .. }
-                | HirStmt::Throw { .. }
-                | HirStmt::Break { .. }
-                | HirStmt::Continue { .. }
-                | HirStmt::Empty { .. } => {}
+                    HirStmt::Assert { .. }
+                    | HirStmt::Throw { .. }
+                    | HirStmt::Break { .. }
+                    | HirStmt::Continue { .. }
+                    | HirStmt::Empty { .. } => {}
                 }
             }
         }

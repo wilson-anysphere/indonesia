@@ -234,7 +234,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "var-poly-expression"),
         "expected cast to provide a target type for lambda/var inference; got {diags:?}"
     );
     assert!(
@@ -2165,7 +2167,9 @@ class C {
     let span = bad
         .span
         .expect("constructor-invocation-not-first diagnostic should have a span");
-    let this_kw = src.find("this(1)").expect("snippet should contain this call");
+    let this_kw = src
+        .find("this(1)")
+        .expect("snippet should contain this call");
     assert!(
         span.start <= this_kw && this_kw < span.end,
         "expected diagnostic span to cover this invocation, got {span:?}"
@@ -2584,17 +2588,21 @@ class C {
     );
     let diag = static_diags[0];
     assert_eq!(
-        diag.message,
-        "cannot call instance method `foo` from a static context",
+        diag.message, "cannot call instance method `foo` from a static context",
         "unexpected diagnostic message: {diag:?}"
     );
-    let span = diag.span.expect("static-context diagnostic should have a span");
+    let span = diag
+        .span
+        .expect("static-context diagnostic should have a span");
     let snippet = src
         .get(span.start..span.end)
         .unwrap_or("<invalid span>")
         .trim()
         .trim_end_matches(';');
-    assert_eq!(snippet, "C.foo(null)", "unexpected span snippet for {diag:?}");
+    assert_eq!(
+        snippet, "C.foo(null)",
+        "unexpected span snippet for {diag:?}"
+    );
 
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
@@ -7827,9 +7835,9 @@ class D { void m(){ new C(1); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags
-            .iter()
-            .any(|d| d.code.as_ref() == "unresolved-constructor" && d.message.contains("accessible")),
+        diags.iter().any(
+            |d| d.code.as_ref() == "unresolved-constructor" && d.message.contains("accessible")
+        ),
         "expected private constructor call to be rejected; got {diags:?}"
     );
 }

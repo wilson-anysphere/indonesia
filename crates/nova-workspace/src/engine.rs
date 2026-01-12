@@ -3268,14 +3268,14 @@ fn cached_java_compile_config(
         .ok()
         .flatten()?;
 
-    module
-        .java_compile_config
-        .or_else(|| {
-            module.classpath.map(|classpath| nova_build::JavaCompileConfig {
+    module.java_compile_config.or_else(|| {
+        module
+            .classpath
+            .map(|classpath| nova_build::JavaCompileConfig {
                 compile_classpath: classpath,
                 ..nova_build::JavaCompileConfig::default()
             })
-        })
+    })
 }
 
 fn reload_project_and_sync(
@@ -3342,7 +3342,10 @@ fn reload_project_and_sync(
             }
         };
 
-    if matches!(loaded.build_system, BuildSystem::Maven | BuildSystem::Gradle) {
+    if matches!(
+        loaded.build_system,
+        BuildSystem::Maven | BuildSystem::Gradle
+    ) {
         let build_integration_cfg = &options.nova_config.build;
         let (mode, timeout, kind) = match loaded.build_system {
             BuildSystem::Maven => (
@@ -3372,8 +3375,7 @@ fn reload_project_and_sync(
                 BuildIntegrationMode::Off => {}
                 BuildIntegrationMode::Auto => {
                     let cache_dir = build_cache_dir(workspace_root, query_db);
-                    if let Some(cfg) =
-                        cached_java_compile_config(workspace_root, kind, &cache_dir)
+                    if let Some(cfg) = cached_java_compile_config(workspace_root, kind, &cache_dir)
                     {
                         let base = loaded.clone();
                         loaded = apply_java_compile_config_to_project_config(loaded, &cfg, &base);
@@ -3861,10 +3863,7 @@ mod tests {
         assert!(
             !should_refresh_build_config(
                 &root,
-                &[root
-                    .join("nested")
-                    .join("bazel-out")
-                    .join("build.gradle")]
+                &[root.join("nested").join("bazel-out").join("build.gradle")]
             ),
             "expected nested/bazel-out/build.gradle to be ignored"
         );

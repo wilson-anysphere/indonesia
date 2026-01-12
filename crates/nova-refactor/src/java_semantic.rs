@@ -20,8 +20,8 @@ use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{
-    MethodSignature as SemanticMethodSignature, RefactorDatabase, Reference, SymbolDefinition,
-    TypeSymbolInfo, ReferenceKind,
+    MethodSignature as SemanticMethodSignature, RefactorDatabase, Reference, ReferenceKind,
+    SymbolDefinition, TypeSymbolInfo,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -2890,9 +2890,7 @@ fn record_body_references(
                             resolver.resolve_name(&scope_result.scopes, scope, root)?;
                         Some(matches!(
                             root_resolved,
-                            Resolution::Local(_)
-                                | Resolution::Parameter(_)
-                                | Resolution::Field(_)
+                            Resolution::Local(_) | Resolution::Parameter(_) | Resolution::Field(_)
                         ))
                     })()
                     .unwrap_or(false);
@@ -2900,11 +2898,13 @@ fn record_body_references(
                         // If the root segment is a value, this is an expression (`obj.foo`), not a
                         // type/package qualification (`p.Foo`). Avoid recording a type reference
                         // which would cause type rename to rewrite value-based member accesses.
-                    } else if let Some(resolved) = resolver.resolve_qualified_type_resolution_in_scope(
-                        &scope_result.scopes,
-                        scope,
-                        &path,
-                    ) {
+                    } else if let Some(resolved) = resolver
+                        .resolve_qualified_type_resolution_in_scope(
+                            &scope_result.scopes,
+                            scope,
+                            &path,
+                        )
+                    {
                         match resolved {
                             TypeResolution::Source(item) => {
                                 if let Some(&symbol) =
@@ -3111,7 +3111,8 @@ fn record_body_references(
                     if is_qualified_this_or_super(file_text, body, *receiver) {
                         return;
                     }
-                    let Some(&callee_scope) = scope_result.expr_scopes.get(&(owner, *callee)) else {
+                    let Some(&callee_scope) = scope_result.expr_scopes.get(&(owner, *callee))
+                    else {
                         return;
                     };
                     let callee_interned_scope = scope_interner.intern(db_file, callee_scope);
@@ -3215,7 +3216,8 @@ fn record_body_references(
                     ) {
                         return;
                     }
-                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
+                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field))
+                    else {
                         return;
                     };
                     let range = TextRange::new(name_range.start, name_range.end);
@@ -5717,11 +5719,17 @@ fn collect_switch_contexts(
                 }
             }
             hir::Stmt::Assert {
-                condition,
-                message,
-                ..
+                condition, message, ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 if let Some(expr) = message {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
@@ -5729,9 +5737,25 @@ fn collect_switch_contexts(
             hir::Stmt::Assert {
                 condition, message, ..
             } => {
-                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *condition,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 if let Some(message) = message {
-                    walk_expr(body, *message, owner, scope_result, resolver, item_trees, out);
+                    walk_expr(
+                        body,
+                        *message,
+                        owner,
+                        scope_result,
+                        resolver,
+                        item_trees,
+                        out,
+                    );
                 }
             }
             hir::Stmt::Throw { expr, .. } => {

@@ -1506,7 +1506,9 @@ pub fn core_file_diagnostics(
                 use nova_syntax::java::ast::MemberDecl;
                 match member {
                     MemberDecl::Field(field) => {
-                        push_type_ref_diags(resolver, scopes, scope, env, type_vars, &field.ty, out);
+                        push_type_ref_diags(
+                            resolver, scopes, scope, env, type_vars, &field.ty, out,
+                        );
                     }
                     MemberDecl::Method(method) => {
                         push_type_ref_diags(
@@ -1520,26 +1522,14 @@ pub fn core_file_diagnostics(
                         );
                         for param in &method.params {
                             push_type_ref_diags(
-                                resolver,
-                                scopes,
-                                scope,
-                                env,
-                                type_vars,
-                                &param.ty,
-                                out,
+                                resolver, scopes, scope, env, type_vars, &param.ty, out,
                             );
                         }
                     }
                     MemberDecl::Constructor(cons) => {
                         for param in &cons.params {
                             push_type_ref_diags(
-                                resolver,
-                                scopes,
-                                scope,
-                                env,
-                                type_vars,
-                                &param.ty,
-                                out,
+                                resolver, scopes, scope, env, type_vars, &param.ty, out,
                             );
                         }
                     }
@@ -2743,7 +2733,15 @@ const JAVA_PRIMITIVE_TYPES: &[&str] = &[
 
 const JAVA_LANG_COMMON_TYPES: &[&str] = &[
     // Common `java.lang.*` types (implicitly imported).
-    "Object", "String", "Boolean", "Byte", "Short", "Character", "Integer", "Long", "Float",
+    "Object",
+    "String",
+    "Boolean",
+    "Byte",
+    "Short",
+    "Character",
+    "Integer",
+    "Long",
+    "Float",
     "Double",
 ];
 
@@ -5912,10 +5910,7 @@ class A {
 "#;
         db.set_file_text(file, source.to_string());
 
-        let offset = source
-            .find("\\n")
-            .expect("expected `\\\\n` in fixture")
-            + "\\n".len();
+        let offset = source.find("\\n").expect("expected `\\\\n` in fixture") + "\\n".len();
         let position = crate::text::offset_to_position(source, offset);
 
         let cancel = nova_scheduler::CancellationToken::new();
@@ -5945,21 +5940,21 @@ class A {
 "#;
         db.set_file_text(file, source.to_string());
 
-        let offset = source
-            .find("\\u")
-            .expect("expected `\\\\u` in fixture")
-            + "\\u".len();
+        let offset = source.find("\\u").expect("expected `\\\\u` in fixture") + "\\u".len();
         let position = crate::text::offset_to_position(source, offset);
 
         let cancel = nova_scheduler::CancellationToken::new();
         let items = core_completions(&db, file, position, &cancel);
 
-        let unicode = items.iter().find(|i| i.label == r#"\u0000"#).unwrap_or_else(|| {
-            panic!(
-                "expected unicode escape completion inside string literal; got labels {:?}",
-                items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
-            )
-        });
+        let unicode = items
+            .iter()
+            .find(|i| i.label == r#"\u0000"#)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected unicode escape completion inside string literal; got labels {:?}",
+                    items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+                )
+            });
         assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u${1:0000}"#));
         assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
     }
@@ -7277,10 +7272,9 @@ fn type_position_completions(
 ) -> Vec<CompletionItem> {
     let analysis = analyze(text);
     let allow_var = ctx == TypePositionCompletionContext::Type
-        && analysis
-            .methods
-            .iter()
-            .any(|m| span_contains(m.body_span, prefix_start) || span_contains(m.body_span, offset));
+        && analysis.methods.iter().any(|m| {
+            span_contains(m.body_span, prefix_start) || span_contains(m.body_span, offset)
+        });
 
     let mut seen = HashSet::<String>::new();
     let mut items = Vec::new();
@@ -8466,8 +8460,8 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
 
     let jdk = JdkIndex::new();
     let resolver = ImportResolver::new(&jdk);
-    let owner = resolve_type_receiver(&resolver, &imports, package.as_ref(), receiver)
-        .or_else(|| {
+    let owner =
+        resolve_type_receiver(&resolver, &imports, package.as_ref(), receiver).or_else(|| {
             // If a type receiver isn't resolvable via imports, still try a small
             // set of "common" JDK packages so member completion can offer
             // best-effort static members with auto-import edits.
@@ -9686,10 +9680,10 @@ fn type_name_completions(
         candidates.push(Candidate {
             item: {
                 let mut item = CompletionItem {
-                label: ty.name.clone(),
-                kind: Some(ty.kind),
-                detail: Some(fqn),
-                ..Default::default()
+                    label: ty.name.clone(),
+                    kind: Some(ty.kind),
+                    detail: Some(fqn),
+                    ..Default::default()
                 };
                 mark_workspace_completion_item(&mut item);
                 item

@@ -472,7 +472,10 @@ fn unresolved_import_offers_remove_quick_fix() {
     let action = find_code_action(&actions, "Remove unresolved import")
         .expect("expected remove import quick fix");
 
-    assert_eq!(action.kind.as_ref(), Some(&lsp_types::CodeActionKind::QUICKFIX));
+    assert_eq!(
+        action.kind.as_ref(),
+        Some(&lsp_types::CodeActionKind::QUICKFIX)
+    );
     let edit = action.edit.as_ref().expect("expected workspace edit");
 
     let updated = apply_workspace_edit(source, edit);
@@ -491,7 +494,10 @@ fn unresolved_type_offers_import_quick_fix() {
     let action = find_code_action(&actions, "Import java.util.List")
         .expect("expected import java.util.List quick fix");
 
-    assert_eq!(action.kind.as_ref(), Some(&lsp_types::CodeActionKind::QUICKFIX));
+    assert_eq!(
+        action.kind.as_ref(),
+        Some(&lsp_types::CodeActionKind::QUICKFIX)
+    );
     let edit = action.edit.as_ref().expect("expected workspace edit");
 
     let updated = apply_workspace_edit(source, edit);

@@ -63,7 +63,9 @@ pub(crate) fn quick_fixes_for_diagnostics(
 
                     // For simple identifiers, also offer creating the missing class (mirrors the
                     // `unresolved-type` quick fix).
-                    let span_text = source.get(diag_span.start..diag_span.end).unwrap_or_default();
+                    let span_text = source
+                        .get(diag_span.start..diag_span.end)
+                        .unwrap_or_default();
                     if !span_text.contains('.') && is_simple_type_identifier(&name) {
                         if let Some(action) = create_class_action(uri, source, &name) {
                             actions.push(CodeActionOrCommand::CodeAction(action));
@@ -428,7 +430,11 @@ fn initialize_unassigned_local_action(
     let insert_offset = line_start_offset(source, diag_span.start)?;
     let indent = line_indent(source, insert_offset);
     let default_value = infer_default_value_for_local(source, name, diag_span.start);
-    let line_ending = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let line_ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let new_text = format!("{indent}{name} = {default_value};{line_ending}");
 
     Some(CodeAction {

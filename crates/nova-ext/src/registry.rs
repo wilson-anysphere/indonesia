@@ -331,9 +331,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = stats.map_mut(kind);
-        let entry = map
-            .entry(id.to_string())
-            .or_default();
+        let entry = map.entry(id.to_string()).or_default();
 
         let Some(open_until) = entry.circuit_open_until else {
             return false;

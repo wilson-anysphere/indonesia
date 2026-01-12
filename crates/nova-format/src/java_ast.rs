@@ -980,11 +980,7 @@ fn needs_space_before(last: Option<&SigToken>, next_kind: SyntaxKind) -> bool {
         return false;
     }
 
-    if last
-        .kind()
-        .is_some_and(is_control_keyword_kind)
-        && next_kind == SyntaxKind::LParen
-    {
+    if last.kind().is_some_and(is_control_keyword_kind) && next_kind == SyntaxKind::LParen {
         return true;
     }
 

@@ -327,10 +327,7 @@ mod tests {
         let store = VirtualDocumentStore::new(1024);
         let fs = VirtualDocumentsFs::new(base.clone(), store.clone());
 
-        assert_eq!(
-            fs.read_bytes(&path).unwrap(),
-            b"class BytesOk {}".to_vec()
-        );
+        assert_eq!(fs.read_bytes(&path).unwrap(), b"class BytesOk {}".to_vec());
         assert!(store.contains(&path));
         assert_eq!(base.reads(), 1);
 

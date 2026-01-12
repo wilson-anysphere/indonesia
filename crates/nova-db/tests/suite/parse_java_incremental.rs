@@ -4,9 +4,9 @@ use std::sync::Arc;
 use nova_core::{TextEdit, TextRange, TextSize};
 use nova_db::{FileId, NovaSyntax as _, SalsaDatabase};
 use nova_memory::{MemoryBudget, MemoryManager, MemoryPressure};
+use nova_syntax::JavaParseStore;
 use nova_syntax::{parse_java as full_parse_java, JavaParseResult, SyntaxKind};
 use nova_vfs::OpenDocuments;
-use nova_syntax::JavaParseStore;
 
 fn find_class_by_name(parse: &JavaParseResult, name: &str) -> nova_syntax::SyntaxNode {
     parse

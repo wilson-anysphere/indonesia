@@ -3882,7 +3882,8 @@ fn collect_method_candidates(
                     let current_owner = def;
                     let existing_owner_ty = Type::class(existing_owner, vec![]);
                     let current_owner_ty = Type::class(current_owner, vec![]);
-                    let existing_is_subtype = is_subtype(env, &existing_owner_ty, &current_owner_ty);
+                    let existing_is_subtype =
+                        is_subtype(env, &existing_owner_ty, &current_owner_ty);
                     let current_is_subtype = is_subtype(env, &current_owner_ty, &existing_owner_ty);
                     if current_is_subtype && !existing_is_subtype {
                         out[existing] = CandidateMethod {

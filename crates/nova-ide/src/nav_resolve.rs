@@ -186,10 +186,16 @@ pub(crate) struct Definition {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum OccurrenceKind {
-    MemberCall { receiver: String },
-    MemberField { receiver: String },
+    MemberCall {
+        receiver: String,
+    },
+    MemberField {
+        receiver: String,
+    },
     /// Java method/constructor reference (`recv::method`, `Type::new`).
-    MethodRef { receiver: String },
+    MethodRef {
+        receiver: String,
+    },
     LocalCall,
     Ident,
 }
@@ -850,7 +856,10 @@ impl Resolver {
                         // if the full receiver doesn't resolve (package segments), try the final
                         // segment as a workspace type name.
                         let last = receiver.rsplit('.').next()?.trim();
-                        self.index.type_info(last).is_some().then_some(last.to_string())
+                        self.index
+                            .type_info(last)
+                            .is_some()
+                            .then_some(last.to_string())
                     })?;
                 let def = self.index.resolve_method_definition(&receiver_ty, &ident)?;
                 Some(ResolvedSymbol {

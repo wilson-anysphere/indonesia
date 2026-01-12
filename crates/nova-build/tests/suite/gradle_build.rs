@@ -344,9 +344,7 @@ fn annotation_processing_for_buildsrc_uses_project_dir_flag_and_root_task() {
     let main = ap.main.expect("expected main annotation processing config");
     assert_eq!(
         main.generated_sources_dir,
-        Some(
-            buildsrc_dir.join("build/generated/sources/annotationProcessor/java/main")
-        )
+        Some(buildsrc_dir.join("build/generated/sources/annotationProcessor/java/main"))
     );
 
     let invocations = runner.invocations();
@@ -388,7 +386,9 @@ fn build_for_buildsrc_uses_project_dir_flag_and_unprefixed_compile_task() {
     let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
     let cache = BuildCache::new(tmp.path().join("cache"));
 
-    let result = gradle.build(&project_root, Some(":__buildSrc"), &cache).unwrap();
+    let result = gradle
+        .build(&project_root, Some(":__buildSrc"), &cache)
+        .unwrap();
     assert!(result.diagnostics.is_empty());
 
     let invocations = runner.invocations();

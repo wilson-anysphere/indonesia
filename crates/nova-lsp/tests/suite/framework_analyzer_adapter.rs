@@ -61,7 +61,8 @@ fn lsp_extensions_can_register_framework_analyzers_via_adapter() {
 
     let mut state = NovaLspIdeState::new(db, config, ProjectId::new(0));
 
-    let analyzer = FrameworkAnalyzerAdapter::new("framework.test", TestFrameworkAnalyzer).into_arc();
+    let analyzer =
+        FrameworkAnalyzerAdapter::new("framework.test", TestFrameworkAnalyzer).into_arc();
     state
         .registry_mut()
         .register_diagnostic_provider(analyzer.clone())

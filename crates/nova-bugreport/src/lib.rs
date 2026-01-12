@@ -362,8 +362,7 @@ fn append_crash_record(path: &Path, record: &CrashRecord) -> std::io::Result<()>
         .append(true)
         .open(path)?;
 
-    let line = serde_json::to_string(record)
-        .map_err(std::io::Error::other)?;
+    let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
     Ok(())
@@ -439,8 +438,7 @@ struct CrashReport {
     persisted: Vec<CrashRecord>,
 }
 
-type ExtraAttachmentsCallback<'a> =
-    dyn Fn(&Path) -> Result<(), BugReportError> + Send + Sync + 'a;
+type ExtraAttachmentsCallback<'a> = dyn Fn(&Path) -> Result<(), BugReportError> + Send + Sync + 'a;
 
 pub struct BugReportBuilder<'a> {
     config: &'a NovaConfig,
@@ -680,8 +678,7 @@ fn create_zip_archive(dir: &Path) -> Result<PathBuf, BugReportError> {
         .unwrap_or("nova-bugreport");
     zip_dir_recursive(&mut zip, dir, dir, prefix, &options)?;
 
-    zip.finish()
-        .map_err(std::io::Error::other)?;
+    zip.finish().map_err(std::io::Error::other)?;
     Ok(archive_path)
 }
 

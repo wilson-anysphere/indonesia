@@ -3605,8 +3605,8 @@ interface I {
 }
 
 #[test]
-fn extract_method_inside_interface_generic_method_with_public_visibility_emits_default_before_type_params()
-{
+fn extract_method_inside_interface_generic_method_with_public_visibility_emits_default_before_type_params(
+) {
     let fixture = r#"
 interface I {
     default <T> void m(T a) {

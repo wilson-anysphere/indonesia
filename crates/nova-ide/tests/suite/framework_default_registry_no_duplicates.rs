@@ -90,4 +90,3 @@ fn default_registry_does_not_duplicate_quarkus_framework_diagnostics_when_projec
         "expected default registry to contain the framework analyzer registry provider id"
     );
 }
-

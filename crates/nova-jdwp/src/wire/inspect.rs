@@ -554,7 +554,7 @@ async fn linked_list_children(
                     if let JdwpValue::Object { id, .. } = value {
                         next = Some(id);
                     }
-                },
+                }
                 _ => {}
             }
         }

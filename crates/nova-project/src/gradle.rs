@@ -3854,11 +3854,7 @@ dependencies {
             .map(|d| (d.group_id, d.artifact_id, d.version))
             .collect();
 
-        assert!(got.contains(&(
-            "com.example".to_string(),
-            "dynamic".to_string(),
-            None
-        )));
+        assert!(got.contains(&("com.example".to_string(), "dynamic".to_string(), None)));
         assert!(got.contains(&(
             "com.example".to_string(),
             "literal".to_string(),

@@ -153,7 +153,10 @@ fn load_project_finds_gradle_workspace_root_from_buildsrc_nested_file_with_setti
     // `build.gradle`. Ensure `buildSrc/settings.gradle` does not "steal" the workspace root when
     // loading a file under `buildSrc/**`.
     write(&root.join("build.gradle"), "// root build");
-    write(&root.join("buildSrc/settings.gradle"), "rootProject.name = \"buildSrc\"\n");
+    write(
+        &root.join("buildSrc/settings.gradle"),
+        "rootProject.name = \"buildSrc\"\n",
+    );
     write(&root.join("buildSrc/build.gradle"), "// buildSrc build");
 
     write(

@@ -231,14 +231,19 @@ fn prefers_newest_existing_timestamped_snapshot_jar_from_metadata() {
     let expected_suffix = format!("com/example/dep/1.0-SNAPSHOT/{old_jar_name}");
     jar_entries
         .iter()
-        .find(|p| p.to_string_lossy().replace('\\', "/").ends_with(&expected_suffix))
+        .find(|p| {
+            p.to_string_lossy()
+                .replace('\\', "/")
+                .ends_with(&expected_suffix)
+        })
         .expect("expected newest existing snapshot jar to be resolved from metadata");
 
     let missing_suffix = format!("com/example/dep/1.0-SNAPSHOT/{new_jar_name}");
     assert!(
-        !jar_entries
-            .iter()
-            .any(|p| p.to_string_lossy().replace('\\', "/").ends_with(&missing_suffix)),
+        !jar_entries.iter().any(|p| p
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with(&missing_suffix)),
         "did not expect missing jar to be added to classpath, got: {jar_entries:?}"
     );
 }
