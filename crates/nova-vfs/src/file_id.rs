@@ -52,6 +52,28 @@ impl FileIdRegistry {
         id_from
     }
 
+    /// Rename (or move) a path, preserving the source `FileId` even if the destination path is
+    /// already interned.
+    pub fn rename_path_displacing_destination(&mut self, from: &VfsPath, to: VfsPath) -> FileId {
+        let Some(id_from) = self.path_to_id.remove(from) else {
+            return self.file_id(to);
+        };
+
+        if let Some(id_to) = self.path_to_id.remove(&to) {
+            if id_to != id_from {
+                if let Some(slot) = self.id_to_path.get_mut(id_to.to_raw() as usize) {
+                    *slot = None;
+                }
+            }
+        }
+
+        if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
+            *slot = Some(to.clone());
+        }
+        self.path_to_id.insert(to, id_from);
+        id_from
+    }
+
     /// Returns all currently-tracked file ids (sorted).
     pub fn all_file_ids(&self) -> Vec<FileId> {
         let mut ids: Vec<_> = self.path_to_id.values().copied().collect();
@@ -163,5 +185,23 @@ mod tests {
         assert_eq!(registry.get_id(&to), Some(to_id));
         assert_eq!(registry.get_path(to_id), Some(&to));
         assert_eq!(registry.get_path(from_id), None);
+    }
+
+    #[test]
+    fn rename_path_displacing_destination_preserves_source_id() {
+        let mut registry = FileIdRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("a.java"));
+        let to = VfsPath::local(dir.path().join("b.java"));
+        let from_id = registry.file_id(from.clone());
+        let to_id = registry.file_id(to.clone());
+
+        let moved_id = registry.rename_path_displacing_destination(&from, to.clone());
+
+        assert_eq!(moved_id, from_id);
+        assert_eq!(registry.get_id(&from), None);
+        assert_eq!(registry.get_id(&to), Some(from_id));
+        assert_eq!(registry.get_path(from_id), Some(&to));
+        assert_eq!(registry.get_path(to_id), None);
     }
 }
