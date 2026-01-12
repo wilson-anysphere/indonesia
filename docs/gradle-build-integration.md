@@ -147,6 +147,11 @@ Each `javaCompileConfigs[":path"]` contains:
 `projectDir` and other paths may be absolute or workspace-relative; `nova-project` resolves relative
 paths against the workspace root.
 
+This snapshot currently covers **only** the minimal project-directory mapping + Java compile
+configuration needed for discovery/classpath construction. Other build-tool outputs (e.g. build
+diagnostics, annotation processing details) are tracked separately (typically via `nova-build`’s
+cache/orchestrator APIs) and are **not** part of this file yet.
+
 ---
 
 ## Heuristic mode vs snapshot mode (`nova-project`)
@@ -173,7 +178,7 @@ With a valid `.nova/queries/gradle.json`, `nova-project` can use:
 
 - resolved compile/test **classpath entries** from Gradle (including transitive deps),
 - `sourceSets`-derived **source roots** and **output dirs**,
-- project directory mappings for included builds/subprojects,
+- project directory mappings for Gradle subprojects (`:path` → `projectDir`),
 - Java level and preview flags derived from Gradle config/toolchains.
 
 If the snapshot is **partial** (e.g. missing `javaCompileConfigs` for some subprojects), those
