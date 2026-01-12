@@ -2913,6 +2913,23 @@ class C {
 }
 
 #[test]
+fn static_star_imported_math_max_resolves() {
+    let src = r#"
+import static java.lang.Math.*;
+class C { int m(){ return max(1,2); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unresolved-name"
+            && d.code.as_ref() != "unresolved-static-member"),
+        "expected Math.* static star import to provide max; got {diags:?}"
+    );
+}
+
+#[test]
 fn java_lang_math_max_resolves_via_implicit_import() {
     let src = r#"
 class C {
@@ -2951,6 +2968,32 @@ class C { double m(){ return PI; } }
             .all(|d| d.code.as_ref() != "unresolved-static-member"
                 && d.code.as_ref() != "unresolved-field"),
         "expected static-imported Math.PI to resolve; got {diags:?}"
+    );
+
+    let offset = src
+        .find("return PI")
+        .expect("snippet should contain PI return")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "double");
+}
+
+#[test]
+fn static_star_imported_math_pi_resolves() {
+    let src = r#"
+import static java.lang.Math.*;
+class C { double m(){ return PI; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
+            && d.code.as_ref() != "unresolved-field"
+            && d.code.as_ref() != "unresolved-name"),
+        "expected Math.* static star import to provide PI; got {diags:?}"
     );
 
     let offset = src
