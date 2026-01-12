@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use nova_core::{Name, QualifiedName};
-use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaTypeck};
+use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaIndexing, NovaTypeck};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::ids::{FieldId, ItemId, MethodId};
 use nova_hir::item_tree::Modifiers as HirModifiers;
 use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::HirDatabase;
+use nova_hir::{item_tree, item_tree::ItemTree};
 use nova_resolve::{
     BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
     ScopeKind, StaticMemberResolution, TypeResolution, WorkspaceDefMap,
@@ -278,6 +279,7 @@ impl RefactorJavaDatabase {
                     .get(&method)
                     .copied()
                     .expect("method scope map must contain key");
+
                 let scope = scope_interner.intern(*file_id, method_scope);
                 let method_data = tree.method(method);
                 for (idx, param) in method_data.params.iter().enumerate() {
@@ -545,6 +547,25 @@ impl RefactorJavaDatabase {
             .with_classpath(&workspace_def_map)
             .with_workspace(&workspace_def_map);
 
+        // Precompute a best-effort inheritance view and type/member maps used for receiver-aware
+        // method resolution (e.g. `super::m`, `this::m`).
+        let inheritance = snap.project_indexes(project).inheritance.clone();
+        let mut type_by_name: HashMap<String, ItemId> = HashMap::new();
+        let mut type_name_by_item: HashMap<ItemId, String> = HashMap::new();
+        let mut methods_by_item: HashMap<ItemId, HashMap<String, Vec<MethodId>>> = HashMap::new();
+        for (_file, file_id) in &file_ids {
+            let tree = snap.hir_item_tree(*file_id);
+            for item in &tree.items {
+                collect_type_maps(
+                    tree.as_ref(),
+                    *item,
+                    &mut type_by_name,
+                    &mut type_name_by_item,
+                    &mut methods_by_item,
+                );
+            }
+        }
+
         for (file, file_id) in &file_ids {
             let Some(scope_result) = scopes.get(file_id) else {
                 continue;
@@ -584,6 +605,10 @@ impl RefactorJavaDatabase {
                     &item_trees,
                     tree.as_ref(),
                     &resolution_to_symbol,
+                    &type_by_name,
+                    &type_name_by_item,
+                    &methods_by_item,
+                    &inheritance,
                     &mut references,
                     &mut spans,
                 );
@@ -604,6 +629,10 @@ impl RefactorJavaDatabase {
                     &item_trees,
                     tree.as_ref(),
                     &resolution_to_symbol,
+                    &type_by_name,
+                    &type_name_by_item,
+                    &methods_by_item,
+                    &inheritance,
                     &mut references,
                     &mut spans,
                 );
@@ -624,6 +653,10 @@ impl RefactorJavaDatabase {
                     &item_trees,
                     tree.as_ref(),
                     &resolution_to_symbol,
+                    &type_by_name,
+                    &type_name_by_item,
+                    &methods_by_item,
+                    &inheritance,
                     &mut references,
                     &mut spans,
                 );
@@ -642,6 +675,38 @@ impl RefactorJavaDatabase {
                 &mut references,
                 &mut spans,
             );
+        }
+
+        // Method references in field initializers (e.g. `Supplier<?> s = super::m;`) are not part
+        // of Nova's lowered HIR bodies yet. Scan the full-fidelity syntax tree for those so rename
+        // can still update them.
+        for (file, file_id) in &file_ids {
+            let text = files.get(file).map(|t| t.as_ref()).unwrap_or("");
+            let tree = snap.hir_item_tree(*file_id);
+            record_syntax_method_reference_references(
+                file,
+                text,
+                tree.as_ref(),
+                &type_by_name,
+                &type_name_by_item,
+                &methods_by_item,
+                &inheritance,
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
+        }
+
+        // Ensure we don't materialize overlapping edits if the same reference was indexed by
+        // multiple mechanisms (e.g. both HIR and syntax scans).
+        for refs in &mut references {
+            refs.sort_by(|a, b| {
+                a.file
+                    .cmp(&b.file)
+                    .then_with(|| a.range.start.cmp(&b.range.start))
+                    .then_with(|| a.range.end.cmp(&b.range.end))
+            });
+            refs.dedup_by(|a, b| a.file == b.file && a.range == b.range);
         }
 
         spans.sort_by(|(file_a, range_a, sym_a), (file_b, range_b, sym_b)| {
@@ -1682,6 +1747,10 @@ fn record_body_references(
     item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
     tree: &nova_hir::item_tree::ItemTree,
     resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+    inheritance: &nova_index::InheritanceIndex,
     references: &mut [Vec<Reference>],
     spans: &mut Vec<(FileId, TextRange, SymbolId)>,
 ) {
@@ -2048,6 +2117,36 @@ fn record_body_references(
                     name_range,
                     ..
                 } => {
+                    // `WorkspaceDefMap::type_def` only contains methods declared directly on the
+                    // type, so member resolution for `this.m()` / `super.m()` needs an explicit
+                    // inheritance walk to find inherited methods.
+                    let receiver_kind = match &body.exprs[*receiver] {
+                        hir::Expr::This { .. } => Some(ReceiverKind::This),
+                        hir::Expr::Super { .. } => Some(ReceiverKind::Super),
+                        _ => None,
+                    };
+                    if let Some(receiver_kind) = receiver_kind {
+                        if let Some(enclosing_item) = enclosing_class(&scope_result.scopes, scope) {
+                            if let Some(method) = resolve_receiver_method(
+                                enclosing_item,
+                                receiver_kind,
+                                name.as_str(),
+                                type_by_name,
+                                type_name_by_item,
+                                methods_by_item,
+                                inheritance,
+                            ) {
+                                if let Some(&symbol) =
+                                    resolution_to_symbol.get(&ResolutionKey::Method(method))
+                                {
+                                    let range = TextRange::new(name_range.start, name_range.end);
+                                    record(file, symbol, range, references, spans);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
                     let Some(receiver_ty) = receiver_type(
                         owner,
                         body,
@@ -2087,6 +2186,35 @@ fn record_body_references(
                 name_range,
                 ..
             } => {
+                // `WorkspaceDefMap::type_def` does not include inherited methods, so resolve
+                // `this::m` / `super::m` via an explicit inheritance walk.
+                let receiver_kind = match &body.exprs[*receiver] {
+                    hir::Expr::This { .. } => Some(ReceiverKind::This),
+                    hir::Expr::Super { .. } => Some(ReceiverKind::Super),
+                    _ => None,
+                };
+                if let Some(receiver_kind) = receiver_kind {
+                    if let Some(enclosing_item) = enclosing_class(&scope_result.scopes, scope) {
+                        if let Some(method) = resolve_receiver_method(
+                            enclosing_item,
+                            receiver_kind,
+                            name.as_str(),
+                            type_by_name,
+                            type_name_by_item,
+                            methods_by_item,
+                            inheritance,
+                        ) {
+                            if let Some(&symbol) =
+                                resolution_to_symbol.get(&ResolutionKey::Method(method))
+                            {
+                                let range = TextRange::new(name_range.start, name_range.end);
+                                record(file, symbol, range, references, spans);
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 let Some(receiver_ty) = receiver_type(
                     owner,
                     body,
@@ -2416,6 +2544,334 @@ fn is_ident_start_char(ch: char) -> bool {
 
 fn is_ident_continue_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '$'
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverKind {
+    This,
+    Super,
+}
+
+fn resolve_receiver_method(
+    enclosing_item: ItemId,
+    receiver_kind: ReceiverKind,
+    name: &str,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+    inheritance: &nova_index::InheritanceIndex,
+) -> Option<MethodId> {
+    match receiver_kind {
+        ReceiverKind::This => resolve_method_in_type_or_supertypes(
+            enclosing_item,
+            name,
+            type_by_name,
+            type_name_by_item,
+            methods_by_item,
+            inheritance,
+        ),
+        ReceiverKind::Super => {
+            let super_item = direct_super_item(enclosing_item, type_by_name, type_name_by_item, inheritance)?;
+            resolve_method_in_type_or_supertypes(
+                super_item,
+                name,
+                type_by_name,
+                type_name_by_item,
+                methods_by_item,
+                inheritance,
+            )
+        }
+    }
+}
+
+fn direct_super_item(
+    subtype: ItemId,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    inheritance: &nova_index::InheritanceIndex,
+) -> Option<ItemId> {
+    let subtype_name = type_name_by_item.get(&subtype)?;
+    let supertypes = inheritance.supertypes.get(subtype_name)?;
+
+    // Best-effort: prefer a class supertype (so `super` does not bind to an implemented interface).
+    for super_name in supertypes {
+        if let Some(super_item) = type_by_name.get(super_name) {
+            if matches!(super_item, ItemId::Class(_)) {
+                return Some(*super_item);
+            }
+        }
+    }
+
+    for super_name in supertypes {
+        if let Some(super_item) = type_by_name.get(super_name) {
+            return Some(*super_item);
+        }
+    }
+
+    None
+}
+
+fn resolve_method_in_type_or_supertypes(
+    ty: ItemId,
+    name: &str,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+    inheritance: &nova_index::InheritanceIndex,
+) -> Option<MethodId> {
+    let mut visited = HashSet::<ItemId>::new();
+    resolve_method_in_type_or_supertypes_impl(
+        ty,
+        name,
+        type_by_name,
+        type_name_by_item,
+        methods_by_item,
+        inheritance,
+        &mut visited,
+    )
+}
+
+fn resolve_method_in_type_or_supertypes_impl(
+    ty: ItemId,
+    name: &str,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+    inheritance: &nova_index::InheritanceIndex,
+    visited: &mut HashSet<ItemId>,
+) -> Option<MethodId> {
+    if !visited.insert(ty) {
+        return None;
+    }
+
+    if let Some(methods) = methods_by_item.get(&ty).and_then(|m| m.get(name)) {
+        if let Some(method) = methods.first().copied() {
+            return Some(method);
+        }
+    }
+
+    let ty_name = type_name_by_item.get(&ty)?;
+    let Some(supertypes) = inheritance.supertypes.get(ty_name) else {
+        return None;
+    };
+
+    for super_name in supertypes {
+        let Some(super_item) = type_by_name.get(super_name).copied() else {
+            continue;
+        };
+        if let Some(found) = resolve_method_in_type_or_supertypes_impl(
+            super_item,
+            name,
+            type_by_name,
+            type_name_by_item,
+            methods_by_item,
+            inheritance,
+            visited,
+        ) {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn collect_type_maps(
+    tree: &ItemTree,
+    item: item_tree::Item,
+    type_by_name: &mut HashMap<String, ItemId>,
+    type_name_by_item: &mut HashMap<ItemId, String>,
+    methods_by_item: &mut HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+) {
+    let item_id = item_id(item);
+    let (name, members) = item_name_and_members(tree, item_id);
+
+    type_by_name.entry(name.to_string()).or_insert(item_id);
+    type_name_by_item.insert(item_id, name.to_string());
+
+    let mut method_map: HashMap<String, Vec<MethodId>> = HashMap::new();
+    for member in members {
+        match member {
+            item_tree::Member::Method(method_id) => {
+                let method = tree.method(*method_id);
+                method_map
+                    .entry(method.name.clone())
+                    .or_default()
+                    .push(*method_id);
+            }
+            item_tree::Member::Type(child) => {
+                collect_type_maps(tree, *child, type_by_name, type_name_by_item, methods_by_item);
+            }
+            _ => {}
+        }
+    }
+    methods_by_item.insert(item_id, method_map);
+}
+
+fn record_syntax_method_reference_references(
+    file: &FileId,
+    text: &str,
+    tree: &ItemTree,
+    type_by_name: &HashMap<String, ItemId>,
+    type_name_by_item: &HashMap<ItemId, String>,
+    methods_by_item: &HashMap<ItemId, HashMap<String, Vec<MethodId>>>,
+    inheritance: &nova_index::InheritanceIndex,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    let parse = nova_syntax::parse_java(text);
+    let root = parse.syntax();
+
+    for mr in root
+        .descendants()
+        .filter_map(|node| ast::MethodReferenceExpression::cast(node))
+    {
+        let Some(name_tok) = mr.name_token() else {
+            continue;
+        };
+        let name = name_tok.text().to_string();
+        let name_range = syntax_token_range(&name_tok);
+
+        let Some(receiver) = mr.expression() else {
+            continue;
+        };
+
+        // Only handle the unqualified `this::m` / `super::m` forms (mirrors `hir::Expr::{This,Super}`).
+        let receiver_kind = match receiver {
+            ast::Expression::ThisExpression(this_expr) => {
+                this_expr.qualifier().is_none().then_some(ReceiverKind::This)
+            }
+            ast::Expression::SuperExpression(super_expr) => {
+                super_expr.qualifier().is_none().then_some(ReceiverKind::Super)
+            }
+            _ => None,
+        };
+        let Some(receiver_kind) = receiver_kind else {
+            continue;
+        };
+
+        let Some(enclosing_item) = enclosing_item_at_offset(tree, name_range.start) else {
+            continue;
+        };
+
+        let Some(method) = resolve_receiver_method(
+            enclosing_item,
+            receiver_kind,
+            &name,
+            type_by_name,
+            type_name_by_item,
+            methods_by_item,
+            inheritance,
+        ) else {
+            continue;
+        };
+
+        record_reference(
+            file,
+            name_range,
+            ResolutionKey::Method(method),
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn enclosing_item_at_offset(tree: &ItemTree, offset: usize) -> Option<ItemId> {
+    fn walk(
+        tree: &ItemTree,
+        item: ItemId,
+        offset: usize,
+        best: &mut Option<(usize, ItemId)>,
+    ) {
+        let (body_range, members) = item_body_range_and_members(tree, item);
+        if !(body_range.start <= offset && offset < body_range.end) {
+            return;
+        }
+
+        let len = body_range.end.saturating_sub(body_range.start);
+        match best {
+            Some((best_len, _)) if *best_len <= len => {}
+            _ => {
+                *best = Some((len, item));
+            }
+        }
+
+        for member in members {
+            if let item_tree::Member::Type(child) = member {
+                walk(tree, item_id(*child), offset, best);
+            }
+        }
+    }
+
+    let mut best: Option<(usize, ItemId)> = None;
+    for item in &tree.items {
+        walk(tree, item_id(*item), offset, &mut best);
+    }
+    best.map(|(_, item)| item)
+}
+
+fn item_id(item: item_tree::Item) -> ItemId {
+    match item {
+        item_tree::Item::Class(id) => ItemId::Class(id),
+        item_tree::Item::Interface(id) => ItemId::Interface(id),
+        item_tree::Item::Enum(id) => ItemId::Enum(id),
+        item_tree::Item::Record(id) => ItemId::Record(id),
+        item_tree::Item::Annotation(id) => ItemId::Annotation(id),
+    }
+}
+
+fn item_name_and_members<'a>(tree: &'a ItemTree, item: ItemId) -> (&'a str, &'a [item_tree::Member]) {
+    match item {
+        ItemId::Class(id) => {
+            let data = tree.class(id);
+            (data.name.as_str(), data.members.as_slice())
+        }
+        ItemId::Interface(id) => {
+            let data = tree.interface(id);
+            (data.name.as_str(), data.members.as_slice())
+        }
+        ItemId::Enum(id) => {
+            let data = tree.enum_(id);
+            (data.name.as_str(), data.members.as_slice())
+        }
+        ItemId::Record(id) => {
+            let data = tree.record(id);
+            (data.name.as_str(), data.members.as_slice())
+        }
+        ItemId::Annotation(id) => {
+            let data = tree.annotation(id);
+            (data.name.as_str(), data.members.as_slice())
+        }
+    }
+}
+
+fn item_body_range_and_members<'a>(
+    tree: &'a ItemTree,
+    item: ItemId,
+) -> (nova_types::Span, &'a [item_tree::Member]) {
+    match item {
+        ItemId::Class(id) => {
+            let data = tree.class(id);
+            (data.body_range, data.members.as_slice())
+        }
+        ItemId::Interface(id) => {
+            let data = tree.interface(id);
+            (data.body_range, data.members.as_slice())
+        }
+        ItemId::Enum(id) => {
+            let data = tree.enum_(id);
+            (data.body_range, data.members.as_slice())
+        }
+        ItemId::Record(id) => {
+            let data = tree.record(id);
+            (data.body_range, data.members.as_slice())
+        }
+        ItemId::Annotation(id) => {
+            let data = tree.annotation(id);
+            (data.body_range, data.members.as_slice())
+        }
+    }
 }
 
 fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {

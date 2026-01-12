@@ -2749,6 +2749,34 @@ fn rename_type_from_constructor_declaration_renames_constructors() {
 }
 
 #[test]
+fn rename_method_updates_super_method_reference() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Base { void m(){} }
+class Derived extends Base { java.util.function.Supplier<?> s = super::m; }
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("void m").unwrap() + "void ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at method m");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "n".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(after.contains("void n()"), "expected method to be renamed: {after}");
+    assert!(
+        after.contains("super::n"),
+        "expected super method reference to be renamed: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
