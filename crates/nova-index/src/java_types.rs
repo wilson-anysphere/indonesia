@@ -1,5 +1,5 @@
+use nova_build_model::{SourceRoot, SourceRootKind, SourceRootOrigin};
 use nova_core::{fs as corefs, Name, PackageName, QualifiedName, TypeIndex, TypeName};
-use nova_project::{SourceRoot, SourceRootKind, SourceRootOrigin};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;

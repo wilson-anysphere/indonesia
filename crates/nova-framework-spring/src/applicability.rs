@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use nova_project::{ClasspathEntry, ProjectConfig};
+use nova_build_model::{ClasspathEntry, ProjectConfig};
 use zip::ZipArchive;
 
 /// Returns `true` when a project configuration suggests Spring is in use.

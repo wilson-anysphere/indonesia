@@ -1,9 +1,9 @@
+use nova_build_model::{
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, ProjectConfig,
+};
 use nova_framework_spring::{
     analyze_java_sources, is_spring_applicable, qualifier_completions, BeanKind, InjectionKind,
     SPRING_AMBIGUOUS_BEAN, SPRING_NO_BEAN,
-};
-use nova_project::{
-    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, ProjectConfig,
 };
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
@@ -403,4 +403,3 @@ fn qualifier_completions_include_explicit_qualifiers() {
         "expected qualifier completion; got {labels:?}"
     );
 }
-

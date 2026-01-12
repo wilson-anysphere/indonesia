@@ -11,7 +11,7 @@ nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-hir = { path = "../nova-hir" }
 nova-memory = { path = "../nova-memory" }
-nova-project = { path = "../nova-project" }
+nova-build-model = { path = "../nova-build-model" }
 nova-syntax = { path = "../nova-syntax" }
 nova-storage = { path = "../nova-storage" }
 rkyv = { version = "0.7", features = ["validation"] }

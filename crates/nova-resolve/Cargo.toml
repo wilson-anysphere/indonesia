@@ -11,7 +11,7 @@ nova-framework = { path = "../nova-framework" }
 nova-hir = { path = "../nova-hir" }
 nova-jdk = { path = "../nova-jdk" }
 nova-modules = { path = "../nova-modules" }
-nova-project = { path = "../nova-project" }
+nova-build-model = { path = "../nova-build-model" }
 nova-types = { path = "../nova-types" }
 thiserror = "1.0"
 unicode-ident = "1"

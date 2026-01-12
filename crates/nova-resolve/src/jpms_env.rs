@@ -35,7 +35,7 @@ impl std::fmt::Debug for JpmsCompilationEnvironment {
 
 pub fn build_jpms_environment(
     jdk: &nova_jdk::JdkIndex,
-    workspace: Option<&nova_project::ProjectConfig>,
+    workspace: Option<&nova_build_model::ProjectConfig>,
     module_path_entries: &[ClasspathEntry],
 ) -> Result<JpmsEnvironment> {
     let mut graph = jdk.module_graph().cloned().unwrap_or_else(|| {
@@ -124,7 +124,7 @@ pub fn build_jpms_environment(
 
 pub fn build_jpms_environment_for_project(
     jdk: &nova_jdk::JdkIndex,
-    project: &nova_project::ProjectConfig,
+    project: &nova_build_model::ProjectConfig,
 ) -> Result<JpmsEnvironment> {
     let module_path_entries: Vec<ClasspathEntry> = project
         .module_path
@@ -137,7 +137,7 @@ pub fn build_jpms_environment_for_project(
 
 pub fn build_jpms_compilation_environment(
     jdk: &nova_jdk::JdkIndex,
-    workspace: Option<&nova_project::ProjectConfig>,
+    workspace: Option<&nova_build_model::ProjectConfig>,
     module_path_entries: &[ClasspathEntry],
     classpath_entries: &[ClasspathEntry],
     cache_dir: Option<&Path>,
@@ -159,7 +159,7 @@ pub fn build_jpms_compilation_environment(
 
 pub fn build_jpms_compilation_environment_with_options(
     jdk: &nova_jdk::JdkIndex,
-    workspace: Option<&nova_project::ProjectConfig>,
+    workspace: Option<&nova_build_model::ProjectConfig>,
     module_path_entries: &[ClasspathEntry],
     classpath_entries: &[ClasspathEntry],
     cache_dir: Option<&Path>,
@@ -208,7 +208,7 @@ pub fn build_jpms_compilation_environment_with_options(
 
 pub fn build_jpms_compilation_environment_for_project(
     jdk: &nova_jdk::JdkIndex,
-    project: &nova_project::ProjectConfig,
+    project: &nova_build_model::ProjectConfig,
     cache_dir: Option<&Path>,
 ) -> Result<JpmsCompilationEnvironment> {
     let module_path_entries: Vec<ClasspathEntry> = project
@@ -249,12 +249,11 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::jpms::JpmsResolver;
+    use nova_build_model::{BuildSystem, JavaConfig, JavaVersion, JpmsModuleRoot, Module, ProjectConfig};
     use nova_classpath::ModuleNameKind;
     use nova_core::{QualifiedName, TypeName};
     use nova_hir::module_info::lower_module_info_source_strict;
     use nova_jdk::JdkIndex;
-    use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
-    use nova_project::{JpmsModuleRoot, Module};
     use tempfile::TempDir;
 
     fn test_dep_jar() -> PathBuf {

@@ -1,5 +1,5 @@
+use nova_build_model::{SourceRoot, SourceRootKind, SourceRootOrigin};
 use nova_index::ClassIndex;
-use nova_project::{SourceRoot, SourceRootKind, SourceRootOrigin};
 
 #[test]
 fn class_index_prefers_sources_over_generated() {
