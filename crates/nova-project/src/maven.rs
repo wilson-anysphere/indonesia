@@ -2003,6 +2003,13 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    // Maven dependencies are represented as jar files on disk. Treat missing artifacts as absent
+    // rather than synthesizing a classpath entry (see `fix(nova-project): only add Maven jars when
+    // present on disk`).
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
