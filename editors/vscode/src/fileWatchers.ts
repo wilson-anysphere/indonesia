@@ -55,6 +55,7 @@ const WATCHED_FILE_GLOB_PATTERNS = [
   '**/nova.toml',
   '**/.nova.toml',
   '**/nova.config.toml',
+  '**/.nova/apt-cache/generated-roots.json',
   '**/.nova/config.toml',
 ] as const;
 

@@ -42,6 +42,7 @@ test('getNovaWatchedFileGlobPatterns returns the expected default glob list', ()
     '**/nova.toml',
     '**/.nova.toml',
     '**/nova.config.toml',
+    '**/.nova/apt-cache/generated-roots.json',
     '**/.nova/config.toml',
   ]);
 });

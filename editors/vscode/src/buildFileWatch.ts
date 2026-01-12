@@ -49,6 +49,7 @@ const BUILD_FILE_GLOBS: readonly string[] = [
   '**/nova.toml',
   '**/.nova.toml',
   '**/nova.config.toml',
+  '**/.nova/apt-cache/generated-roots.json',
   '**/.nova/**/*.toml',
 ];
 
