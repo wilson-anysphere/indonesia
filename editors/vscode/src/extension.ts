@@ -2949,17 +2949,18 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  // Invoke the stop callback *before* clearing the module-scoped manager reference.
+  // Note: `stopAllWorkspaceClients` closes over `clientManager`, so clearing it first would
+  // prevent proper shutdown.
   const stop = stopAllWorkspaceClients;
+  const stopPromise = stop ? stop() : undefined;
+
   ensureWorkspaceClient = undefined;
   stopAllWorkspaceClients = undefined;
   setWorkspaceSafeModeEnabled = undefined;
   clientManager = undefined;
 
-  if (stop) {
-    return stop();
-  }
-
-  return undefined;
+  return stopPromise;
 }
 
 function hasExplicitWorkspaceRoutingHint(params: unknown): boolean {
