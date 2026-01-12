@@ -453,8 +453,12 @@ ArgumentList {
 
 LiteralExpression {}
 NameExpression {}
-ThisExpression {}
-SuperExpression {}
+ThisExpression {
+  qualifier: Expression?
+}
+SuperExpression {
+  qualifier: Expression?
+}
 
 ParenthesizedExpression {
   expression: Expression?

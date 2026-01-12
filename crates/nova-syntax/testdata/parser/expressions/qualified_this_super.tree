@@ -1,0 +1,68 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Outer"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      ClassDeclaration
+        Modifiers
+        ClassKw "class"
+        Whitespace " "
+        Identifier "Inner"
+        Whitespace " "
+        ClassBody
+          LBrace "{"
+          Whitespace "\n    "
+          MethodDeclaration
+            Modifiers
+            VoidKw "void"
+            Whitespace " "
+            Identifier "m"
+            ParameterList
+              LParen "("
+              RParen ")"
+            Whitespace " "
+            Block
+              LBrace "{"
+              Whitespace "\n      "
+              ExpressionStatement
+                MethodCallExpression
+                  FieldAccessExpression
+                    ThisExpression
+                      NameExpression
+                        Identifier "Outer"
+                      Dot "."
+                      ThisKw "this"
+                    Dot "."
+                    Identifier "toString"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n      "
+              ExpressionStatement
+                MethodCallExpression
+                  FieldAccessExpression
+                    SuperExpression
+                      NameExpression
+                        Identifier "Outer"
+                      Dot "."
+                      SuperKw "super"
+                    Dot "."
+                    Identifier "toString"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n    "
+              RBrace "}"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

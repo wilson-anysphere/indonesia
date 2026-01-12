@@ -1,8 +1,8 @@
 use crate::ast::{
     AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
     CompilationUnit, Expression, ExpressionFragment, FieldAccessExpression, FieldDeclaration,
-    ModuleDirectiveKind, NewExpression, Statement, StatementFragment, SwitchRuleBody,
-    TypeDeclaration,
+    ModuleDirectiveKind, NewExpression, Statement, StatementFragment, SuperExpression,
+    SwitchRuleBody, ThisExpression, TypeDeclaration,
 };
 use crate::SyntaxKind;
 use crate::{
@@ -1090,6 +1090,55 @@ fn explicit_generic_invocation_without_receiver_has_type_arguments() {
     assert_eq!(args.arguments().count(), 1);
     let arg = args.arguments().next().unwrap().ty().unwrap();
     assert_eq!(arg.syntax().text().to_string(), "String");
+}
+
+#[test]
+fn qualified_this_and_super_expressions_have_qualifiers() {
+    let src = r#"
+        class Outer {
+          class Inner {
+            void m() {
+              Outer.this.toString();
+              Outer.super.toString();
+            }
+          }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let qualified_this = parse
+        .syntax()
+        .descendants()
+        .filter_map(ThisExpression::cast)
+        .find(|expr| expr.qualifier().is_some())
+        .expect("expected a qualified this expression");
+    assert_eq!(
+        qualified_this
+            .qualifier()
+            .unwrap()
+            .syntax()
+            .text()
+            .to_string(),
+        "Outer"
+    );
+
+    let qualified_super = parse
+        .syntax()
+        .descendants()
+        .filter_map(SuperExpression::cast)
+        .find(|expr| expr.qualifier().is_some())
+        .expect("expected a qualified super expression");
+    assert_eq!(
+        qualified_super
+            .qualifier()
+            .unwrap()
+            .syntax()
+            .text()
+            .to_string(),
+        "Outer"
+    );
 }
 
 #[test]

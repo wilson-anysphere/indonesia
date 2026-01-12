@@ -3062,6 +3062,23 @@ impl<'a> Parser<'a> {
                         self.builder.finish_node();
                         continue;
                     }
+                    // Qualified `this` / `super`: `TypeName.this`, `TypeName.super`.
+                    if self.nth(1) == Some(SyntaxKind::ThisKw) {
+                        self.builder
+                            .start_node_at(checkpoint, SyntaxKind::ThisExpression.into());
+                        self.bump(); // .
+                        self.bump(); // this
+                        self.builder.finish_node();
+                        continue;
+                    }
+                    if self.nth(1) == Some(SyntaxKind::SuperKw) {
+                        self.builder
+                            .start_node_at(checkpoint, SyntaxKind::SuperExpression.into());
+                        self.bump(); // .
+                        self.bump(); // super
+                        self.builder.finish_node();
+                        continue;
+                    }
                     // Field access / method call receiver segment. Java also allows explicit type
                     // arguments on method invocations: `expr.<T>method()`.
                     let mut lookahead = skip_trivia(&self.tokens, 1);
