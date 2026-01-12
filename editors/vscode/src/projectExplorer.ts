@@ -396,6 +396,26 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
             description: javaLanguageLevel,
           });
         }
+        const resolvedProjectRoot =
+          typeof model.projectRoot === 'string' && model.projectRoot.trim().length > 0
+            ? resolvePossiblyRelativePath(workspace.uri.fsPath, model.projectRoot)
+            : '';
+        if (resolvedProjectRoot && path.normalize(resolvedProjectRoot) !== path.normalize(workspace.uri.fsPath)) {
+          const uri = vscode.Uri.file(resolvedProjectRoot);
+          infoNodes.push({
+            type: 'path',
+            id: `${element.id}:projectRoot`,
+            label: 'Project Root',
+            description: resolvedProjectRoot,
+            uri,
+            icon: vscode.ThemeIcon.Folder,
+            command: {
+              title: 'Reveal Project Root',
+              command: COMMAND_REVEAL_PATH,
+              arguments: [uri],
+            },
+          });
+        }
 
         const unitNodes = model.units.map((unit, idx) => ({
           type: 'unit' as const,
