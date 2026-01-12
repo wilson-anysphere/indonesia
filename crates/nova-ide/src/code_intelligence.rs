@@ -2407,7 +2407,7 @@ pub(crate) fn core_completions(
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
-        let items = type_name_completions(db, file, &prefix);
+        let items = type_name_completions(db, file, text, &text_index, &prefix);
         if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
@@ -2772,7 +2772,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
-        let items = type_name_completions(db, file, &prefix);
+        let items = type_name_completions(db, file, text, &text_index, &prefix);
         if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
@@ -4215,6 +4215,7 @@ fn infer_receiver_type_of_expr_ending_at(
 // -----------------------------------------------------------------------------
 
 const MAX_TYPE_NAME_COMPLETIONS: usize = 200;
+const MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE: usize = 200;
 
 #[derive(Debug, Default)]
 struct JavaImportContext {
@@ -4383,13 +4384,22 @@ fn is_likely_cast_paren(tokens: &[Token], l_paren_idx: usize) -> bool {
     let prev = &tokens[l_paren_idx - 1];
     match prev.kind {
         // Avoid `foo(` (call expression / method declaration name).
-        TokenKind::Ident => matches!(prev.text.as_str(), "return" | "throw" | "case" | "assert"),
+        TokenKind::Ident => matches!(
+            prev.text.as_str(),
+            "return" | "throw" | "case" | "assert" | "catch" | "for" | "try"
+        ),
         TokenKind::Symbol(ch) => !matches!(ch, '.' | ')' | ']'),
         _ => false,
     }
 }
 
-fn type_name_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<CompletionItem> {
+fn type_name_completions(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    text_index: &TextIndex<'_>,
+    prefix: &str,
+) -> Vec<CompletionItem> {
     // Only offer Java type names inside Java files.
     if db
         .file_path(file)
@@ -4398,8 +4408,8 @@ fn type_name_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<C
         return Vec::new();
     }
 
-    let text = db.file_content(file);
     let import_ctx = java_import_context(text);
+    let imports = parse_java_imports(text);
 
     let mut items = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -4428,14 +4438,22 @@ fn type_name_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<C
         }
     }
 
-    // 3) JDK types from `java.lang.*` + wildcard imports.
-    if let Some(jdk) = JDK_INDEX.as_ref() {
+    // 3) JDK types from `java.lang.*` + `java.util.*` + wildcard imports.
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    {
         let mut packages = import_ctx.wildcard_packages.clone();
         packages.push("java.lang".to_string()); // implicitly imported.
+        packages.push("java.util".to_string()); // common package (mirrors `new` completions).
         packages.sort();
         packages.dedup();
 
         for pkg in packages {
+            if items.len() >= MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE * 4 {
+                break;
+            }
             let pkg_prefix = format!("{pkg}.");
             let query = format!("{pkg_prefix}{prefix}");
 
@@ -4443,7 +4461,11 @@ fn type_name_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<C
                 continue;
             };
 
+            let mut added_for_pkg = 0usize;
             for binary in names {
+                if added_for_pkg >= MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE {
+                    break;
+                }
                 if !binary.starts_with(&pkg_prefix) {
                     continue;
                 }
@@ -4472,12 +4494,18 @@ fn type_name_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<C
                     })
                     .unwrap_or(CompletionItemKind::CLASS);
 
-                items.push(CompletionItem {
+                let mut item = CompletionItem {
                     label: simple,
                     kind: Some(kind),
-                    detail: Some(binary),
+                    detail: Some(binary.clone()),
                     ..Default::default()
-                });
+                };
+                if java_type_needs_import(&imports, &binary) {
+                    item.additional_text_edits =
+                        Some(vec![java_import_text_edit(text, text_index, &binary)]);
+                }
+                items.push(item);
+                added_for_pkg += 1;
             }
         }
     }

@@ -828,6 +828,36 @@ class A extends Arr<|> {}
 }
 
 #[test]
+fn completion_type_position_adds_import_edit_for_arraylist_without_imports() {
+    let (db, file, pos) = fixture("class A { void m(){ Arr<|> xs; } }");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    let edits = item
+        .additional_text_edits
+        .as_ref()
+        .expect("expected additional_text_edits for ArrayList completion");
+    assert!(
+        edits
+            .iter()
+            .any(|e| e.new_text == "import java.util.ArrayList;\n"),
+        "expected import edit for java.util.ArrayList; got {edits:#?}"
+    );
+
+    let import_edit = edits
+        .iter()
+        .find(|e| e.new_text == "import java.util.ArrayList;\n")
+        .expect("expected import edit for java.util.ArrayList");
+
+    assert_eq!(import_edit.range.start, lsp_types::Position::new(0, 0));
+    assert_eq!(import_edit.range.end, lsp_types::Position::new(0, 0));
+}
+
+#[test]
 fn completion_includes_workspace_annotation_types_after_at_sign() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
