@@ -1060,16 +1060,17 @@ class C {
 "#;
 
     let (db, file) = setup_db(src);
+    // Place the cursor on the literal argument to ensure the invocation was
+    // lowered all the way into HIR/typeck (not dropped or replaced with a
+    // missing expression).
     let offset = src
         .find("this(1)")
         .expect("snippet should contain explicit constructor invocation")
-        + 1;
-    let ty = db.type_at_offset_display(file, offset as u32);
-    assert!(
-        ty.is_some(),
-        "expected a type at offset inside explicit constructor invocation, got {ty:?}; diagnostics: {:?}",
-        db.type_diagnostics(file)
-    );
+        + "this(".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset inside explicit constructor invocation");
+    assert_eq!(ty, "int");
 }
 
 #[test]
