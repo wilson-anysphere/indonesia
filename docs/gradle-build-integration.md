@@ -75,6 +75,9 @@ build tool (`nova-build`) and persisting the results for later reloads.
 - `GradleBuild::java_compile_config(..., project_path=None, ...)` populates the root entry
   `javaCompileConfigs[":"]` (used by single-project Gradle workspaces, and by workspace-level queries
   that want a unified classpath)
+  - When the root project is an **aggregator** (no Java plugin / no `compileClasspath`), Nova will
+    best-effort **union** all subproject configs and store that union under `javaCompileConfigs[":"]`
+    so `nova-project` can still reuse a workspace-level classpath on reload.
 - `GradleBuild::java_compile_config(..., project_path=Some(":__buildSrc" | ":__buildSrc:subproject"), ...)`
   populates `javaCompileConfigs[...]` for Gradle’s special nested `buildSrc/` build by running Gradle
   with `--project-dir buildSrc`.
