@@ -2234,3 +2234,31 @@ fn string_template_expression_accessors_text_segment_boundary_cases() {
         Vec::new(),
     );
 }
+
+#[test]
+fn string_template_expression_accessors_expression_fragment() {
+    let fragment_parse = parse_java_expression_fragment("STR.\"Hello \\{name}!\"", 0);
+    assert!(fragment_parse.parse.errors.is_empty());
+
+    let fragment =
+        ExpressionFragment::cast(fragment_parse.parse.syntax()).expect("ExpressionFragment");
+    let expr = fragment.expression().expect("expected expression");
+    let template_expr = match expr {
+        Expression::StringTemplateExpression(it) => it,
+        other => panic!("expected StringTemplateExpression, got {other:?}"),
+    };
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    assert_eq!(processor.syntax().text().to_string(), "STR");
+
+    let template = template_expr.template().expect("expected string template");
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Hello ", "!"]);
+    assert_eq!(template.parts().count(), 1);
+}
