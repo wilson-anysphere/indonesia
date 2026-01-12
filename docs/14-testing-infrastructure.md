@@ -589,6 +589,8 @@ from `main`, otherwise benching the base commit in a git worktree). For full ope
 
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
+
+# CI/workstation equivalent:
 cargo bench --locked -p nova-core --bench critical_paths
 cargo bench --locked -p nova-syntax --bench parse_java
 cargo bench --locked -p nova-format --bench format
@@ -597,6 +599,16 @@ cargo bench --locked -p nova-classpath --bench index
 cargo bench --locked -p nova-ide --bench completion
 cargo bench --locked -p nova-fuzzy --bench fuzzy
 cargo bench --locked -p nova-index --bench symbol_search
+
+# Agent / multi-runner (see AGENTS.md):
+bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
+bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
+bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
+bash scripts/cargo_agent.sh bench --locked -p nova-refactor --bench refactor
+bash scripts/cargo_agent.sh bench --locked -p nova-classpath --bench index
+bash scripts/cargo_agent.sh bench --locked -p nova-ide --bench completion
+bash scripts/cargo_agent.sh bench --locked -p nova-fuzzy --bench fuzzy
+bash scripts/cargo_agent.sh bench --locked -p nova-index --bench symbol_search
 ```
 
 **Capture + compare locally (same tooling CI uses):**
@@ -609,9 +621,18 @@ cargo bench --locked -p nova-index --bench symbol_search
 cargo run --locked -p nova-cli --release -- perf capture \
   --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
   --out perf-current.json
+# agent/multi-runner:
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf capture \
+  --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
+  --out perf-current.json
 
 # compare two captured runs
 cargo run --locked -p nova-cli --release -- perf compare \
+  --baseline perf-base.json \
+  --current perf-current.json \
+  --thresholds-config perf/thresholds.toml
+# agent/multi-runner:
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf compare \
   --baseline perf-base.json \
   --current perf-current.json \
   --thresholds-config perf/thresholds.toml
