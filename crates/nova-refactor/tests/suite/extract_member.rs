@@ -654,6 +654,43 @@ class A {
 }
 
 #[test]
+fn extract_field_qualifies_instance_field_reference() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    int foo = 1;
+
+    void m() {
+        int x = /*[*/foo + 1/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private final int value = this.foo + 1;
+
+    int foo = 1;
+
+    void m() {
+        int x = value;
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn extract_constant_rejects_increment_expressions() {
     for fixture in [
         r#"
@@ -677,6 +714,43 @@ class A {
         let err = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap_err();
         assert_eq!(err, ExtractError::SideEffectfulExpression);
     }
+}
+
+#[test]
+fn extract_constant_qualifies_static_field_reference() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static final int BASE = 1;
+
+    void m() {
+        int x = /*[*/BASE + 1/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final int VALUE = A.BASE + 1;
+
+    static final int BASE = 1;
+
+    void m() {
+        int x = VALUE;
+    }
+}
+"#
+    );
 }
 
 #[test]

@@ -1083,6 +1083,7 @@ where
             ));
 
             actions.extend(type_mismatch_quick_fixes(
+                &cancel,
                 source,
                 &uri,
                 span,
@@ -1266,6 +1267,7 @@ where
 }
 
 fn type_mismatch_quick_fixes(
+    cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
     cancel: &CancellationToken,

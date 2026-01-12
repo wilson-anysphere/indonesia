@@ -123,7 +123,10 @@ fn extract_impl(
     }
 
     let expr_range = syntax_range(expr.syntax());
-    let expr_text = source[expr_range.start..expr_range.end].to_string();
+    let expr_text = match kind {
+        ExtractKind::Field => qualify_field_initializer_expr(source, &expr, &class_body),
+        ExtractKind::Constant => qualify_constant_initializer_expr(source, &expr, &class_body)?,
+    };
     let expr_type = infer_expr_type(source, &expr).unwrap_or_else(|| "Object".to_string());
 
     let existing_names = collect_field_names(&class_body);
@@ -182,6 +185,99 @@ fn extract_impl(
         .map_err(|_| ExtractError::InvalidSelection)?;
 
     Ok(ExtractOutcome { edit, name })
+}
+
+fn qualify_field_initializer_expr(
+    source: &str,
+    expr: &ast::Expression,
+    class_body: &ast::ClassBody,
+) -> String {
+    // We insert extracted fields at the top of the class body. Any unqualified access to an
+    // instance field in another field initializer is an "illegal forward reference" in Java, so we
+    // proactively qualify such references with `this.` to keep the result compilable.
+    //
+    // We only qualify known instance-field names; static fields do not have the same forward
+    // reference restriction in instance initializers.
+    let instance_fields = collect_instance_field_names(class_body);
+    if instance_fields.is_empty() {
+        let expr_range = syntax_range(expr.syntax());
+        return source[expr_range.start..expr_range.end].to_string();
+    }
+
+    let mut insertions: Vec<usize> = expr
+        .syntax()
+        .descendants()
+        .filter_map(ast::NameExpression::cast)
+        .filter_map(|name_expr| {
+            let head = head_name_segment(name_expr.syntax())?;
+            instance_fields.contains(&head).then_some(syntax_range(name_expr.syntax()).start)
+        })
+        .collect();
+    insertions.sort_unstable();
+    insertions.dedup();
+
+    splice_insertions(source, syntax_range(expr.syntax()), &insertions, "this.")
+}
+
+fn qualify_constant_initializer_expr(
+    source: &str,
+    expr: &ast::Expression,
+    class_body: &ast::ClassBody,
+) -> Result<String, ExtractError> {
+    // Like `qualify_field_initializer_expr`, but for `static` field initializers:
+    // unqualified access to *static* fields declared later is an illegal forward reference.
+    //
+    // We qualify those names with the enclosing class name (e.g. `A.FIELD`) which is accepted by
+    // javac even when the referenced field is declared later.
+    let static_fields = collect_static_field_names(class_body);
+    if static_fields.is_empty() {
+        let expr_range = syntax_range(expr.syntax());
+        return Ok(source[expr_range.start..expr_range.end].to_string());
+    }
+
+    let mut insertions: Vec<usize> = expr
+        .syntax()
+        .descendants()
+        .filter_map(ast::NameExpression::cast)
+        .filter_map(|name_expr| {
+            let head = head_name_segment(name_expr.syntax())?;
+            static_fields.contains(&head).then_some(syntax_range(name_expr.syntax()).start)
+        })
+        .collect();
+    insertions.sort_unstable();
+    insertions.dedup();
+
+    if insertions.is_empty() {
+        let expr_range = syntax_range(expr.syntax());
+        return Ok(source[expr_range.start..expr_range.end].to_string());
+    }
+
+    let Some(class_name) = enclosing_class_name(class_body) else {
+        // Anonymous classes have no name to qualify forward references.
+        return Err(ExtractError::NotStaticSafe);
+    };
+
+    Ok(splice_insertions(
+        source,
+        syntax_range(expr.syntax()),
+        &insertions,
+        &format!("{class_name}."),
+    ))
+}
+
+fn splice_insertions(source: &str, range: TextRange, insertions: &[usize], text: &str) -> String {
+    let mut out = String::new();
+    let mut last = range.start;
+    for &pos in insertions {
+        if pos < range.start || pos > range.end {
+            continue;
+        }
+        out.push_str(&source[last..pos]);
+        out.push_str(text);
+        last = pos;
+    }
+    out.push_str(&source[last..range.end]);
+    out
 }
 
 fn trim_range(source: &str, mut range: TextRange) -> TextRange {
@@ -455,6 +551,39 @@ fn collect_instance_field_names(body: &ast::ClassBody) -> HashSet<String> {
         }
     }
     out
+}
+
+fn collect_static_field_names(body: &ast::ClassBody) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for member in body.members() {
+        let ast::ClassMember::FieldDeclaration(field) = member else {
+            continue;
+        };
+        let is_static = field
+            .modifiers()
+            .map(|mods| mods.keywords().any(|tok| tok.kind() == SyntaxKind::StaticKw))
+            .unwrap_or(false);
+        if !is_static {
+            continue;
+        }
+        let Some(list) = field.declarator_list() else {
+            continue;
+        };
+        for decl in list.declarators() {
+            if let Some(name) = decl.name_token() {
+                out.insert(name.text().to_string());
+            }
+        }
+    }
+    out
+}
+
+fn enclosing_class_name(body: &ast::ClassBody) -> Option<String> {
+    body.syntax()
+        .ancestors()
+        .find_map(ast::ClassDeclaration::cast)
+        .and_then(|decl| decl.name_token())
+        .map(|tok| tok.text().to_string())
 }
 
 fn expr_has_lowercase_receiver_member_access(expr: &nova_syntax::SyntaxNode) -> bool {
