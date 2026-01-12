@@ -159,13 +159,24 @@ pub(crate) fn insertion_point(source: &str) -> (usize, String) {
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
 
-    let indent = if before_brace_on_line.trim().is_empty() {
+    let on_own_line = before_brace_on_line.trim().is_empty();
+
+    // If the closing brace is on its own indented line (e.g. `    }`), inserting at the brace
+    // offset would split the indentation from the brace and leave trailing whitespace on the
+    // previous line. Insert at the line start so the brace stays aligned.
+    let insert_offset = if on_own_line && !close_indent.is_empty() {
+        line_start
+    } else {
+        close_brace
+    };
+
+    let indent = if on_own_line {
         format!("{close_indent}  ")
     } else {
         "  ".to_string()
     };
 
-    (close_brace, indent)
+    (insert_offset, indent)
 }
 
 fn single_file_insert_edit(

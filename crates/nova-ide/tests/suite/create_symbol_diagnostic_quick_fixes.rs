@@ -308,3 +308,34 @@ fn create_symbol_quick_fixes_are_deduped_across_diagnostics() {
         "expected Create method action to be deduped; got {actions:#?}"
     );
 }
+
+#[test]
+fn does_not_offer_create_method_quick_fix_for_non_enclosing_receiver() {
+    // The create-symbol quick fix inserts into the *current* file, so it should only be offered
+    // for unqualified calls or `this`/`super` member accesses.
+    let source = "class A { void m() { other.foo(); } }";
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let start = source.find("other.foo").expect("expected call in fixture");
+    let end = start + "other.foo".len();
+    let range = Range::new(
+        offset_to_position(source, start),
+        offset_to_position(source, end),
+    );
+
+    let diagnostic = Diagnostic {
+        range: range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-method".to_string())),
+        message: "unresolved method `foo`".to_string(),
+        ..Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diagnostic]);
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.title == "Create method 'foo'"),
+        "expected no Create method quick fix for non-enclosing receiver; got {actions:#?}"
+    );
+}

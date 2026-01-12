@@ -136,16 +136,6 @@ pub fn diagnostic_quick_fixes(
             }
             actions.push(action);
         }
-        if let Some(action) = create_method_quick_fix(source, &uri, &selection, diag) {
-            if seen_create_symbol_titles.insert(action.title.clone()) {
-                actions.push(action);
-            }
-        }
-        if let Some(action) = create_field_quick_fix(source, &uri, &selection, diag) {
-            if seen_create_symbol_titles.insert(action.title.clone()) {
-                actions.push(action);
-            }
-        }
         if let Some(action) = remove_unreachable_code_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
@@ -951,118 +941,6 @@ fn return_mismatch_quick_fixes(
     }]
 }
 
-fn create_method_quick_fix(
-    source: &str,
-    uri: &Uri,
-    selection: &Range,
-    diagnostic: &Diagnostic,
-) -> Option<CodeAction> {
-    if diagnostic_code(diagnostic)? != "unresolved-method" {
-        return None;
-    }
-
-    if !ranges_intersect(selection, &diagnostic.range) {
-        return None;
-    }
-
-    let name = unresolved_member_name(&diagnostic.message, source, &diagnostic.range)?;
-
-    let (insert_offset, indent) = insertion_point_for_member(source);
-    let insert_pos = crate::text::offset_to_position(source, insert_offset);
-    let insert_range = Range {
-        start: insert_pos,
-        end: insert_pos,
-    };
-
-    let diag_start_offset = crate::text::position_to_offset(source, diagnostic.range.start)
-        .unwrap_or(0)
-        .min(source.len());
-
-    let snippet = source_range_text(source, &diagnostic.range).unwrap_or_default();
-    let is_static = diagnostic.message.contains("static context")
-        || looks_like_static_receiver(snippet)
-        || is_within_static_context(source, diag_start_offset);
-
-    let static_kw = if is_static { "static " } else { "" };
-    let prefix = insertion_prefix(source, insert_offset);
-    let new_text = format!(
-        "{prefix}{indent}private {static_kw}Object {name}(Object... args) {{ return null; }}\n"
-    );
-
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: insert_range,
-            new_text,
-        }],
-    );
-
-    Some(CodeAction {
-        title: format!("Create method '{name}'"),
-        kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            document_changes: None,
-            change_annotations: None,
-        }),
-        diagnostics: Some(vec![diagnostic.clone()]),
-        ..CodeAction::default()
-    })
-}
-
-fn create_field_quick_fix(
-    source: &str,
-    uri: &Uri,
-    selection: &Range,
-    diagnostic: &Diagnostic,
-) -> Option<CodeAction> {
-    if diagnostic_code(diagnostic)? != "unresolved-field" {
-        return None;
-    }
-
-    if !ranges_intersect(selection, &diagnostic.range) {
-        return None;
-    }
-
-    let name = unresolved_member_name(&diagnostic.message, source, &diagnostic.range)?;
-
-    let (insert_offset, indent) = insertion_point_for_member(source);
-    let insert_pos = crate::text::offset_to_position(source, insert_offset);
-    let insert_range = Range {
-        start: insert_pos,
-        end: insert_pos,
-    };
-
-    let snippet = source_range_text(source, &diagnostic.range).unwrap_or_default();
-    let is_static = looks_like_static_receiver(snippet);
-
-    let static_kw = if is_static { "static " } else { "" };
-    let prefix = insertion_prefix(source, insert_offset);
-    let new_text = format!("{prefix}{indent}private {static_kw}Object {name};\n");
-
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: insert_range,
-            new_text,
-        }],
-    );
-
-    Some(CodeAction {
-        title: format!("Create field '{name}'"),
-        kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            document_changes: None,
-            change_annotations: None,
-        }),
-        diagnostics: Some(vec![diagnostic.clone()]),
-        ..CodeAction::default()
-    })
-}
-
 fn flow_null_deref_quick_fix(
     source: &str,
     uri: &Uri,
@@ -1184,47 +1062,6 @@ pub(crate) fn is_simple_cast_expr(expr: &str) -> bool {
     IDENT_RE.is_match(expr) || NUMBER_RE.is_match(expr) || STRING_RE.is_match(expr)
 }
 
-fn unresolved_member_name(message: &str, source: &str, range: &Range) -> Option<String> {
-    let name = backticked_name(message)
-        .map(ToString::to_string)
-        .or_else(|| source_range_text(source, range).and_then(extract_identifier_from_snippet))?;
-
-    is_java_identifier(&name).then_some(name)
-}
-
-fn extract_identifier_from_snippet(snippet: &str) -> Option<String> {
-    let trimmed = snippet.trim();
-
-    // For calls, drop `(...)`. For qualified accesses, drop the receiver prefix.
-    let before_paren = trimmed.split('(').next().unwrap_or(trimmed).trim();
-    let tail = before_paren
-        .rsplit('.')
-        .next()
-        .unwrap_or(before_paren)
-        .trim();
-
-    (!tail.is_empty()).then_some(tail.to_string())
-}
-
-fn is_java_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_ident_start(first) {
-        return false;
-    }
-    chars.all(is_ident_continue)
-}
-
-fn is_ident_start(c: char) -> bool {
-    c == '_' || c == '$' || c.is_ascii_alphabetic()
-}
-
-fn is_ident_continue(c: char) -> bool {
-    is_ident_start(c) || c.is_ascii_digit()
-}
-
 fn source_range_text<'a>(source: &'a str, range: &Range) -> Option<&'a str> {
     let start = crate::text::position_to_offset(source, range.start)?;
     let end = crate::text::position_to_offset(source, range.end)?;
@@ -1268,60 +1105,6 @@ fn insertion_prefix(source: &str, insert_offset: usize) -> &'static str {
     } else {
         "\n\n"
     }
-}
-
-fn looks_like_static_receiver(snippet: &str) -> bool {
-    let trimmed = snippet.trim();
-    let Some((receiver, _)) = trimmed.split_once('.') else {
-        return false;
-    };
-    let receiver = receiver.trim();
-    let receiver = receiver.rsplit('.').next().unwrap_or(receiver).trim();
-    receiver
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
-}
-
-fn contains_word(haystack: &str, needle: &str) -> bool {
-    for (idx, _) in haystack.match_indices(needle) {
-        let before = haystack[..idx].chars().next_back();
-        let after = haystack[idx + needle.len()..].chars().next();
-        let ok_before = before.map_or(true, |c| !is_ident_continue(c));
-        let ok_after = after.map_or(true, |c| !is_ident_continue(c));
-        if ok_before && ok_after {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_within_static_context(source: &str, offset: usize) -> bool {
-    // Best-effort scan backwards for the nearest unmatched `{`, and look for `static` in the
-    // immediately preceding chunk. This is intentionally heuristic and does not attempt to parse
-    // Java.
-    let bytes = source.as_bytes();
-    let mut depth: i32 = 0;
-    let mut i = offset.min(bytes.len());
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b'}' => depth += 1,
-            b'{' => {
-                if depth == 0 {
-                    let window_start = i.saturating_sub(200);
-                    let before = &source[window_start..i];
-                    if contains_word(before, "static") {
-                        return true;
-                    }
-                } else {
-                    depth -= 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 fn is_simple_type_identifier(name: &str) -> bool {
