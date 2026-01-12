@@ -2671,13 +2671,32 @@ pub fn lub(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
 }
 
 fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
-    if is_subtype(env, a, b) {
+    // Preserve exact equality (including unresolved `Named` types).
+    if a == b {
         return a.clone();
     }
-    if is_subtype(env, b, a) {
-        return b.clone();
+
+    let a_sub_b = is_subtype(env, a, b);
+    let b_sub_a = is_subtype(env, b, a);
+
+    match (a_sub_b, b_sub_a) {
+        // Standard fast paths.
+        (true, false) => a.clone(),
+        (false, true) => b.clone(),
+
+        // Error recovery (or other non-antisymmetric cases in our best-effort subtyping):
+        // if the types are mutually compatible, pick a deterministic representative.
+        (true, true) => {
+            if type_sort_key(env, a) <= type_sort_key(env, b) {
+                a.clone()
+            } else {
+                b.clone()
+            }
+        }
+
+        // Otherwise, synthesize a normalized intersection.
+        (false, false) => make_intersection(env, vec![a.clone(), b.clone()]),
     }
-    make_intersection(env, vec![a.clone(), b.clone()])
 }
 
 // === Member resolution =======================================================
