@@ -47,14 +47,20 @@ describe('Frameworks dashboard UX', () => {
   it('Frameworks tree view uses the standard unsupported placeholder label', async () => {
     const contents = await readSrcFile('frameworksView.ts');
 
-    expect(contents).toContain("const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';");
-    expect(contents).toMatch(/return\s+messageNode\(NOT_SUPPORTED_MESSAGE,\s*method,\s*new\s+vscode\.ThemeIcon\('warning'\)\);/);
+    expect(contents).toContain('NOVA_NOT_SUPPORTED_MESSAGE');
+    expect(contents).toMatch(/return\s+messageNode\(NOVA_NOT_SUPPORTED_MESSAGE,\s*method,\s*new\s+vscode\.ThemeIcon\('warning'\)\);/);
   });
 
-  it('Framework search uses the same unsupported placeholder label', async () => {
+  it('Framework dashboard exports a shared unsupported placeholder label', async () => {
+    const contents = await readSrcFile('frameworkDashboard.ts');
+
+    expect(contents).toContain("export const NOVA_NOT_SUPPORTED_MESSAGE = 'Not supported by this server';");
+  });
+
+  it('Framework search uses the shared unsupported placeholder label', async () => {
     const contents = await readSrcFile('frameworkSearch.ts');
 
-    expect(contents).toContain("const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';");
+    expect(contents).toContain('NOVA_NOT_SUPPORTED_MESSAGE');
   });
 
   it('Frameworks view assigns endpoint and bean context menu values', async () => {
@@ -64,4 +70,3 @@ describe('Frameworks dashboard UX', () => {
     expect(contents).toContain('item.contextValue = NOVA_FRAMEWORK_BEAN_CONTEXT;');
   });
 });
-

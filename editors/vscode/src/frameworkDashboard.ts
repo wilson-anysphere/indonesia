@@ -13,6 +13,7 @@ export type NovaRequest = <R>(
 
 export const NOVA_FRAMEWORK_ENDPOINT_CONTEXT = 'novaFrameworkEndpoint';
 export const NOVA_FRAMEWORK_BEAN_CONTEXT = 'novaFrameworkBean';
+export const NOVA_NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
 
 type MaybeRecord = Record<string, unknown>;
 

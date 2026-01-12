@@ -4,6 +4,7 @@ import { isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabil
 import {
   NOVA_FRAMEWORK_BEAN_CONTEXT,
   NOVA_FRAMEWORK_ENDPOINT_CONTEXT,
+  NOVA_NOT_SUPPORTED_MESSAGE,
   uriFromFileLike,
   type NovaRequest,
 } from './frameworkDashboard';
@@ -11,8 +12,6 @@ import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNaviga
 import { formatError, isSafeModeError } from './safeMode';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
-
-const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
 
 type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
@@ -182,8 +181,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         item.id = `novaFrameworks:category:${element.workspaceFolder.uri.toString()}:${element.category}`;
         item.iconPath = categoryIcon(element.category);
         if (!isFrameworkCategorySupported(element)) {
-          item.description = NOT_SUPPORTED_MESSAGE;
-          item.tooltip = NOT_SUPPORTED_MESSAGE;
+          item.description = NOVA_NOT_SUPPORTED_MESSAGE;
+          item.tooltip = NOVA_NOT_SUPPORTED_MESSAGE;
         }
         return item;
       }
@@ -605,7 +604,7 @@ function messageNode(
 }
 
 function unsupportedMethodNode(method: string): MessageNode {
-  return messageNode(NOT_SUPPORTED_MESSAGE, method, new vscode.ThemeIcon('warning'));
+  return messageNode(NOVA_NOT_SUPPORTED_MESSAGE, method, new vscode.ThemeIcon('warning'));
 }
 
 function unsupportedCategoryNode(category: FrameworkCategory): MessageNode {

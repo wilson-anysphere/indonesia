@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
-import { uriFromFileLike } from './frameworkDashboard';
+import { NOVA_NOT_SUPPORTED_MESSAGE, uriFromFileLike } from './frameworkDashboard';
 import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
 import { formatError, isSafeModeError } from './safeMode';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
@@ -14,8 +14,6 @@ export type NovaRequest = <R>(
 ) => Promise<R | undefined>;
 
 type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
-
-const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
 interface WebEndpointsResponse {
   endpoints: WebEndpoint[];
 }
@@ -201,18 +199,18 @@ async function pickFrameworkSearchKind(workspaceKey: string): Promise<FrameworkS
     [
       {
         label: 'Web endpoints',
-        description: webSupported === false ? NOT_SUPPORTED_MESSAGE : 'nova/web/endpoints',
+        description: webSupported === false ? NOVA_NOT_SUPPORTED_MESSAGE : 'nova/web/endpoints',
         detail: webSupported === false ? 'nova/web/endpoints (or nova/quarkus/endpoints)' : undefined,
         value: 'web-endpoints' as const,
       },
       {
         label: 'Micronaut endpoints',
-        description: micronautEndpointsSupported === false ? NOT_SUPPORTED_MESSAGE : 'nova/micronaut/endpoints',
+        description: micronautEndpointsSupported === false ? NOVA_NOT_SUPPORTED_MESSAGE : 'nova/micronaut/endpoints',
         value: 'micronaut-endpoints' as const,
       },
       {
         label: 'Micronaut beans',
-        description: micronautBeansSupported === false ? NOT_SUPPORTED_MESSAGE : 'nova/micronaut/beans',
+        description: micronautBeansSupported === false ? NOVA_NOT_SUPPORTED_MESSAGE : 'nova/micronaut/beans',
         value: 'micronaut-beans' as const,
       },
     ],
