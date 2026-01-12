@@ -261,22 +261,40 @@ frame.
 
 **Important:** this request should only be sent while the debuggee is *stopped* (after a breakpoint
 hit or step). `frameId` must refer to a currently-valid stack frame (from the most recent
-`stackTrace` response).
+`stackTrace` response) and must be `> 0`.
 
 #### Request
 
 - **Command:** `nova/streamDebug`
 - **Arguments:** JSON object with `camelCase` keys:
-  - `expression` (string, required)
-  - `frameId` (number, required)
-  - `maxSampleSize` (number, optional, default `25`)
-  - `maxTotalTimeMs` (number, optional, default `250`)
-  - `allowSideEffects` (bool, optional, default `false`)
-  - `allowTerminalOps` (bool, optional, default `false`)
+  - `expression: string` (required)
+  - `frameId: number` (required; must be `> 0`)
+  - `maxSampleSize?: number` (optional; default `25`; capped to `25`)
+  - `maxTotalTimeMs?: number` (optional; evaluation budget in milliseconds; default `250`)
+    - This budgets the *evaluation* phase. Helper compilation/injection is treated as setup and is
+      excluded from this budget (it is bounded separately).
+  - `allowSideEffects?: boolean` (optional; default `false`)
+  - `allowTerminalOps?: boolean` (optional; default `false`)
 
 #### Response
 
 Response body:
+
+`{ analysis: StreamChain, runtime: StreamDebugResult }`
+
+```jsonc
+{
+  // nova_stream_debug::StreamChain
+  "analysis": { /* ... */ },
+  // nova_stream_debug::StreamDebugResult
+  "runtime": { /* ... */ }
+}
+```
+
+The concrete Rust structs are defined in `nova-stream-debug`:
+
+- [`nova_stream_debug::StreamChain`](../nova-stream-debug/src/lib.rs)
+- [`nova_stream_debug::StreamDebugResult`](../nova-stream-debug/src/lib.rs)
 
 ```jsonc
 {
@@ -315,20 +333,22 @@ Response body:
 
 #### Notes
 
-- The wire implementation uses `javac` plus JDWP `DefineClass`/`InvokeMethod` internally; `javac`
-  must be available on `PATH`.
-- `maxSampleSize` is applied by evaluating a bounded sample of the stream (roughly
-  `stream.limit(maxSampleSize)`); this helps keep evaluations fast and prevents accidentally
-  consuming large streams.
+- Safety guard: expressions whose stream source looks like an *existing* `Stream` value (for
+  example `s.filter(...).count()` when `s` is a local `Stream<?>`) are refused by default, because
+  sampling consumes the stream.
+  - Call-based sources like `collection.stream()` or `java.util.Arrays.stream(array)` are allowed.
+- `maxSampleSize` controls sampling (roughly `stream.limit(maxSampleSize)`) and is clamped to `<= 25`
+  to keep evaluations fast and avoid accidentally consuming large streams.
 - `allowSideEffects` gates execution of known side-effecting operations like `peek` and `forEach`.
 - `allowTerminalOps` gates execution of the terminal operation. When disabled, the terminal result
   is still included but marked `"executed": false`.
-- Safety: expressions that look like an already-instantiated stream value (for example a local
-  `Stream<?> s` referenced as just `s`) may be rejected because sampling consumes streams. Prefer an
-  expression that recreates the stream (for example `collection.stream()` or
-  `java.util.Arrays.stream(array)`).
-- `maxTotalTimeMs` budgets the evaluation phase; helper compilation/injection is treated as setup
-  and is bounded separately.
+- `maxTotalTimeMs` budgets the evaluation phase; helper compilation/injection is treated as setup and
+  is bounded separately.
+- Known limitations:
+  - Evaluation is implemented by compiling and injecting a helper class into the debuggee.
+  - Because the helper is a separate top-level class, expressions that reference `private` members
+    may fail to compile (use accessors or rewrite the expression).
+  - Requires a working `javac` on the host (available on `PATH`).
 - On failure, the adapter responds with `success=false` and a human-readable `message` (standard DAP
   error response shape). (The legacy adapter instead returned `success=true` with
   `{ "error": "..." }` in the response body.)

@@ -11,6 +11,14 @@ pub mod evaluator;
 
 pub const STREAM_DEBUG_COMMAND: &str = "nova/streamDebug";
 
+/// Hard cap on `StreamDebugConfig::max_sample_size` exposed via the DAP
+/// `nova/streamDebug` request.
+///
+/// The stream debugger samples by evaluating a bounded prefix of the stream
+/// (`.limit(...).collect(...)`). Keeping this capped avoids expensive evaluations
+/// and large allocations when inspecting big streams.
+pub const STREAM_DEBUG_MAX_SAMPLE_SIZE: usize = 25;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamDebugArguments {
@@ -53,13 +61,14 @@ impl StreamDebugArguments {
     pub fn into_config(&self) -> StreamDebugConfig {
         let mut cfg = StreamDebugConfig::default();
         if let Some(max) = self.max_sample_size {
-            cfg.max_sample_size = max;
+            cfg.max_sample_size = max.min(STREAM_DEBUG_MAX_SAMPLE_SIZE);
         }
         if let Some(ms) = self.max_total_time_ms {
             cfg.max_total_time = Duration::from_millis(ms);
         }
         cfg.allow_side_effects = self.allow_side_effects;
         cfg.allow_terminal_ops = self.allow_terminal_ops;
+        cfg.max_sample_size = cfg.max_sample_size.min(STREAM_DEBUG_MAX_SAMPLE_SIZE);
         cfg
     }
 }
