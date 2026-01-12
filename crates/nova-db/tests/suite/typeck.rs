@@ -1182,9 +1182,63 @@ class Foo {
 }
 
 #[test]
+fn generic_method_type_param_bounds_allow_member_calls() {
+    let src = r#"
+class C {
+    <T extends String> String m(T t) {
+        return t.substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected bounded type param receiver to resolve member calls; got {diags:?}"
+    );
+
+    let offset = src
+        .find("substring")
+        .expect("snippet should contain substring call")
+        + "substring".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn generic_constructor_type_param_bounds_allow_member_calls() {
+    let src = r#"
+class Foo {
+    <T extends String> Foo(T t) {
+        t.substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected bounded ctor type param receiver to resolve member calls; got {diags:?}"
+    );
+
+    let offset = src
+        .find("substring")
+        .expect("snippet should contain substring call")
+        + "substring".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn lambda_param_type_is_inferred_from_function_target() {
     let src = r#"
-import java.util.function.Function;
+ import java.util.function.Function;
 class C {
     void m() {
         Function<String, Integer> f = s -> s.length();

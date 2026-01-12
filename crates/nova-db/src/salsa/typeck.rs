@@ -262,6 +262,7 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
                 define_source_types(&resolver, &scopes, &tree, &mut loader);
 
             let type_vars = type_vars_for_owner(
+                &resolver,
                 def,
                 scope_id,
                 &scopes.scopes,
@@ -679,6 +680,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     // this body and cross-file member resolution works.
     let source_types = define_workspace_source_types(db, project, &resolver, &mut loader);
     let type_vars = type_vars_for_owner(
+        &resolver,
         owner,
         body_scope,
         &scopes.scopes,
@@ -3336,7 +3338,8 @@ fn enclosing_class_item(
     }
 }
 
-fn type_vars_for_owner(
+fn type_vars_for_owner<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
     owner: DefWithBodyId,
     body_scope: nova_resolve::ScopeId,
     scopes: &nova_resolve::ScopeGraph,
@@ -3364,12 +3367,15 @@ fn type_vars_for_owner(
         }
         DefWithBodyId::Constructor(c) => {
             let object_ty = Type::class(loader.store.well_known().object, vec![]);
-            for tp in &tree.constructor(c).type_params {
-                let id = loader
-                    .store
-                    .add_type_param(tp.name.clone(), vec![object_ty.clone()]);
-                vars.insert(tp.name.clone(), id);
-            }
+            let _ = allocate_type_params(
+                resolver,
+                scopes,
+                body_scope,
+                loader,
+                &object_ty,
+                &tree.constructor(c).type_params,
+                &mut vars,
+            );
         }
         DefWithBodyId::Initializer(_) => {}
     }

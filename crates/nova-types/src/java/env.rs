@@ -31,6 +31,61 @@ impl<'env> TyContext<'env> {
         }
     }
 
+    /// Normalize a receiver type for member lookup (field/method resolution).
+    ///
+    /// Java allows member access on type variables; those accesses are resolved against the
+    /// type variable's first upper bound (or `Object` if no bound is specified).
+    ///
+    /// This helper also:
+    /// - resolves `Type::Named` into `Type::Class` when possible
+    /// - collapses intersection types to their first component (best-effort)
+    /// - applies capture conversion for wildcard-containing parameterized types
+    pub(crate) fn normalize_receiver_for_member_access(&mut self, receiver: &Type) -> Type {
+        let object = Type::class(self.well_known().object, vec![]);
+        let mut current = receiver.clone();
+
+        // Follow through `Named` / type-variable bounds so downstream member lookup sees a class
+        // type whenever possible.
+        //
+        // Use a small recursion limit to avoid pathological cycles (`T extends T`) from causing
+        // infinite loops in malformed code.
+        for _ in 0..8 {
+            match &current {
+                Type::Named(name) => {
+                    if let Some(id) = self.lookup_class(name) {
+                        current = Type::class(id, vec![]);
+                        continue;
+                    }
+                }
+                Type::TypeVar(id) => {
+                    current = self
+                        .type_param(*id)
+                        .and_then(|tp| tp.upper_bounds.first())
+                        .cloned()
+                        .unwrap_or_else(|| object.clone());
+                    continue;
+                }
+                Type::Intersection(types) => {
+                    current = types.first().cloned().unwrap_or_else(|| object.clone());
+                    continue;
+                }
+                Type::Wildcard(bound) => {
+                    current = match bound {
+                        WildcardBound::Unbounded => object.clone(),
+                        WildcardBound::Extends(upper) => (**upper).clone(),
+                        // `? super T` has upper bound `Object` for member access.
+                        WildcardBound::Super(_) => object.clone(),
+                    };
+                    continue;
+                }
+                _ => break,
+            }
+            break;
+        }
+
+        self.capture_conversion(&current)
+    }
+
     /// Clear all context-local allocations.
     ///
     /// Callers that want deterministic IDs across repeated invocations should prefer creating a
@@ -169,13 +224,7 @@ impl<'env> TyContext<'env> {
         name: &str,
         call_kind: CallKind,
     ) -> Option<FieldDef> {
-        let mut receiver = receiver.clone();
-        if let Type::Named(n) = &receiver {
-            if let Some(id) = self.lookup_class(n) {
-                receiver = Type::class(id, vec![]);
-            }
-        }
-        let receiver = self.capture_conversion(&receiver);
+        let receiver = self.normalize_receiver_for_member_access(receiver);
         crate::resolve_field(self, &receiver, name, call_kind)
     }
 }
