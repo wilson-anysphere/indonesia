@@ -2158,11 +2158,21 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             continue;
         }
 
+        // Gradle version catalogs can define dependency versions and thus affect resolved
+        // classpaths.
+        //
+        // Gradle supports multiple catalogs and custom filenames (for example,
+        // `gradle/deps.versions.toml`) referenced from `settings.gradle(.kts)`. Since the
+        // `.versions.toml` suffix is Gradle's convention for catalog files and false positives
+        // should be rare, we include *any* `*.versions.toml` in the fingerprint to avoid stale
+        // cached classpaths when catalogs are moved outside the conventional `gradle/` directory.
+        if name.ends_with(".versions.toml") {
+            out.push(path);
+            continue;
+        }
+
         match name {
             "gradle.properties" => out.push(path),
-            // Gradle version catalogs can define dependency versions and thus
-            // affect resolved classpaths.
-            "libs.versions.toml" => out.push(path),
             "gradlew" | "gradlew.bat" => {
                 if path == root.join(name) {
                     out.push(path);

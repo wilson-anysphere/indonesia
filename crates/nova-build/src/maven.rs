@@ -260,6 +260,22 @@ impl MavenBuild {
             absolutize_paths(&module_dir, roots)
         };
 
+        // Maven should normally report conventional source roots via
+        // `project.compileSourceRoots` / `project.testCompileSourceRoots`, but keep the config
+        // resilient when the expressions are unsupported or return empty.
+        if main_source_roots.is_empty() {
+            let conventional = module_dir.join("src").join("main").join("java");
+            if conventional.is_dir() {
+                main_source_roots.push(conventional);
+            }
+        }
+        if test_source_roots.is_empty() {
+            let conventional = module_dir.join("src").join("test").join("java");
+            if conventional.is_dir() {
+                test_source_roots.push(conventional);
+            }
+        }
+
         let build_dir = self
             .evaluate_scalar_best_effort(project_root, module_relative, "project.build.directory")?
             .filter(|value| !value.contains("${"))
@@ -404,22 +420,27 @@ impl MavenBuild {
 
             // Match Gradle behavior by considering only stable modules
             // (`module-info.class` or `Automatic-Module-Name`).
-            let module_path = infer_module_path_for_compile_config(
+            let evaluated_module_path = infer_module_path_for_compile_config(
                 &module_path_candidates,
                 &[],
                 main_output_dir.as_ref(),
                 true,
             );
 
-            if module_path.is_empty() {
-                infer_module_path_for_compile_config(
-                    &compile_classpath,
-                    &main_source_roots,
-                    main_output_dir.as_ref(),
-                    compiler_args_looks_like_jpms,
-                )
+            if !evaluated_module_path.is_empty() {
+                evaluated_module_path
             } else {
-                module_path
+                // Heuristic fallback: when Maven doesn't expose module-path expressions, approximate
+                // the module-path with the compile classpath for JPMS projects (e.g. when a
+                // `module-info.java` is present). This keeps the request resilient while still
+                // allowing downstream consumers to enable module-path compilation.
+                let should_infer_module_path = compiler_args_looks_like_jpms
+                    || main_source_roots_have_module_info(&main_source_roots);
+                if should_infer_module_path {
+                    compile_classpath.clone()
+                } else {
+                    Vec::new()
+                }
             }
         };
 
