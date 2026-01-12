@@ -1861,13 +1861,13 @@ mod tests {
 
         fn write_reply(stream: &mut TcpStream, id: u32, error_code: u16, payload: &[u8]) {
             let length = 11usize + payload.len();
-            let mut buf = Vec::with_capacity(length);
-            buf.extend_from_slice(&(length as u32).to_be_bytes());
-            buf.extend_from_slice(&id.to_be_bytes());
-            buf.push(0x80);
-            buf.extend_from_slice(&error_code.to_be_bytes());
-            buf.extend_from_slice(payload);
-            stream.write_all(&buf).unwrap();
+            let mut header = [0u8; crate::JDWP_HEADER_LEN];
+            header[0..4].copy_from_slice(&(length as u32).to_be_bytes());
+            header[4..8].copy_from_slice(&id.to_be_bytes());
+            header[8] = 0x80;
+            header[9..11].copy_from_slice(&error_code.to_be_bytes());
+            stream.write_all(&header).unwrap();
+            stream.write_all(payload).unwrap();
             stream.flush().unwrap();
         }
 
