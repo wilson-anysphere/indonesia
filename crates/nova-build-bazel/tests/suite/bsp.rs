@@ -6,7 +6,7 @@ use nova_build_bazel::bsp::{
     JavacOptionsItem, JavacProvider, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
     TextDocumentIdentifier,
 };
-use nova_build_bazel::{BspWorkspace, JavaCompileInfo};
+use nova_build_bazel::{test_support::EnvVarGuard, BspServerConfig, BspWorkspace, JavaCompileInfo};
 use tempfile::tempdir;
 
 #[test]
@@ -40,6 +40,32 @@ fn bsp_initialize_handles_interleaved_server_request_before_response() {
 
     drop(workspace);
     server.join();
+}
+
+#[test]
+fn bsp_workspace_connect_uses_dot_bsp_discovery_when_config_is_default() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+    let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
+
+    let root = tempdir().unwrap();
+    let bsp_dir = root.path().join(".bsp");
+    std::fs::create_dir_all(&bsp_dir).unwrap();
+
+    let fake_server_path = env!("CARGO_BIN_EXE_fake_bsp_server");
+    let json = serde_json::json!({
+        "argv": [fake_server_path],
+        "languages": ["java"],
+    });
+    std::fs::write(
+        bsp_dir.join("server.json"),
+        serde_json::to_string(&json).unwrap(),
+    )
+    .unwrap();
+
+    let workspace = BspWorkspace::connect(root.path().to_path_buf(), BspServerConfig::default())
+        .expect("connect should use .bsp discovery");
+    assert_eq!(workspace.server_info().display_name, "fake-bsp");
 }
 
 #[test]
