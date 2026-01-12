@@ -346,13 +346,14 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-lsp`
 - **Purpose:** LSP integration crate + `nova-lsp` binary.
-- **Key entry points:** `crates/nova-lsp/src/main.rs` (current stdio JSON-RPC loop),
+- **Key entry points:** `crates/nova-lsp/src/main.rs` (stdio LSP server using `lsp-server` framing + a Nova-owned dispatch loop),
   `crates/nova-lsp/src/lib.rs` (custom method constants + dispatch helpers),
   `crates/nova-lsp/src/extensions/*` (custom `nova/*` endpoints).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - ADR 0003 targets `lsp-server`; current binary is a hand-rolled transport (`crates/nova-lsp/src/codec.rs`).
-  - Custom `nova/*` methods are not advertised via `initialize.capabilities.experimental` yet.
+   - ADR 0003 mentions an optional TCP transport; `nova-lsp` currently only supports stdio (`lsp_server::Connection::stdio()`).
+   - Request cancellation is routed (`$/cancelRequest` → request-scoped `CancellationToken`), but many handlers still only check cancellation at coarse boundaries; long-running work may not stop promptly.
+   - The server loop is intentionally simple/mostly synchronous today (requests are handled serially), and does not yet have a general async scheduling model for isolating expensive work.
 
 ### `nova-memory`
 - **Purpose:** memory budgeting + accounting + cooperative eviction (used by `nova-lsp` telemetry endpoints).
@@ -512,7 +513,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - `nova-lsp`’s stdio server uses `nova_vfs::Document`/`ContentChange` for open-document tracking, but does not yet use the full `Vfs`/archive path model for canonical virtual documents.
+   - `nova-lsp` uses `Vfs` overlays today for open-document tracking + reading from disk; the remaining work is making `VfsPath`/ADR 0006 canonical URIs the single end-to-end representation for *all* “virtual documents” (archives, decompiled sources, generated files), rather than a mix of schemes/strings across crates.
+   - The watcher abstractions (`FileWatcher`, `WatchEvent`) are not yet widely integrated; most file-change information still comes from editor-sent LSP notifications.
 
 ### `nova-worker`
 - **Purpose:** `nova-worker` binary for distributed mode (connects to `nova-router` and builds shard indexes).
