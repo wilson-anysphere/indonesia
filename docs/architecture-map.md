@@ -244,9 +244,11 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Integration into the core semantic DB is still partial; analyzers mostly run as standalone passes.
-  - IDE integration currently relies on a best-effort adapter (`crates/nova-ide/src/framework_db.rs`)
-    and `FrameworkAnalyzerRegistryProvider` (`crates/nova-ide/src/extensions.rs`), not a Salsa-backed
-    query layer.
+  - IDE integration is currently split:
+    - Most shipped framework diagnostics/completions live in `crates/nova-ide/src/framework_cache.rs`.
+    - Registry-backed analyzers can run via a best-effort adapter (`crates/nova-ide/src/framework_db.rs`)
+      and `FrameworkAnalyzerRegistryProvider` (`crates/nova-ide/src/extensions.rs`), but the default
+      provider is registered as `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op).
 
 ### `nova-framework-builtins`
 - **Purpose:** centralized construction/registration of Nova’s built-in `nova-framework-*` analyzers so downstream crates (IDE, LSP, etc.) don’t need to maintain their own lists.
