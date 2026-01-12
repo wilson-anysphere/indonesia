@@ -69,7 +69,13 @@ impl SymbolSearchIndex {
         let mut builder = TrigramIndexBuilder::new();
         for (id, entry) in entries.iter().enumerate() {
             let id = id as SymbolId;
-            builder.insert2(id, &entry.symbol.name, &entry.symbol.qualified_name);
+            // `workspace/symbol` commonly sets `qualified_name == name`. Avoid
+            // redundant trigram extraction in that case.
+            if entry.symbol.qualified_name == entry.symbol.name {
+                builder.insert(id, &entry.symbol.name);
+            } else {
+                builder.insert2(id, &entry.symbol.name, &entry.symbol.qualified_name);
+            }
         }
         let trigram = builder.build();
 
@@ -248,13 +254,15 @@ impl SymbolSearchIndex {
 
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
-        let qual = matcher.score(&entry.symbol.qualified_name);
-        if let (Some(a), Some(b)) = (best, qual) {
-            if b.rank_key() > a.rank_key() {
-                best = Some(b);
+        if entry.symbol.qualified_name != entry.symbol.name {
+            let qual = matcher.score(&entry.symbol.qualified_name);
+            if let (Some(a), Some(b)) = (best, qual) {
+                if b.rank_key() > a.rank_key() {
+                    best = Some(b);
+                }
+            } else if best.is_none() {
+                best = qual;
             }
-        } else if best.is_none() {
-            best = qual;
         }
 
         let Some(score) = best else { return };
@@ -492,6 +500,53 @@ impl MemoryEvictor for WorkspaceSymbolSearcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualified_name_equal_to_name_preserves_results() {
+        let symbol = Symbol {
+            name: "FooBar".into(),
+            qualified_name: "FooBar".into(),
+            container_name: None,
+            location: None,
+            ast_id: None,
+        };
+
+        let index = SymbolSearchIndex::build(vec![symbol.clone()]);
+        let results = index.search("fb", 10);
+        assert_eq!(results.len(), 1);
+
+        // Baseline: always score both fields and pick the best. When the
+        // strings are equal, this should match the optimized path.
+        let mut matcher = FuzzyMatcher::new("fb");
+        let mut best = matcher.score(&symbol.name);
+        let qual = matcher.score(&symbol.qualified_name);
+        if let (Some(a), Some(b)) = (best, qual) {
+            if b.rank_key() > a.rank_key() {
+                best = Some(b);
+            }
+        } else if best.is_none() {
+            best = qual;
+        }
+
+        assert_eq!(Some(results[0].score), best);
+    }
+
+    #[test]
+    fn qualified_name_is_used_for_matching_when_different() {
+        let index = SymbolSearchIndex::build(vec![Symbol {
+            name: "Map".into(),
+            qualified_name: "HashMap".into(),
+            container_name: None,
+            location: None,
+            ast_id: None,
+        }]);
+
+        // `Map` is too short for this query, so a match is only possible via
+        // `qualified_name`.
+        let results = index.search("Hash", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "Map");
+    }
 
     #[test]
     fn symbol_search_uses_trigram_for_long_queries() {
