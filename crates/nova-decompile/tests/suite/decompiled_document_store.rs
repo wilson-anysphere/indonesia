@@ -440,6 +440,39 @@ fn non_file_entries_are_treated_as_cache_miss_and_deleted() {
 
 #[cfg(unix)]
 #[test]
+fn fifo_entries_are_treated_as_cache_miss_and_deleted() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+    if rc != 0 {
+        panic!("mkfifo failed: {}", std::io::Error::last_os_error());
+    }
+
+    assert!(path.exists(), "precondition: fifo should exist");
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!path.exists(), "fifo cache entry should be deleted");
+}
+
+#[cfg(unix)]
+#[test]
 fn symlink_entries_are_treated_as_cache_miss_and_deleted() {
     use std::os::unix::fs::symlink;
 

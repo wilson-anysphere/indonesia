@@ -711,7 +711,10 @@ fn open_cache_file_read(path: &Path) -> io::Result<std::fs::File> {
         let mut opts = std::fs::OpenOptions::new();
         opts.read(true);
         // Refuse to follow symlinks at open time (mitigates TOCTOU races).
-        opts.custom_flags(libc::O_NOFOLLOW);
+        //
+        // Also open with O_NONBLOCK so a hostile cache entry swapped to a FIFO
+        // cannot hang the reader in `open(2)`.
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         opts.open(path)
     }
 
