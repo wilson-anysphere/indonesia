@@ -406,4 +406,36 @@ mod tests {
 
         assert_eq!(vfs.read_to_string(&path).unwrap(), "overlay");
     }
+
+    #[test]
+    fn vfs_exists_reports_virtual_document_presence() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
+
+        assert!(!vfs.exists(&path), "virtual doc should be absent by default");
+
+        vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
+        assert!(vfs.exists(&path), "virtual doc should exist after storing");
+    }
+
+    #[test]
+    fn vfs_read_bytes_serves_virtual_document_text() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Bytes");
+        let text = "class Bytes {}".to_string();
+
+        vfs.store_virtual_document(path.clone(), text.clone());
+        assert_eq!(vfs.read_bytes(&path).unwrap(), text.into_bytes());
+    }
+
+    #[test]
+    fn vfs_virtual_document_metadata_is_unsupported() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Meta");
+
+        vfs.store_virtual_document(path.clone(), "class Meta {}".to_string());
+
+        let err = vfs.metadata(&path).expect_err("expected metadata to be unsupported");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
 }
