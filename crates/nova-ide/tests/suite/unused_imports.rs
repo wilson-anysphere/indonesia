@@ -1,4 +1,5 @@
-use lsp_types::{CodeActionKind, CodeActionOrCommand, NumberOrString};
+use crate::text_fixture::offset_to_position;
+use lsp_types::{CodeActionKind, CodeActionOrCommand, DiagnosticSeverity, NumberOrString, Range};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
@@ -123,4 +124,62 @@ fn diagnostic_quick_fixes_includes_remove_unused_import() {
     let mut updated = source.to_string();
     updated.replace_range(start..end, &text_edit.new_text);
     assert_eq!(updated, "class A {}\n");
+}
+
+#[test]
+fn code_actions_with_context_includes_remove_unused_import_for_cursor_at_span_start() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    let source = "import java.util.List;\nclass A {}\n";
+    db.set_file_text(file, source.to_string());
+
+    let import_start = source.find("import").expect("expected import in fixture");
+    let import_end = source.find('\n').expect("expected newline after import");
+
+    let range = Range::new(
+        offset_to_position(source, import_start),
+        offset_to_position(source, import_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("unused-import".to_string())),
+        message: "unused import".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let selection = Span::new(import_start, import_start);
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(selection),
+        &[diag],
+    );
+
+    let action = actions
+        .iter()
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) if action.title == "Remove unused import" => {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("expected Remove unused import code action");
+
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes-based edit");
+    let edits = changes.values().next().expect("expected text edits");
+    assert_eq!(edits.len(), 1);
+    let text_edit = &edits[0];
+    assert!(text_edit.new_text.is_empty());
+    assert_eq!(text_edit.range.start.line, 0);
+    assert_eq!(text_edit.range.start.character, 0);
+    assert_eq!(text_edit.range.end.line, 1);
+    assert_eq!(text_edit.range.end.character, 0);
 }
