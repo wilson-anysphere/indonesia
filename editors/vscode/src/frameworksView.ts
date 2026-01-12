@@ -139,9 +139,10 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     let foundRunningServer = false;
 
     for (const workspaceFolder of workspaces) {
+      const workspaceKey = workspaceFolder.uri.toString();
       const projectRoot = workspaceFolder.uri.fsPath;
       try {
-        const resp = await fetchWebEndpoints(this.request, projectRoot);
+        const resp = await fetchWebEndpoints(this.request, workspaceKey, projectRoot);
 
         // `sendNovaRequest` returns `undefined` when the server does not support a method.
         // Preserve the old behavior of treating that as "method not found" for this view.
@@ -191,10 +192,11 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
       return [];
     }
 
+    const probeWorkspaceKey = workspaces[0].uri.toString();
     const probeProjectRoot = workspaces[0].uri.fsPath;
     const [micronautEndpointsSupported, micronautBeansSupported] = await Promise.all([
-      probeNovaRequestSupport(this.request, MICRONAUT_ENDPOINTS_METHOD, { projectRoot: probeProjectRoot }),
-      probeNovaRequestSupport(this.request, MICRONAUT_BEANS_METHOD, { projectRoot: probeProjectRoot }),
+      probeNovaRequestSupport(this.request, probeWorkspaceKey, MICRONAUT_ENDPOINTS_METHOD, { projectRoot: probeProjectRoot }),
+      probeNovaRequestSupport(this.request, probeWorkspaceKey, MICRONAUT_BEANS_METHOD, { projectRoot: probeProjectRoot }),
     ]);
 
     const webEndpointsSupported =
@@ -315,10 +317,11 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<v
 
 async function probeNovaRequestSupport(
   request: NovaRequest,
+  workspaceKey: string,
   method: string,
   params: Record<string, unknown>,
 ): Promise<boolean> {
-  const supported = isNovaRequestSupported(method);
+  const supported = isNovaRequestSupported(workspaceKey, method);
   if (supported === true) {
     return true;
   }
@@ -337,12 +340,16 @@ async function probeNovaRequestSupport(
   }
 }
 
-async function fetchWebEndpoints(request: NovaRequest, projectRoot: string): Promise<WebEndpointsResponse | undefined> {
+async function fetchWebEndpoints(
+  request: NovaRequest,
+  workspaceKey: string,
+  projectRoot: string,
+): Promise<WebEndpointsResponse | undefined> {
   const method = 'nova/web/endpoints';
   const alias = 'nova/quarkus/endpoints';
 
-  const supportedWeb = isNovaRequestSupported(method);
-  const supportedAlias = isNovaRequestSupported(alias);
+  const supportedWeb = isNovaRequestSupported(workspaceKey, method);
+  const supportedAlias = isNovaRequestSupported(workspaceKey, alias);
 
   const candidates: string[] = [];
   if (supportedWeb === true) {

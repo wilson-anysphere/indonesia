@@ -1604,11 +1604,11 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
         if (event.newState === State.Starting || event.newState === State.Stopped) {
-          resetNovaExperimentalCapabilities();
+          resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
           return;
         }
         if (event.newState === State.Running) {
-          setNovaExperimentalCapabilities(languageClient.initializeResult);
+          setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
         }
       }),
     );
