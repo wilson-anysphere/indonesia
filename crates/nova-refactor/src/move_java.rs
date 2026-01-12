@@ -644,7 +644,10 @@ mod java_text {
         }
 
         fn starts_with(&self, s: &str) -> bool {
-            self.src.as_bytes()[self.offset..].starts_with(s.as_bytes())
+            self.src
+                .as_bytes()
+                .get(self.offset..)
+                .is_some_and(|rest| rest.starts_with(s.as_bytes()))
         }
 
         fn skip_whitespace(&mut self) {
@@ -936,7 +939,7 @@ mod java_text {
     }
 
     pub fn contains_identifier_after_offset(source: &str, offset: usize, ident: &str) -> bool {
-        if offset >= source.len() {
+        if offset > source.len() {
             return false;
         }
 
