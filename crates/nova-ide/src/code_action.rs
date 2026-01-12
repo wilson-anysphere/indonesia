@@ -8,6 +8,7 @@ use nova_refactor::extract_method::{
 };
 use nova_refactor::TextRange;
 use nova_types::Span;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -456,20 +457,10 @@ fn type_mismatch_quick_fixes(
     diagnostic: &Diagnostic,
 ) -> Vec<CodeAction> {
     fn cast_replacement(expected: &str, expr: &str) -> String {
-        // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
-        // `((T) a) + b` and does not cast the whole expression.
-        let needs_parens = expr.chars().any(|c| c.is_whitespace())
-            || [
-                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=", "&", "|",
-                "^",
-            ]
-            .into_iter()
-            .any(|op| expr.contains(op));
-
-        if needs_parens {
-            format!("({expected}) ({expr})")
-        } else {
+        if is_simple_cast_expr(expr) {
             format!("({expected}) {expr}")
+        } else {
+            format!("({expected}) ({expr})")
         }
     }
 
@@ -686,6 +677,19 @@ fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
     let message = message.strip_prefix("type mismatch: expected ")?;
     let (expected, found) = message.split_once(", found ")?;
     Some((expected.trim().to_string(), found.trim().to_string()))
+}
+
+fn is_simple_cast_expr(expr: &str) -> bool {
+    static IDENT_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^[A-Za-z_$][A-Za-z0-9_$]*$").expect("valid regex"));
+    // Minimal MVP numeric literal support: decimal integers/floats (with optional underscores).
+    static NUMBER_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^[0-9][0-9_]*(?:\.[0-9][0-9_]*)?$").expect("valid regex"));
+    // Minimal Java-like string literal: double-quoted, allowing escaped chars.
+    static STRING_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"^"(?:\\.|[^"\\])*"$"#).expect("valid regex"));
+
+    IDENT_RE.is_match(expr) || NUMBER_RE.is_match(expr) || STRING_RE.is_match(expr)
 }
 
 fn unresolved_member_name(message: &str, source: &str, range: &Range) -> Option<String> {
