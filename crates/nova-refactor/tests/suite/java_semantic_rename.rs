@@ -371,3 +371,48 @@ fn rename_field_updates_references_in_assert_statement() {
     assert!(out_src.contains("int bar = 1;"));
     assert!(out_src.contains("assert bar > 0 : bar;"));
 }
+
+#[test]
+fn rename_type_updates_type_use_in_assert_statement() {
+    let type_file = FileId::new("Foo.java");
+    let use_file = FileId::new("Test.java");
+
+    let src_type = r#"class Foo {}
+"#;
+
+    let src_use = r#"class Test {
+  void m() {
+    assert true : new Foo();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (type_file.clone(), src_type.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_type.find("class Foo").unwrap() + "class ".len();
+    let symbol = db.symbol_at(&type_file, offset).expect("type symbol");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".to_string(),
+        },
+    )
+    .expect("rename succeeds");
+
+    let mut files = BTreeMap::new();
+    files.insert(type_file.clone(), src_type.to_string());
+    files.insert(use_file.clone(), src_use.to_string());
+    let out = apply_workspace_edit(&files, &edit).expect("edit applies");
+
+    let out_type = out.get(&type_file).expect("Foo.java updated");
+    assert!(out_type.contains("class Bar {}"), "{out_type}");
+
+    let out_use = out.get(&use_file).expect("Test.java updated");
+    assert!(out_use.contains("assert true : new Bar();"), "{out_use}");
+}
