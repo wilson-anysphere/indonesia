@@ -159,6 +159,12 @@ pub fn generate_stream_eval_helper_java_source(
 ) -> String {
     const CLASS_NAME: &str = "__NovaStreamEvalHelper";
     const THIS_IDENT: &str = "__this";
+    const DEFAULT_IMPORTS: [&str; 4] = [
+        "java.util.*",
+        "java.util.stream.*",
+        "java.util.function.*",
+        "static java.util.stream.Collectors.*",
+    ];
 
     let mut out = String::new();
 
@@ -170,14 +176,25 @@ pub fn generate_stream_eval_helper_java_source(
     }
 
     // Emit imports, preserving first-seen order while deduping.
+    //
+    // Start with a conservative set of defaults so common stream expressions compile without
+    // requiring fully-qualified names (e.g. `collect(toList())`).
     let mut seen_imports: HashSet<String> = HashSet::new();
-    for import in imports {
+    for import in DEFAULT_IMPORTS.iter().copied().chain(imports.iter().map(|s| s.as_str())) {
         let import = import.trim();
         if import.is_empty() {
             continue;
         }
         let import = import.strip_prefix("import ").unwrap_or(import).trim();
-        let import = import.strip_suffix(';').unwrap_or(import).trim();
+        // Normalize semicolons/comments:
+        // - `import foo.Bar;` -> `foo.Bar`
+        // - `import foo.Bar; // comment` -> `foo.Bar`
+        // - `foo.Bar;` -> `foo.Bar`
+        let import = import
+            .split_once(';')
+            .map(|(before, _after)| before)
+            .unwrap_or(import)
+            .trim();
         if import.is_empty() {
             continue;
         }
@@ -597,8 +614,12 @@ mod tests {
         let src = generate_stream_eval_helper_java_source(
             "com.example",
             &[
-                "java.util.List".to_string(),
-                "java.util.stream.Collectors".to_string(),
+                // Simulate best-effort imports scraped from the paused source file.
+                "import com.acme.Foo".to_string(),
+                "import static com.acme.Util.*".to_string(),
+                // Duplicates should not produce repeated import lines (semicolons normalized).
+                "import com.acme.Foo;".to_string(),
+                "import java.util.*;".to_string(),
             ],
             &[
                 ("this".to_string(), "com.example.Foo".to_string()),
@@ -609,8 +630,17 @@ mod tests {
         );
 
         assert!(src.contains("package com.example;"));
-        assert!(src.contains("import java.util.List;"));
-        assert!(src.contains("import java.util.stream.Collectors;"));
+        // Default imports (including common static imports).
+        assert!(src.contains("import java.util.*;"));
+        assert!(src.contains("import java.util.stream.*;"));
+        assert!(src.contains("import java.util.function.*;"));
+        assert!(src.contains("import static java.util.stream.Collectors.*;"));
+        // Best-effort file imports should be preserved.
+        assert!(src.contains("import com.acme.Foo;"));
+        assert!(src.contains("import static com.acme.Util.*;"));
+        // Dedupe (semicolons normalized).
+        assert_eq!(src.matches("import com.acme.Foo;").count(), 1);
+        assert_eq!(src.matches("import java.util.*;").count(), 1);
         assert!(src.contains("public final class __NovaStreamEvalHelper"));
 
         // Ensure locals are exposed via valid parameter names.
@@ -622,6 +652,11 @@ mod tests {
         assert!(src.contains("public static Object stage1"));
         assert!(src.contains("return __this.foo();"));
         assert!(src.contains("return __this.bar();"));
+
+        // Imports are emitted deterministically: defaults first, then file imports.
+        let idx_default = src.find("import java.util.*;").unwrap();
+        let idx_custom = src.find("import com.acme.Foo;").unwrap();
+        assert!(idx_default < idx_custom, "expected default imports before file imports:\n{src}");
     }
 
     #[test]

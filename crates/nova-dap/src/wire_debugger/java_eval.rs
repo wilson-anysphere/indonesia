@@ -182,6 +182,7 @@ impl Debugger {
             "import java.util.*;".to_string(),
             "import java.util.stream.*;".to_string(),
             "import java.util.function.*;".to_string(),
+            "import static java.util.stream.Collectors.*;".to_string(),
         ];
         if let Some(extra) = self.best_effort_imports_for_frame(cancel, &frame).await? {
             imports.extend(extra);
@@ -856,19 +857,37 @@ fn dedup_lines(lines: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for line in lines {
-        let normalized = line.trim().to_string();
-        if normalized.is_empty() {
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
+
+        // Normalize import lines so that:
+        // - trailing semicolons are consistent
+        // - `import ...; // comment` is reduced to `import ...;`
+        // - duplicates are removed even if semicolons/comments differ
+        let normalized = if line.starts_with("import ") || line.starts_with("import static ") {
+            // Keep only the portion of the line up to (and including) the first ';' if present.
+            // This drops any trailing comment content and avoids appending an extra ';' later.
+            let stmt = match line.split_once(';') {
+                Some((before, _after)) => before.trim(),
+                None => line,
+            };
+
+            // Canonicalize by stripping the leading `import ` and any trailing `;`.
+            let spec = stmt
+                .strip_prefix("import ")
+                .unwrap_or(stmt)
+                .trim()
+                .trim_end_matches(';')
+                .trim();
+            format!("import {spec};")
+        } else {
+            line.to_string()
+        };
+
         if seen.insert(normalized.clone()) {
-            // Ensure import lines end in `;` to keep javac happy.
-            if (normalized.starts_with("import ") || normalized.starts_with("import static "))
-                && !normalized.ends_with(';')
-            {
-                out.push(format!("{normalized};"));
-            } else {
-                out.push(normalized);
-            }
+            out.push(normalized);
         }
     }
     out
@@ -1066,6 +1085,26 @@ erased generic types). Try adding explicit casts or types, e.g. \
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedup_lines_normalizes_import_semicolons_and_trailing_comments() {
+        let lines = vec![
+            "import java.util.*".to_string(),
+            "import java.util.*;".to_string(),
+            "import static java.util.stream.Collectors.*".to_string(),
+            "import static java.util.stream.Collectors.*; // comment".to_string(),
+            "import static java.util.stream.Collectors.*;".to_string(),
+        ];
+
+        let deduped = dedup_lines(lines);
+        assert_eq!(
+            deduped,
+            vec![
+                "import java.util.*;".to_string(),
+                "import static java.util.stream.Collectors.*;".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn render_eval_source_uses_void_return_type_for_foreach_terminal() {
