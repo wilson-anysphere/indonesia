@@ -9,7 +9,7 @@ use zip::write::FileOptions;
 #[test]
 fn workspace_model_populates_module_path_for_jpms_workspaces() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
 
     std::fs::create_dir_all(root.join("src/main/java")).expect("mkdir src");
     std::fs::write(
@@ -25,7 +25,7 @@ fn workspace_model_populates_module_path_for_jpms_workspaces() {
 
     let mut options = LoadOptions::default();
     options.classpath_overrides.push(dep_dir.clone());
-    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Simple);
     assert_eq!(model.modules.len(), 1);
@@ -50,7 +50,7 @@ fn workspace_model_populates_module_path_for_jpms_workspaces() {
 #[test]
 fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_workspaces() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
 
     std::fs::create_dir_all(root.join("src/main/java")).expect("mkdir src");
     std::fs::write(
@@ -66,7 +66,7 @@ fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_wor
 
     let mut options = LoadOptions::default();
     options.classpath_overrides.push(jar_path.clone());
-    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Simple);
     assert_eq!(model.modules.len(), 1);
@@ -90,7 +90,7 @@ fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_wor
 #[test]
 fn simple_workspace_model_puts_missing_jmod_overrides_on_module_path_for_jpms_workspaces() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
 
     std::fs::create_dir_all(root.join("src/main/java")).expect("mkdir src");
     std::fs::write(
@@ -105,7 +105,7 @@ fn simple_workspace_model_puts_missing_jmod_overrides_on_module_path_for_jpms_wo
 
     let mut options = LoadOptions::default();
     options.classpath_overrides.push(jmod_path.clone());
-    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Simple);
     assert_eq!(model.modules.len(), 1);
@@ -129,7 +129,8 @@ fn simple_workspace_model_puts_missing_jmod_overrides_on_module_path_for_jpms_wo
 #[test]
 fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path().join("workspace");
+    let tmp_root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
+    let root = tmp_root.join("workspace");
     std::fs::create_dir_all(&root).expect("mkdir root");
 
     std::fs::write(
@@ -166,7 +167,7 @@ fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
     )
     .expect("write dummy java");
 
-    let maven_repo = tmp.path().join("maven-repo");
+    let maven_repo = tmp_root.join("maven-repo");
     let jar_path = maven_repo.join("com/example/dep/1.0/dep-1.0.jar");
     std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("mkdir jar parent");
     write_jar_with_manifest(
@@ -201,7 +202,7 @@ fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
 #[test]
 fn gradle_workspace_model_populates_module_path_for_jpms_overrides() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
 
     // Minimal marker so `detect_build_system` chooses Gradle.
     std::fs::write(root.join("build.gradle"), "").expect("write build.gradle");
@@ -222,7 +223,7 @@ fn gradle_workspace_model_populates_module_path_for_jpms_overrides() {
 
     let mut options = LoadOptions::default();
     options.classpath_overrides.push(dep_dir.clone());
-    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
     assert_eq!(model.modules.len(), 1);
@@ -265,7 +266,7 @@ fn gradle_workspace_model_populates_module_path_for_jpms_overrides() {
 #[test]
 fn bazel_workspace_model_populates_module_path_for_jpms_overrides() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
 
     std::fs::write(root.join("WORKSPACE"), "").expect("write WORKSPACE");
 
@@ -286,7 +287,7 @@ fn bazel_workspace_model_populates_module_path_for_jpms_overrides() {
 
     let mut options = LoadOptions::default();
     options.classpath_overrides.push(dep_dir.clone());
-    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+    let model = load_workspace_model_with_options(&root, &options).expect("load workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Bazel);
     assert_eq!(model.modules.len(), 1);
@@ -433,7 +434,7 @@ fn write_jar_with_manifest(path: &Path, manifest: &str) {
 #[test]
 fn make_module_info_class_fixture_is_readable_from_directory_archive() {
     let tmp = tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize tempdir");
     let dep_dir = root.join("mod-b");
     std::fs::create_dir_all(&dep_dir).expect("mkdir dep_dir");
     std::fs::write(dep_dir.join("module-info.class"), make_module_info_class())
