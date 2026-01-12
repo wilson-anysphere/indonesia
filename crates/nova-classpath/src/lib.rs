@@ -646,7 +646,6 @@ impl ClasspathIndex {
 
         bytes
     }
-
     pub fn lookup_binary(&self, binary_name: &str) -> Option<&ClasspathClassStub> {
         self.stubs_by_binary.get(binary_name)
     }

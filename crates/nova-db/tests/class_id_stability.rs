@@ -113,3 +113,65 @@ class B {
         "expected Foo to have stable ClassId across bodies"
     );
 }
+
+#[test]
+fn external_class_ids_are_stable_across_bodies_in_same_file() {
+    let classpath =
+        ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(dep_jar())], None, None, None)
+            .expect("failed to build dep.jar classpath index");
+
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let file = FileId::from_raw(1);
+    db.set_file_project(file, project);
+    db.set_file_rel_path(file, Arc::new("src/C.java".to_string()));
+    db.set_file_exists(file, true);
+    db.set_all_file_ids(Arc::new(vec![file]));
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let src = r#"
+class C {
+    void a() {
+        com.example.dep.Foo foo;
+        com.example.dep.Bar bar;
+    }
+
+    void b() {
+        com.example.dep.Bar bar;
+        com.example.dep.Foo foo;
+    }
+}
+"#;
+    db.set_file_content(file, Arc::new(src.to_string()));
+
+    let tree = db.hir_item_tree(file);
+    let method_a = find_method_named(&tree, "a");
+    let method_b = find_method_named(&tree, "b");
+
+    let body_a = db.typeck_body(DefWithBodyId::Method(method_a));
+    let body_b = db.typeck_body(DefWithBodyId::Method(method_b));
+
+    let foo_a = body_a
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("Foo should be interned in body a env");
+    let bar_a = body_a
+        .env
+        .lookup_class("com.example.dep.Bar")
+        .expect("Bar should be interned in body a env");
+
+    let foo_b = body_b
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("Foo should be interned in body b env");
+    let bar_b = body_b
+        .env
+        .lookup_class("com.example.dep.Bar")
+        .expect("Bar should be interned in body b env");
+
+    assert_eq!(foo_a, foo_b, "expected Foo to have stable ClassId across bodies");
+    assert_eq!(bar_a, bar_b, "expected Bar to have stable ClassId across bodies");
+}

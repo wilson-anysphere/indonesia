@@ -326,6 +326,19 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
         }
     }
 
+    // NOTE: We currently do **not** pre-intern all JDK binary names here.
+    //
+    // While it would provide fully stable `ClassId` allocation for arbitrary
+    // standard-library types, a real JDK contains tens of thousands of classes.
+    // Pre-interning all of them would:
+    // - increase the cost of building this base store, and
+    // - (more importantly) bloat every cloned body-local `TypeStore`, since
+    //   `typeck_body` needs a mutable `TypeStore` for on-demand loading.
+    //
+    // The current approach relies on `TypeStore::with_minimal_jdk()` for a small
+    // but semantically useful set of core types, and loads other JDK types on
+    // demand.
+
     db.record_query_stat("project_base_type_store", start.elapsed());
     ArcEq::new(Arc::new(store))
 }
