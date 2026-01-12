@@ -9,6 +9,7 @@ use nova_cache::{
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -3435,6 +3436,9 @@ pub fn load_sharded_index_view_lazy(
         Some(value) if value == shard_count => {}
         _ => return Ok(None),
     }
+    if !probe_sharded_symbols_idx_schema(&shards_root) {
+        return Ok(None);
+    }
 
     let invalidated_files_set: BTreeSet<String> =
         metadata.diff_files(current_snapshot).into_iter().collect();
@@ -3491,6 +3495,9 @@ pub fn load_sharded_index_view_lazy_from_fast_snapshot(
     match read_shard_manifest(&shards_root) {
         Some(value) if value == shard_count => {}
         _ => return Ok(None),
+    }
+    if !probe_sharded_symbols_idx_schema(&shards_root) {
+        return Ok(None);
     }
 
     let invalidated_files_set: BTreeSet<String> = metadata
@@ -3613,6 +3620,37 @@ fn read_shard_manifest(shards_root: &Path) -> Option<u32> {
     let text = std::fs::read_to_string(manifest_path).ok()?;
     let line = text.lines().next()?.trim();
     line.parse::<u32>().ok()
+}
+
+fn probe_sharded_symbols_idx_schema(shards_root: &Path) -> bool {
+    // `load_sharded_index_view_lazy(_from_fast_snapshot)` is allowed to avoid opening and
+    // validating every shard archive. However, callers like `nova index`/`cache warm` can early
+    // return on a cache hit (no invalidated files) and never touch any shard payloads.
+    //
+    // When the index schema changes, we must treat the cache as a miss even if file metadata
+    // fingerprints are unchanged, otherwise those commands can incorrectly no-op while leaving an
+    // incompatible cache on disk.
+    //
+    // Probe a single known shard file (`symbols.idx` in shard 0) by reading its header only. This
+    // is O(1) and avoids mmap/`rkyv` validation work on the cache-hit fast path.
+    let probe_path = shard_dir(shards_root, 0).join("symbols.idx");
+    let Ok(mut file) = std::fs::File::open(&probe_path) else {
+        return false;
+    };
+
+    let mut header_bytes = [0u8; nova_storage::HEADER_LEN];
+    if file.read_exact(&mut header_bytes).is_err() {
+        return false;
+    }
+    let Ok(header) = nova_storage::StorageHeader::decode(&header_bytes) else {
+        return false;
+    };
+
+    header.kind == nova_storage::ArtifactKind::SymbolIndex
+        && header.schema_version == INDEX_SCHEMA_VERSION
+        && header.nova_version == nova_core::NOVA_VERSION
+        && header.endian == nova_core::target_endian()
+        && header.pointer_width == nova_core::target_pointer_width()
 }
 
 fn load_shard_archives(shard_dir: &Path) -> Option<LoadedShardIndexArchives> {
