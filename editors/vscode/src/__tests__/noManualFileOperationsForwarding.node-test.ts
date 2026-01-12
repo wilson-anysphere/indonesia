@@ -155,6 +155,123 @@ function resolveNotificationMethod(
   return undefined;
 }
 
+function unwrapExpression(expr: ts.Expression): ts.Expression {
+  if (ts.isParenthesizedExpression(expr)) {
+    return unwrapExpression(expr.expression);
+  }
+  if (ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr)) {
+    return unwrapExpression(expr.expression);
+  }
+  return expr;
+}
+
+function isSendNotificationReference(expr: ts.Expression, env: Map<string, string>, aliases: Set<string>): boolean {
+  const unwrapped = unwrapExpression(expr);
+
+  if (ts.isIdentifier(unwrapped)) {
+    return aliases.has(unwrapped.text);
+  }
+
+  // `client.sendNotification` / `client['sendNotification']`
+  if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
+    return getCalledMethodName(unwrapped, env) === 'sendNotification';
+  }
+
+  // `client.sendNotification.bind(client)` / `client['sendNotification'].bind(client)`
+  if (ts.isCallExpression(unwrapped)) {
+    const callee = unwrapped.expression;
+    if (getCalledMethodName(callee, env) !== 'bind') {
+      return false;
+    }
+    if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+      return false;
+    }
+    return isSendNotificationReference(callee.expression, env, aliases);
+  }
+
+  return false;
+}
+
+function buildSendNotificationAliasesFromVariableStatements(
+  statements: readonly ts.Statement[],
+  env: Map<string, string>,
+  baseAliases: Set<string>,
+): Set<string> {
+  const bindingAliases = new Set<string>();
+  const candidateDecls: Array<{ name: string; initializer: ts.Expression }> = [];
+
+  for (const statement of statements) {
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    const declList = statement.declarationList;
+    if ((declList.flags & ts.NodeFlags.Const) === 0) {
+      continue;
+    }
+
+    for (const decl of declList.declarations) {
+      if (!decl.initializer) {
+        continue;
+      }
+
+      if (ts.isIdentifier(decl.name)) {
+        candidateDecls.push({ name: decl.name.text, initializer: decl.initializer });
+        continue;
+      }
+
+      if (ts.isObjectBindingPattern(decl.name)) {
+        for (const element of decl.name.elements) {
+          const localName = ts.isIdentifier(element.name) ? element.name.text : undefined;
+          if (!localName) {
+            continue;
+          }
+
+          let propertyName: string | undefined;
+          if (!element.propertyName) {
+            propertyName = localName;
+          } else if (ts.isIdentifier(element.propertyName)) {
+            propertyName = element.propertyName.text;
+          } else if (ts.isStringLiteral(element.propertyName) || ts.isNoSubstitutionTemplateLiteral(element.propertyName)) {
+            propertyName = element.propertyName.text;
+          } else if (ts.isComputedPropertyName(element.propertyName)) {
+            propertyName = evalConstString(element.propertyName.expression, env);
+          }
+
+          if (propertyName === 'sendNotification') {
+            bindingAliases.add(localName);
+          }
+        }
+      }
+    }
+  }
+
+  const aliases = new Set<string>(baseAliases);
+  const resolved = new Set<string>();
+  for (const name of bindingAliases) {
+    if (!aliases.has(name)) {
+      aliases.add(name);
+      resolved.add(name);
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const decl of candidateDecls) {
+      if (aliases.has(decl.name)) {
+        continue;
+      }
+      if (isSendNotificationReference(decl.initializer, env, aliases)) {
+        aliases.add(decl.name);
+        resolved.add(decl.name);
+        changed = true;
+      }
+    }
+  }
+
+  return resolved;
+}
+
 function buildConstStringEnvFromVariableStatements(
   statements: readonly ts.Statement[],
   imports: Map<string, string>,
@@ -212,31 +329,46 @@ test('extension does not manually forward workspace file operations (vscode-lang
     const fileEnv = new Map<string, string>(
       buildConstStringEnvFromVariableStatements(sourceFile.statements, importAliases, new Map<string, string>()),
     );
+    const fileAliases = new Set<string>(
+      buildSendNotificationAliasesFromVariableStatements(sourceFile.statements, fileEnv, new Set<string>()),
+    );
 
-    const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>) => {
-      if (ts.isCallExpression(node) && getCalledMethodName(node.expression, env) === 'sendNotification') {
-        const arg0 = node.arguments[0];
-        const method = arg0 ? resolveNotificationMethod(arg0, env, importAliases) : undefined;
-        if (method && bannedNotificationMethods.has(method)) {
-          const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-          violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`);
+    const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>, aliases: Set<string>) => {
+      if (ts.isCallExpression(node)) {
+        const callExpr = node.expression;
+        const isDirectSendNotification = getCalledMethodName(callExpr, env) === 'sendNotification';
+        const isAliasSendNotification = ts.isIdentifier(callExpr) && aliases.has(callExpr.text);
+        if (isDirectSendNotification || isAliasSendNotification) {
+          const arg0 = node.arguments[0];
+          const method = arg0 ? resolveNotificationMethod(arg0, env, importAliases) : undefined;
+          if (method && bannedNotificationMethods.has(method)) {
+            const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+            violations.add(
+              `${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`,
+            );
+          }
         }
       }
 
       let nextEnv = env;
+      let nextAliases = aliases;
       if (ts.isBlock(node)) {
         const blockEnv = buildConstStringEnvFromVariableStatements(node.statements, importAliases, env);
-        if (blockEnv.size > 0) {
-          nextEnv = new Map<string, string>([...env, ...blockEnv]);
+        const combinedEnv = blockEnv.size > 0 ? new Map<string, string>([...env, ...blockEnv]) : env;
+        nextEnv = combinedEnv;
+
+        const blockAliases = buildSendNotificationAliasesFromVariableStatements(node.statements, combinedEnv, aliases);
+        if (blockAliases.size > 0) {
+          nextAliases = new Set<string>([...aliases, ...blockAliases]);
         }
       }
 
       ts.forEachChild(node, (child) => {
-        scanForBannedSendNotifications(child, nextEnv);
+        scanForBannedSendNotifications(child, nextEnv, nextAliases);
       });
     };
 
-    scanForBannedSendNotifications(sourceFile, fileEnv);
+    scanForBannedSendNotifications(sourceFile, fileEnv, fileAliases);
 
     const visit = (node: ts.Node) => {
       if (!ts.isCallExpression(node)) {
