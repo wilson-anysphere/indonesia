@@ -447,18 +447,13 @@ Concrete example: `crates/nova-ide/src/lombok_intel.rs` builds a best-effort wor
 feeds it into `MemoryDatabase`, and uses the Lombok analyzer to provide framework-backed member
 completion/navigation.
 
-Also note that optional `nova_framework::Database` methods may not be implemented by a host DB:
+Also note that some `nova_framework::Database` methods may not be implemented by a host DB:
 
-- `file_text` may return `None`
+- `file_text`/`file_path` may return `None`
 - `all_files`/`all_classes` may return empty vectors
 
 Analyzers are expected to degrade gracefully by skipping file-text parsing and cross-file scanning
 when that information is unavailable.
-
-`nova_framework::Database` is intentionally minimal. Implementations may return `None` for
-`file_text`/`file_path` and may return an empty list from `all_files(project)`/`all_classes(project)`
-when project-wide enumeration is not available. Analyzers should degrade gracefully in those cases
-(skip cross-file scans and return no project-wide diagnostics/completions).
 
 ```rust
 use nova_framework::{AnalyzerRegistry, MemoryDatabase};

@@ -392,8 +392,10 @@ testdata/
 
 ## Dependencies
 
-**Upstream:** `nova-syntax`, `nova-types`, `nova-resolve`
-**Downstream:** `nova-ide` (virtual members appear in completion)
+At the crate layer:
+
+- **Upstream:** `nova-core`, `nova-hir` (`ClassData`), `nova-types`, `nova-vfs`, `nova-scheduler`
+- **Downstream:** `nova-framework-*` analyzers, `nova-resolve` (virtual members), `nova-ide`
 
 ---
 
