@@ -213,6 +213,12 @@ fn json_schema_requires_non_empty_extension_patterns() {
 
     assert_eq!(
         value
+            .pointer("/definitions/ExtensionsConfig/properties/allow/minItems")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        value
             .pointer("/definitions/ExtensionsConfig/properties/allow/items/minLength")
             .and_then(|v| v.as_u64()),
         Some(1)

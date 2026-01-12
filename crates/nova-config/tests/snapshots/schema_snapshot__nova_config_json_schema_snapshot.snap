@@ -986,7 +986,8 @@ expression: schema
           "items": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "minItems": 1
         },
         "deny": {
           "description": "Extensions with an id in this list will never be loaded.",
