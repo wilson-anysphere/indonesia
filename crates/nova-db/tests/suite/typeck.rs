@@ -13,15 +13,6 @@ use nova_resolve::ids::DefWithBodyId;
 use nova_types::{PrimitiveType, Severity, Type, TypeEnv, TypeStore};
 use tempfile::TempDir;
 
-#[path = "../typeck/diagnostics.rs"]
-mod diagnostics;
-
-#[path = "../typeck/demand.rs"]
-mod demand;
-
-#[path = "../typeck/resolve_method_call.rs"]
-mod resolve_method_call;
-
 fn base_project_config(root: PathBuf) -> ProjectConfig {
     ProjectConfig {
         workspace_root: root.clone(),

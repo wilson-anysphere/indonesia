@@ -859,32 +859,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
     }
 
-    fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
-        // Only produce diagnostics for annotation types when we have a base span to anchor them.
-        // Many callers (and tests) use `base_span = None` when parsing detached `TypeRef.text`
-        // strings, and expect type-use annotations to be ignored entirely in that mode.
-        if self.base_span.is_none() {
-            return;
-        }
-        if name_range.is_empty() {
-            return;
-        }
-        let text = self.text.get(name_range.clone()).unwrap_or("");
-        if text.is_empty() {
-            return;
-        }
-
-        let segments: Vec<String> = text
-            .split('.')
-            .filter(|seg| !seg.is_empty())
-            .map(|seg| seg.to_string())
-            .collect();
-        if segments.is_empty() {
-            return;
-        }
-
-        let per_segment_args = vec![Vec::new(); segments.len()];
-        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
+    fn resolve_annotation_name(&mut self, _name_range: Range<usize>) {
+        // Type-use annotations are currently ignored by Nova's type reference parsing + typeck.
+        // We still parse/skip their syntax to avoid confusing the core type grammar, but we don't
+        // resolve their types or emit diagnostics.
     }
 
     fn find_best_annotation_name_end(
