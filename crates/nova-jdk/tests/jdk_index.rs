@@ -50,6 +50,23 @@ fn builtin_index_resolves_minimal_fixture_types() {
     );
 
     assert_eq!(
+        index.resolve_static_member(&TypeName::new("java.lang.Math"), &Name::from("max")),
+        Some(StaticMemberId::new("java.lang.Math::max"))
+    );
+    assert_eq!(
+        index.resolve_static_member(&TypeName::new("java.lang.Math"), &Name::from("min")),
+        Some(StaticMemberId::new("java.lang.Math::min"))
+    );
+    assert_eq!(
+        index.resolve_static_member(&TypeName::new("java.lang.Math"), &Name::from("PI")),
+        Some(StaticMemberId::new("java.lang.Math::PI"))
+    );
+    assert_eq!(
+        index.resolve_static_member(&TypeName::new("java.lang.Math"), &Name::from("E")),
+        Some(StaticMemberId::new("java.lang.Math::E"))
+    );
+
+    assert_eq!(
         index.resolve_static_member(
             &TypeName::new("java.util.Collections"),
             &Name::from("emptyList")
