@@ -164,10 +164,12 @@ pub fn is_build_file(path: &Path) -> bool {
         "gradle-wrapper.properties" => {
             path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
         }
+        "gradle-wrapper.jar" => path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")),
         "mvnw" | "mvnw.cmd" => true,
         "maven-wrapper.properties" => {
             path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
         }
+        "maven-wrapper.jar" => path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.jar")),
         "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
         "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
         "jvm.config" => path.ends_with(Path::new(".mvn/jvm.config")),
@@ -208,11 +210,13 @@ mod tests {
             root.join("gradle")
                 .join("wrapper")
                 .join("gradle-wrapper.properties"),
+            root.join("gradle").join("wrapper").join("gradle-wrapper.jar"),
             root.join("mvnw"),
             root.join("mvnw.cmd"),
             root.join(".mvn")
                 .join("wrapper")
                 .join("maven-wrapper.properties"),
+            root.join(".mvn").join("wrapper").join("maven-wrapper.jar"),
             root.join(".mvn").join("extensions.xml"),
             root.join(".mvn").join("maven.config"),
             root.join(".mvn").join("jvm.config"),
@@ -255,6 +259,8 @@ mod tests {
             root.join(".gradle").join("dependencies.gradle"),
             root.join("build").join("dependencies.gradle"),
             root.join("target").join("dependencies.gradle"),
+            root.join("gradle-wrapper.jar"),
+            root.join(".mvn").join("maven-wrapper.jar"),
         ];
 
         for path in non_build_files {
