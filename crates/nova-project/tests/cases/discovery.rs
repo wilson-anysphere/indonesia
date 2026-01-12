@@ -277,7 +277,7 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
     assert!(jar_path_str.contains("/1.2.3/"), "jar path: {jar_path_str}");
     assert!(!jar_path_str.contains("${"), "jar path: {jar_path_str}");
 
-    // Creating the jar should not change the synthesized path.
+    // Creating the jar should make the expected path appear on the classpath.
     std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("mkdir jar parent");
     std::fs::write(&jar_path, b"").expect("write jar placeholder");
 

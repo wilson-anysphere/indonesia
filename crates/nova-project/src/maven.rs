@@ -188,8 +188,10 @@ pub(crate) fn load_maven_project(
                 dependency_entries.push(ClasspathEntry {
                     // Maven dependency artifacts are typically jar files, but some build systems
                     // (and test fixtures) can "explode" jars into directories (often still ending
-                    // with `.jar`). Treat existing directories as directories, but keep missing
-                    // artifacts as `Jar` entries so downstream systems can fetch/populate them.
+                    // with `.jar`). Treat existing directories as directories.
+                    //
+                    // Missing artifacts are omitted so downstream JPMS/classpath indexing doesn't
+                    // fail trying to open non-existent archives.
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {
@@ -505,8 +507,8 @@ pub(crate) fn load_maven_workspace_model(
                     continue;
                 }
                 classpath.push(ClasspathEntry {
-                    // Prefer treating dependencies as jars even when they haven't been downloaded
-                    // yet (synthesized paths), but support "exploded jar" directories on disk.
+                    // Support "exploded jar" directories on disk; omit missing artifacts so
+                    // downstream indexing doesn't fail trying to open them.
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {
