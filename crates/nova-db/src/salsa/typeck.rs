@@ -6623,9 +6623,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
 
         let q = QualifiedName::from_dotted(prefix);
-        let resolved = self
-            .resolver
-            .resolve_qualified_type_in_scope(self.scopes, self.scope_id, &q)?;
+        let resolved =
+            self.resolver
+                .resolve_qualified_type_in_scope(self.scopes, self.scope_id, &q)?;
         let id = loader.store.intern_class_id(resolved.as_str());
         let ty = Type::class(id, Vec::new());
         self.ensure_type_loaded(loader, &ty);

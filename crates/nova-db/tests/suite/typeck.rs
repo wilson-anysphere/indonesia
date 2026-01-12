@@ -3526,6 +3526,71 @@ fn cross_file_inherited_interface_method_call_resolves_via_extends() {
 }
 
 #[test]
+fn cross_file_inherited_field_access_resolves_via_extends() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let base_file = FileId::from_raw(1);
+    let derived_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        base_file,
+        "src/p/Base.java",
+        r#"package p; class Base { int x = 1; }"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        derived_file,
+        "src/p/Derived.java",
+        r#"package p; class Derived extends Base {}"#,
+    );
+    let src_use = r#"package p; class Use { int m() { return new Derived().x; } }"#;
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![base_file, derived_file, use_file]));
+
+    let offset = src_use
+        .find(".x")
+        .expect("snippet should contain `.x` field access")
+        + 1;
+
+    // `type_at_offset_display` is demand-driven and should not execute full-body type checking.
+    db.clear_query_stats();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+
+    let typeck_body_executions = db
+        .query_stats()
+        .by_query
+        .get("typeck_body")
+        .map(|s| s.executions)
+        .unwrap_or(0);
+    assert_eq!(
+        typeck_body_executions, 0,
+        "type_at_offset_display should not execute typeck_body"
+    );
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected inherited field access to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_static_method_call_resolves_on_workspace_class() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
@@ -3861,7 +3926,9 @@ class Use {
 
     let diags = db.type_diagnostics(use_file);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "unresolved-name" && d.message.contains("`X`")),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-name" && d.message.contains("`X`")),
         "expected static-imported interface field to resolve; got {diags:?}"
     );
 
@@ -3909,7 +3976,9 @@ class Use {
 
     let diags = db.type_diagnostics(use_file);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "unresolved-name" && d.message.contains("`A`")),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-name" && d.message.contains("`A`")),
         "expected static-imported enum constant to resolve; got {diags:?}"
     );
 

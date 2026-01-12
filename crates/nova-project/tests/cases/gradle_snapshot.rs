@@ -7,7 +7,8 @@ use nova_project::{
 };
 
 fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
-    let build_files = collect_gradle_build_files(workspace_root).expect("collect gradle build files");
+    let build_files =
+        collect_gradle_build_files(workspace_root).expect("collect gradle build files");
     BuildFileFingerprint::from_files(workspace_root, build_files)
         .expect("gradle fingerprint")
         .digest

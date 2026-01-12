@@ -795,7 +795,9 @@ mod tests {
         // observe `reload_project()` reloading configuration when the snapshot changes.
         let workspace_root = &cfg.workspace_root;
         let fingerprint = nova_build_model::collect_gradle_build_files(workspace_root)
-            .and_then(|files| nova_build_model::BuildFileFingerprint::from_files(workspace_root, files))
+            .and_then(|files| {
+                nova_build_model::BuildFileFingerprint::from_files(workspace_root, files)
+            })
             .expect("gradle build fingerprint")
             .digest;
 
