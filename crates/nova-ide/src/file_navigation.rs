@@ -458,7 +458,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
             .map(|(target_file, target_span)| (uri_for_file(db, target_file), target_span))
     };
 
-    let mut locations = if let Some(call) = parsed
+    let locations = if let Some(call) = parsed
         .calls
         .iter()
         .find(|call| nav_core::span_contains(call.method_span, offset))

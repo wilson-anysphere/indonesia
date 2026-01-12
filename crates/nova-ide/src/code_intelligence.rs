@@ -9840,12 +9840,11 @@ fn expected_type_for_completion(
         .filter(|c| c.open_paren < prefix_start && prefix_start <= c.close_paren)
         .max_by_key(|c| c.open_paren)?;
     let arg_index = call_argument_index(text, call.open_paren, prefix_start);
-    expected_type_for_call_argument(types, workspace_index, analysis, call, arg_index)
+    expected_type_for_call_argument(types, analysis, call, arg_index)
 }
 
 fn expected_type_for_call_argument(
     types: &mut TypeStore,
-    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
     analysis: &Analysis,
     call: &CallExpr,
     arg_index: usize,
@@ -10036,53 +10035,6 @@ fn parse_source_type_for_expected(
         .and_then(|idx| idx.unique_fqn_for_simple_name(trimmed))
         .unwrap_or(trimmed);
     parse_source_type(types, resolved)
-}
-
-fn infer_receiver_for_expected(
-    types: &mut TypeStore,
-    workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
-    analysis: &Analysis,
-    receiver: &str,
-) -> (Type, CallKind) {
-    if receiver.starts_with('"') {
-        return (
-            types
-                .class_id("java.lang.String")
-                .map(|id| Type::class(id, vec![]))
-                .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
-            CallKind::Instance,
-        );
-    }
-
-    if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
-        return (
-            parse_source_type_for_expected(types, workspace_index, &var.ty),
-            CallKind::Instance,
-        );
-    }
-    if let Some(param) = analysis
-        .methods
-        .iter()
-        .flat_map(|m| m.params.iter())
-        .find(|p| p.name == receiver)
-    {
-        return (
-            parse_source_type_for_expected(types, workspace_index, &param.ty),
-            CallKind::Instance,
-        );
-    }
-    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
-        return (
-            parse_source_type_for_expected(types, workspace_index, &field.ty),
-            CallKind::Instance,
-        );
-    }
-
-    // Allow `Foo.bar()` to treat `Foo` as a type reference.
-    (
-        parse_source_type_for_expected(types, workspace_index, receiver),
-        CallKind::Static,
-    )
 }
 
 fn sam_param_count(types: &TypeStore, ty: &Type) -> Option<usize> {
