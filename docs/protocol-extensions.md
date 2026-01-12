@@ -1084,7 +1084,11 @@ Field semantics:
 Notes:
 
 - Workspace semantic-search indexing is best-effort and is only started when semantic search is
-  enabled in the Nova config and a valid workspace root is known.
+  enabled in the Nova config (e.g. `ai.enabled=true`, `ai.features.semantic_search=true`) and a
+  valid workspace root is known.
+- This request is allowed while the server is in safe-mode (it is explicitly exempted from the
+  safe-mode guard).
+  - Note: indexing itself may be disabled while in safe-mode; the status endpoint is still available.
 
 ---
 
@@ -1449,44 +1453,6 @@ This request is guarded by `nova_lsp::hardening::guard_method()` and fails with 
 server is in safe-mode.
 
 ## Experimental / client-specific methods
-
-### `nova/semanticSearch/indexStatus`
-
-This is a lightweight “poll for background workspace indexing progress” endpoint for Nova’s
-semantic-search subsystem (used to supply related-code context for AI prompts).
-
-- **Kind:** request
-- **Stability:** experimental
-- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
-
-#### Request params
-
-Currently unused; clients should send an empty object:
-
-```json
-{}
-```
-
-#### Response
-
-```json
-{
-  "currentRunId": 1,
-  "completedRunId": 1,
-  "done": true,
-  "indexedFiles": 42,
-  "indexedBytes": 12345
-}
-```
-
-Notes:
-
-- Indexing only runs when semantic search is enabled (`ai.enabled=true` and
-  `ai.features.semantic_search=true`) and the server has a workspace root (`initialize.rootUri`).
-- `done=true` means the most recent indexing run has completed.
-- `currentRunId=0` means workspace indexing has not started (for example: semantic search disabled,
-  missing workspace root, AI runtime not available, or the server is in safe-mode).
-
 ---
 
 ### `nova/completion/more`
@@ -1531,42 +1497,6 @@ VS Code extension expects:
 
 - Clients should treat `-32601` (method not found) **or** `-32602` (“unknown … method”) as “AI
   completions not supported”.
-
----
-
-### `nova/semanticSearch/indexStatus`
-
-Returns the status of the background semantic-search workspace indexing task.
-
-- **Kind:** request
-- **Stability:** experimental
-- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
-
-#### Request params
-
-No params are required; clients should send `{}` or omit params.
-
-#### Response
-
-```json
-{
-  "currentRunId": 1,
-  "completedRunId": 1,
-  "done": true,
-  "indexedFiles": 123,
-  "indexedBytes": 456789
-}
-```
-
-Notes:
-
-- `done` is `true` once `currentRunId != 0` and `currentRunId == completedRunId`.
-- The indexing run is **best-effort** and may be disabled when AI is not configured.
-
-#### Safe-mode
-
-This request is allowed while the server is in safe-mode (it is explicitly exempted from the
-safe-mode guard).
 
 ---
 

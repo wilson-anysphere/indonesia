@@ -1,3 +1,17 @@
+//! Watch-root management for workspace file watching.
+//!
+//! `nova-workspace` builds file watching on `nova_vfs::FileWatcher`, which exposes a minimal API:
+//! callers add/remove roots to watch (`watch_root` / `unwatch_root`) and then consume events from the
+//! watcher's receiver.
+//!
+//! In Nova, the set of roots that should be watched can change over time:
+//!
+//! - Project reloads can discover new `source_roots` / `generated_source_roots`.
+//! - Generated roots may not exist yet when watching starts (e.g. build outputs).
+//!
+//! [`WatchRootManager`] reconciles the *desired* set of roots with the currently watched set,
+//! handling adds/removes deterministically and retrying roots that are temporarily missing.
+
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};

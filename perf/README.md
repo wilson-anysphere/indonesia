@@ -13,7 +13,6 @@ cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format
 cargo bench -p nova-refactor --bench refactor
 cargo bench -p nova-classpath --bench index
-cargo bench -p nova-ide --bench completion
 ```
 
 Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
@@ -46,7 +45,6 @@ requests and on pushes to `main`:
 - `nova-format/format`: full-file formatting and minimal edit diffing.
 - `nova-refactor/refactor`: `organize_imports` + semantic `rename`.
 - `nova-classpath/index`: JAR/JMOD indexing over committed testdata fixtures.
-- `nova-ide/completion`: Java completion latency (member/import/type/postfix).
 
 ## Capturing a run
 

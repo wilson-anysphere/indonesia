@@ -24,6 +24,17 @@ events (`from` then `to`) and may reorder or coalesce them. `nova-vfs` is respon
 these into a single logical **Moved** operation when possible; when pairing fails, consumers may
 observe a fallback representation (e.g. delete+create, or just modified).
 
+## Dynamic watch roots (workspace reloads)
+
+In `nova-workspace`, the set of watch roots can change after a project reload. For example:
+
+- Maven/Gradle discovery may refine `source_roots`.
+- Generated source roots may appear/disappear depending on build configuration and APT output.
+
+To handle this, the workspace reconciles its desired roots against the active watcher and updates
+them dynamically. Roots that do not exist yet are retried later (instead of failing permanently),
+which keeps “generated sources not created yet” from breaking file watching.
+
 ## Feature flags
 
 `nova-vfs` keeps OS watcher dependencies behind feature flags:
