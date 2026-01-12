@@ -326,7 +326,9 @@ impl CtSymReleaseIndex {
             add_string(&mut bytes, v);
         }
 
-        // Cached stubs / misses.
+        // Cached stubs / misses. `by_internal` and `by_binary` share the same
+        // `Arc<JdkClassStub>` allocations, so avoid double-counting stubs by tracking pointer
+        // identity.
         let mut seen_stubs: HashSet<*const JdkClassStub> = HashSet::new();
         let mut add_stub = |bytes: &mut u64, stub: &Arc<JdkClassStub>| {
             let ptr = Arc::as_ptr(stub);
