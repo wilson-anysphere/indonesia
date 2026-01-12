@@ -149,6 +149,11 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 --features refactor refactor_smoke -- -max_total_time=30 -max_len=262144
         timeout-minutes: 30
 
+      - name: nova-dap/read_dap_message
+        working-directory: crates/nova-dap
+        run: cargo +nightly fuzz run --codegen-units 16 read_dap_message -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: nova-jdwp/decode_packet_bytes
         working-directory: crates/nova-jdwp
         run: cargo +nightly fuzz run --codegen-units 16 decode_packet_bytes -- -max_total_time=30 -max_len=262144
@@ -164,11 +169,6 @@ jobs:
             echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
             exit 1
           fi
-
-      - name: nova-dap/read_dap_message
-        working-directory: crates/nova-dap
-        run: cargo +nightly fuzz run --codegen-units 16 read_dap_message -- -max_total_time=30 -max_len=262144
-        timeout-minutes: 20
 
       - name: Upload fuzz artifacts
         if: failure()
