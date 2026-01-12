@@ -183,6 +183,8 @@ impl DebugConfiguration {
 
     /// Convert this configuration into DAP `launch` arguments for `nova-dap`, overriding
     /// the JDWP host/port and attach timeout.
+    ///
+    /// `host` may be an IP address or hostname (for example `localhost`).
     pub fn as_nova_dap_launch_arguments_with_jdwp(
         &self,
         host: impl Into<String>,

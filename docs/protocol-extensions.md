@@ -976,7 +976,7 @@ JSON array of VS Code-style debug configurations:
 {
   "projectRoot": "/absolute/path/to/workspace",
   "changedFiles": ["src/main/java/com/example/Foo.java"],
-  "host": "127.0.0.1",
+  "host": "localhost",
   "port": 5005
 }
 ```
@@ -984,7 +984,7 @@ JSON array of VS Code-style debug configurations:
 Notes:
 
 - `changedFiles` entries may be absolute or relative paths; relative paths are resolved against `projectRoot`.
-- `host` is optional; default is `127.0.0.1`.
+- `host` is optional; default is `127.0.0.1`. May be an IP address *or* hostname (for example `localhost`).
 - A single `.java` file can compile to **multiple JVM classes** (e.g. the primary class plus nested / anonymous classes like `Foo$Inner` or `Foo$1`). For each `changedFiles` entry, the server may redefine **multiple** classes and then **aggregate** the outcome into a single per-file result entry.
 - Implementations may choose to **skip unloaded classes** (recommended): if a compiled class is not currently loaded in the target VM, it is ignored/skipped rather than treated as an error. In that case, `status: "success"` still means “all attempted (loaded) class redefinitions succeeded”.
 
