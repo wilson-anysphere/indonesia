@@ -1091,6 +1091,18 @@ mod notify_impl {
             }
             assert!(overflowed.load(Ordering::Acquire));
 
+            // Ensure the drain loop had a chance to observe the full downstream queue before we
+            // start receiving messages. Without this, the consumer may read the first `Changes`
+            // message quickly enough that the second send succeeds, making the test flaky.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !overflowed.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() <= deadline,
+                    "expected watcher to mark downstream queue as overflowed"
+                );
+                std::thread::yield_now();
+            }
+
             let msg = events_rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("expected watcher message")
