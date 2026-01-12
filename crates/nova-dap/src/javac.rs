@@ -271,11 +271,17 @@ pub(crate) async fn compile_java_to_dir(
     output_dir: &Path,
 ) -> std::result::Result<Vec<CompiledClass>, CompileError> {
     let mut cmd = Command::new(&javac.javac);
-    // Keep memory usage low so hot-swap compilation remains reliable under the
-    // `cargo_agent` RLIMIT_AS cap used in CI.
+    // Keep memory and thread usage low so hot-swap compilation remains reliable under the
+    // `cargo_agent` RLIMIT_AS cap (and low per-process thread limits) used in CI.
     cmd.arg("-J-Xms16m");
     cmd.arg("-J-Xmx256m");
     cmd.arg("-J-XX:CompressedClassSpaceSize=64m");
+    // Some CI environments provide many CPUs but impose a low thread limit. The JVM sizes its
+    // internal thread pools (GC, JIT compiler, etc.) based on CPU count, which can cause `javac` to
+    // fail at startup with `pthread_create failed (EAGAIN)` even for tiny sources. Prefer a
+    // conservative single-threaded GC and a small compiler thread pool.
+    cmd.arg("-J-XX:+UseSerialGC");
+    cmd.arg("-J-XX:CICompilerCount=2");
     cmd.arg("-g");
     cmd.arg("-encoding");
     cmd.arg("UTF-8");

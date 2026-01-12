@@ -2984,11 +2984,11 @@ impl Debugger {
         let mut inspector = Inspector::new(jdwp.clone());
 
         fn unsafe_existing_stream_message(stream_expr: &str) -> String {
-            // This mirrors `nova-stream-debug`'s safety guard message. Sampling a stream requires
-            // iterating it, which consumes already-instantiated Stream values.
+            // Safety guard: sampling a stream requires iterating it, which consumes
+            // already-instantiated `Stream` values.
             format!(
                 "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
-Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
+Stream debug needs to sample elements by iterating the stream, which would *consume* that Stream value.\n\
 Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
             )
         }
