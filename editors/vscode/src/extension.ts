@@ -6,6 +6,7 @@ import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languag
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { registerNovaDebugAdapter } from './debugAdapter';
 import { registerNovaDebugConfigurations } from './debugConfigurations';
+import { registerFrameworkDashboardCommands } from './frameworkDashboard';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaTestDebugRunProfile } from './testDebug';
@@ -236,6 +237,7 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaDebugConfigurations(context, sendNovaRequest);
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
+  registerFrameworkDashboardCommands(context);
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');

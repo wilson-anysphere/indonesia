@@ -32,6 +32,11 @@
     "onCommand:nova.runTest",
     "onCommand:nova.addDebugConfiguration",
     "onCommand:nova.hotSwapChangedFiles",
+    "onCommand:nova.frameworks.copyEndpointPath",
+    "onCommand:nova.frameworks.copyEndpointMethodAndPath",
+    "onCommand:nova.frameworks.copyBeanId",
+    "onCommand:nova.frameworks.copyBeanType",
+    "onCommand:nova.frameworks.revealInExplorer",
     "onDebug"
   ],
   "main": "./out/extension.js",
@@ -96,8 +101,62 @@
       {
         "command": "nova.hotSwapChangedFiles",
         "title": "Nova: Hot Swap Changed Files"
+      },
+      {
+        "command": "nova.frameworks.copyEndpointPath",
+        "title": "Nova: Copy Endpoint Path"
+      },
+      {
+        "command": "nova.frameworks.copyEndpointMethodAndPath",
+        "title": "Nova: Copy Endpoint Method + Path"
+      },
+      {
+        "command": "nova.frameworks.copyBeanId",
+        "title": "Nova: Copy Bean Id"
+      },
+      {
+        "command": "nova.frameworks.copyBeanType",
+        "title": "Nova: Copy Bean Type"
+      },
+      {
+        "command": "nova.frameworks.revealInExplorer",
+        "title": "Nova: Reveal In Explorer"
       }
     ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "nova.frameworks.copyEndpointPath",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkEndpoint",
+          "group": "clipboard@1"
+        },
+        {
+          "command": "nova.frameworks.copyEndpointMethodAndPath",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkEndpoint",
+          "group": "clipboard@2"
+        },
+        {
+          "command": "nova.frameworks.revealInExplorer",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkEndpoint",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nova.frameworks.copyBeanId",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkBean",
+          "group": "clipboard@1"
+        },
+        {
+          "command": "nova.frameworks.copyBeanType",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkBean",
+          "group": "clipboard@2"
+        },
+        {
+          "command": "nova.frameworks.revealInExplorer",
+          "when": "view == novaFrameworks && viewItem == novaFrameworkBean",
+          "group": "navigation@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Nova",
       "properties": {
