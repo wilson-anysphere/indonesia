@@ -97,6 +97,34 @@ class C {
     assert_eq!(got, expected, "expected diagnostics to be pre-sorted");
 }
 
+#[test]
+fn throw_requires_throwable() {
+    let src = r#"
+class C { void m(){ throw "x"; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "throw-non-throwable"),
+        "expected throw-non-throwable diagnostic; got: {diags:?}"
+    );
+}
+
+#[test]
+fn catch_param_requires_throwable() {
+    let src = r#"
+class C { void m(){ try {} catch (String e) {} } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "catch-non-throwable"),
+        "expected catch-non-throwable diagnostic; got: {diags:?}"
+    );
+}
+
 fn diagnostic_cmp(a: &Diagnostic, b: &Diagnostic) -> Ordering {
     let span_cmp = match (a.span, b.span) {
         (Some(a_span), Some(b_span)) => a_span

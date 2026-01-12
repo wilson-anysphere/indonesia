@@ -15,10 +15,10 @@ use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
-    cast_conversion, format_resolved_method, format_type, CallKind, ClassDef, ClassId, ClassKind,
-    ConstValue, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason, MethodDef,
-    MethodNotFound, MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext, Type, TypeEnv,
-    TypeParamDef, TypeProvider, TypeStore, TypeVarId, WildcardBound,
+    cast_conversion, format_resolved_method, format_type, is_subtype, CallKind, ClassDef, ClassId,
+    ClassKind, ConstValue, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
+    MethodDef, MethodNotFound, MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext,
+    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId, WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -1543,13 +1543,38 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 self.check_stmt(loader, *body, expected_return);
                 for catch in catches {
                     let data = &self.body.locals[catch.param];
-                    if data.ty_text.trim() != "var" {
+                    let catch_ty = if data.ty_text.trim() != "var" {
                         let catch_ty = self.resolve_source_type(
                             loader,
                             data.ty_text.as_str(),
                             Some(data.ty_range),
                         );
-                        self.local_types[catch.param.idx()] = catch_ty;
+                        self.local_types[catch.param.idx()] = catch_ty.clone();
+                        catch_ty
+                    } else {
+                        self.local_types[catch.param.idx()].clone()
+                    };
+
+                    if !catch_ty.is_errorish() {
+                        let Some(throwable_id) = loader.store.lookup_class("java.lang.Throwable")
+                        else {
+                            // Minimal JDK may not have Throwable (best-effort recovery).
+                            self.check_stmt(loader, catch.body, expected_return);
+                            continue;
+                        };
+                        let throwable_ty = Type::class(throwable_id, vec![]);
+
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        if !is_subtype(env_ro, &catch_ty, &throwable_ty) {
+                            let found = format_type(env_ro, &catch_ty);
+                            self.diagnostics.push(Diagnostic::error(
+                                "catch-non-throwable",
+                                format!(
+                                    "catch parameter type must be a subtype of Throwable; found {found}"
+                                ),
+                                Some(data.ty_range),
+                            ));
+                        }
                     }
                     self.check_stmt(loader, catch.body, expected_return);
                 }
@@ -1558,7 +1583,28 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirStmt::Throw { expr, .. } => {
-                let _ = self.infer_expr(loader, *expr);
+                let expr_ty = self.infer_expr(loader, *expr).ty;
+
+                if expr_ty.is_errorish() {
+                    return;
+                }
+
+                let Some(throwable_id) = loader.store.lookup_class("java.lang.Throwable") else {
+                    // Best-effort recovery: if the minimal environment does not define Throwable,
+                    // we can't validate the throw statement.
+                    return;
+                };
+                let throwable_ty = Type::class(throwable_id, vec![]);
+
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                if assignment_conversion(env_ro, &expr_ty, &throwable_ty).is_none() {
+                    let found = format_type(env_ro, &expr_ty);
+                    self.diagnostics.push(Diagnostic::error(
+                        "throw-non-throwable",
+                        format!("cannot throw expression of type {found}"),
+                        Some(self.body.exprs[*expr].range()),
+                    ));
+                }
             }
             HirStmt::Break { .. } | HirStmt::Continue { .. } => {}
             HirStmt::Empty { .. } => {}

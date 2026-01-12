@@ -139,6 +139,7 @@ impl JdkIndex {
 
         // java.lang
         this.add_type("java.lang", "Object");
+        this.add_type("java.lang", "Throwable");
         this.add_type("java.lang", "Class");
         this.add_type("java.lang", "Iterable");
         this.add_type("java.lang", "String");

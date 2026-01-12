@@ -673,11 +673,13 @@ impl TypeStore {
 
         // java.lang
         let object = store.intern_class_id("java.lang.Object");
+        let throwable = store.intern_class_id("java.lang.Throwable");
         let string = store.intern_class_id("java.lang.String");
         let integer = store.intern_class_id("java.lang.Integer");
         let cloneable = store.intern_class_id("java.lang.Cloneable");
         let serializable = store.intern_class_id("java.io.Serializable");
 
+        let object_ty = Type::class(object, vec![]);
         store.define_class(
             object,
             ClassDef {
@@ -692,12 +694,25 @@ impl TypeStore {
             },
         );
         store.define_class(
+            throwable,
+            ClassDef {
+                name: "java.lang.Throwable".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
             string,
             ClassDef {
                 name: "java.lang.String".to_string(),
                 kind: ClassKind::Class,
                 type_params: vec![],
-                super_class: Some(Type::class(object, vec![])),
+                super_class: Some(object_ty.clone()),
                 interfaces: vec![],
                 fields: vec![],
                 constructors: vec![],
