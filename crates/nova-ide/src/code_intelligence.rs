@@ -14421,4 +14421,13 @@ class Foo {
             .expect("expected a string literal token");
         assert_eq!(lit.span.end, text.len());
     }
+
+    #[test]
+    fn method_reference_double_colon_offset_does_not_underflow() {
+        assert_eq!(method_reference_double_colon_offset("import", 0), None);
+        assert_eq!(method_reference_double_colon_offset("package", 1), None);
+
+        // Basic happy-path: `Foo::` ends with a method reference delimiter.
+        assert_eq!(method_reference_double_colon_offset("Foo::", 5), Some(3));
+    }
 }
