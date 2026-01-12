@@ -2254,6 +2254,14 @@ pub(crate) fn core_completions(
         return Vec::new();
     }
 
+    let (prefix_start, prefix) = identifier_prefix(text, offset);
+
+    // Prefer `import static Foo.<member>` completions over generic import path completions so we
+    // surface static members (e.g. `max`) instead of only offering `*`.
+    if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
+        return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
     // Import clause completions should run before all other Java completions (member/postfix/general)
     // because the syntax overlaps (`import java.util.<cursor>` would otherwise be treated as a dot
     // completion on the identifier `java`).
@@ -2263,7 +2271,6 @@ pub(crate) fn core_completions(
             return decorate_completions(&text_index, ctx.replace_start, offset, items);
         }
     }
-    let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if let Some(ctx) = package_decl_completion_context(text, offset) {
         let items = package_decl_completions(db, file, &ctx);
@@ -2272,15 +2279,10 @@ pub(crate) fn core_completions(
         }
     }
 
-    if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
-        return decorate_completions(&text_index, prefix_start, offset, items);
-    }
-
     // Java annotation element (attribute) completions inside `@Anno(...)`.
     if let Some(items) = annotation_attribute_completions(db, text, offset, prefix_start, &prefix) {
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
-
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
             &text_index,
@@ -2413,11 +2415,18 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         .position_to_offset(position)
         .unwrap_or_else(|| text.len())
         .min(text.len());
+    let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
+        // Prefer `import static Foo.<member>` completions over generic import completions so we
+        // don't hide member suggestions when the cursor is positioned after the final `.`.
+        if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
+            return decorate_completions(&text_index, prefix_start, offset, items);
+        }
+
         if let Some(ctx) = import_context(text, offset) {
             let items = import_completions(&text_index, offset, &ctx);
             if !items.is_empty() {
@@ -2432,8 +2441,6 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             }
         }
     }
-
-    let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) {
@@ -2639,10 +2646,6 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
-    }
-
-    if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
-        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     if is_new_expression_type_completion_context(text, prefix_start) {
