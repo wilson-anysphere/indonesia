@@ -1,5 +1,5 @@
 [alias]
-xtask = "run -p xtask --"
+xtask = "run --locked -p xtask --"
 
 # Some environments configure a global rustc wrapper (commonly `sccache`) via user Cargo config.
 # In sandboxed/CI-like execution this can be flaky (e.g. a broken sccache server causes every
