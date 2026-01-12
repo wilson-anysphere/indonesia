@@ -380,18 +380,46 @@ pub(crate) fn load_maven_workspace_model(
 
         let dependencies = effective.dependencies.clone();
 
-        // Add workspace module outputs for direct workspace dependencies.
-        for dep in &dependencies {
-            if let Some(output) = workspace_module_main_output_dir(dep, &workspace_modules) {
-                classpath.push(ClasspathEntry {
-                    kind: ClasspathEntryKind::Directory,
-                    path: output,
-                });
+        // Maven dependencies are transitive by default. When a module depends on another
+        // workspace module, we want to include both:
+        // - the dependency module's output directory (reactor build output), and
+        // - the dependency module's external dependencies on the consuming module's classpath.
+        //
+        // This traversal expands workspace module dependencies into an "effective root"
+        // dependency list that includes external deps contributed by workspace modules.
+        let mut expanded_dependencies = dependencies.clone();
+        let mut visited_workspace_modules: HashSet<(String, String)> = HashSet::new();
+        let mut queue: VecDeque<Dependency> = dependencies.iter().cloned().collect();
+
+        while let Some(dep) = queue.pop_front() {
+            let key = (dep.group_id.clone(), dep.artifact_id.clone());
+            let Some(info) = workspace_modules.get(&key) else {
+                continue;
+            };
+            if !versions_compatible(dep.version.as_deref(), info.version.as_deref()) {
+                continue;
+            }
+            if !visited_workspace_modules.insert(key) {
+                continue;
+            }
+
+            classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: info.root.join("target/classes"),
+            });
+
+            // Best-effort: if the dependency module POM couldn't be parsed (or had no
+            // dependencies), this list will be empty and we just won't expand further.
+            for child in &info.dependencies {
+                expanded_dependencies.push(child.clone());
+                queue.push_back(child.clone());
             }
         }
 
-        // Resolve direct + transitive external dependencies from local Maven repo.
-        let resolved_deps = resolver.resolve_dependency_closure(&dependencies);
+        // Resolve direct + transitive external dependencies from local Maven repo, using the
+        // expanded dependency list so workspace module dependencies contribute their external
+        // dependency closure.
+        let resolved_deps = resolver.resolve_dependency_closure(&expanded_dependencies);
         for dep in &resolved_deps {
             if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
                 continue;
@@ -1107,6 +1135,7 @@ impl MavenResolver {
 struct WorkspaceModuleInfo {
     root: PathBuf,
     version: Option<String>,
+    dependencies: Vec<Dependency>,
 }
 
 type WorkspaceModuleIndex = HashMap<(String, String), WorkspaceModuleInfo>;
@@ -1133,6 +1162,7 @@ fn build_workspace_module_index(
             WorkspaceModuleInfo {
                 root: module.root.clone(),
                 version: module.effective.version.clone(),
+                dependencies: module.effective.dependencies.clone(),
             },
         );
     }
@@ -1143,14 +1173,6 @@ fn is_workspace_module_dependency(dep: &Dependency, modules: &WorkspaceModuleInd
     modules
         .get(&(dep.group_id.clone(), dep.artifact_id.clone()))
         .is_some_and(|m| versions_compatible(dep.version.as_deref(), m.version.as_deref()))
-}
-
-fn workspace_module_main_output_dir(dep: &Dependency, modules: &WorkspaceModuleIndex) -> Option<PathBuf> {
-    let info = modules.get(&(dep.group_id.clone(), dep.artifact_id.clone()))?;
-    if !versions_compatible(dep.version.as_deref(), info.version.as_deref()) {
-        return None;
-    }
-    Some(info.root.join("target/classes"))
 }
 
 fn versions_compatible(requested: Option<&str>, available: Option<&str>) -> bool {
