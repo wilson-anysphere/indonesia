@@ -327,9 +327,9 @@ impl CtSymReleaseIndex {
         }
 
         // Cached stubs / misses.
-        let mut seen_stubs: HashSet<usize> = HashSet::new();
+        let mut seen_stubs: HashSet<*const JdkClassStub> = HashSet::new();
         let mut add_stub = |bytes: &mut u64, stub: &Arc<JdkClassStub>| {
-            let ptr = Arc::as_ptr(stub) as usize;
+            let ptr = Arc::as_ptr(stub);
             if seen_stubs.insert(ptr) {
                 *bytes = bytes.saturating_add(class_stub_bytes(stub.as_ref()));
             }
