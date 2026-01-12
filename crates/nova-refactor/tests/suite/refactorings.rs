@@ -2273,10 +2273,8 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
     // `"x"` literal (which would allow the refactoring to proceed).
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
-  int foo(String s) { return 1; }
-
   void m() {
-    System.out.println(/*start*/1 + foo("x")/*end*/);
+    System.out.println(/*start*/1 + ("x" == "y" ? 1 : 2)/*end*/);
   }
 }
 "#;
@@ -2298,8 +2296,8 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
 
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
     assert!(
-        after.contains("tmp = 1 + foo(\"x\");"),
-        "expected extraction of `1 + foo(\\\"x\\\")`: {after}"
+        after.contains("int tmp = 1 + (\"x\" == \"y\" ? 1 : 2);"),
+        "expected extraction of `1 + (\\\"x\\\" == \\\"y\\\" ? 1 : 2)`: {after}"
     );
     assert!(
         !after.contains("String tmp"),

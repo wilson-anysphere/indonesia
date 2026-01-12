@@ -1413,9 +1413,16 @@ pub fn extract_variable(
     // Extracting a side-effectful expression into a new statement can change evaluation order or
     // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
     //
+    // We reject such expressions when extracting with `var`, because we cannot reliably preserve
+    // evaluation semantics in all contexts without a full control-flow analysis.
+    //
+    // When the user opts into an explicit type (`use_var=false`), we still allow extraction as a
+    // best-effort fallback provided the earlier execution-boundary + evaluation-order guards have
+    // accepted the selection.
+    //
     // Note: the expression-statement special-case above rewrites the statement in place, so it
     // preserves statement-level evaluation order and is therefore allowed.
-    if has_side_effects(expr.syntax()) {
+    if params.use_var && has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractSideEffects);
     }
 
