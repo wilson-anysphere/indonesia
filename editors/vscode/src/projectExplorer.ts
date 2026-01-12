@@ -1609,7 +1609,21 @@ function getWorkspaceFolderFromCommandArg(arg: unknown): vscode.WorkspaceFolder 
     return asFolder;
   }
 
+  if (arg instanceof vscode.Uri) {
+    return vscode.workspace.getWorkspaceFolder(arg) ?? undefined;
+  }
+
   if (arg && typeof arg === 'object') {
+    const uri = (arg as { uri?: unknown }).uri;
+    if (uri instanceof vscode.Uri) {
+      return vscode.workspace.getWorkspaceFolder(uri) ?? undefined;
+    }
+
+    const resourceUri = (arg as { resourceUri?: unknown }).resourceUri;
+    if (resourceUri instanceof vscode.Uri) {
+      return vscode.workspace.getWorkspaceFolder(resourceUri) ?? undefined;
+    }
+
     const workspace = (arg as { workspace?: unknown }).workspace;
     const asNested = asWorkspaceFolder(workspace);
     if (asNested) {
