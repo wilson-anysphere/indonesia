@@ -153,6 +153,11 @@ pub struct SearchStats {
     pub candidates_considered: usize,
 }
 
+enum CandidateSource<'a> {
+    Ids(&'a [SymbolId]),
+    FullScan(usize),
+}
+
 #[derive(Debug, Clone)]
 pub struct SymbolSearchIndex {
     symbols: Vec<SymbolEntry>,
@@ -257,65 +262,8 @@ impl SymbolSearchIndex {
 
         TRIGRAM_SCRATCH.with(|scratch| {
             let mut trigram_scratch = scratch.borrow_mut();
-
-            enum CandidateSource<'a> {
-                Ids(&'a [SymbolId]),
-                FullScan(usize),
-            }
-
-            let (strategy, candidates_considered, candidates): (
-                CandidateStrategy,
-                usize,
-                CandidateSource<'_>,
-            ) = if q_bytes.len() < 3 {
-                let key = q_bytes[0].to_ascii_lowercase();
-                let bucket = &self.prefix1[key as usize];
-                if !bucket.is_empty() {
-                    (
-                        CandidateStrategy::Prefix,
-                        bucket.len(),
-                        CandidateSource::Ids(bucket),
-                    )
-                } else {
-                    let scan_limit = 50_000usize.min(self.symbols.len());
-                    (
-                        CandidateStrategy::FullScan,
-                        scan_limit,
-                        CandidateSource::FullScan(scan_limit),
-                    )
-                }
-            } else {
-                let trigram_candidates = self
-                    .trigram
-                    .candidates_with_scratch(query, &mut trigram_scratch);
-                if trigram_candidates.is_empty() {
-                    // For longer queries, a missing trigram intersection likely means no
-                    // substring match exists. Fall back to a (bounded) scan to still
-                    // support acronym-style queries.
-                    let key = q_bytes[0].to_ascii_lowercase();
-                    let bucket = &self.prefix1[key as usize];
-                    if !bucket.is_empty() {
-                        (
-                            CandidateStrategy::Prefix,
-                            bucket.len(),
-                            CandidateSource::Ids(bucket),
-                        )
-                    } else {
-                        let scan_limit = 50_000usize.min(self.symbols.len());
-                        (
-                            CandidateStrategy::FullScan,
-                            scan_limit,
-                            CandidateSource::FullScan(scan_limit),
-                        )
-                    }
-                } else {
-                    (
-                        CandidateStrategy::Trigram,
-                        trigram_candidates.len(),
-                        CandidateSource::Ids(trigram_candidates),
-                    )
-                }
-            };
+            let (strategy, candidates_considered, candidates) =
+                self.candidate_source(query, q_bytes, &mut trigram_scratch);
 
             if limit == 0 {
                 return (
@@ -443,6 +391,60 @@ impl SymbolSearchIndex {
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         self.search_with_stats(query, limit).0
+    }
+
+    fn candidate_source<'a>(
+        &'a self,
+        query: &str,
+        q_bytes: &[u8],
+        trigram_scratch: &'a mut TrigramCandidateScratch,
+    ) -> (CandidateStrategy, usize, CandidateSource<'a>) {
+        debug_assert!(
+            !q_bytes.is_empty(),
+            "candidate_source should not be called for empty queries"
+        );
+
+        if q_bytes.len() < 3 {
+            let key = q_bytes[0].to_ascii_lowercase();
+            let bucket = &self.prefix1[key as usize];
+            if !bucket.is_empty() {
+                (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+            } else {
+                let scan_limit = 50_000usize.min(self.symbols.len());
+                (
+                    CandidateStrategy::FullScan,
+                    scan_limit,
+                    CandidateSource::FullScan(scan_limit),
+                )
+            }
+        } else {
+            let trigram_candidates = self
+                .trigram
+                .candidates_with_scratch(query, trigram_scratch);
+            if trigram_candidates.is_empty() {
+                // For longer queries, a missing trigram intersection likely means no
+                // substring match exists. Fall back to a (bounded) scan to still
+                // support acronym-style queries.
+                let key = q_bytes[0].to_ascii_lowercase();
+                let bucket = &self.prefix1[key as usize];
+                if !bucket.is_empty() {
+                    (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                } else {
+                    let scan_limit = 50_000usize.min(self.symbols.len());
+                    (
+                        CandidateStrategy::FullScan,
+                        scan_limit,
+                        CandidateSource::FullScan(scan_limit),
+                    )
+                }
+            } else {
+                (
+                    CandidateStrategy::Trigram,
+                    trigram_candidates.len(),
+                    CandidateSource::Ids(trigram_candidates),
+                )
+            }
+        }
     }
 
     #[inline]
@@ -755,63 +757,9 @@ mod tests {
                 },
             );
         }
-
-        enum CandidateSource<'a> {
-            Ids(&'a [SymbolId]),
-            FullScan(usize),
-        }
-
         let mut trigram_scratch = TrigramCandidateScratch::default();
-        let (strategy, candidates_considered, candidates): (
-            CandidateStrategy,
-            usize,
-            CandidateSource<'_>,
-        ) = if q_bytes.len() < 3 {
-            let key = q_bytes[0].to_ascii_lowercase();
-            let bucket = &index.prefix1[key as usize];
-            if !bucket.is_empty() {
-                (
-                    CandidateStrategy::Prefix,
-                    bucket.len(),
-                    CandidateSource::Ids(bucket),
-                )
-            } else {
-                let scan_limit = 50_000usize.min(index.symbols.len());
-                (
-                    CandidateStrategy::FullScan,
-                    scan_limit,
-                    CandidateSource::FullScan(scan_limit),
-                )
-            }
-        } else {
-            let trigram_candidates = index
-                .trigram
-                .candidates_with_scratch(query, &mut trigram_scratch);
-            if trigram_candidates.is_empty() {
-                let key = q_bytes[0].to_ascii_lowercase();
-                let bucket = &index.prefix1[key as usize];
-                if !bucket.is_empty() {
-                    (
-                        CandidateStrategy::Prefix,
-                        bucket.len(),
-                        CandidateSource::Ids(bucket),
-                    )
-                } else {
-                    let scan_limit = 50_000usize.min(index.symbols.len());
-                    (
-                        CandidateStrategy::FullScan,
-                        scan_limit,
-                        CandidateSource::FullScan(scan_limit),
-                    )
-                }
-            } else {
-                (
-                    CandidateStrategy::Trigram,
-                    trigram_candidates.len(),
-                    CandidateSource::Ids(trigram_candidates),
-                )
-            }
-        };
+        let (strategy, candidates_considered, candidates) =
+            index.candidate_source(query, q_bytes, &mut trigram_scratch);
 
         if limit == 0 {
             return (
