@@ -79,7 +79,7 @@ The `nova` CLI complements the LSP by providing scriptable entry points for:
 
 ```bash
 # from this repo
-cargo run -p nova-cli -- --help
+cargo run --locked -p nova-cli -- --help
 ```
 
 ### Commands
@@ -149,7 +149,7 @@ GitHub Actions example:
 ```yaml
 - name: Build Nova cache package
   run: |
-    cargo run -p nova-cli -- cache pack . --out nova-cache.tar.zst
+    cargo run --locked -p nova-cli -- cache pack . --out nova-cache.tar.zst
 
 - name: Upload Nova cache package
   uses: actions/upload-artifact@v4
@@ -186,7 +186,7 @@ Minimal GitHub Actions example:
 
 ```yaml
 - name: Nova diagnostics (SARIF)
-  run: cargo run -p nova-cli -- diagnostics . --sarif-out nova.sarif
+  run: cargo run --locked -p nova-cli -- diagnostics . --sarif-out nova.sarif
 
 - name: Upload SARIF
   uses: github/codeql-action/upload-sarif@v3
@@ -234,8 +234,8 @@ RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
 NOVA_REAL_PROJECT=guava ./scripts/run-real-project-tests.sh
 
 # (Advanced) Run the test binaries directly (still using the agent wrapper):
-bash scripts/cargo_agent.sh test -p nova-project --test harness -- --ignored real_projects::
-bash scripts/cargo_agent.sh test -p nova-cli --test harness -- --ignored suite::real_projects::
+bash scripts/cargo_agent.sh test --locked -p nova-project --test harness -- --ignored real_projects::
+bash scripts/cargo_agent.sh test --locked -p nova-cli --test harness -- --ignored suite::real_projects::
 ```
 
 ### (Optional) Run `javac`/build validation

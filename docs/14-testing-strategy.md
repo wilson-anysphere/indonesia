@@ -447,11 +447,11 @@ mod lsp_tests {
 covers core critical paths, syntax parsing, formatting, refactors, and classpath indexing via Criterion
 bench suites:
 
-- `crates/nova-core/benches/critical_paths.rs` (`cargo bench -p nova-core --bench critical_paths`)
-- `crates/nova-syntax/benches/parse_java.rs` (`cargo bench -p nova-syntax --bench parse_java`)
-- `crates/nova-format/benches/format.rs` (`cargo bench -p nova-format --bench format`)
-- `crates/nova-refactor/benches/refactor.rs` (`cargo bench -p nova-refactor --bench refactor`)
-- `crates/nova-classpath/benches/index.rs` (`cargo bench -p nova-classpath --bench index`)
+- `crates/nova-core/benches/critical_paths.rs` (`cargo bench --locked -p nova-core --bench critical_paths`)
+- `crates/nova-syntax/benches/parse_java.rs` (`cargo bench --locked -p nova-syntax --bench parse_java`)
+- `crates/nova-format/benches/format.rs` (`cargo bench --locked -p nova-format --bench format`)
+- `crates/nova-refactor/benches/refactor.rs` (`cargo bench --locked -p nova-refactor --bench refactor`)
+- `crates/nova-classpath/benches/index.rs` (`cargo bench --locked -p nova-classpath --bench index`)
 
 Benchmark thresholds live in `perf/thresholds.toml`. Runtime snapshot thresholds live in
 `perf/runtime-thresholds.toml` (used by `nova perf compare-runtime`; not currently a CI gate). For operational
