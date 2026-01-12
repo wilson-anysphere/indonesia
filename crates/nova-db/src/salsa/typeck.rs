@@ -1000,6 +1000,20 @@ fn resolve_method_call_demand(
     };
 
     let _ = checker.infer_expr_with_expected(&mut loader, call_site.expr, expected.as_ref());
+
+    // `typeck_body` treats ambiguous calls as "best-effort" and still records the first candidate
+    // for downstream type inference. For IDE features (signature help, hover, etc.) we instead
+    // want to be resilient and avoid presenting an arbitrary choice, so ambiguous calls resolve to
+    // `None`.
+    let call_span = body.exprs[call_site.expr].range();
+    if checker
+        .diagnostics
+        .iter()
+        .any(|d| d.code.as_ref() == "ambiguous-call" && d.span == Some(call_span))
+    {
+        db.record_query_stat("resolve_method_call_demand", start.elapsed());
+        return None;
+    }
     let resolved = checker
         .call_resolutions
         .get(call_site.expr.idx())
