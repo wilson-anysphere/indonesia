@@ -465,11 +465,7 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         salsa.set_file_text(file, text.to_string());
         let snap = salsa.snapshot();
         diagnostics.extend(snap.type_diagnostics(file));
-    }
-
-    // 2b) Control-flow + definite assignment diagnostics (best-effort).
-    if let Some(parse) = java_parse.as_ref() {
-        diagnostics.extend(flow_diagnostics(parse));
+        diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
     }
 
     // 3) Unresolved references (best-effort).
