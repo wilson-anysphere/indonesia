@@ -46,18 +46,17 @@ fn loads_maven_multi_module_workspace() {
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("lib/src/main/java"))));
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("app/src/main/java"))));
 
-    // Classpath should include dependency jar placeholders.
+    // Classpath should omit missing dependency jars (repo is empty).
     let jar_entries = config
         .classpath
         .iter()
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.clone())
         .collect::<Vec<_>>();
-    assert!(jar_entries.iter().any(|p| {
-        p.to_string_lossy()
-            .replace('\\', "/")
-            .contains("com/google/guava/guava/33.0.0-jre")
-    }));
+    assert!(
+        jar_entries.is_empty(),
+        "expected no jar entries, found: {jar_entries:?}"
+    );
 
     // Dependencies should be stable and contain expected coordinates.
     let deps: BTreeSet<_> = config
@@ -146,19 +145,8 @@ fn resolves_maven_nested_properties() {
         .expect("expected managed dependency to be discovered");
     assert_eq!(dep.version, Some("1.2.3".to_string()));
 
-    let jar_entries = config
-        .classpath
-        .iter()
-        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
-        .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
-        .collect::<Vec<_>>();
-
-    let jar_path = jar_entries
-        .iter()
-        .find(|p| p.contains("com/example/managed-dep"))
-        .expect("expected managed-dep to have a synthesized jar path");
-    assert!(jar_path.contains("/1.2.3/"), "jar path: {jar_path}");
-    assert!(!jar_path.contains("${"), "jar path: {jar_path}");
+    // The Maven dependency jar path is only included when the artifact exists in the local repo.
+    // This test uses an empty repo; version resolution is still validated via the dependency list.
 }
 
 #[test]
@@ -178,19 +166,8 @@ fn resolves_inherited_maven_managed_versions_with_child_property_overrides() {
         .expect("expected managed dependency to be discovered");
     assert_eq!(dep.version, Some("2.0.0".to_string()));
 
-    let jar_entries = config
-        .classpath
-        .iter()
-        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
-        .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
-        .collect::<Vec<_>>();
-
-    let jar_path = jar_entries
-        .iter()
-        .find(|p| p.contains("com/example/managed-dep"))
-        .expect("expected managed-dep to have a synthesized jar path");
-    assert!(jar_path.contains("/2.0.0/"), "jar path: {jar_path}");
-    assert!(!jar_path.contains("${"), "jar path: {jar_path}");
+    // The Maven dependency jar path is only included when the artifact exists in the local repo.
+    // This test uses an empty repo; version resolution is still validated via the dependency list.
 }
 
 #[test]
@@ -614,20 +591,16 @@ fn loads_maven_multi_module_workspace_model() {
     assert_eq!(match_lib.module.id, "maven:com.example:lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 
-    // Non-JPMS Maven workspace model: dependency jars should remain on the classpath and
-    // `module_path` should stay empty.
+    // Non-JPMS Maven workspace model: `module_path` should stay empty, and missing dependency jars
+    // should be omitted from the classpath (repo is empty).
     assert!(
         app.module_path.is_empty(),
         "expected module_path to remain empty for non-JPMS workspaces"
     );
-    assert!(app.classpath.iter().any(|cp| {
-        cp.kind == ClasspathEntryKind::Jar
-            && cp
-                .path
-                .to_string_lossy()
-                .replace('\\', "/")
-                .contains("com/google/guava/guava/33.0.0-jre")
-    }));
+    assert!(
+        !app.classpath.iter().any(|cp| cp.kind == ClasspathEntryKind::Jar),
+        "expected no dependency jar entries for empty Maven repo"
+    );
 
     // Ensure model is deterministic.
     let model2 =

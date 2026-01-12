@@ -1571,6 +1571,7 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
 }
+
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
     let version = dep.version.as_deref()?;
     if version.contains("${") {
@@ -1616,7 +1617,12 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         }
     }
 
-    Some(version_dir.join(default_file_name(version)))
+    let path = version_dir.join(default_file_name(version));
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 fn resolve_snapshot_jar_file_name(
