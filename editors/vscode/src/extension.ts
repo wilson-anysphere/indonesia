@@ -1804,10 +1804,10 @@ export async function activate(context: vscode.ExtensionContext) {
   ensureClientStarted = ensureLanguageClientStarted;
   stopClient = stopLanguageClient;
 
-  registerNovaBuildFileWatchers(context, sendNovaRequest, {
+  registerNovaBuildFileWatchers(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }), {
     output: serverOutput,
     formatError,
-    isMethodNotFoundError,
+    isMethodNotFoundError: isNovaMethodNotFoundError,
   });
 
   let restartPromptInFlight: Promise<void> | undefined;

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 type FormatError = (err: unknown) => string;
 type IsMethodNotFoundError = (err: unknown) => boolean;
@@ -103,7 +103,18 @@ export function registerNovaBuildFileWatchers(
     const projectRoot = workspaceFolder.uri.fsPath;
 
     try {
-      await request('nova/reloadProject', { projectRoot, buildTool: 'auto' });
+      const resp = await request('nova/reloadProject', { projectRoot, buildTool: 'auto' });
+      if (typeof resp === 'undefined') {
+        // Capability gating: treat the missing endpoint as "unsupported" and disable the feature.
+        reloadProjectSupported = false;
+        if (!reloadProjectUnsupportedWarningLogged) {
+          reloadProjectUnsupportedWarningLogged = true;
+          opts.output.appendLine(
+            'Nova: nova/reloadProject is not supported by the connected server; auto-reload on build file changes is disabled for this session.',
+          );
+        }
+        return;
+      }
     } catch (err) {
       if (opts.isMethodNotFoundError(err)) {
         reloadProjectSupported = false;
@@ -164,4 +175,3 @@ export function registerNovaBuildFileWatchers(
     }),
   );
 }
-
