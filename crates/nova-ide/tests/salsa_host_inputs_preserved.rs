@@ -4,6 +4,7 @@ use std::sync::Arc;
 use nova_classpath::ClasspathIndex;
 use nova_db::{Database as LegacyDatabase, FileId, NovaInputs, ProjectId, SalsaDatabase};
 use nova_jdk::JdkIndex;
+use nova_scheduler::CancellationToken;
 
 struct TestDb {
     file: FileId,
@@ -66,7 +67,8 @@ class A {
         salsa: salsa.clone(),
     };
 
-    let _ = nova_ide::core_file_diagnostics(&db, file);
+    let cancel = CancellationToken::new();
+    let _ = nova_ide::core_file_diagnostics(&db, file, &cancel);
 
     salsa.with_snapshot(|snap| {
         assert!(
