@@ -144,12 +144,13 @@ pub struct FormatConfig {
 /// Nova currently maintains multiple formatters as the implementation evolves. The intent is that
 /// callers funnel full-document formatting through [`edits_for_document_formatting`] (or
 /// [`edits_for_document_formatting_with_strategy`]) so the CLI + LSP stay in lockstep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FormatStrategy {
     /// Legacy, token-only formatter (`nova_syntax::parse` + [`format_java`]).
     LegacyToken,
     /// AST-aware formatter based on the rowan Java parser (`nova_syntax::parse_java`) with a
     /// token-walk formatter (`format_java_ast`).
+    #[default]
     JavaTokenWalkAst,
     /// Experimental doc-based pretty-printer based on the rowan Java AST.
     ///
@@ -157,14 +158,6 @@ pub enum FormatStrategy {
     /// but it provides the extensible architecture needed for IntelliJ/google-java-format
     /// quality in follow-up work.
     JavaPrettyAst,
-}
-
-impl Default for FormatStrategy {
-    fn default() -> Self {
-        // Default to the AST-aware formatter so Nova's full-document formatting stays consistent
-        // across the CLI and LSP.
-        Self::JavaTokenWalkAst
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,8 +187,10 @@ impl Default for FormatConfig {
 /// Each step receives the current [`SyntaxTree`] and source text and produces a new source text.
 /// The pipeline reparses the updated text between steps to keep subsequent transformations in sync.
 pub struct FormatPipeline<'a> {
-    steps: Vec<Box<dyn Fn(&SyntaxTree, &str) -> String + Send + Sync + 'a>>,
+    steps: Vec<Box<FormatPipelineStep<'a>>>,
 }
+
+type FormatPipelineStep<'a> = dyn Fn(&SyntaxTree, &str) -> String + Send + Sync + 'a;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum NewlineStyle {
@@ -255,6 +250,12 @@ impl<'a> FormatPipeline<'a> {
     pub fn run_and_diff(&self, tree: &SyntaxTree, source: &str) -> Vec<TextEdit> {
         let (_tree, text) = self.run(tree.clone(), source.to_string());
         minimal_text_edits(source, &text)
+    }
+}
+
+impl<'a> Default for FormatPipeline<'a> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1108,7 +1109,7 @@ fn indent_level_at(tree: &SyntaxTree, source: &str, offset: TextSize) -> usize {
     let mut iter = tree.tokens();
     let mut next_token = None;
 
-    while let Some(token) = iter.next() {
+    for token in iter.by_ref() {
         if token.range.end > offset {
             next_token = Some(token);
             break;

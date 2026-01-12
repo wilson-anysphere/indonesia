@@ -621,7 +621,7 @@ fn has_whitespace_only_blank_line_between_offsets(source: &str, start: u32, end:
     slice.trim().is_empty() && has_blank_line(slice)
 }
 
-fn source_slice_between_offsets<'a>(source: &'a str, start: u32, end: u32) -> &'a str {
+fn source_slice_between_offsets(source: &str, start: u32, end: u32) -> &str {
     let len = source.len();
     let mut start = start as usize;
     let mut end = end as usize;

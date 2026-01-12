@@ -586,8 +586,8 @@ fn fmt_multiline_doc_comment<'a>(text: &'a str) -> Doc<'a> {
         let trimmed = raw.trim_start_matches([' ', '\t']);
         if trimmed.starts_with("*/") {
             parts.push(Doc::text(trimmed));
-        } else if trimmed.starts_with('*') {
-            parts.push(Doc::concat([Doc::text(" *"), Doc::text(&trimmed[1..])]));
+        } else if let Some(rest) = trimmed.strip_prefix('*') {
+            parts.push(Doc::concat([Doc::text(" *"), Doc::text(rest)]));
         } else {
             parts.push(Doc::text(raw));
         }

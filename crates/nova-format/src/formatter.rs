@@ -9,7 +9,7 @@ struct Span {
 }
 
 impl Span {
-    fn text<'a>(self, source: &'a str) -> &'a str {
+    fn text(self, source: &str) -> &str {
         // The lexer stores byte offsets, so slicing is always safe as long as the source is.
         &source[self.start..self.end]
     }
@@ -91,7 +91,7 @@ fn ends_with_unescaped_quote(bytes: &[u8], quote: u8, min_len: usize) -> bool {
             break;
         }
     }
-    backslashes % 2 == 0
+    backslashes.is_multiple_of(2)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -577,7 +577,7 @@ impl<'a> FormatState<'a> {
         }
     }
 
-    fn next_non_trivia<'t>(tokens: &'t [Token], mut idx: usize) -> Option<&'t Token> {
+    fn next_non_trivia(tokens: &[Token], mut idx: usize) -> Option<&Token> {
         while idx < tokens.len() {
             if !tokens[idx].is_trivia() {
                 return Some(&tokens[idx]);
@@ -1075,10 +1075,10 @@ fn tokenize(tree: &SyntaxTree, source: &str) -> Vec<Token> {
 
         match tok.kind {
             SyntaxKind::Whitespace => {
-                if count_line_breaks(tok.text(source)) >= 2 {
-                    if !matches!(out.last(), Some(Token::BlankLine)) {
-                        out.push(Token::BlankLine);
-                    }
+                if count_line_breaks(tok.text(source)) >= 2
+                    && !matches!(out.last(), Some(Token::BlankLine))
+                {
+                    out.push(Token::BlankLine);
                 }
                 i += 1;
             }
@@ -2129,13 +2129,11 @@ fn has_generic_close_ahead(tokens: &[Token], l_angle_idx: usize) -> bool {
 
     // Limit lookahead to keep the formatter linear-ish even on pathological input.
     let limit = 256usize;
-    let mut steps = 0usize;
 
-    for tok in tokens.iter().skip(l_angle_idx + 1) {
+    for (steps, tok) in tokens.iter().skip(l_angle_idx + 1).enumerate() {
         if steps >= limit {
             break;
         }
-        steps += 1;
 
         let is_top_level = paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
 

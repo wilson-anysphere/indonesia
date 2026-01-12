@@ -787,6 +787,7 @@ impl JdwpClient {
         Ok(sig)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn reference_type_signature_with_generic_cached(
         &self,
         class_id: ReferenceTypeId,
@@ -3210,20 +3211,23 @@ mod tests {
 
         assert_eq!(fields.len(), 3);
 
-        assert_eq!(fields[0].name, "strings");
-        assert_eq!(fields[0].signature, "Ljava/util/List;");
+        let strings = fields.iter().find(|field| field.name == "strings").unwrap();
+        assert_eq!(strings.signature, "Ljava/util/List;");
         assert_eq!(
-            fields[0].generic_signature.as_deref(),
+            strings.generic_signature.as_deref(),
             Some("Ljava/util/List<Ljava/lang/String;>;")
         );
 
-        assert_eq!(fields[1].name, "count");
-        assert_eq!(fields[1].signature, "I");
-        assert_eq!(fields[1].generic_signature, None);
+        let count = fields.iter().find(|field| field.name == "count").unwrap();
+        assert_eq!(count.signature, "I");
+        assert_eq!(count.generic_signature, None);
 
-        assert_eq!(fields[2].name, "staticField");
-        assert_eq!(fields[2].signature, "I");
-        assert_eq!(fields[2].generic_signature, None);
+        let static_field = fields
+            .iter()
+            .find(|field| field.name == "staticField")
+            .unwrap();
+        assert_eq!(static_field.signature, "I");
+        assert_eq!(static_field.generic_signature, None);
     }
 
     #[tokio::test]

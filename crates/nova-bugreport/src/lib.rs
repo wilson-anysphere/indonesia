@@ -326,7 +326,7 @@ pub fn default_crash_log_path() -> PathBuf {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
             })
             .unwrap_or_else(std::env::temp_dir);
-        return base.join("nova").join("crashes.jsonl");
+        base.join("nova").join("crashes.jsonl")
     }
 
     #[cfg(target_os = "macos")]
@@ -334,7 +334,7 @@ pub fn default_crash_log_path() -> PathBuf {
         let base = std::env::var_os("HOME")
             .map(|home| PathBuf::from(home).join("Library/Logs"))
             .unwrap_or_else(std::env::temp_dir);
-        return base.join("nova").join("crashes.jsonl");
+        base.join("nova").join("crashes.jsonl")
     }
 
     #[cfg(target_os = "windows")]
@@ -343,7 +343,7 @@ pub fn default_crash_log_path() -> PathBuf {
             .or_else(|| std::env::var_os("APPDATA"))
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        return base.join("Nova").join("crashes.jsonl");
+        base.join("Nova").join("crashes.jsonl")
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -363,7 +363,7 @@ fn append_crash_record(path: &Path, record: &CrashRecord) -> std::io::Result<()>
         .open(path)?;
 
     let line = serde_json::to_string(record)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        .map_err(std::io::Error::other)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
     Ok(())
@@ -439,6 +439,9 @@ struct CrashReport {
     persisted: Vec<CrashRecord>,
 }
 
+type ExtraAttachmentsCallback<'a> =
+    dyn Fn(&Path) -> Result<(), BugReportError> + Send + Sync + 'a;
+
 pub struct BugReportBuilder<'a> {
     config: &'a NovaConfig,
     log_buffer: &'a LogBuffer,
@@ -448,7 +451,7 @@ pub struct BugReportBuilder<'a> {
     persisted_crash_log_path: Option<PathBuf>,
     create_archive: bool,
     safe_mode_active: Option<bool>,
-    extra_attachments: Option<Box<dyn Fn(&Path) -> Result<(), BugReportError> + Send + Sync + 'a>>,
+    extra_attachments: Option<Box<ExtraAttachmentsCallback<'a>>>,
 }
 
 impl<'a> BugReportBuilder<'a> {
@@ -631,7 +634,7 @@ fn total_memory_bytes() -> Option<u64> {
         for line in meminfo.lines() {
             let line = line.trim_start();
             if let Some(rest) = line.strip_prefix("MemTotal:") {
-                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
                 return Some(kb.saturating_mul(1024));
             }
         }
@@ -651,7 +654,7 @@ fn current_rss_bytes() -> Option<u64> {
         for line in status.lines() {
             let line = line.trim_start();
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
                 return Some(kb.saturating_mul(1024));
             }
         }
@@ -678,7 +681,7 @@ fn create_zip_archive(dir: &Path) -> Result<PathBuf, BugReportError> {
     zip_dir_recursive(&mut zip, dir, dir, prefix, &options)?;
 
     zip.finish()
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        .map_err(std::io::Error::other)?;
     Ok(archive_path)
 }
 
@@ -701,12 +704,12 @@ fn zip_dir_recursive(
             continue;
         }
 
-        let rel = path.strip_prefix(root).unwrap_or_else(|_| path.as_path());
+        let rel = path.strip_prefix(root).unwrap_or(path.as_path());
         let name = Path::new(prefix).join(rel);
         let name = name.to_string_lossy().replace('\\', "/");
 
-        zip.start_file(name, (*options).clone())
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        zip.start_file(name, *options)
+            .map_err(std::io::Error::other)?;
         let mut file = std::fs::File::open(&path)?;
         std::io::copy(&mut file, zip)?;
     }

@@ -449,7 +449,7 @@ pub mod transport {
     ) -> anyhow::Result<Vec<u8>> {
         use tokio::io::AsyncReadExt;
 
-        let max_len = max_len.min(MAX_FRAME_BYTES).max(1);
+        let max_len = max_len.clamp(1, MAX_FRAME_BYTES);
         let max = max_frame_size().min(max_len);
 
         let mut prefix = [0u8; LEN_PREFIX_BYTES];

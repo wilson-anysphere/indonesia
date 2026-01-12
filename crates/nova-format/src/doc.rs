@@ -486,7 +486,7 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
 }
 
 fn push_spaces(out: &mut String, count: usize) {
-    out.extend(std::iter::repeat(' ').take(count));
+    out.extend(std::iter::repeat_n(' ', count));
 }
 
 fn trim_trailing_whitespace(out: &mut String) {

@@ -333,7 +333,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         let map = stats.map_mut(kind);
         let entry = map
             .entry(id.to_string())
-            .or_insert_with(ProviderStats::default);
+            .or_default();
 
         let Some(open_until) = entry.circuit_open_until else {
             return false;
@@ -423,6 +423,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         false
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn invoke_provider<T, F>(
         &self,
         kind: &'static str,

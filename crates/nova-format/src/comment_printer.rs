@@ -141,9 +141,9 @@ fn fmt_doc_comment<'a>(text: &'a str) -> Doc<'a> {
         if trimmed.starts_with("*/") {
             // Closing delimiter aligns with the opening indentation.
             parts.push(Doc::text(trimmed));
-        } else if trimmed.starts_with('*') {
+        } else if let Some(rest) = trimmed.strip_prefix('*') {
             // Normalize interior lines to ` <indent> * ...` style.
-            parts.push(Doc::concat([Doc::text(" *"), Doc::text(&trimmed[1..])]));
+            parts.push(Doc::concat([Doc::text(" *"), Doc::text(rest)]));
         } else {
             parts.push(Doc::text(raw));
         }
@@ -217,7 +217,7 @@ pub(crate) fn common_indent<'a>(lines: impl Iterator<Item = &'a str>) -> usize {
     min.unwrap_or(0)
 }
 
-pub(crate) fn trim_indent<'a>(line: &'a str, indent: usize) -> &'a str {
+pub(crate) fn trim_indent(line: &str, indent: usize) -> &str {
     if indent == 0 {
         return line;
     }

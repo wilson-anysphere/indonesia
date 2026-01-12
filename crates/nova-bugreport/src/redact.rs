@@ -67,7 +67,7 @@ fn sanitize_url(url: &str) -> String {
 
     let (scheme, rest) = url.split_at(scheme_idx + 3);
 
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or_else(|| rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(authority_end);
 
     let authority = if let Some(at_pos) = authority.rfind('@') {

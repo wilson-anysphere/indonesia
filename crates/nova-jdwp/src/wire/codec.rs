@@ -15,6 +15,7 @@ pub fn signature_to_tag(signature: &str) -> u8 {
 ///
 /// If `class` already looks like a JDWP signature (starts with `L` and ends with
 /// `;`), it is returned unchanged.
+#[allow(dead_code)]
 pub fn class_name_to_signature(class: &str) -> String {
     if class.starts_with('L') && class.ends_with(';') {
         return class.to_string();
@@ -276,6 +277,7 @@ impl<'a> JdwpReader<'a> {
             .map_err(|e| JdwpError::Protocol(format!("invalid utf-8 string: {e}")))
     }
 
+    #[allow(dead_code)]
     pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
         self.require(len)?;
         let bytes = &self.buf[self.pos..self.pos + len];
@@ -337,6 +339,7 @@ impl<'a> JdwpReader<'a> {
     }
 }
 
+#[allow(dead_code)]
 pub fn encode_command(id: u32, command_set: u8, command: u8, payload: &[u8]) -> Vec<u8> {
     let length = (HEADER_LEN + payload.len()) as u32;
     let mut out = Vec::with_capacity(length as usize);
@@ -349,6 +352,7 @@ pub fn encode_command(id: u32, command_set: u8, command: u8, payload: &[u8]) -> 
     out
 }
 
+#[allow(dead_code)]
 pub fn encode_reply(id: u32, error_code: u16, payload: &[u8]) -> Vec<u8> {
     let length = (HEADER_LEN + payload.len()) as u32;
     let mut out = Vec::with_capacity(length as usize);

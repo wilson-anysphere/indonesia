@@ -23,6 +23,7 @@ pub const ERROR_INVALID_OBJECT: u16 = 20;
 #[derive(Debug, Default)]
 pub(crate) struct InspectCache {
     pub(crate) signatures: HashMap<ReferenceTypeId, String>,
+    #[allow(dead_code)]
     pub(crate) signatures_with_generic: HashMap<ReferenceTypeId, (String, Option<String>)>,
     pub(crate) fields: HashMap<ReferenceTypeId, Vec<FieldInfo>>,
     #[allow(dead_code)]
@@ -549,9 +550,10 @@ async fn linked_list_children(
         for (name, value, ty) in node_children {
             match name.as_str() {
                 "item" => item = Some((value, ty)),
-                "next" => match value {
-                    JdwpValue::Object { id, .. } => next = Some(id),
-                    _ => {}
+                "next" => {
+                    if let JdwpValue::Object { id, .. } = value {
+                        next = Some(id);
+                    }
                 },
                 _ => {}
             }
@@ -680,8 +682,7 @@ async fn map_key_display(jdwp: &JdwpClient, key: &JdwpValue) -> String {
 
 fn escape_java_string(input: &str, max_len: usize) -> String {
     let mut out = String::new();
-    let mut used = 0usize;
-    for ch in input.chars() {
+    for (used, ch) in input.chars().enumerate() {
         if used >= max_len {
             out.push('…');
             break;
@@ -694,7 +695,6 @@ fn escape_java_string(input: &str, max_len: usize) -> String {
             '\t' => out.push_str("\\t"),
             _ => out.push(ch),
         }
-        used += 1;
     }
     out
 }

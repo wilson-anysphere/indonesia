@@ -471,8 +471,11 @@ fn find_assignment_key(haystack: &str, key: &str) -> Option<usize> {
     let mut search_start = 0usize;
     while let Some(rel) = haystack[search_start..].find(key) {
         let idx = search_start + rel;
-        let before = bytes[..idx].last().copied();
-        let after = bytes[idx + key.len()..].first().copied();
+        let before = bytes.get(..idx).and_then(|s| s.last()).copied();
+        let after = bytes
+            .get(idx + key.len()..)
+            .and_then(|s| s.first())
+            .copied();
 
         let before_ok = before
             .map(|b| !is_ident_continue(b as char))

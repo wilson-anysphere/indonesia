@@ -982,7 +982,7 @@ fn needs_space_before(last: Option<&SigToken>, next_kind: SyntaxKind) -> bool {
 
     if last
         .kind()
-        .is_some_and(|kind| is_control_keyword_kind(kind))
+        .is_some_and(is_control_keyword_kind)
         && next_kind == SyntaxKind::LParen
     {
         return true;
@@ -1312,13 +1312,10 @@ fn has_generic_close_ahead(tokens: &[SyntaxToken], l_angle_idx: usize) -> bool {
 
     // Limit lookahead to keep the formatter linear-ish even on pathological input.
     let limit = 256usize;
-    let mut steps = 0usize;
-
-    for tok in tokens.iter().skip(l_angle_idx + 1) {
+    for (steps, tok) in tokens.iter().skip(l_angle_idx + 1).enumerate() {
         if steps >= limit {
             break;
         }
-        steps += 1;
 
         match tok.kind() {
             SyntaxKind::Whitespace
