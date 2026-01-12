@@ -36,6 +36,7 @@ impl BuildSystemBackend for MavenBuildSystem {
             PathPattern::ExactFileName("mvnw"),
             PathPattern::ExactFileName("mvnw.cmd"),
             PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.properties"),
+            PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.jar"),
             PathPattern::Glob("**/.mvn/extensions.xml"),
             PathPattern::Glob("**/.mvn/maven.config"),
             PathPattern::Glob("**/.mvn/jvm.config"),
@@ -92,6 +93,7 @@ impl BuildSystemBackend for GradleBuildSystem {
             PathPattern::ExactFileName("gradlew"),
             PathPattern::ExactFileName("gradlew.bat"),
             PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.properties"),
+            PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar"),
         ]
     }
 }

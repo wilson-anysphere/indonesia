@@ -50,6 +50,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(maven
         .watch_files()
         .contains(&PathPattern::Glob("**/.mvn/jvm.config")));
+    assert!(maven
+        .watch_files()
+        .contains(&PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.jar")));
 
     let gradle = GradleBuildSystem::new(LoadOptions::default());
     assert!(gradle
@@ -59,6 +62,9 @@ fn watch_files_contains_canonical_markers() {
         .watch_files()
         .contains(&PathPattern::ExactFileName("libs.versions.toml")));
     assert!(gradle.watch_files().contains(&PathPattern::Glob("**/*.gradle")));
+    assert!(gradle
+        .watch_files()
+        .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
 
     let bazel = BazelBuildSystem::new(LoadOptions::default());
     assert!(bazel
