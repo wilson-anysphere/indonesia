@@ -242,9 +242,8 @@ pub mod ast {
         pub ty: TypeRef,
         /// `true` for a variable-arity parameter (`T... xs`).
         ///
-        /// This is tracked explicitly because the `...` token is *not* part of
-        /// the `TypeRef` syntax node, so it would otherwise be lost during
-        /// lowering.
+        /// This is tracked explicitly so downstream layers don't have to infer
+        /// varargs by parsing `ty.text` heuristically.
         pub is_varargs: bool,
         pub name: String,
         pub name_range: Span,

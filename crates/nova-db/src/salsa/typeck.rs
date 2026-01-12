@@ -4050,12 +4050,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let is_varargs = method
                             .params
                             .last()
-                            .is_some_and(|param| param.ty.trim().contains("..."));
+                            .is_some_and(|param| param.is_varargs || param.ty.trim().contains("..."));
 
                         let params = method
                             .params
                             .iter()
-                            .map(|p| {
+                            .enumerate()
+                            .map(|(idx, p)| {
+                                let is_varargs_param = is_varargs && idx + 1 == method.params.len();
                                 preload_type_names(
                                     self.resolver,
                                     &scopes.scopes,
@@ -4063,7 +4065,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     loader,
                                     &p.ty,
                                 );
-                                nova_resolve::type_ref::resolve_type_ref_text(
+                                let ty = nova_resolve::type_ref::resolve_type_ref_text(
                                     self.resolver,
                                     &scopes.scopes,
                                     scope,
@@ -4072,7 +4074,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     &p.ty,
                                     None,
                                 )
-                                .ty
+                                .ty;
+
+                                // If the ellipsis was not included in the captured type text (e.g.
+                                // due to parse recovery or future lowering changes), still model
+                                // varargs as an array type.
+                                if is_varargs_param && !p.ty.trim().contains("...") {
+                                    Type::Array(Box::new(ty))
+                                } else {
+                                    ty
+                                }
                             })
                             .collect::<Vec<_>>();
 
@@ -4118,10 +4129,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         // Best-effort: treat class type params as in-scope for constructor
                         // signatures.
                         let vars = class_vars.clone();
+                        let is_varargs = ctor
+                            .params
+                            .last()
+                            .is_some_and(|p| p.is_varargs || p.ty.trim().contains("..."));
                         let params = ctor
                             .params
                             .iter()
-                            .map(|p| {
+                            .enumerate()
+                            .map(|(idx, p)| {
+                                let is_varargs_param = is_varargs && idx + 1 == ctor.params.len();
                                 preload_type_names(
                                     self.resolver,
                                     &scopes.scopes,
@@ -4129,7 +4146,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     loader,
                                     &p.ty,
                                 );
-                                nova_resolve::type_ref::resolve_type_ref_text(
+                                let ty = nova_resolve::type_ref::resolve_type_ref_text(
                                     self.resolver,
                                     &scopes.scopes,
                                     scope,
@@ -4138,17 +4155,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     &p.ty,
                                     None,
                                 )
-                                .ty
+                                .ty;
+
+                                if is_varargs_param && !p.ty.trim().contains("...") {
+                                    Type::Array(Box::new(ty))
+                                } else {
+                                    ty
+                                }
                             })
                             .collect::<Vec<_>>();
-
-                        let used_ellipsis = ctor
-                            .params
-                            .last()
-                            .is_some_and(|p| p.ty.as_str().contains("..."));
-                        let last_is_array =
-                            params.last().is_some_and(|t| matches!(t, Type::Array(_)));
-                        let is_varargs = used_ellipsis && last_is_array;
 
                         let is_accessible = ctor.modifiers.raw & Modifiers::PRIVATE == 0;
                         constructors.push(ConstructorDef {

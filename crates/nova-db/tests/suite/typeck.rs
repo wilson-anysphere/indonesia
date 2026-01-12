@@ -3505,6 +3505,81 @@ class C {
 }
 
 #[test]
+fn resolve_method_call_demand_resolves_varargs_method_call() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {}
+    static void m() {
+        foo(1, 2, 3);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the call expression inside `C.m`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+    let call_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement with call");
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected statement expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected varargs method call resolution");
+
+    assert_eq!(resolved.name, "foo");
+    assert!(resolved.is_varargs);
+    assert!(resolved.used_varargs);
+    assert_eq!(
+        resolved.params,
+        vec![
+            Type::Primitive(PrimitiveType::Int),
+            Type::Primitive(PrimitiveType::Int),
+            Type::Primitive(PrimitiveType::Int),
+        ]
+    );
+    assert_eq!(
+        resolved.signature_params,
+        Some(vec![Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))])
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
 fn type_at_offset_display_does_not_execute_typeck_body() {
     let src = r#"
 class C {
