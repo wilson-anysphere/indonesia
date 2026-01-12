@@ -1497,3 +1497,75 @@ class C {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn extract_method_rejects_protected_visibility_in_interface() {
+    let fixture = r#"
+interface I {
+    default void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Protected,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject protected visibility in interface context");
+    assert!(
+        err.contains("InvalidVisibilityForInterface"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn extract_method_inside_interface_with_public_visibility_emits_default() {
+    let fixture = r#"
+interface I {
+    default void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Public,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+interface I {
+    default void m(int a) {
+        int b = 1;
+        extracted(a, b);
+        System.out.println("done");
+    }
+
+    public default void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}

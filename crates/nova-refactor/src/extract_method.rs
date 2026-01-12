@@ -143,6 +143,9 @@ pub enum ExtractMethodIssue {
     InvalidMethodName {
         name: String,
     },
+    InvalidVisibilityForInterface {
+        visibility: Visibility,
+    },
     NameCollision {
         name: String,
     },
@@ -243,6 +246,20 @@ impl ExtractMethod {
             issues.push(ExtractMethodIssue::InvalidMethodName {
                 name: self.name.clone(),
             });
+        }
+        let interface_like = matches!(
+            enclosing_type_body.as_ref(),
+            Some(EnclosingTypeBody::Interface(_) | EnclosingTypeBody::Annotation(_))
+        );
+        if interface_like {
+            match self.visibility {
+                Visibility::Protected | Visibility::PackagePrivate => {
+                    issues.push(ExtractMethodIssue::InvalidVisibilityForInterface {
+                        visibility: self.visibility,
+                    });
+                }
+                Visibility::Private | Visibility::Public => {}
+            }
         }
         if let Some(enclosing_type_body) = enclosing_type_body.as_ref() {
             if issues.is_empty() && type_body_has_method_named(enclosing_type_body, &self.name) {
@@ -580,6 +597,12 @@ impl ExtractMethod {
         let enclosing_method_is_static = method.is_static();
         let enclosing_type_body = find_enclosing_type_body(method.syntax())
             .ok_or("selection must be inside a type declaration")?;
+        let interface_like = matches!(
+            &enclosing_type_body,
+            EnclosingTypeBody::Interface(_) | EnclosingTypeBody::Annotation(_)
+        );
+        let needs_default_modifier =
+            interface_like && self.visibility == Visibility::Public && !enclosing_method_is_static;
 
         let method_indent = indentation_at(source, syntax_range(method.syntax()).start);
         let call_indent = indentation_at(source, selection.start);
@@ -686,6 +709,9 @@ impl ExtractMethod {
         if !vis_kw.is_empty() {
             modifiers.push_str(vis_kw);
             modifiers.push(' ');
+        }
+        if needs_default_modifier {
+            modifiers.push_str("default ");
         }
         if enclosing_method_is_static {
             modifiers.push_str("static ");

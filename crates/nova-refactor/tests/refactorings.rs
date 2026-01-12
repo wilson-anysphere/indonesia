@@ -3463,10 +3463,11 @@ fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cl
     let src = r#"class C {
   void m(int x) {
     switch (x) {
-      case 1:
+      case 1: {
         int a = 1 + 2;
         System.out.println(a);
         break;
+      }
     }
   }
  }
@@ -3490,9 +3491,10 @@ fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cl
     let expected = r#"class C {
   void m(int x) {
     switch (x) {
-      case 1:
+      case 1: {
         System.out.println((1 + 2));
         break;
+      }
     }
   }
  }
