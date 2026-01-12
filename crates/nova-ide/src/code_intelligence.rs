@@ -2109,6 +2109,13 @@ pub(crate) fn core_completions(
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
+    if type_position_completion_applicable(text, prefix_start, &prefix) {
+        let items = type_name_completions(db, file, &prefix);
+        if !items.is_empty() {
+            return decorate_completions(&text_index, prefix_start, offset, items);
+        }
+    }
+
     decorate_completions(
         &text_index,
         prefix_start,
@@ -2378,6 +2385,13 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             rank_completions(&prefix, &mut items, &ranking_ctx);
         }
         return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
+    if type_position_completion_applicable(text, prefix_start, &prefix) {
+        let items = type_name_completions(db, file, &prefix);
+        if !items.is_empty() {
+            return decorate_completions(&text_index, prefix_start, offset, items);
+        }
     }
 
     decorate_completions(
@@ -3404,6 +3418,482 @@ fn infer_receiver_type_of_expr_ending_at(
     let inner = text.get(open_paren + 1..end - 1)?.trim();
     let ty_name = infer_receiver_type_name(analysis, inner)?;
     Some(parse_source_type(types, &ty_name))
+}
+
+// -----------------------------------------------------------------------------
+// Java type-position completion (best-effort)
+// -----------------------------------------------------------------------------
+
+const MAX_TYPE_NAME_COMPLETIONS: usize = 200;
+
+#[derive(Debug, Default)]
+struct JavaImportContext {
+    package: Option<String>,
+    /// Fully-qualified imports (`import foo.bar.Baz;`).
+    explicit: Vec<String>,
+    /// Imported packages (`import foo.bar.*;`).
+    wildcard_packages: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceType {
+    name: String,
+    kind: CompletionItemKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypePositionTrigger {
+    /// Contexts that strongly imply a type (e.g. `extends`, `implements`).
+    Unambiguous,
+    /// Contexts that might be either a type or an expression (e.g. start-of-statement).
+    Ambiguous,
+}
+
+fn type_position_completion_applicable(text: &str, prefix_start: usize, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+
+    let tokens = tokenize(text);
+    let Some(cur_idx) = token_index_at_offset(&tokens, prefix_start) else {
+        return false;
+    };
+
+    let Some(trigger) = type_position_trigger(&tokens, cur_idx) else {
+        return false;
+    };
+
+    match trigger {
+        TypePositionTrigger::Unambiguous => true,
+        TypePositionTrigger::Ambiguous => looks_like_reference_type_prefix(prefix),
+    }
+}
+
+fn looks_like_reference_type_prefix(prefix: &str) -> bool {
+    prefix
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn token_index_at_offset(tokens: &[Token], offset: usize) -> Option<usize> {
+    tokens
+        .iter()
+        .enumerate()
+        .find(|(_, t)| t.span.start <= offset && offset < t.span.end)
+        .map(|(idx, _)| idx)
+}
+
+fn type_position_trigger(tokens: &[Token], cur_idx: usize) -> Option<TypePositionTrigger> {
+    if cur_idx == 0 {
+        return Some(TypePositionTrigger::Ambiguous);
+    }
+
+    // Walk backwards over modifiers/annotations to find the "real" syntactic predecessor.
+    let mut j: isize = cur_idx as isize - 1;
+    while j >= 0 {
+        let tok = &tokens[j as usize];
+
+        // Best-effort: skip common modifiers (fields, methods, locals).
+        if tok.kind == TokenKind::Ident && is_decl_modifier(&tok.text) {
+            j -= 1;
+            continue;
+        }
+
+        // Best-effort: skip simple annotations (`@Foo` or `@foo.bar.Baz`), without arguments.
+        if tok.kind == TokenKind::Ident {
+            if let Some(at_idx) = annotation_at_token(tokens, j as usize) {
+                j = at_idx as isize - 1;
+                continue;
+            }
+        }
+
+        break;
+    }
+
+    if j < 0 {
+        return Some(TypePositionTrigger::Ambiguous);
+    }
+
+    let prev = &tokens[j as usize];
+    match prev.kind {
+        TokenKind::Ident => match prev.text.as_str() {
+            "extends" | "implements" | "throws" | "instanceof" | "new" => {
+                Some(TypePositionTrigger::Unambiguous)
+            }
+            _ => None,
+        },
+        TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}') => {
+            Some(TypePositionTrigger::Ambiguous)
+        }
+        TokenKind::Symbol(',') => {
+            // Potentially inside `implements Foo, Bar` / `throws A, B` / `interface X extends A, B`.
+            comma_in_type_list(tokens, j as usize).then_some(TypePositionTrigger::Unambiguous)
+        }
+        TokenKind::Symbol('(') => {
+            // Potential cast: `(Foo) expr` (avoid method-call `foo(...)` cases).
+            is_likely_cast_paren(tokens, j as usize).then_some(TypePositionTrigger::Ambiguous)
+        }
+        _ => None,
+    }
+}
+
+fn is_decl_modifier(ident: &str) -> bool {
+    matches!(
+        ident,
+        "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "final"
+            | "abstract"
+            | "transient"
+            | "volatile"
+            | "synchronized"
+            | "native"
+            | "strictfp"
+            | "default"
+            | "sealed"
+            | "non-sealed"
+    )
+}
+
+fn annotation_at_token(tokens: &[Token], end_ident_idx: usize) -> Option<usize> {
+    // end_ident_idx points at the last ident in a potentially-qualified name.
+    let mut i = end_ident_idx;
+    while i >= 2
+        && tokens[i - 1].kind == TokenKind::Symbol('.')
+        && tokens[i - 2].kind == TokenKind::Ident
+    {
+        i -= 2;
+    }
+
+    if i >= 1 && tokens[i - 1].kind == TokenKind::Symbol('@') {
+        Some(i - 1)
+    } else {
+        None
+    }
+}
+
+fn comma_in_type_list(tokens: &[Token], comma_idx: usize) -> bool {
+    let mut i = comma_idx;
+    while i > 0 {
+        i -= 1;
+        let tok = &tokens[i];
+        match tok.kind {
+            TokenKind::Ident
+                if matches!(tok.text.as_str(), "implements" | "throws" | "extends") =>
+            {
+                return true;
+            }
+            TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}') => break,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_likely_cast_paren(tokens: &[Token], l_paren_idx: usize) -> bool {
+    if l_paren_idx == 0 {
+        return true;
+    }
+
+    let prev = &tokens[l_paren_idx - 1];
+    match prev.kind {
+        // Avoid `foo(` (call expression / method declaration name).
+        TokenKind::Ident => matches!(prev.text.as_str(), "return" | "throw" | "case" | "assert"),
+        TokenKind::Symbol(ch) => !matches!(ch, '.' | ')' | ']'),
+        _ => false,
+    }
+}
+
+fn type_name_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<CompletionItem> {
+    // Only offer Java type names inside Java files.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) != Some("java"))
+    {
+        return Vec::new();
+    }
+
+    let text = db.file_content(file);
+    let import_ctx = java_import_context(text);
+
+    let mut items = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // 1) Workspace types (best-effort, visibility filtered by imports + same-package).
+    for ty in workspace_types_with_prefix(db, &import_ctx, prefix) {
+        if seen.insert(ty.name.clone()) {
+            items.push(CompletionItem {
+                label: ty.name,
+                kind: Some(ty.kind),
+                ..Default::default()
+            });
+        }
+    }
+
+    // 2) Explicit imports (can refer to workspace or classpath/JDK types).
+    for fqn in &import_ctx.explicit {
+        let simple = fqn.rsplit('.').next().unwrap_or(fqn).to_string();
+        if simple.starts_with(prefix) && seen.insert(simple.clone()) {
+            items.push(CompletionItem {
+                label: simple,
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(fqn.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
+    // 3) JDK types from `java.lang.*` + wildcard imports.
+    if let Some(jdk) = JDK_INDEX.as_ref() {
+        let mut packages = import_ctx.wildcard_packages.clone();
+        packages.push("java.lang".to_string()); // implicitly imported.
+        packages.sort();
+        packages.dedup();
+
+        for pkg in packages {
+            let pkg_prefix = format!("{pkg}.");
+            let query = format!("{pkg_prefix}{prefix}");
+
+            let Ok(names) = jdk.class_names_with_prefix(&query) else {
+                continue;
+            };
+
+            for binary in names {
+                if !binary.starts_with(&pkg_prefix) {
+                    continue;
+                }
+
+                let rest = &binary[pkg_prefix.len()..];
+                // Star-imports only expose direct package members (no subpackages).
+                if rest.contains('.') || rest.contains('$') {
+                    continue;
+                }
+
+                let simple = rest.to_string();
+                if !seen.insert(simple.clone()) {
+                    continue;
+                }
+
+                let kind = jdk
+                    .lookup_type(&binary)
+                    .ok()
+                    .flatten()
+                    .map(|stub| {
+                        if stub.access_flags & ACC_INTERFACE != 0 {
+                            CompletionItemKind::INTERFACE
+                        } else {
+                            CompletionItemKind::CLASS
+                        }
+                    })
+                    .unwrap_or(CompletionItemKind::CLASS);
+
+                items.push(CompletionItem {
+                    label: simple,
+                    kind: Some(kind),
+                    detail: Some(binary),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items.truncate(MAX_TYPE_NAME_COMPLETIONS);
+    items
+}
+
+fn java_import_context(text: &str) -> JavaImportContext {
+    let tokens = tokenize(text);
+    let mut ctx = JavaImportContext::default();
+
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let tok = &tokens[i];
+        if tok.kind == TokenKind::Ident && tok.text == "package" {
+            if let Some((pkg, end)) = parse_qualified_name_until_semicolon(&tokens, i + 1) {
+                ctx.package = Some(pkg);
+                i = end;
+                continue;
+            }
+        }
+
+        if tok.kind == TokenKind::Ident && tok.text == "import" {
+            // Best-effort: ignore `import static`.
+            let mut j = i + 1;
+            if tokens
+                .get(j)
+                .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "static")
+            {
+                j += 1;
+            }
+
+            if let Some((path, end, is_wildcard)) = parse_import_path(&tokens, j) {
+                if is_wildcard {
+                    ctx.wildcard_packages.push(path);
+                } else {
+                    ctx.explicit.push(path);
+                }
+                i = end;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    ctx
+}
+
+fn parse_qualified_name_until_semicolon(tokens: &[Token], start: usize) -> Option<(String, usize)> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = start;
+    while i < tokens.len() {
+        let tok = &tokens[i];
+        match tok.kind {
+            TokenKind::Ident => {
+                parts.push(tok.text.clone());
+                i += 1;
+            }
+            TokenKind::Symbol('.') => i += 1,
+            TokenKind::Symbol(';') => {
+                if parts.is_empty() {
+                    return None;
+                }
+                return Some((parts.join("."), i + 1));
+            }
+            _ => break,
+        }
+    }
+    None
+}
+
+fn parse_import_path(tokens: &[Token], start: usize) -> Option<(String, usize, bool)> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = start;
+    let mut is_wildcard = false;
+
+    while i < tokens.len() {
+        let tok = &tokens[i];
+        match tok.kind {
+            TokenKind::Ident => {
+                parts.push(tok.text.clone());
+                i += 1;
+            }
+            TokenKind::Symbol('.') => {
+                // Could be `.*` next.
+                if tokens.get(i + 1).is_some_and(|t| t.kind == TokenKind::Symbol('*')) {
+                    is_wildcard = true;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            TokenKind::Symbol(';') => {
+                if parts.is_empty() {
+                    return None;
+                }
+                let path = parts.join(".");
+                return Some((path, i + 1, is_wildcard));
+            }
+            TokenKind::Symbol('*') => {
+                // Handle malformed `import foo.*` without the dot being tokenized as part of it.
+                is_wildcard = true;
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+
+    None
+}
+
+fn workspace_types_with_prefix(
+    db: &dyn Database,
+    ctx: &JavaImportContext,
+    prefix: &str,
+) -> Vec<WorkspaceType> {
+    let mut out = Vec::new();
+
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+
+        let text = db.file_content(file_id);
+        let (pkg, types) = workspace_types_in_file(text);
+        for (name, kind) in types {
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            if !workspace_type_accessible(ctx, pkg.as_deref(), &name) {
+                continue;
+            }
+            out.push(WorkspaceType { name, kind });
+        }
+    }
+
+    out
+}
+
+fn workspace_type_accessible(ctx: &JavaImportContext, ty_pkg: Option<&str>, ty_name: &str) -> bool {
+    // Same package is always accessible (including default package).
+    if ctx.package.as_deref() == ty_pkg {
+        return true;
+    }
+
+    let fqn = match ty_pkg {
+        Some(pkg) => format!("{pkg}.{ty_name}"),
+        None => ty_name.to_string(),
+    };
+
+    // Explicit import.
+    if ctx.explicit.iter().any(|imp| imp == &fqn) {
+        return true;
+    }
+
+    // Wildcard import.
+    if let Some(pkg) = ty_pkg {
+        if ctx.wildcard_packages.iter().any(|p| p == pkg) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn workspace_types_in_file(text: &str) -> (Option<String>, Vec<(String, CompletionItemKind)>) {
+    let tokens = tokenize(text);
+    let package = java_import_context(text).package;
+
+    let mut types = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < tokens.len() {
+        let tok = &tokens[i];
+        let kind = match (tok.kind.clone(), tok.text.as_str()) {
+            (TokenKind::Ident, "class") => Some(CompletionItemKind::CLASS),
+            (TokenKind::Ident, "interface") => Some(CompletionItemKind::INTERFACE),
+            (TokenKind::Ident, "enum") => Some(CompletionItemKind::CLASS),
+            (TokenKind::Ident, "record") => Some(CompletionItemKind::CLASS),
+            _ => None,
+        };
+
+        if let Some(kind) = kind {
+            if let Some(name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident) {
+                types.push((name_tok.text.clone(), kind));
+            }
+        }
+
+        i += 1;
+    }
+
+    (package, types)
 }
 
 fn general_completions(

@@ -295,13 +295,13 @@ fn annotation_attribute_completion_filters_already_present_elements() {
 fn completion_new_expression_includes_arraylist_with_star_import() {
     let (db, file, pos) = fixture(
         r#"
-import java.util.*;
-class A {
-  void m() {
-    Object x = new Arr<|>
-  }
-}
-"#,
+ import java.util.*;
+ class A {
+   void m() {
+     Object x = new Arr<|>
+   }
+ }
+ "#,
     );
 
     let items = completions(&db, file, pos);
@@ -418,6 +418,43 @@ class A {
     assert!(
         labels.contains(&"String"),
         "expected completion list to contain String; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_includes_string_in_local_var_declaration() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Str<|> s;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"String"),
+        "expected completion list to contain String; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_includes_arraylist_in_extends_clause() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A extends Arr<|> {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"ArrayList"),
+        "expected completion list to contain ArrayList; got {labels:?}"
     );
 }
 
