@@ -274,6 +274,26 @@ fn completion_in_incomplete_record_keyword_suggests_record() {
 }
 
 #[test]
+fn completion_in_incomplete_extends_keyword_suggests_extends() {
+    let (db, file, pos) = fixture("exten<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "extends"),
+        "expected `extends` keyword completion for incomplete `exten`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_implements_keyword_suggests_implements() {
+    let (db, file, pos) = fixture("implemen<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "implements"),
+        "expected `implements` keyword completion for incomplete `implemen`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_call_does_not_panic() {
     let (db, file, pos) = fixture(
         r#"

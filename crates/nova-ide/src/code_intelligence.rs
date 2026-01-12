@@ -8833,6 +8833,8 @@ fn general_completions(
         ("interface", None),
         ("enum", None),
         ("record", None),
+        ("extends", None),
+        ("implements", None),
         ("new", None),
     ] {
         match snippet {
