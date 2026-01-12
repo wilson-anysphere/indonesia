@@ -853,6 +853,44 @@ class C {
 }
 
 #[test]
+fn extract_method_inside_record_compact_constructor() {
+    let fixture = r#"
+record R(int x) {
+    R {
+        /*start*/System.out.println(x);/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+record R(int x) {
+    R {
+        extracted(x);
+    }
+
+    private void extracted(int x) {
+        System.out.println(x);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_inside_instance_initializer_block() {
     let fixture = r#"
 class C {
