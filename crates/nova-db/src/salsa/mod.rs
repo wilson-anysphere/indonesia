@@ -2687,6 +2687,24 @@ class Foo {
     }
 
     #[test]
+    fn salsa_input_tracker_updates_on_apply_file_text_edit() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new();
+        db.register_salsa_input_tracker(&manager);
+
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "abc");
+        assert_eq!(manager.report().usage.other, 3);
+
+        let edit = nova_syntax::TextEdit::new(nova_syntax::TextRange::new(1, 2), "xxxx");
+        db.apply_file_text_edit(file, edit);
+
+        // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).
+        assert_eq!(manager.report().usage.other, 6);
+        assert_eq!(db.salsa_input_bytes(), 6);
+    }
+
+    #[test]
     fn salsa_input_tracker_registers_via_memo_evictor_and_picks_up_existing_inputs() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
         let db = Database::new();
