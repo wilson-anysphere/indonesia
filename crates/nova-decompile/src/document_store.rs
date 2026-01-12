@@ -494,11 +494,24 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
     let Some(parent) = path.parent() else {
         return Ok(None);
     };
+    let Some(root) = parent.parent() else {
+        return Ok(None);
+    };
 
     // Avoid following symlinked directories (e.g. `<root>/<hash>` being replaced
     // with a symlink to an arbitrary directory).
     //
     // Any unexpected filesystem state should degrade to a cache miss.
+    let root_meta = match std::fs::symlink_metadata(root) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Ok(None),
+    };
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+        remove_corrupt_path(root);
+        return Ok(None);
+    }
+
     let parent_meta = match std::fs::symlink_metadata(parent) {
         Ok(meta) => meta,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),

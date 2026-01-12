@@ -316,3 +316,40 @@ fn symlink_parent_directories_are_treated_as_cache_miss_and_removed() {
         "file outside the store must not be deleted"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn symlink_store_root_is_treated_as_cache_miss_and_removed() {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+
+    let store_root = base.path().join("decompiled");
+    symlink(outside.path(), &store_root).unwrap();
+
+    let store = DecompiledDocumentStore::new(store_root.clone());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let outside_file = outside
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+    std::fs::create_dir_all(outside_file.parent().unwrap()).unwrap();
+    std::fs::write(&outside_file, "evil").unwrap();
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+
+    assert!(
+        std::fs::symlink_metadata(&store_root).is_err(),
+        "symlinked store root should be removed"
+    );
+    assert!(
+        outside_file.exists(),
+        "file outside the store must not be deleted"
+    );
+}
