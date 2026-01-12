@@ -105,7 +105,7 @@ struct SmartStepIntoState {
     origin_class_id: ReferenceTypeId,
     origin_method_id: u64,
     origin_line: i32,
-    target_id: i64,
+    target_ordinal: i64,
     seen: i64,
     phase: SmartStepPhase,
     remaining_resumes: u32,
@@ -583,16 +583,21 @@ impl Debugger {
 
         let frame_handle = self.alloc_frame_handle(thread, &frame);
         let targets = self.step_in_targets(cancel, frame_handle).await?;
-        if targets.is_empty() || (target_id as usize) >= targets.len() {
+        let Some(target_ordinal) = targets.iter().position(|target| {
+            target
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .is_some_and(|id| id == target_id)
+        }) else {
             return self.step(cancel, dap_thread_id, StepDepth::Into).await;
-        }
+        };
 
         self.smart_step_into = Some(SmartStepIntoState {
             thread,
             origin_class_id: frame.location.class_id,
             origin_method_id: frame.location.method_id,
             origin_line,
-            target_id,
+            target_ordinal: target_ordinal as i64,
             seen: 0,
             phase: SmartStepPhase::Into,
             remaining_resumes: SMART_STEP_MAX_RESUMES,
@@ -636,7 +641,7 @@ impl Debugger {
                 match state.phase {
                     SmartStepPhase::Into => {
                         if !in_origin {
-                            if state.seen == state.target_id {
+                            if state.seen == state.target_ordinal {
                                 keep_state = false;
                             } else {
                                 state.seen = state.seen.saturating_add(1);
