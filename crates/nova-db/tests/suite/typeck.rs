@@ -1606,6 +1606,46 @@ class B {
 }
 
 #[test]
+fn static_imported_math_max_resolves() {
+    let src = r#"
+import static java.lang.Math.max;
+class C { int m(){ return max(1,2); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static-imported Math.max call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_imported_math_pi_resolves() {
+    let src = r#"
+import static java.lang.Math.PI;
+class C { double m(){ return PI; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
+            && d.code.as_ref() != "unresolved-field"),
+        "expected static-imported Math.PI to resolve; got {diags:?}"
+    );
+
+    let offset = src
+        .find("return PI")
+        .expect("snippet should contain PI return")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "double");
+}
+
+#[test]
 fn cross_file_type_reference_resolves_via_import_in_signature() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

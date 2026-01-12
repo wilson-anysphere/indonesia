@@ -815,6 +815,32 @@ impl TypeStore {
             constructors: vec![],
             methods: vec![],
         });
+        let _math = store.add_class(ClassDef {
+            name: "java.lang.Math".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![FieldDef {
+                name: "PI".to_string(),
+                ty: Type::Primitive(PrimitiveType::Double),
+                is_static: true,
+                is_final: true,
+            }],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "max".to_string(),
+                type_params: vec![],
+                params: vec![
+                    Type::Primitive(PrimitiveType::Int),
+                    Type::Primitive(PrimitiveType::Int),
+                ],
+                return_type: Type::Primitive(PrimitiveType::Int),
+                is_static: true,
+                is_varargs: false,
+                is_abstract: false,
+            }],
+        });
         let _boolean = store.add_class(ClassDef {
             name: "java.lang.Boolean".to_string(),
             kind: ClassKind::Class,
