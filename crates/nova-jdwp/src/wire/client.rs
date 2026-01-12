@@ -3198,7 +3198,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(fields.len(), 2);
+        assert_eq!(fields.len(), 3);
 
         assert_eq!(fields[0].name, "strings");
         assert_eq!(fields[0].signature, "Ljava/util/List;");
@@ -3210,6 +3210,10 @@ mod tests {
         assert_eq!(fields[1].name, "count");
         assert_eq!(fields[1].signature, "I");
         assert_eq!(fields[1].generic_signature, None);
+
+        assert_eq!(fields[2].name, "staticField");
+        assert_eq!(fields[2].signature, "I");
+        assert_eq!(fields[2].generic_signature, None);
     }
 
     #[tokio::test]

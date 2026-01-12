@@ -299,6 +299,13 @@ pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
     let length = u32::from_be_bytes(*len_bytes) as usize;
     validate_jdwp_packet_length(length).map_err(JdwpError::Protocol)?;
 
+    if bytes.len() < length {
+        // The in-memory fuzzing helper can detect truncated inputs before
+        // allocating. This keeps fuzz runs fast (and avoids allocating up to
+        // `MAX_JDWP_PACKET_BYTES` for short inputs that lie about their length).
+        return Err(JdwpError::Protocol("unexpected end of packet".to_string()));
+    }
+
     let payload_len = length - JDWP_HEADER_LEN;
     let mut payload = Vec::new();
     payload.try_reserve_exact(payload_len).map_err(|_| {
@@ -306,12 +313,6 @@ pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
             "unable to allocate packet buffer ({payload_len} bytes)"
         ))
     })?;
-
-    if bytes.len() < length {
-        // `read_exact` would fail here, but only after we've already allocated
-        // `payload_len` bytes.
-        return Err(JdwpError::Protocol("unexpected end of packet".to_string()));
-    }
 
     // Parse the fixed header.
     let header = &bytes[..JDWP_HEADER_LEN];
