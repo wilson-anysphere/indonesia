@@ -1729,30 +1729,57 @@ pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Valu
 
     let project_root = PathBuf::from(&req.project_root);
     let key = canonicalize_project_root(&project_root);
-    let orchestrator_building = build_orchestrator_if_present(&key)
-        .map(|o| matches!(o.status().state, BuildTaskState::Queued | BuildTaskState::Running))
-        .unwrap_or(false);
-    let bazel_building = nova_project::bazel_workspace_root(&key)
-        .and_then(|workspace_root| bazel_build_orchestrator_if_present(&workspace_root))
-        .map(|o| {
-            matches!(
-                o.status().state,
-                BazelBuildTaskState::Queued | BazelBuildTaskState::Running
-            )
+    let orchestrator_snapshot = build_orchestrator_if_present(&key).map(|o| o.status());
+    let orchestrator_state = orchestrator_snapshot.as_ref().map(|s| s.state);
+    let orchestrator_last_error = orchestrator_snapshot
+        .as_ref()
+        .and_then(|s| s.last_error.clone());
+    let orchestrator_building = matches!(
+        orchestrator_state,
+        Some(BuildTaskState::Queued | BuildTaskState::Running)
+    );
+    let orchestrator_failed = matches!(
+        orchestrator_state,
+        Some(BuildTaskState::Failure | BuildTaskState::Cancelled)
+    );
+
+    let bazel_snapshot = bazel_build_orchestrator_if_present(&key)
+        .or_else(|| {
+            nova_project::bazel_workspace_root(&key)
+                .and_then(|workspace_root| bazel_build_orchestrator_if_present(&workspace_root))
         })
-        .unwrap_or(false);
+        .map(|o| o.status());
+    let bazel_state = bazel_snapshot.as_ref().map(|s| s.state);
+    let bazel_last_error = bazel_snapshot.as_ref().and_then(|s| s.last_error.clone());
+    let bazel_building = matches!(
+        bazel_state,
+        Some(BazelBuildTaskState::Queued | BazelBuildTaskState::Running)
+    );
+    let bazel_failed = matches!(
+        bazel_state,
+        Some(BazelBuildTaskState::Failure | BazelBuildTaskState::Cancelled)
+    );
+
     let (registry_status, registry_last_error) = build_status_snapshot_for_project_root(&key);
     let status = if registry_status == BuildStatus::Building || orchestrator_building || bazel_building
     {
         BuildStatus::Building
+    } else if registry_status == BuildStatus::Failed || orchestrator_failed || bazel_failed {
+        BuildStatus::Failed
     } else {
-        registry_status
+        BuildStatus::Idle
     };
-    let last_error = if status == BuildStatus::Failed {
-        registry_last_error
-    } else {
-        None
-    };
+
+    let mut last_error = None;
+    if status == BuildStatus::Failed {
+        last_error = registry_last_error;
+        if last_error.is_none() && orchestrator_failed {
+            last_error = orchestrator_last_error;
+        }
+        if last_error.is_none() && bazel_failed {
+            last_error = bazel_last_error;
+        }
+    }
 
     serde_json::to_value(BuildStatusResult {
         schema_version: BUILD_STATUS_SCHEMA_VERSION,
@@ -2038,6 +2065,89 @@ mod tests {
         assert_eq!(
             build_status_for_project_root(&root_with_dot),
             BuildStatus::Failed
+        );
+    }
+
+    #[test]
+    fn build_status_reports_failed_when_orchestrator_failed_without_registry_entry() {
+        use std::io;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        #[derive(Debug)]
+        struct FailingRunner;
+
+        impl CommandRunner for FailingRunner {
+            fn run(&self, _cwd: &Path, _program: &Path, _args: &[String]) -> io::Result<CommandOutput> {
+                Err(io::Error::new(io::ErrorKind::Other, "boom"))
+            }
+        }
+
+        #[derive(Debug)]
+        struct FailingRunnerFactory;
+
+        impl CommandRunnerFactory for FailingRunnerFactory {
+            fn build_runner(
+                &self,
+                _cancellation: nova_process::CancellationToken,
+            ) -> Arc<dyn CommandRunner> {
+                Arc::new(FailingRunner)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("pom.xml"), "<project></project>").unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Install an orchestrator without build-status instrumentation so `handle_build_status`
+        // must consult the orchestrator state, not just the status registry.
+        let orchestrator = BuildOrchestrator::with_runner_factory(
+            root.clone(),
+            root.join(".nova").join("build-cache"),
+            Arc::new(FailingRunnerFactory),
+        );
+        {
+            let mut map = build_orchestrators()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            map.insert(root.clone(), orchestrator.clone());
+        }
+
+        orchestrator.enqueue(BuildRequest::Maven {
+            module_relative: None,
+            goal: nova_build::MavenBuildGoal::Compile,
+        });
+
+        for _ in 0..200 {
+            if matches!(
+                orchestrator.status().state,
+                BuildTaskState::Failure | BuildTaskState::Cancelled
+            ) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            matches!(
+                orchestrator.status().state,
+                BuildTaskState::Failure | BuildTaskState::Cancelled
+            ),
+            "expected orchestrator to fail"
+        );
+
+        let resp = handle_build_status(serde_json::json!({
+            "projectRoot": root.to_string_lossy(),
+        }))
+        .unwrap();
+
+        assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("failed"));
+        assert!(
+            resp.get("lastError")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("boom"),
+            "expected lastError to include the runner error: {resp:?}"
         );
     }
 
