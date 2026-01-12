@@ -100,6 +100,23 @@ impl AstIdMap {
     pub fn span(&self, id: AstId) -> Option<Span> {
         self.range(id).map(text_range_to_span)
     }
+
+    /// Best-effort estimate of heap memory usage of this map in bytes.
+    ///
+    /// This is intended for integration with `nova-memory` / Salsa memo
+    /// footprint tracking. It intentionally ignores allocator/HashMap overhead
+    /// beyond backing storage capacities.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let nodes = self.nodes.capacity() * size_of::<AstPtr>();
+        let by_ptr = self.by_ptr.capacity() * size_of::<(AstPtr, AstId)>();
+        // `HashMap` has additional control bytes; approximate as 1 byte per
+        // bucket.
+        let ctrl = self.by_ptr.capacity();
+        (nodes + by_ptr + ctrl) as u64
+    }
 }
 
 fn is_relevant_node(node: &SyntaxNode) -> bool {

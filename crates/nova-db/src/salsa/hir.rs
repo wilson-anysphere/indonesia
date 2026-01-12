@@ -55,6 +55,7 @@ fn java_parse(db: &dyn NovaHir, file: FileId) -> Arc<nova_syntax::java::Parse> {
     let text_len = u32::from(root.text_range().end()) as usize;
     let parsed = nova_syntax::java::parse_with_syntax(&root, text_len);
     let result = Arc::new(parsed);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::JavaParse, text_len as u64);
     db.record_query_stat("java_parse", start.elapsed());
     result
 }
@@ -71,6 +72,7 @@ fn hir_ast_id_map(db: &dyn NovaHir, file: FileId) -> Arc<AstIdMap> {
     let syntax = parse_java.syntax();
     let map = AstIdMap::new(&syntax);
     let result = Arc::new(map);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::HirAstIdMap, result.estimated_bytes());
     db.record_query_stat("hir_ast_id_map", start.elapsed());
     result
 }

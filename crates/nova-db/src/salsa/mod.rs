@@ -247,6 +247,11 @@ pub enum TrackedSalsaMemo {
     /// avoid double-counting; the bytes are instead accounted under
     /// [`MemoryCategory::SyntaxTrees`].
     ParseJava,
+    /// Lightweight Java AST produced by [`NovaHir::java_parse`].
+    JavaParse,
+    /// Stable mapping between syntax nodes and per-file [`nova_hir::ast_id::AstId`]s produced by
+    /// [`NovaHir::hir_ast_id_map`].
+    HirAstIdMap,
     /// Token-based structural summary for [`NovaSemantic::item_tree`].
     ///
     /// When an `item_tree` result is pinned in [`ItemTreeStore`] (e.g. for an
@@ -319,6 +324,10 @@ struct FileMemoBytes {
     parse: Option<u64>,
     /// Bytes recorded for the `parse_java` memo (None if the query has never been executed).
     parse_java: Option<u64>,
+    /// Bytes recorded for the `java_parse` memo.
+    java_parse: u64,
+    /// Bytes recorded for the `hir_ast_id_map` memo.
+    hir_ast_id_map: u64,
     /// Bytes recorded for the `item_tree` memo (None if the query has never been executed).
     item_tree: Option<u64>,
     /// Bytes recorded for the `hir_item_tree` memo.
@@ -332,6 +341,8 @@ impl FileMemoBytes {
     fn total(self) -> u64 {
         self.parse.unwrap_or(0)
             + self.parse_java.unwrap_or(0)
+            + self.java_parse
+            + self.hir_ast_id_map
             + self.item_tree.unwrap_or(0)
             + self.hir_item_tree
             + self.scope_graph
@@ -380,6 +391,8 @@ impl SalsaMemoFootprint {
         match memo {
             TrackedSalsaMemo::Parse => entry.parse = Some(bytes),
             TrackedSalsaMemo::ParseJava => entry.parse_java = Some(bytes),
+            TrackedSalsaMemo::JavaParse => entry.java_parse = bytes,
+            TrackedSalsaMemo::HirAstIdMap => entry.hir_ast_id_map = bytes,
             TrackedSalsaMemo::ItemTree => entry.item_tree = Some(bytes),
             TrackedSalsaMemo::HirItemTree => entry.hir_item_tree = bytes,
             TrackedSalsaMemo::ScopeGraph => entry.scope_graph = bytes,
@@ -4465,6 +4478,32 @@ class Foo {
         let baseline_bytes = db.salsa_memo_bytes();
         assert!(baseline_bytes > 0, "expected baseline memo bytes to be > 0");
 
+        // New tracking: lightweight Java parses.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.java_parse(*file);
+            }
+        });
+
+        let after_java_parse_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_java_parse_bytes > baseline_bytes,
+            "expected java_parse memos to increase tracked bytes"
+        );
+
+        // New tracking: HIR AST id maps.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.hir_ast_id_map(*file);
+            }
+        });
+
+        let after_ast_id_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_ast_id_bytes > after_java_parse_bytes,
+            "expected hir_ast_id_map memos to increase tracked bytes"
+        );
+
         // New tracking: HIR item trees.
         db.with_snapshot(|snap| {
             for file in &files {
@@ -4474,7 +4513,7 @@ class Foo {
 
         let after_hir_bytes = db.salsa_memo_bytes();
         assert!(
-            after_hir_bytes > baseline_bytes,
+            after_hir_bytes > after_ast_id_bytes,
             "expected hir_item_tree memos to increase tracked bytes"
         );
 
