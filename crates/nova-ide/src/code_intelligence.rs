@@ -1907,6 +1907,16 @@ fn module_info_package_segment_completions(
     let mut candidates: HashMap<String, bool> = HashMap::new();
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
         for pkg in env.workspace_index().packages() {
+            // `exports`/`opens` directives declare packages *owned by the current module*, not JDK
+            // packages. Avoid suggesting minimal-JDK packages that are seeded into the workspace
+            // completion environment.
+            if pkg.starts_with("java.")
+                || pkg.starts_with("javax.")
+                || pkg.starts_with("jdk.")
+                || pkg.starts_with("sun.")
+            {
+                continue;
+            }
             add_package_segment_candidates(&mut candidates, pkg, &parent_segments, segment_prefix);
         }
     }
@@ -1927,6 +1937,11 @@ fn module_info_package_segment_completions(
             insert_text: Some(insert_text),
             ..Default::default()
         });
+    }
+
+    // These packages all originate from workspace source packages.
+    for item in &mut items {
+        mark_workspace_completion_item(item);
     }
 
     let ranking_ctx = CompletionRankingContext::default();
@@ -2211,21 +2226,46 @@ fn module_info_completion_items(
             let mut has_static = false;
             let mut has_transitive = false;
             let mut after_requires = false;
+            let mut module_span: Option<Span> = None;
             for tok in &tokens {
                 match tok.kind {
                     TokKind::Ident("requires") => after_requires = true,
                     TokKind::Ident("static") if after_requires => has_static = true,
                     TokKind::Ident("transitive") if after_requires => has_transitive = true,
+                    TokKind::Ident(name) if after_requires && module_span.is_none() => {
+                        if !matches!(name, "requires" | "static" | "transitive") {
+                            module_span = Some(tok.span);
+                        }
+                    }
                     _ => {}
                 }
             }
 
             let mut items = Vec::new();
-            if !has_static {
-                items.push(module_info_keyword_item("static"));
-            }
-            if !has_transitive {
-                items.push(module_info_keyword_item("transitive"));
+            if let Some(span) = module_span {
+                // `requires` accepts exactly one module name. If the cursor is already after the
+                // module token, there is no valid continuation besides `;`.
+                if offset > span.end {
+                    return Vec::new();
+                }
+
+                // Avoid suggesting modifiers while the user is typing the module name; inserting
+                // them at the module-name position would produce invalid syntax.
+                if offset <= span.start {
+                    if !has_static {
+                        items.push(module_info_keyword_item("static"));
+                    }
+                    if !has_transitive {
+                        items.push(module_info_keyword_item("transitive"));
+                    }
+                }
+            } else {
+                if !has_static {
+                    items.push(module_info_keyword_item("static"));
+                }
+                if !has_transitive {
+                    items.push(module_info_keyword_item("transitive"));
+                }
             }
 
             let candidates = module_info_module_name_candidates(db, file);
@@ -4647,9 +4687,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     // JPMS `module-info.java` completions (keywords/directives/modules/packages).
     if is_module_descriptor(db, file, text) {
         let items = module_info_completion_items(db, file, text, offset, prefix_start, &prefix);
-        if !items.is_empty() {
-            return decorate_completions(&text_index, prefix_start, offset, items);
-        }
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     // Spring DI completions inside Java source.

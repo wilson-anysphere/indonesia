@@ -1312,6 +1312,23 @@ fn completion_in_module_info_requires_suggests_java_base() {
 }
 
 #[test]
+fn completion_in_module_info_requires_does_not_suggest_modifiers_while_completing_module_name() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(module_path, "module my.mod { requires ja<|> }", vec![]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"static"),
+        "did not expect requires completion to suggest `static` while completing module name; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"transitive"),
+        "did not expect requires completion to suggest `transitive` while completing module name; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_empty_module_info_suggests_module_declaration_snippet() {
     let module_path = PathBuf::from("/workspace/module-info.java");
     let (db, file, pos) = fixture_multi(module_path, "<|>", vec![]);
@@ -1350,6 +1367,45 @@ fn completion_in_module_info_exports_suggests_workspace_package_segment() {
     assert!(
         labels.iter().any(|l| *l == "api" || *l == "api."),
         "expected module-info exports completion to contain api; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_exports_does_not_suggest_jdk_package_segments() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/com/example/api/A.java");
+
+    let java_text = "package com.example.api; class A {}".to_string();
+    let module_text = "module my.mod { exports <|> }";
+
+    let (db, file, pos) = fixture_multi(module_path, module_text, vec![(java_path, java_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"com."),
+        "expected exports completion to include workspace package segment `com.`; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"java.") && !labels.contains(&"java"),
+        "did not expect exports completion to suggest `java` packages; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_module_info_exports_java_prefix_is_empty() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/com/example/api/A.java");
+
+    let java_text = "package com.example.api; class A {}".to_string();
+    let module_text = "module my.mod { exports ja<|> }";
+
+    let (db, file, pos) = fixture_multi(module_path, module_text, vec![(java_path, java_text)]);
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions for `exports ja...` (should not suggest JDK packages); got {items:#?}"
     );
 }
 
