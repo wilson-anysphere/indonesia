@@ -1650,6 +1650,24 @@ class B {
     set_file(&mut db, project, b_file, "src/p/B.java", src_b);
     db.set_project_files(project, Arc::new(vec![a_file, b_file]));
 
+    let offset_f = src_b
+        .find("int x = F")
+        .expect("snippet should contain `int x = F`")
+        + "int x = ".len();
+    let f_ty = db
+        .type_at_offset_display(b_file, offset_f as u32)
+        .expect("expected a type at offset for F");
+    assert_eq!(f_ty, "int");
+
+    let offset_m = src_b
+        .find("m(1)")
+        .expect("snippet should contain m(1)")
+        + "m".len();
+    let m_ty = db
+        .type_at_offset_display(b_file, offset_m as u32)
+        .expect("expected a type at offset for m(1)");
+    assert_eq!(m_ty, "String");
+
     let diags = db.type_diagnostics(b_file);
     assert!(
         !diags.iter().any(|d| {
