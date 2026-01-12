@@ -299,7 +299,7 @@ fn sanitize_prefix(prefix: &str) -> String {
         if mode != ScanMode::Code || b != b'f' {
             return;
         }
-        if prefix[idx..].starts_with("final")
+        if bytes[idx..].starts_with(b"final")
             && is_boundary(bytes, idx.saturating_sub(1))
             && is_boundary(bytes, idx + 5)
         {
@@ -521,7 +521,7 @@ fn parse_top_level_classes<'a>(source: &'a str) -> Vec<ClassDecl<'a>> {
                 b'"' => mode = ScanMode::StringLiteral,
                 b'\'' => mode = ScanMode::CharLiteral,
                 b'c' if brace_depth == 0 => {
-                    if source[idx..].starts_with("class")
+                    if bytes[idx..].starts_with(b"class")
                         && is_boundary(bytes, idx.saturating_sub(1))
                         && is_boundary(bytes, idx + 5)
                     {
