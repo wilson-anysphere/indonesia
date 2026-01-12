@@ -1,0 +1,64 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "f"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                LambdaExpression
+                  LambdaParameters
+                    LambdaParameterList
+                      LParen "("
+                      LambdaParameter
+                        Modifiers
+                          Annotation
+                            At "@"
+                            Name
+                              Identifier "A"
+                              Whitespace " "
+                        Type
+                          NamedType
+                            VarKw "var"
+                            Whitespace " "
+                        Identifier "x"
+                      RParen ")"
+                  Whitespace " "
+                  Arrow "->"
+                  LambdaBody
+                    Whitespace " "
+                    NameExpression
+                      Identifier "x"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
