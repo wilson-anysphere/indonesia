@@ -83,15 +83,17 @@ function extractRoutingHintFromValue(params: unknown): RoutingHint {
     return { kind: 'uri', uri };
   }
 
-  const textDocument = record.textDocument;
-  if (textDocument && typeof textDocument === 'object') {
-    const tdUri = normalizeString((textDocument as Record<string, unknown>).uri);
-    if (tdUri) {
-      return { kind: 'uri', uri: tdUri };
+  for (const key of ['textDocument', 'text_document'] as const) {
+    const textDocument = record[key];
+    if (textDocument && typeof textDocument === 'object') {
+      const tdUri = normalizeString((textDocument as Record<string, unknown>).uri);
+      if (tdUri) {
+        return { kind: 'uri', uri: tdUri };
+      }
     }
   }
 
-  const projectRoot = normalizeString(record.projectRoot);
+  const projectRoot = normalizeString(record.projectRoot) ?? normalizeString(record.project_root);
   if (projectRoot) {
     return { kind: 'projectRoot', projectRoot };
   }

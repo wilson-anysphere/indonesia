@@ -45,6 +45,20 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBe(folders[0].uri);
   });
 
+  it('routes by params.text_document.uri (snake_case)', () => {
+    const { folders, root } = makeWorkspaceFolders();
+    const fileInA = pathToFileURL(path.join(root, 'a', 'src', 'Main.java')).toString();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'textDocument/definition',
+        params: { text_document: { uri: fileInA } },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
   it('routes by params.projectRoot (exact folder)', () => {
     const { folders } = makeWorkspaceFolders();
 
@@ -54,6 +68,19 @@ describe('routeWorkspaceFolderUri', () => {
         activeDocumentUri: undefined,
         method: 'nova/test/discover',
         params: { projectRoot: folders[1].fsPath },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes by params.project_root (snake_case)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/test/discover',
+        params: { project_root: folders[1].fsPath },
       }),
     ).toBe(folders[1].uri);
   });

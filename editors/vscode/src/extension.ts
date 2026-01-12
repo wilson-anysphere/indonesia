@@ -3212,7 +3212,15 @@ function hasExplicitWorkspaceRoutingHint(method: string, params: unknown): boole
       }
     }
 
-    const projectRoot = obj.projectRoot;
+    const textDocumentSnake = obj.text_document;
+    if (textDocumentSnake && typeof textDocumentSnake === 'object') {
+      const tdUri = (textDocumentSnake as Record<string, unknown>).uri;
+      if (typeof tdUri === 'string' && tdUri.trim().length > 0) {
+        return true;
+      }
+    }
+
+    const projectRoot = obj.projectRoot ?? obj.project_root;
     if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
       return true;
     }
