@@ -1685,13 +1685,12 @@ fn handle_notification(
                     continue;
                 };
                 state.semantic_search_remove_uri(&old_uri);
-                state.analysis.rename_uri(&old_uri, &new_uri);
+                let file_id = state.analysis.rename_uri(&old_uri, &new_uri);
                 let to_path = VfsPath::from(&new_uri);
                 if !state.analysis.vfs.overlay().is_open(&to_path) {
                     state.analysis.refresh_from_disk(&new_uri);
                 } else {
                     // Rename of an open document: update the semantic search path key.
-                    let file_id = state.analysis.vfs.file_id(to_path);
                     state.semantic_search_index_open_document(file_id);
                 }
             }
@@ -1711,12 +1710,11 @@ fn handle_notification(
             // If the source buffer is open, treat the rename as a pure path move; the in-memory
             // overlay remains the source of truth.
             state.semantic_search_remove_uri(&params.from);
-            state.analysis.rename_uri(&params.from, &params.to);
+            let file_id = state.analysis.rename_uri(&params.from, &params.to);
             let to_path = VfsPath::from(&params.to);
             if !state.analysis.vfs.overlay().is_open(&to_path) {
                 state.analysis.refresh_from_disk(&params.to);
             } else {
-                let file_id = state.analysis.vfs.file_id(to_path);
                 state.semantic_search_index_open_document(file_id);
             }
         }
