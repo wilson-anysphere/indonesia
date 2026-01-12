@@ -1746,6 +1746,9 @@ impl WorkspaceEngine {
 
     pub fn close_document(&self, path: &VfsPath) {
         let file_id = self.vfs.get_id(path);
+        // Capture the current overlay contents (if open) so we can transfer them into Salsa without
+        // cloning on close.
+        let overlay_text = self.vfs.open_document_text_arc(path);
         self.vfs.close_document(path);
         self.sync_overlay_documents_memory();
 
@@ -1753,15 +1756,45 @@ impl WorkspaceEngine {
             self.ensure_file_inputs(file_id, path);
             let exists = self.vfs.exists(path);
             self.query_db.set_file_exists(file_id, exists);
-            let mut restored_from_disk = false;
+            let mut synced_to_disk = false;
             if exists {
-                if let Ok(text) = self.vfs.read_to_string(path) {
-                    let text_arc = Arc::new(text);
-                    self.query_db
-                        .set_file_content(file_id, Arc::clone(&text_arc));
-                    self.closed_file_texts
-                        .track_closed_file_content(file_id, &text_arc);
-                    restored_from_disk = true;
+                // If the document was not dirty when it was closed, the overlay contents should
+                // match disk and we can avoid an expensive `read_to_string` by reusing the existing
+                // `Arc<String>` allocation.
+                let is_dirty = self
+                    .query_db
+                    .with_snapshot(|snap| snap.file_is_dirty(file_id));
+                if !is_dirty {
+                    if let Some(text_arc) = overlay_text.as_ref() {
+                        self.query_db
+                            .set_file_content(file_id, Arc::clone(text_arc));
+                        self.closed_file_texts
+                            .track_closed_file_content(file_id, text_arc);
+                        synced_to_disk = true;
+                    }
+                }
+
+                if !synced_to_disk {
+                    match self.vfs.read_to_string(path) {
+                        Ok(text) => {
+                            let text_arc = Arc::new(text);
+                            self.query_db
+                                .set_file_content(file_id, Arc::clone(&text_arc));
+                            self.closed_file_texts
+                                .track_closed_file_content(file_id, &text_arc);
+                            synced_to_disk = true;
+                        }
+                        Err(_) => {
+                            // Best-effort: keep the previous contents if we fail to read during a
+                            // transient IO error.
+                            if let Some(text_arc) = overlay_text.as_ref() {
+                                self.query_db
+                                    .set_file_content(file_id, Arc::clone(text_arc));
+                                self.closed_file_texts
+                                    .track_closed_file_content(file_id, text_arc);
+                            }
+                        }
+                    }
                 }
             } else {
                 // The overlay was closed and the file doesn't exist on disk; drop the last-known
@@ -1770,7 +1803,7 @@ impl WorkspaceEngine {
                     .set_file_content(file_id, empty_file_content());
                 self.closed_file_texts.clear(file_id);
             }
-            if !exists || restored_from_disk {
+            if !exists || synced_to_disk {
                 self.query_db.set_file_is_dirty(file_id, false);
             }
             self.update_project_files_membership(path, file_id, exists);
@@ -2222,9 +2255,9 @@ impl WorkspaceEngine {
                 // The file is open in the editor; keep overlay contents but update dirty state if the
                 // file was saved to disk (or modified externally).
                 let disk_text = fs::read_to_string(path);
-                let overlay_text = self.vfs.overlay().document_text(&vfs_path);
+                let overlay_text = self.vfs.open_document_text_arc(&vfs_path);
                 let is_dirty = match (disk_text, overlay_text) {
-                    (Ok(disk), Some(overlay)) => disk != overlay,
+                    (Ok(disk), Some(overlay)) => disk.as_str() != overlay.as_str(),
                     _ => true,
                 };
                 self.query_db.set_file_is_dirty(file_id, is_dirty);
@@ -2303,17 +2336,17 @@ impl WorkspaceEngine {
                 // The document is open in the editor (either because it was already open at `to`,
                 // or because it was moved there from `from`). Ensure Salsa sees the overlay contents
                 // so workspace analysis doesn't accidentally use stale disk state.
-                let text = self
-                    .vfs
-                    .open_document_text_arc(&to_vfs)
+                let overlay_text = self.vfs.open_document_text_arc(&to_vfs);
+                let text = overlay_text
+                    .as_ref()
+                    .map(Arc::clone)
                     .or_else(|| self.vfs.read_to_string(&to_vfs).ok().map(Arc::new));
                 if let Some(text) = text {
                     self.query_db.set_file_content(file_id, text);
                 }
                 let disk_text = fs::read_to_string(to);
-                let overlay_text = self.vfs.overlay().document_text(&to_vfs);
                 let is_dirty = match (disk_text, overlay_text) {
-                    (Ok(disk), Some(overlay)) => disk != overlay,
+                    (Ok(disk), Some(overlay)) => disk.as_str() != overlay.as_str(),
                     _ => true,
                 };
                 self.query_db.set_file_is_dirty(file_id, is_dirty);
@@ -4821,6 +4854,60 @@ mode = "off"
             !Arc::ptr_eq(&before_salsa, &after_salsa),
             "applying changes should produce a new Arc<String> (copy-on-write) so Salsa sees an input change"
         );
+    }
+
+    #[test]
+    fn close_document_reuses_overlay_arc_when_not_dirty() {
+        let workspace = crate::Workspace::new_in_memory();
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        fs::write(abs.as_path(), "class Main {}").unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path.clone(), "class Main {}".to_string(), 1);
+
+        let engine = workspace.engine_for_tests();
+        let overlay = engine.vfs.open_document_text_arc(&path).unwrap();
+        assert!(
+            !engine.query_db.with_snapshot(|snap| snap.file_is_dirty(file_id)),
+            "precondition: opening with on-disk text should mark the file clean"
+        );
+
+        workspace.close_document(&path);
+
+        let salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert!(Arc::ptr_eq(&overlay, &salsa));
+        assert!(!engine.query_db.with_snapshot(|snap| snap.file_is_dirty(file_id)));
+    }
+
+    #[test]
+    fn close_document_restores_disk_text_when_dirty() {
+        let workspace = crate::Workspace::new_in_memory();
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        fs::write(abs.as_path(), "disk").unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path.clone(), "overlay".to_string(), 1);
+
+        let engine = workspace.engine_for_tests();
+        let overlay = engine.vfs.open_document_text_arc(&path).unwrap();
+        assert!(
+            engine.query_db.with_snapshot(|snap| snap.file_is_dirty(file_id)),
+            "precondition: opening with different text should mark the file dirty"
+        );
+
+        workspace.close_document(&path);
+
+        let salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        assert_eq!(salsa.as_str(), "disk");
+        assert!(
+            !Arc::ptr_eq(&overlay, &salsa),
+            "closing a dirty document should restore disk contents"
+        );
+        assert!(!engine.query_db.with_snapshot(|snap| snap.file_is_dirty(file_id)));
     }
 
     #[test]
