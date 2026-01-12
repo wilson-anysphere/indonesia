@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
@@ -11,6 +11,8 @@ const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
 ];
 
 const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
+
+const JMOD_HEADER_LEN: u64 = 4;
 
 const JPMS_COMPILER_FLAG_NEEDLES: [&str; 12] = [
     "--module-path",
@@ -140,45 +142,85 @@ fn directory_has_automatic_module_name(dir: &Path) -> bool {
 }
 
 fn archive_is_stable_module(path: &Path) -> bool {
+    fn probe_archive<R: Read + Seek>(archive: &mut ZipArchive<R>) -> (bool, bool) {
+        let mut had_error = false;
+
+        for candidate in MODULE_INFO_CLASS_CANDIDATES {
+            match archive.by_name(candidate) {
+                Ok(_) => return (true, had_error),
+                Err(zip::result::ZipError::FileNotFound) => continue,
+                Err(_) => had_error = true,
+            }
+        }
+
+        for manifest_path in MANIFEST_CANDIDATES {
+            let mut file = match archive.by_name(manifest_path) {
+                Ok(file) => file,
+                Err(zip::result::ZipError::FileNotFound) => continue,
+                Err(_) => {
+                    had_error = true;
+                    continue;
+                }
+            };
+
+            let mut bytes = Vec::with_capacity(file.size() as usize);
+            if file.read_to_end(&mut bytes).is_err() {
+                had_error = true;
+                continue;
+            }
+            let manifest = String::from_utf8_lossy(&bytes);
+            if manifest_main_attribute(&manifest, "Automatic-Module-Name")
+                .is_some_and(|name| !name.is_empty())
+            {
+                return (true, had_error);
+            }
+        }
+
+        (false, had_error)
+    }
+
+    fn is_jmod_magic(file: &mut File) -> bool {
+        let mut header = [0u8; 2];
+        let ok = file.read_exact(&mut header).is_ok() && header == *b"JM";
+        let _ = file.seek(SeekFrom::Start(0));
+        ok
+    }
+
+    // First attempt: interpret the file as a normal zip (works for jars and for some jmod variants
+    // where the central directory offsets are relative to the file start, even if the file has a
+    // `JM<version>` preamble).
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let is_jmod_magic = is_jmod_magic(&mut file);
+
+    if let Ok(mut archive) = ZipArchive::new(file) {
+        let (found, had_error) = probe_archive(&mut archive);
+        if found {
+            return true;
+        }
+        // For `.jmod`-style archives with a `JM<version>` header, the zip offsets can also be
+        // relative to the start of the embedded zip payload (after the 4-byte header). When the
+        // initial probe fails due to archive parsing errors, retry with an offset reader.
+        if !is_jmod_magic || !had_error {
+            return false;
+        }
+    } else if !is_jmod_magic {
+        return false;
+    }
+
+    // JMOD fallback: interpret zip offsets relative to the start of the embedded zip payload
+    // (after the `JM<version>` header).
     let Ok(file) = File::open(path) else {
         return false;
     };
-    let Ok(mut archive) = ZipArchive::new(file) else {
+    let Ok(reader) = OffsetReader::new(file, JMOD_HEADER_LEN) else {
         return false;
     };
-
-    for candidate in MODULE_INFO_CLASS_CANDIDATES {
-        if archive.by_name(candidate).is_ok() {
-            return true;
-        }
-    }
-
-    zip_manifest_main_attribute(&mut archive, "Automatic-Module-Name")
-        .is_some_and(|name| !name.is_empty())
-}
-
-fn zip_manifest_main_attribute<R: Read + Seek>(
-    archive: &mut ZipArchive<R>,
-    key: &str,
-) -> Option<String> {
-    for manifest_path in MANIFEST_CANDIDATES {
-        let mut file = match archive.by_name(manifest_path) {
-            Ok(file) => file,
-            Err(zip::result::ZipError::FileNotFound) => continue,
-            Err(_) => continue,
-        };
-
-        let mut bytes = Vec::with_capacity(file.size() as usize);
-        if file.read_to_end(&mut bytes).is_err() {
-            continue;
-        }
-        let manifest = String::from_utf8_lossy(&bytes);
-        if let Some(value) = manifest_main_attribute(&manifest, key) {
-            return Some(value);
-        }
-    }
-
-    None
+    let Ok(mut archive) = ZipArchive::new(reader) else {
+        return false;
+    };
+    probe_archive(&mut archive).0
 }
 
 fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
@@ -223,9 +265,58 @@ fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
     None
 }
 
+struct OffsetReader<R> {
+    inner: R,
+    base: u64,
+}
+
+impl<R> OffsetReader<R>
+where
+    R: Seek,
+{
+    fn new(mut inner: R, base: u64) -> std::io::Result<Self> {
+        inner.seek(SeekFrom::Start(base))?;
+        Ok(Self { inner, base })
+    }
+}
+
+impl<R> Read for OffsetReader<R>
+where
+    R: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R> Seek for OffsetReader<R>
+where
+    R: Seek,
+{
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let base = self.base;
+        let adjusted = match pos {
+            SeekFrom::Start(offset) => SeekFrom::Start(offset.checked_add(base).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow")
+            })?),
+            SeekFrom::End(offset) => SeekFrom::End(offset),
+            SeekFrom::Current(offset) => SeekFrom::Current(offset),
+        };
+
+        let absolute = self.inner.seek(adjusted)?;
+        absolute.checked_sub(base).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before archive start",
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::io::Write;
     use std::path::Path;
     use zip::write::FileOptions;
@@ -386,6 +477,36 @@ mod tests {
             zip.finish().unwrap();
         }
         assert!(stable_module_path_entry(&classes_manifest_jar));
+    }
+
+    #[test]
+    fn stable_module_path_entry_detects_jmods_with_magic_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Create a valid zip payload that contains a JPMS marker in the normal jmod location.
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut cursor);
+            let options = FileOptions::default();
+            zip.start_file("classes/module-info.class", options)
+                .unwrap();
+            zip.write_all(b"cafebabe").unwrap();
+            zip.finish().unwrap();
+        }
+        let zip_bytes = cursor.into_inner();
+
+        // Prefix with `JM<version>` header so the zip payload begins at offset 4.
+        let path = root.join("demo.jmod");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"JM\x01\x00");
+        bytes.extend_from_slice(&zip_bytes);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(
+            stable_module_path_entry(&path),
+            "expected `JM<version>`-prefixed jmod archives to be detected as stable modules"
+        );
     }
 
     #[test]

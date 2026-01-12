@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +29,8 @@ const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
 ];
 
 const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
+
+const JMOD_HEADER_LEN: u64 = 4;
 
 /// Derive the automatic module name for a module-path entry based on its path.
 ///
@@ -280,9 +282,9 @@ impl ClasspathEntry {
 }
 
 fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+    let mut archive = match open_zip_archive(path) {
+        Ok(archive) => archive,
+        Err(ClasspathError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
             // Best-effort: JPMS tooling can still assign an automatic module name based on the jar
             // filename even when the archive hasn't been downloaded yet.
             let name =
@@ -294,9 +296,8 @@ fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
             };
             return Ok(EntryModuleMeta { name, kind });
         }
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err(err),
     };
-    let mut archive = zip::ZipArchive::new(file)?;
 
     for candidate in MODULE_INFO_CLASS_CANDIDATES {
         match archive.by_name(candidate) {
@@ -1497,6 +1498,92 @@ enum ZipKind {
     Jmod,
 }
 
+struct OffsetReader<R> {
+    inner: R,
+    base: u64,
+}
+
+impl<R> OffsetReader<R>
+where
+    R: Seek,
+{
+    fn new(mut inner: R, base: u64) -> std::io::Result<Self> {
+        inner.seek(SeekFrom::Start(base))?;
+        Ok(Self { inner, base })
+    }
+}
+
+impl<R> Read for OffsetReader<R>
+where
+    R: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R> Seek for OffsetReader<R>
+where
+    R: Seek,
+{
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let base = self.base;
+        let adjusted = match pos {
+            SeekFrom::Start(offset) => SeekFrom::Start(offset.checked_add(base).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow")
+            })?),
+            SeekFrom::End(offset) => SeekFrom::End(offset),
+            SeekFrom::Current(offset) => SeekFrom::Current(offset),
+        };
+
+        let absolute = self.inner.seek(adjusted)?;
+        absolute.checked_sub(base).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before archive start",
+            )
+        })
+    }
+}
+
+fn open_zip_archive(
+    path: &Path,
+) -> Result<zip::ZipArchive<OffsetReader<std::fs::File>>, ClasspathError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut header = [0u8; 2];
+    let is_jmod_magic = file.read_exact(&mut header).is_ok() && header == *b"JM";
+    file.seek(SeekFrom::Start(0))?;
+
+    // First attempt: interpret the archive as a normal zip (works for jars and for some `.jmod`
+    // variants where the central directory offsets are relative to the file start, even if the
+    // file has a `JM<version>` preamble).
+    let reader = OffsetReader::new(file, 0)?;
+    match zip::ZipArchive::new(reader) {
+        Ok(mut archive) => {
+            if !is_jmod_magic {
+                return Ok(archive);
+            }
+
+            // For `.jmod` files with a `JM<version>` header, the zip offsets can also be relative
+            // to the embedded zip payload (after the 4-byte header). When local header parsing
+            // fails, retry with an offset reader.
+            if archive.len() == 0 || archive.by_index(0).is_ok() {
+                return Ok(archive);
+            }
+        }
+        Err(err) => {
+            if !is_jmod_magic {
+                return Err(err.into());
+            }
+        }
+    }
+
+    // JMOD fallback: interpret zip offsets relative to the start of the embedded zip payload.
+    let file = std::fs::File::open(path)?;
+    let reader = OffsetReader::new(file, JMOD_HEADER_LEN)?;
+    Ok(zip::ZipArchive::new(reader)?)
+}
+
 fn read_module_info_from_dir(dir: &Path) -> Result<Option<ModuleInfo>, ClasspathError> {
     // Multi-release JARs can store `module-info.class` under `META-INF/versions/9/`.
     // JMODs (or exploded JMODs) can store it under `classes/`.
@@ -1521,12 +1608,13 @@ fn read_module_info_from_zip(
     path: &Path,
     kind: ZipKind,
 ) -> Result<Option<ModuleInfo>, ClasspathError> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+    let mut archive = match open_zip_archive(path) {
+        Ok(archive) => archive,
+        Err(ClasspathError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
     };
-    let mut archive = zip::ZipArchive::new(file)?;
 
     let candidates: &[&str] = match kind {
         ZipKind::Jar => &MODULE_INFO_CLASS_CANDIDATES,
@@ -1601,12 +1689,13 @@ fn index_zip(
     stats: Option<&IndexingStats>,
     options: IndexOptions,
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err.into()),
+    let mut archive = match open_zip_archive(path) {
+        Ok(archive) => archive,
+        Err(ClasspathError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(err) => return Err(err),
     };
-    let mut archive = zip::ZipArchive::new(file)?;
 
     match kind {
         ZipKind::Jmod => {
@@ -1989,9 +2078,12 @@ impl From<DepsClassStub> for ClasspathClassStub {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
+    use std::io::{Cursor, Write};
     use std::path::PathBuf;
 
     use tempfile::TempDir;
+    use zip::write::FileOptions;
+    use zip::ZipWriter;
 
     use super::*;
 
@@ -2056,6 +2148,47 @@ mod tests {
             .module_info()
             .unwrap()
             .expect("expected module-info.class in named-module.jmod fixture");
+        assert_eq!(info.name.as_str(), "example.mod");
+    }
+
+    #[test]
+    fn reads_module_info_from_jmod_entry_with_magic_header() {
+        let tmp = TempDir::new().unwrap();
+
+        let jar = test_named_module_jar();
+        let module_info = {
+            let file = std::fs::File::open(&jar).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+            let mut entry = archive.by_name("module-info.class").unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            bytes
+        };
+
+        // Build a zip payload where offsets are relative to the start of the payload, then prefix
+        // it with `JM<version>` so the payload starts at offset 4.
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut cursor);
+            let options = FileOptions::default();
+            zip.start_file("classes/module-info.class", options)
+                .unwrap();
+            zip.write_all(&module_info).unwrap();
+            zip.finish().unwrap();
+        }
+        let zip_bytes = cursor.into_inner();
+
+        let path = tmp.path().join("magic.jmod");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"JM\x01\x00");
+        bytes.extend_from_slice(&zip_bytes);
+        std::fs::write(&path, bytes).unwrap();
+
+        let entry = ClasspathEntry::Jmod(path);
+        let info = entry
+            .module_info()
+            .unwrap()
+            .expect("expected module-info.class in JM-prefixed jmod");
         assert_eq!(info.name.as_str(), "example.mod");
     }
 
