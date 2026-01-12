@@ -2446,6 +2446,9 @@ export async function activate(context: vscode.ExtensionContext) {
               );
             } catch (err) {
               if (token.isCancellationRequested || isRequestCancelledError(err)) {
+                if (isSafeModeError(err)) {
+                  setSafeModeEnabled?.(true);
+                }
                 return;
               }
               throw err;
