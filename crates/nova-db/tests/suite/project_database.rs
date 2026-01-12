@@ -5,8 +5,6 @@ use nova_cache::CacheConfig;
 use nova_db::{AnalysisDatabase, FileId, InMemoryFileStore, SalsaDatabase, SalsaDbView};
 use tempfile::TempDir;
 
-mod suite;
-
 #[test]
 fn in_memory_file_store_implements_project_database() {
     let mut store = InMemoryFileStore::new();
