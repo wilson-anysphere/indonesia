@@ -558,7 +558,7 @@ fn gradle_snapshot_can_add_buildsrc_module_without_conventional_java_layout() {
     let model =
         load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
     let owning = model
-        .module_for_path(&snapshot_main_src.join("com/example/SnapshotOnly.java"))
+        .module_for_path(snapshot_main_src.join("com/example/SnapshotOnly.java"))
         .expect("module_for_path should resolve snapshot buildSrc java file");
     assert_eq!(owning.module.id, "gradle::__buildSrc");
     assert_eq!(owning.source_root.path, snapshot_main_src);
