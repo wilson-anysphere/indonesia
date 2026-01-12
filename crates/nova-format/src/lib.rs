@@ -367,7 +367,7 @@ pub fn edits_for_range_formatting(
     // requested range begins inside a comment or string-like token, lexing the snippet in
     // isolation can reinterpret the literal contents as Java code and corrupt them. Avoid applying
     // range formatting in that situation.
-    if is_inside_non_code_token(tree, range.start()) {
+    if is_inside_non_code_token_at_offset(tree, range.start()) {
         return Ok(Vec::new());
     }
     let start = u32::from(range.start()) as usize;
@@ -522,38 +522,39 @@ pub fn edits_for_on_type_formatting(
     Ok(vec![TextEdit::new(range, new_line)])
 }
 
-fn is_inside_non_code_token(tree: &SyntaxTree, offset: TextSize) -> bool {
+fn is_inside_non_code_token_at_offset(tree: &SyntaxTree, offset: TextSize) -> bool {
     let offset = u32::from(offset);
+    token_kind_covering_offset(tree, offset).is_some_and(is_non_code_token_kind)
+}
+
+fn is_non_code_token_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::StringLiteral
+            | SyntaxKind::CharLiteral
+            | SyntaxKind::TextBlock
+            // String templates can be lexed into multiple tokens (`StringTemplateText`,
+            // `StringTemplateExprStart`, etc.) by the full Java lexer/parser. The cache layer
+            // currently coalesces templates into a single `StringLiteral`, but keep this guard
+            // future-proof so snippet formatting never rewrites template payloads.
+            | SyntaxKind::StringTemplateStart
+            | SyntaxKind::StringTemplateText
+            | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateExprEnd
+            | SyntaxKind::StringTemplateEnd
+            | SyntaxKind::LineComment
+            | SyntaxKind::BlockComment
+            | SyntaxKind::DocComment
+    )
+}
+
+fn is_inside_non_code_token(tree: &SyntaxTree, offset: TextSize) -> bool {
     // LSP on-type formatting positions are typically *after* the typed character, but keep this
     // robust across editor implementations by checking both the current offset and the previous
     // byte.
-    let probes = [offset, offset.saturating_sub(1)];
-    for probe in probes {
-        if let Some(kind) = token_kind_covering_offset(tree, probe) {
-            if matches!(
-                kind,
-                SyntaxKind::StringLiteral
-                    | SyntaxKind::CharLiteral
-                    | SyntaxKind::TextBlock
-                    // String templates can be lexed into multiple tokens (`StringTemplateText`,
-                    // `StringTemplateExprStart`, etc.) by the full Java lexer/parser. The cache
-                    // layer currently coalesces templates into a single `StringLiteral`, but keep
-                    // this guard future-proof so on-type formatting never rewrites template
-                    // payloads.
-                    | SyntaxKind::StringTemplateStart
-                    | SyntaxKind::StringTemplateText
-                    | SyntaxKind::StringTemplateExprStart
-                    | SyntaxKind::StringTemplateExprEnd
-                    | SyntaxKind::StringTemplateEnd
-                    | SyntaxKind::LineComment
-                    | SyntaxKind::BlockComment
-                    | SyntaxKind::DocComment
-            ) {
-                return true;
-            }
-        }
-    }
-    false
+    let offset_u32 = u32::from(offset);
+    is_inside_non_code_token_at_offset(tree, offset)
+        || is_inside_non_code_token_at_offset(tree, TextSize::from(offset_u32.saturating_sub(1)))
 }
 
 fn token_kind_covering_offset(tree: &SyntaxTree, offset: u32) -> Option<SyntaxKind> {
