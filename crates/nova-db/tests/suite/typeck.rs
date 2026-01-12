@@ -458,6 +458,26 @@ class C {
 }
 
 #[test]
+fn this_and_super_in_instance_initializer_are_allowed() {
+    let src = r#"
+class C {
+  {
+    this.toString();
+    super.toString();
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "this-in-static-context"
+            && d.code.as_ref() != "super-in-static-context"),
+        "expected instance initializer to allow `this`/`super`; got {diags:?}"
+    );
+}
+
+#[test]
 fn byte_initializer_allows_int_constant() {
     let src = r#"
 class C { void m(){ byte b = 1; } }
