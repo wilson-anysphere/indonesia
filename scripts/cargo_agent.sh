@@ -259,6 +259,19 @@ run_cargo() {
     limit_as_effective="unlimited"
   fi
 
+  # `cargo nextest run` can spawn many test processes and threads. Even with modest
+  # `--test-threads` settings, the runner and/or test binaries can reserve enough
+  # virtual memory (thread stacks, TLS, etc.) to hit the default 4G RLIMIT_AS ceiling,
+  # causing spurious panics like:
+  #
+  #   failed to spawn thread: Resource temporarily unavailable
+  #
+  # Prefer usability here: if the caller didn't explicitly set a tighter limit,
+  # disable RLIMIT_AS for nextest commands.
+  if [[ "${subcommand}" == "nextest" && "${limit_as_is_default}" -eq 1 ]]; then
+    limit_as_effective="unlimited"
+  fi
+
   # Cap RUST_TEST_THREADS for test runs
   if [[ "${subcommand}" == "test" && -z "${RUST_TEST_THREADS:-}" ]]; then
     local rust_test_threads="${NOVA_RUST_TEST_THREADS:-}"
