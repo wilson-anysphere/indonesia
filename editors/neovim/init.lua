@@ -23,7 +23,14 @@ if not configs.nova then
     default_config = {
       cmd = { "nova-lsp", "--stdio" },
       filetypes = { "java" },
-      root_dir = util.root_pattern("pom.xml", "build.gradle", "settings.gradle", ".git"),
+      root_dir = util.root_pattern(
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        ".git"
+      ),
     },
   }
 end
