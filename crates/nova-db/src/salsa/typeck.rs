@@ -5850,6 +5850,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         .resolve_qualified_this_super_qualifier_type(loader, *range, "super")
                         .or_else(|| self.enclosing_class_type(loader))
                         .unwrap_or(Type::Unknown);
+                    if base.is_errorish() {
+                        return ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        };
+                    }
                     self.ensure_type_loaded(loader, &base);
                     let ty = match base {
                         Type::Class(class_ty) => loader
@@ -8171,6 +8177,30 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         };
                     }
 
+                    if let Some(owner) = type_binary_name(loader.store, &recv_ty) {
+                        if !self.has_enclosing_instance_of(&owner) {
+                            let span = if !name_range.is_empty() {
+                                Some(name_range)
+                            } else {
+                                Some(self.body.exprs[expr].range())
+                            };
+                            let env_ro: &dyn TypeEnv = &*loader.store;
+                            self.diagnostics.push(Diagnostic::error(
+                                "static-context",
+                                format!(
+                                    "cannot use `{}.{}` from a static context",
+                                    format_type(env_ro, &recv_ty),
+                                    name
+                                ),
+                                span,
+                            ));
+                            return ExprInfo {
+                                ty: Type::Error,
+                                is_type_ref: false,
+                            };
+                        }
+                    }
+
                     return ExprInfo {
                         ty: recv_ty,
                         is_type_ref: false,
@@ -8192,6 +8222,30 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             ty: Type::Error,
                             is_type_ref: false,
                         };
+                    }
+
+                    if let Some(owner) = type_binary_name(loader.store, &recv_ty) {
+                        if !self.has_enclosing_instance_of(&owner) {
+                            let span = if !name_range.is_empty() {
+                                Some(name_range)
+                            } else {
+                                Some(self.body.exprs[expr].range())
+                            };
+                            let env_ro: &dyn TypeEnv = &*loader.store;
+                            self.diagnostics.push(Diagnostic::error(
+                                "static-context",
+                                format!(
+                                    "cannot use `{}.{}` from a static context",
+                                    format_type(env_ro, &recv_ty),
+                                    name
+                                ),
+                                span,
+                            ));
+                            return ExprInfo {
+                                ty: Type::Error,
+                                is_type_ref: false,
+                            };
+                        }
                     }
 
                     let object_ty = loader
@@ -9574,6 +9628,24 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 .resolve_qualified_type_in_scope(self.scopes, self.scope_id, &q)?;
         let id = loader.store.intern_class_id(resolved.as_str());
         let ty = Type::class(id, Vec::new());
+
+        // Qualified `this` / `super` expressions can only refer to an *enclosing* instance type.
+        // In static (or implicitly static) member types, there may be no enclosing instance
+        // available even if name resolution finds the type.
+        if !self.has_enclosing_instance_of(resolved.as_str()) {
+            let env_ro: &dyn TypeEnv = &*loader.store;
+            self.diagnostics.push(Diagnostic::error(
+                "static-context",
+                format!(
+                    "cannot use `{}.{}` from a static context",
+                    format_type(env_ro, &ty),
+                    keyword
+                ),
+                Some(range),
+            ));
+            return Some(Type::Error);
+        }
+
         self.ensure_type_loaded(loader, &ty);
         Some(ty)
     }

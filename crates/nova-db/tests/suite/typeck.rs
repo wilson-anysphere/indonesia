@@ -6034,6 +6034,33 @@ class Outer {
 }
 
 #[test]
+fn qualified_this_is_not_allowed_in_static_member_class() {
+    let src = r#"
+class Outer {
+    int x;
+    static class Inner {
+        int m() {
+            return Outer.this.x;
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
+        "expected `Outer.this` to be rejected in a static member class; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected `Outer.this` error to avoid cascading unresolved-field diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn inner_class_can_access_enclosing_instance_field_unqualified() {
     let src = r#"
 class Outer {
@@ -6103,6 +6130,33 @@ class Outer {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-name"),
         "expected unqualified static field access to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn qualified_super_is_not_allowed_in_static_member_class() {
+    let src = r#"
+class Base { void foo() {} }
+class Outer extends Base {
+    static class Inner {
+        void m() {
+            Outer.super.foo();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
+        "expected `Outer.super` to be rejected in a static member class; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected `Outer.super` error to avoid cascading unresolved-method diagnostics; got {diags:?}"
     );
 }
 
