@@ -17,6 +17,29 @@ use super::*;
 
 static STREAM_EVAL_CLASS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamEvalStage {
+    /// The stream source expression used to obtain the initial sample (`stage0`).
+    SourceSample,
+    /// An intermediate operation (`stageN` for N > 0).
+    IntermediateOp { stage: usize },
+    /// The terminal operation (`terminal`).
+    Terminal,
+    /// We could not attribute the compilation error to a specific stage.
+    Unknown,
+}
+
+impl StreamEvalStage {
+    fn label(self) -> &'static str {
+        match self {
+            StreamEvalStage::SourceSample => "source sample",
+            StreamEvalStage::IntermediateOp { .. } => "intermediate op",
+            StreamEvalStage::Terminal => "terminal",
+            StreamEvalStage::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ScopedLocal {
     name: String,
@@ -190,7 +213,7 @@ impl Debugger {
         let _cleanup = TempDirCleanup(output_dir.clone());
 
         let source_path = output_dir.join(format!("{simple_name}.java"));
-        std::fs::write(&source_path, source).map_err(|err| {
+        std::fs::write(&source_path, &source).map_err(|err| {
             DebuggerError::InvalidRequest(format!(
                 "failed to write generated eval source {}: {err}",
                 source_path.display()
@@ -206,9 +229,14 @@ impl Debugger {
                 if cancel.is_cancelled() {
                     return Err(JdwpError::Cancelled.into());
                 }
-                return Err(DebuggerError::InvalidRequest(format!(
-                    "javac failed: {err}"
-                )));
+                let message = format_stream_eval_compile_failure(
+                    &source_path,
+                    &source,
+                    &stage_exprs,
+                    terminal_expr.as_deref(),
+                    &err,
+                );
+                return Err(DebuggerError::InvalidRequest(message));
             }
         };
 
@@ -782,6 +810,187 @@ fn dedup_lines(lines: Vec<String>) -> Vec<String> {
     out
 }
 
+fn format_stream_eval_compile_failure(
+    source_path: &Path,
+    source: &str,
+    stage_exprs: &[String],
+    terminal_expr: Option<&str>,
+    javac_error: &crate::hot_swap::CompileError,
+) -> String {
+    let diagnostics = javac_error.to_string();
+
+    let (stage, expr) = stream_eval_stage_and_expression(source, stage_exprs, terminal_expr, &diagnostics);
+    let user_expr = terminal_expr
+        .or_else(|| stage_exprs.last().map(|s| s.as_str()))
+        .filter(|s| !s.trim().is_empty());
+
+    let mut out = String::new();
+    out.push_str("stream debug helper compilation failed\n");
+    if let Some(user_expr) = user_expr {
+        out.push_str(&format!("User expression: `{user_expr}`\n"));
+    }
+    out.push_str(&format!("Generated source: {}\n", source_path.display()));
+    out.push_str(&match stage {
+        StreamEvalStage::IntermediateOp { stage } => format!("Stage: intermediate op (stage{stage})\n"),
+        other => format!("Stage: {}\n", other.label()),
+    });
+    if let Some(expr) = expr {
+        if user_expr.map(|user| user != expr).unwrap_or(true) {
+            out.push_str(&format!("Stage expression: `{expr}`\n"));
+        }
+    }
+    out.push('\n');
+    out.push_str("Javac diagnostics:\n");
+    out.push_str(&diagnostics);
+
+    for hint in stream_eval_compile_hints(&diagnostics) {
+        out.push_str("\n\nHint: ");
+        out.push_str(&hint);
+    }
+
+    out
+}
+
+fn stream_eval_stage_and_expression<'a>(
+    source: &str,
+    stage_exprs: &'a [String],
+    terminal_expr: Option<&'a str>,
+    javac_output: &str,
+) -> (StreamEvalStage, Option<&'a str>) {
+    let Some((line, _col)) = parse_first_formatted_javac_location(javac_output) else {
+        return (StreamEvalStage::Unknown, None);
+    };
+
+    match stage_decl_for_source_line(source, line) {
+        StageDecl::Terminal => (StreamEvalStage::Terminal, terminal_expr),
+        StageDecl::Stage(0) => (StreamEvalStage::SourceSample, stage_exprs.get(0).map(|s| s.as_str())),
+        StageDecl::Stage(stage) => (
+            StreamEvalStage::IntermediateOp { stage },
+            stage_exprs.get(stage).map(|s| s.as_str()),
+        ),
+        StageDecl::Unknown => (StreamEvalStage::Unknown, None),
+    }
+}
+
+fn parse_first_formatted_javac_location(output: &str) -> Option<(usize, usize)> {
+    // `format_javac_failure` emits one diagnostic per line in the form:
+    // `<file>:<line>:<col>: <message>`
+    let line = output.lines().find(|l| !l.trim().is_empty())?;
+    let mut parts = line.rsplitn(4, ':');
+    let _msg = parts.next()?;
+    let col_s = parts.next()?.trim();
+    let line_s = parts.next()?.trim();
+    let _file = parts.next()?; // may contain ':' on Windows; rsplitn keeps it intact.
+
+    let line_no = line_s.parse::<usize>().ok()?;
+    let col_no = col_s.parse::<usize>().ok()?;
+    Some((line_no, col_no))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageDecl {
+    Stage(usize),
+    Terminal,
+    Unknown,
+}
+
+fn stage_decl_for_source_line(source: &str, error_line_1_based: usize) -> StageDecl {
+    if error_line_1_based == 0 {
+        return StageDecl::Unknown;
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return StageDecl::Unknown;
+    }
+    let mut idx = error_line_1_based.saturating_sub(1);
+    if idx >= lines.len() {
+        idx = lines.len().saturating_sub(1);
+    }
+
+    for line in lines[..=idx].iter().rev() {
+        if let Some(decl) = parse_stage_decl_line(line) {
+            return decl;
+        }
+    }
+    StageDecl::Unknown
+}
+
+fn parse_stage_decl_line(line: &str) -> Option<StageDecl> {
+    // We only want to match method declarations in the generated helper source.
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("public static ") {
+        return None;
+    }
+
+    if trimmed.contains(" terminal(") || trimmed.contains("\tterminal(") || trimmed.contains(" terminal (") {
+        return Some(StageDecl::Terminal);
+    }
+
+    // Look for the stage method name.
+    // Examples:
+    //   public static Object stage0(...)
+    //   public static void stage12(...)
+    let stage_pos = trimmed.find(" stage")?;
+    let after = trimmed[stage_pos + " stage".len()..].trim_start();
+
+    let digits_end = after
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(after.len());
+    if digits_end == 0 {
+        return None;
+    }
+    let digits = &after[..digits_end];
+    let stage = digits.parse::<usize>().ok()?;
+
+    let rest = after[digits_end..].trim_start();
+    if !rest.starts_with('(') {
+        return None;
+    }
+
+    Some(StageDecl::Stage(stage))
+}
+
+fn stream_eval_compile_hints(javac_output: &str) -> Vec<String> {
+    let lower = javac_output.to_lowercase();
+    let mut hints = Vec::new();
+
+    // Missing Collectors import / symbol.
+    if javac_output.contains("Collectors") && lower.contains("cannot find symbol") {
+        hints.push(
+            "`Collectors` was not found. Try using the fully-qualified name \
+`java.util.stream.Collectors` (e.g. `java.util.stream.Collectors.toList()`), or ensure the adapter \
+can locate your source file so it can copy your project's imports."
+                .to_string(),
+        );
+    }
+
+    // Private access failures (injected helper class is not an inner class).
+    if lower.contains("has private access") || lower.contains("private access") {
+        hints.push(
+            "The stream debugger compiles an injected helper class. It can only access public / \
+protected / package-private members; private members are not accessible from the helper. Consider \
+using a public accessor or rewriting the expression."
+                .to_string(),
+        );
+    }
+
+    // Type inference / raw types / lambda inference failures.
+    if lower.contains("cannot infer type")
+        || lower.contains("cannot infer type arguments")
+        || lower.contains("inference variable")
+        || lower.contains("bad return type in lambda expression")
+    {
+        hints.push(
+            "Java type inference can fail in the injected helper context (especially with raw or \
+erased generic types). Try adding explicit casts or types, e.g. \
+`((java.util.List<Foo>) list).stream()` or assigning the stream to a typed local variable."
+                .to_string(),
+        );
+    }
+
+    hints
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,4 +1015,59 @@ mod tests {
             "should not emit `return <void expr>;`:\n{src}"
         );
     }
-}
+
+    #[test]
+    fn stream_eval_compile_failure_includes_stage_and_javac_diagnostics() {
+        let source_path = Path::new("/tmp/NovaStreamEval_Test.java");
+        let source = concat!(
+            "package com.example;\n",
+            "\n",
+            "import java.util.*;\n",
+            "import java.util.stream.*;\n",
+            "\n",
+            "public final class NovaStreamEval_Test {\n",
+            "  // filler\n",
+            "  // filler\n",
+            "  // filler\n",
+            "  public static Object stage0(java.util.List<Integer> list) { return list.stream().collect(Collectors.toList()); }\n",
+            "}\n",
+        );
+
+        let raw_javac_stderr = concat!(
+            "/tmp/NovaStreamEval_Test.java:10: error: cannot find symbol\n",
+            "  public static Object stage0(java.util.List<Integer> list) { return list.stream().collect(Collectors.toList()); }\n",
+            "                                                                                      ^\n",
+            "  symbol:   variable Collectors\n",
+            "  location: class NovaStreamEval_Test\n",
+            "1 error\n",
+        );
+
+        let formatted = crate::javac::format_javac_failure(&[], raw_javac_stderr.as_bytes());
+        let javac_err = crate::hot_swap::CompileError::new(formatted);
+
+        let message = format_stream_eval_compile_failure(
+            source_path,
+            source,
+            &[String::from("list.stream().collect(Collectors.toList())")],
+            None,
+            &javac_err,
+        );
+
+        assert!(
+            message.contains("Stage: source sample"),
+            "expected stage context in message:\n{message}"
+        );
+        assert!(
+            message.contains("/tmp/NovaStreamEval_Test.java:10:"),
+            "expected javac diagnostic location in message:\n{message}"
+        );
+        assert!(
+            message.contains("cannot find symbol"),
+            "expected javac diagnostic message in output:\n{message}"
+        );
+        assert!(
+            message.contains("java.util.stream.Collectors"),
+            "expected Collectors hint in output:\n{message}"
+        );
+    }
+} 
