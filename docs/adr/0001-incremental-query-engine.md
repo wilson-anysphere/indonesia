@@ -46,6 +46,10 @@ This repository already uses `ra_ap_salsa` in `crates/nova-db` to provide:
 - Use **interning** for identity-heavy values:
   - `#[ra_salsa::interned]` for `Name`, `SymbolId`, `PackageId`, etc.
   - prefer compact, copyable IDs (newtypes around interned keys) in query results.
+  - Note: Nova also supports “drop memoized results under memory pressure” by rebuilding
+    `ra_salsa::Storage`. Because that would normally reset intern tables, Nova snapshots+restores
+    the interned tables it relies on so `#[ra_salsa::interned]` IDs remain stable across memo
+    eviction within the lifetime of a single database instance (see ADR 0012).
 - **Purity rule:** Salsa queries are deterministic functions of their inputs. Do not read wall-clock time, environment variables, random numbers, or mutable global state inside a query.
 
 ### Equality / early-cutoff policy
