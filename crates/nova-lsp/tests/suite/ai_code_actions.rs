@@ -1599,38 +1599,15 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("end pos");
     let range = Range::new(start, end);
 
-    // The patch-based `generateTests` implementation prefers editing a conventional test file under
-    // `src/test/java/`. Pre-create that file so we get a simple `WorkspaceEdit.changes` response
-    // (rather than `documentChanges` for file creation).
-    let test_dir = root.join("src/test/java/com/example");
-    std::fs::create_dir_all(&test_dir).expect("create test dir");
-    let test_file_path = test_dir.join("ExampleTest.java");
-    let test_file_rel = "src/test/java/com/example/ExampleTest.java";
-    let test_file_uri = uri_for_path(&test_file_path);
-    let test_source =
-        "package com.example;\n\npublic class ExampleTest {\n    // AI_TESTS_PLACEHOLDER\n}\n";
-    std::fs::write(&test_file_path, test_source).expect("write test file");
-
-    let placeholder_line = "    // AI_TESTS_PLACEHOLDER";
-    let placeholder_start = test_source
-        .find(placeholder_line)
-        .expect("placeholder start");
-    let placeholder_end = placeholder_start + placeholder_line.len();
-    let test_pos = TextPos::new(test_source);
-    let replace_start = test_pos
-        .lsp_position(placeholder_start)
-        .expect("replace start");
-    let replace_end = test_pos.lsp_position(placeholder_end).expect("replace end");
-
+    // The AI test-generation action is allowed to create new files (see
+    // `AiCodeActionExecutor::execute`), so use a patch that creates the conventional Maven/Gradle
+    // test file under `src/test/java/...`.
     let patch = json!({
       "edits": [
         {
-          "file": test_file_rel,
-          "range": {
-              "start": { "line": replace_start.line, "character": replace_start.character },
-              "end": { "line": replace_end.line, "character": replace_end.character }
-          },
-          "text": "    // AI-generated tests would go here\n"
+          "file": "src/test/java/com/example/ExampleTest.java",
+          "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+          "text": "package com.example;\n\npublic class ExampleTest {}\n"
         }
       ]
     })
@@ -1756,15 +1733,41 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("applyEdit params.edit");
     let edit_value = edit.clone();
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
-    let changes = edit.changes.expect("changes map");
-    let expected_uri = test_file_uri.parse::<Uri>().expect("file uri");
-    let edits = changes.get(&expected_uri).expect("edits for file");
-    assert!(
-        edits
-            .iter()
-            .any(|edit| edit.new_text.contains("AI-generated tests would go here")),
-        "expected inserted comment, got {edits:?}"
-    );
+    let expected_test_uri = uri_for_path(&root.join("src/test/java/com/example/ExampleTest.java"))
+        .parse::<Uri>()
+        .expect("test uri");
+    if let Some(document_changes) = edit.document_changes {
+        let ops = match document_changes {
+            lsp_types::DocumentChanges::Operations(ops) => ops,
+            other => panic!("expected documentChanges operations, got {other:?}"),
+        };
+        assert!(
+            ops.iter().any(|op| matches!(op, lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create)) if create.uri == expected_test_uri)),
+            "expected CreateFile for test uri, got {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| {
+                let lsp_types::DocumentChangeOperation::Edit(edit) = op else {
+                    return false;
+                };
+                if edit.text_document.uri != expected_test_uri {
+                    return false;
+                }
+                edit.edits.iter().any(|edit| match edit {
+                    lsp_types::OneOf::Left(edit) => edit.new_text.contains("ExampleTest"),
+                    lsp_types::OneOf::Right(edit) => edit.text_edit.new_text.contains("ExampleTest"),
+                })
+            }),
+            "expected TextDocumentEdit containing ExampleTest, got {ops:?}"
+        );
+    } else {
+        let changes = edit.changes.expect("changes map");
+        let edits = changes.get(&expected_test_uri).expect("edits for file");
+        assert!(
+            edits.iter().any(|edit| edit.new_text.contains("ExampleTest")),
+            "expected edits to contain ExampleTest, got {edits:?}"
+        );
+    }
 
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
