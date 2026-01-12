@@ -367,6 +367,120 @@ pub fn analyze_workspace(
     Ok(result)
 }
 
+/// Compute MapStruct diagnostics for a single file using the provided in-memory source text.
+///
+/// This is a best-effort helper intended for IDE usage where `source` may contain
+/// unsaved edits. It runs the same diagnostics logic as [`analyze_workspace`], but
+/// only for mapper(s) defined in `file`.
+///
+/// `has_mapstruct_dependency` should be set based on build metadata (Maven/Gradle).
+/// When false, this function will emit a `MAPSTRUCT_MISSING_DEPENDENCY` error if
+/// `@Mapper` usage is detected in this file.
+pub fn diagnostics_for_file(
+    project_root: &Path,
+    file: &Path,
+    source: &str,
+    has_mapstruct_dependency: bool,
+) -> std::io::Result<Vec<Diagnostic>> {
+    let mappers = discover_mappers_in_source(file, source)?;
+    if mappers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut diagnostics = Vec::new();
+
+    if !has_mapstruct_dependency {
+        for mapper in &mappers {
+            diagnostics.push(Diagnostic::error(
+                "MAPSTRUCT_MISSING_DEPENDENCY",
+                "MapStruct annotations are present but no org.mapstruct dependency was detected",
+                Some(mapper.name_span),
+            ));
+        }
+    }
+
+    // Ambiguous mapping methods (same source->target).
+    for mapper in &mappers {
+        let mut seen: HashMap<(String, String), Span> = HashMap::new();
+        for method in &mapper.methods {
+            let key = (
+                method.source_type.qualified_name(),
+                method.target_type.qualified_name(),
+            );
+            if let Some(prev) = seen.get(&key) {
+                diagnostics.push(Diagnostic::error(
+                    "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD",
+                    format!(
+                        "Ambiguous mapping method for {} -> {} (another candidate at {}..{})",
+                        key.0, key.1, prev.start, prev.end
+                    ),
+                    Some(method.name_span),
+                ));
+            } else {
+                seen.insert(key, method.name_span);
+            }
+        }
+    }
+
+    // Unmapped target properties (best-effort, file-system based).
+    let roots = source_roots(project_root);
+    for mapper in &mappers {
+        for method in &mapper.methods {
+            let Some(source_props) = properties_for_type(project_root, &roots, &method.source_type)
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let Some(target_props) = properties_for_type(project_root, &roots, &method.target_type)
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+
+            if target_props.is_empty() {
+                continue;
+            }
+
+            let mut mapped: HashSet<String> =
+                source_props.intersection(&target_props).cloned().collect();
+            for mapping in &method.mappings {
+                mapped.insert(mapping.target.clone());
+            }
+
+            let mut unmapped: Vec<String> = target_props.difference(&mapped).cloned().collect();
+            unmapped.sort();
+            if unmapped.is_empty() {
+                continue;
+            }
+
+            diagnostics.push(Diagnostic::warning(
+                "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES",
+                format!(
+                    "Potentially unmapped target properties for {} -> {}: {}",
+                    method.source_type.qualified_name(),
+                    method.target_type.qualified_name(),
+                    unmapped.join(", ")
+                ),
+                Some(method.name_span),
+            ));
+        }
+    }
+
+    Ok(diagnostics)
+}
+
+/// File-system based wrapper for [`diagnostics_for_file`].
+pub fn diagnostics_for_file_fs(
+    project_root: &Path,
+    file: &Path,
+    has_mapstruct_dependency: bool,
+) -> std::io::Result<Vec<Diagnostic>> {
+    let text = std::fs::read_to_string(file)?;
+    diagnostics_for_file(project_root, file, &text, has_mapstruct_dependency)
+}
+
 /// Go-to-definition support for MapStruct.
 ///
 /// This function is intentionally best-effort and only handles the two most
@@ -379,7 +493,21 @@ pub fn goto_definition(
     offset: usize,
 ) -> std::io::Result<Vec<NavigationTarget>> {
     let text = std::fs::read_to_string(file)?;
-    let mappers = discover_mappers_in_source(file, &text)?;
+    goto_definition_in_source(project_root, file, &text, offset)
+}
+
+/// Go-to-definition support for MapStruct using an in-memory source text snapshot.
+///
+/// Behavior matches [`goto_definition`], but parses MapStruct constructs from
+/// `source` rather than reading `file` from disk. It may still read *other* files
+/// from disk as needed (generated sources, target type definitions, etc).
+pub fn goto_definition_in_source(
+    project_root: &Path,
+    file: &Path,
+    source: &str,
+    offset: usize,
+) -> std::io::Result<Vec<NavigationTarget>> {
+    let mappers = discover_mappers_in_source(file, source)?;
     if mappers.is_empty() {
         return Ok(Vec::new());
     }

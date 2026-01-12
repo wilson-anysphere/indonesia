@@ -91,6 +91,28 @@ fn goto_definition_mapping_target_to_target_field() {
 #[test]
 fn goto_definition_respects_impl_name_and_package() {
     let root = fixture_custom_impl_project_root();
+    // Fixture tests need a generated mapper implementation on disk to validate
+    // navigation into annotation-processor output. We create a tiny stub under
+    // the conventional Maven generated sources path.
+    let generated_dir = root.join("target/generated-sources/annotations/com/example/generated");
+    std::fs::create_dir_all(&generated_dir).unwrap();
+    let generated_file = generated_dir.join("CarMapperCustomImpl.java");
+    if !generated_file.exists() {
+        std::fs::write(
+            &generated_file,
+            r#"package com.example.generated;
+
+public class CarMapperCustomImpl implements com.example.CarMapper {
+  @Override
+  public com.example.CarDto carToCarDto(com.example.Car car) {
+    return new com.example.CarDto();
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
     let mapper_file = root.join("src/main/java/com/example/CarMapper.java");
     let mapper_text = std::fs::read_to_string(&mapper_file).unwrap();
     let offset = mapper_text
@@ -112,6 +134,31 @@ fn goto_definition_respects_impl_name_and_package() {
 #[test]
 fn goto_definition_overloaded_methods_select_correct_impl() {
     let root = fixture_overload_project_root();
+    // Provide a generated implementation for the fixture.
+    let generated_dir = root.join("target/generated-sources/annotations/com/example");
+    std::fs::create_dir_all(&generated_dir).unwrap();
+    let generated_file = generated_dir.join("VehicleMapperImpl.java");
+    if !generated_file.exists() {
+        std::fs::write(
+            &generated_file,
+            r#"package com.example;
+
+public class VehicleMapperImpl implements VehicleMapper {
+  @Override
+  public VehicleDto map(Car car) {
+    return new VehicleDto();
+  }
+
+  @Override
+  public VehicleDto map(Bike bike) {
+    return new VehicleDto();
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
     let mapper_file = root.join("src/main/java/com/example/VehicleMapper.java");
     let mapper_text = std::fs::read_to_string(&mapper_file).unwrap();
 
@@ -143,6 +190,25 @@ fn goto_definition_overloaded_methods_select_correct_impl() {
 #[test]
 fn goto_definition_update_method_to_generated_impl() {
     let root = fixture_update_project_root();
+    // Provide a generated implementation for the fixture.
+    let generated_dir = root.join("target/generated-sources/annotations/com/example");
+    std::fs::create_dir_all(&generated_dir).unwrap();
+    let generated_file = generated_dir.join("CarMapperImpl.java");
+    if !generated_file.exists() {
+        std::fs::write(
+            &generated_file,
+            r#"package com.example;
+
+public class CarMapperImpl implements CarMapper {
+  @Override
+  public void updateCarDto(Car car, CarDto carDto) {
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
     let mapper_file = root.join("src/main/java/com/example/CarMapper.java");
     let mapper_text = std::fs::read_to_string(&mapper_file).unwrap();
     let offset = mapper_text

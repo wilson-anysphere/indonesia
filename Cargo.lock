@@ -3805,6 +3805,7 @@ dependencies = [
  "nova-hir",
  "nova-types",
  "nova-vfs",
+ "tempfile",
  "tree-sitter",
 ]
 
