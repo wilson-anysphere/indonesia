@@ -2166,19 +2166,18 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 fn exists_as_jar(path: &Path) -> bool {
-    let is_jar = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"));
-    if !is_jar {
-        return false;
-    }
-
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
     //
     // Accept both files and directories. Missing artifacts are treated as absent so downstream
     // indexing doesn't try to open non-existent archives.
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    {
+        return false;
+    }
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file() || meta.is_dir())
 }
 
