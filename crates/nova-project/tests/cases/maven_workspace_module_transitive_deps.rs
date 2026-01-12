@@ -17,6 +17,12 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
 
     let maven_repo = root.join("m2");
     fs::create_dir_all(&maven_repo).expect("mkdir m2");
+    // Create a fake Guava jar in the local repo so dependency resolution is deterministic and
+    // doesn't rely on the host machine's `~/.m2/repository`.
+    let guava_jar = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    fs::create_dir_all(guava_jar.parent().expect("guava jar parent"))
+        .expect("mkdir guava jar parent");
+    fs::write(&guava_jar, b"").expect("write guava jar placeholder");
 
     // Root aggregator with two workspace modules.
     write_file(

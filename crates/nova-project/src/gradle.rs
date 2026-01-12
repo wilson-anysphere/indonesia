@@ -1771,6 +1771,7 @@ fn parse_gradle_local_classpath_entries_from_text(
 ) -> Vec<ClasspathEntry> {
     static FILES_RE: OnceLock<Regex> = OnceLock::new();
     static FILE_TREE_DIR_RE: OnceLock<Regex> = OnceLock::new();
+    static FILE_TREE_POSITIONAL_RE: OnceLock<Regex> = OnceLock::new();
 
     // Note: this intentionally keeps the matcher simple; Gradle scripts are not trivially
     // parseable without a real Groovy/Kotlin parser. We rely on "exists on disk" checks to
@@ -1778,8 +1779,11 @@ fn parse_gradle_local_classpath_entries_from_text(
     let files_re = FILES_RE
         .get_or_init(|| Regex::new(r#"(?s)\bfiles\s*\((?P<args>.*?)\)"#).expect("valid regex"));
     let file_tree_dir_re = FILE_TREE_DIR_RE.get_or_init(|| {
-        Regex::new(r#"(?s)\bfileTree\s*\(\s*[^)]*?\bdir\s*:\s*['"](?P<dir>[^'"]+)['"]"#)
+        Regex::new(r#"(?s)\bfileTree\s*\(\s*[^)]*?\bdir\s*(?:[:=])\s*['"](?P<dir>[^'"]+)['"]"#)
             .expect("valid regex")
+    });
+    let file_tree_positional_re = FILE_TREE_POSITIONAL_RE.get_or_init(|| {
+        Regex::new(r#"(?s)\bfileTree\s*\(\s*['"](?P<dir>[^'"]+)['"]"#).expect("valid regex")
     });
 
     let mut out = Vec::new();
@@ -1817,13 +1821,10 @@ fn parse_gradle_local_classpath_entries_from_text(
         }
     }
 
-    for caps in file_tree_dir_re.captures_iter(contents) {
-        let Some(dir) = caps.name("dir").map(|m| m.as_str()) else {
-            continue;
-        };
+    let mut add_file_tree_dir = |dir: &str| {
         let dir = dir.trim();
         if dir.is_empty() {
-            continue;
+            return;
         }
 
         let raw_dir = PathBuf::from(dir);
@@ -1834,7 +1835,7 @@ fn parse_gradle_local_classpath_entries_from_text(
         };
 
         if !dir_path.is_dir() {
-            continue;
+            return;
         }
 
         for entry in WalkDir::new(&dir_path).into_iter().filter_map(Result::ok) {
@@ -1848,6 +1849,18 @@ fn parse_gradle_local_classpath_entries_from_text(
                     path: path.to_path_buf(),
                 });
             }
+        }
+    };
+
+    for caps in file_tree_dir_re.captures_iter(contents) {
+        if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
+            add_file_tree_dir(dir);
+        }
+    }
+
+    for caps in file_tree_positional_re.captures_iter(contents) {
+        if let Some(dir) = caps.name("dir").map(|m| m.as_str()) {
+            add_file_tree_dir(dir);
         }
     }
 

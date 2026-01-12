@@ -522,6 +522,31 @@ fn loads_gradle_local_jar_dependencies() {
 }
 
 #[test]
+fn loads_gradle_local_jar_dependencies_kotlin_dsl_filetree() {
+    let root = testdata_path("gradle-local-jars-kotlin");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    assert!(
+        config.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&config.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("libs/tree-only.jar"))
+        }),
+        "expected Kotlin DSL fileTree(\"libs\") to contribute jars on the resolved classpath"
+    );
+}
+
+#[test]
 fn loads_maven_multi_module_workspace_model() {
     let root = testdata_path("maven-multi");
     let repo_dir = tempdir().expect("tempdir");
@@ -949,6 +974,34 @@ fn loads_gradle_local_jar_dependencies_into_workspace_model() {
                     .is_some_and(|p| p == std::path::Path::new("libs/local.jar"))
         }),
         "expected libs/local.jar to be present on the module classpath"
+    );
+}
+
+#[test]
+fn loads_gradle_local_jar_dependencies_kotlin_dsl_filetree_into_workspace_model() {
+    let root = testdata_path("gradle-local-jars-kotlin");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let root_module = model.module_by_id("gradle::").expect("root module");
+
+    assert!(
+        root_module.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&model.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("libs/tree-only.jar"))
+        }),
+        "expected Kotlin DSL fileTree(\"libs\") to contribute jars on the module classpath"
     );
 }
 
