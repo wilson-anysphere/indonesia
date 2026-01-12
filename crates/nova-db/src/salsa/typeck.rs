@@ -4509,14 +4509,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                if assignment_conversion_with_const(
+                match assignment_conversion_with_const(
                     env_ro,
                     &init_ty,
                     &decl_ty,
                     const_value_for_expr(self.body, *init),
-                )
-                .is_none()
-                {
+                ) {
+                    None => {
                     let expected = format_type(env_ro, &decl_ty);
                     let found = format_type(env_ro, &init_ty);
                     self.diagnostics.push(Diagnostic::error(
@@ -4524,6 +4523,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         format!("type mismatch: expected {expected}, found {found}"),
                         Some(self.body.exprs[*init].range()),
                     ));
+                    }
+                    Some(conv) => {
+                        for warning in conv.warnings {
+                            if let TypeWarning::Unchecked(reason) = warning {
+                                self.emit_unchecked_warning(reason, self.body.exprs[*init].range());
+                            }
+                        }
+                    }
                 }
             }
             HirStmt::Expr { expr, .. } => {
@@ -4595,14 +4602,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                if assignment_conversion_with_const(
+                match assignment_conversion_with_const(
                     env_ro,
                     &expr_ty,
                     expected_return,
                     const_value_for_expr(self.body, *expr),
-                )
-                .is_none()
-                {
+                ) {
+                    None => {
                     let expected = format_type(env_ro, expected_return);
                     let found = format_type(env_ro, &expr_ty);
                     self.diagnostics.push(Diagnostic::error(
@@ -4610,6 +4616,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         format!("return type mismatch: expected {expected}, found {found}"),
                         Some(self.body.exprs[*expr].range()),
                     ));
+                    }
+                    Some(conv) => {
+                        for warning in conv.warnings {
+                            if let TypeWarning::Unchecked(reason) = warning {
+                                self.emit_unchecked_warning(reason, self.body.exprs[*expr].range());
+                            }
+                        }
+                    }
                 }
             }
             HirStmt::If {
@@ -4738,9 +4752,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
 
                     let env_ro: &dyn TypeEnv = &*loader.store;
-                    if assignment_conversion_with_const(env_ro, &element_ty, &decl_ty, None)
-                        .is_none()
-                    {
+                    match assignment_conversion_with_const(env_ro, &element_ty, &decl_ty, None) {
+                        None => {
                         let expected = format_type(env_ro, &decl_ty);
                         let found = format_type(env_ro, &element_ty);
                         self.diagnostics.push(Diagnostic::error(
@@ -4748,6 +4761,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             format!("type mismatch: expected {expected}, found {found}"),
                             Some(data.ty_range),
                         ));
+                        }
+                        Some(conv) => {
+                            for warning in conv.warnings {
+                                if let TypeWarning::Unchecked(reason) = warning {
+                                    self.emit_unchecked_warning(reason, data.ty_range);
+                                }
+                            }
+                        }
                     }
                 } else {
                     // `var` local variable type inference was added in Java 10, including support
@@ -5318,16 +5339,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             // Surface unchecked/raw-cast warnings even though the cast typechecks.
                             for warning in conv.warnings {
                                 if let TypeWarning::Unchecked(reason) = warning {
-                                    let reason = match reason {
-                                        UncheckedReason::RawConversion => "raw conversion",
-                                        UncheckedReason::UncheckedCast => "cast",
-                                        UncheckedReason::UncheckedVarargs => "varargs",
-                                    };
-                                    self.diagnostics.push(Diagnostic::warning(
-                                        "unchecked",
-                                        format!("unchecked {reason}"),
-                                        Some(*range),
-                                    ));
+                                    self.emit_unchecked_warning(reason, *range);
                                 }
                             }
 
@@ -6898,6 +6910,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
+    fn emit_unchecked_warning(&mut self, reason: UncheckedReason, span: Span) {
+        let reason = match reason {
+            UncheckedReason::RawConversion => "raw conversion",
+            UncheckedReason::UncheckedCast => "cast",
+            UncheckedReason::UncheckedVarargs => "varargs",
+        };
+        self.diagnostics.push(Diagnostic::warning(
+            "unchecked",
+            format!("unchecked {reason}"),
+            Some(span),
+        ));
+    }
+
     fn emit_method_warnings(
         &mut self,
         method: &ResolvedMethod,
@@ -6937,16 +6962,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ));
                 }
                 TypeWarning::Unchecked(reason) => {
-                    let reason = match reason {
-                        UncheckedReason::RawConversion => "raw conversion",
-                        UncheckedReason::UncheckedCast => "cast",
-                        UncheckedReason::UncheckedVarargs => "varargs",
-                    };
-                    self.diagnostics.push(Diagnostic::warning(
-                        "unchecked",
-                        format!("unchecked {reason}"),
-                        Some(call_span),
-                    ));
+                    self.emit_unchecked_warning(reason, call_span);
                 }
             }
         }

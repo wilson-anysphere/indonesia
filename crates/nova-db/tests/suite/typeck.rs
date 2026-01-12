@@ -412,6 +412,24 @@ class C {
 }
 
 #[test]
+fn unchecked_raw_conversion_in_assignment_emits_warning() {
+    let src = r#"
+class C {
+    void m(java.util.List raw) {
+        java.util.List<String> xs = raw;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
+        "expected an unchecked warning diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
 fn synchronized_on_primitive_is_error() {
     let src = r#"
 class C {
