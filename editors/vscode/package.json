@@ -193,6 +193,11 @@
       },
       {
         "view": "novaFrameworks",
+        "contents": "Nova is running in safe mode.\n\n[Generate Bug Report](command:nova.bugReport)",
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.safeMode"
+      },
+      {
+        "view": "novaFrameworks",
         "contents": "This version of Nova does not support web endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
         "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.webEndpointsSupported"
       },

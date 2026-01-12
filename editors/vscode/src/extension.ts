@@ -1489,6 +1489,10 @@ export async function activate(context: vscode.ExtensionContext) {
       safeModeStatusItem.hide();
     }
 
+    // Keep Frameworks view welcome content in sync with server safe-mode status.
+    // (Used by `contributes.viewsWelcome`.)
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.safeMode', enabled);
+
     if (!enabled) {
       safeModeReason = undefined;
     }
