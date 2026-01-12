@@ -1608,15 +1608,17 @@ pub fn extract_variable(
 
         let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_token_range);
 
-        // For explicit-typed extraction we must be confident about the type. If we don't have
-        // type-checker type information and our parser-only inference fell back to the generic
-        // "Object" type, we intentionally refuse the explicit-type variant (the `var` variant is
-        // still offered). This keeps code actions high-signal in unit-test mode (`TextDatabase`)
-        // where we don't have full type information.
+        // For explicit-typed extraction we must be confident about the type.
+        //
+        // When we don't have type-checker information and our parser-only inference falls back to
+        // the generic `Object` type, we may be unable to distinguish between a value-returning
+        // expression and a `void`-typed method invocation. In those cases, reject the refactoring
+        // rather than guessing. This commonly happens in unit-test mode (`TextDatabase`) where we
+        // don't have full type information.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
-        if typeck_ty.is_none() && parser_ty == "Object" {
+        if typeck_ty.is_none() && parser_ty == "Object" && expr_might_be_void(&expr) {
             return Err(RefactorError::TypeInferenceFailed);
         }
 
@@ -4076,6 +4078,16 @@ fn check_extract_variable_name_conflicts(
 
 fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
     a.start < b.end && b.start < a.end
+}
+
+fn expr_might_be_void(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::MethodCallExpression(_) => true,
+        ast::Expression::ParenthesizedExpression(p) => {
+            p.expression().is_some_and(|e| expr_might_be_void(&e))
+        }
+        _ => false,
+    }
 }
 
 fn pattern_binding_scope_ranges(pat: &ast::TypePattern) -> Option<Vec<TextRange>> {
