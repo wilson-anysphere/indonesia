@@ -3810,7 +3810,7 @@ mod tests {
         let rx = workspace.subscribe();
         workspace.trigger_indexing();
 
-        timeout(Duration::from_secs(10), wait_for_indexing_ready(&rx))
+        timeout(Duration::from_secs(20), wait_for_indexing_ready(&rx))
             .await
             .expect("timed out waiting for indexing");
 

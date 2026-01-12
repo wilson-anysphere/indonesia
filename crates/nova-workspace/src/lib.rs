@@ -1556,6 +1556,69 @@ mod fuzzy_symbol_tests {
     }
 
     #[test]
+    fn workspace_symbol_search_sharded_query_returns_duplicates_as_distinct_definitions() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
+
+        let mut shard0 = ProjectIndexes::default();
+        shard0.symbols.insert(
+            "Dup",
+            indexed_qualified(
+                "com.foo.Dup",
+                Some("com.foo"),
+                SymbolLocation {
+                    file: "com/foo/Dup.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
+        );
+        let mut shard1 = ProjectIndexes::default();
+        shard1.symbols.insert(
+            "Dup",
+            indexed_qualified(
+                "com.bar.Dup",
+                Some("com.bar"),
+                SymbolLocation {
+                    file: "com/bar/Dup.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
+        );
+
+        let shards = vec![shard0, shard1];
+
+        let (results, _stats) =
+            fuzzy_rank_workspace_symbols_sharded(searcher.as_ref(), &shards, "Dup", 10, true);
+
+        assert_eq!(results.len(), 2);
+
+        let mut qualified_names = results
+            .iter()
+            .map(|sym| sym.qualified_name.clone())
+            .collect::<Vec<_>>();
+        qualified_names.sort();
+        assert_eq!(
+            qualified_names,
+            vec!["com.bar.Dup".to_string(), "com.foo.Dup".to_string()]
+        );
+
+        let mut files = results
+            .iter()
+            .map(|sym| sym.location.file.clone())
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                "com/bar/Dup.java".to_string(),
+                "com/foo/Dup.java".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn workspace_symbol_locations_are_computed_from_hir_name_ranges() {
         use std::fs;
 
