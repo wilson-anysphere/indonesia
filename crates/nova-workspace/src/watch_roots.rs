@@ -12,7 +12,7 @@
 //! [`WatchRootManager`] reconciles the *desired* set of roots with the currently watched set,
 //! handling adds/removes deterministically and retrying roots that are temporarily missing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -226,6 +226,7 @@ fn should_retry_watch_error(root: &Path, err: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[derive(Default)]
     struct StubWatcher {

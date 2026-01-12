@@ -27,8 +27,8 @@ use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, 
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
-    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
-    LocalFs, NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
+    ChangeEvent, ContentChange, DocumentError, FileId, FileSystem, FileWatcher, LocalFs,
+    NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 use walkdir::WalkDir;
 
@@ -2526,7 +2526,7 @@ mod tests {
         EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvictor,
     };
     use nova_project::BuildSystem;
-    use nova_vfs::{ManualFileWatcher, ManualFileWatcherHandle};
+    use nova_vfs::{FileChange, ManualFileWatcher, ManualFileWatcherHandle};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};

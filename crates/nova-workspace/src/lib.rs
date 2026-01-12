@@ -4,7 +4,7 @@ use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_db::{FileId, NovaIndexing, SalsaDatabase};
 use nova_index::{
     load_sharded_index_view_lazy_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
-    CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
+    CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
 use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryManager};
@@ -1254,6 +1254,7 @@ fn fuzzy_rank_workspace_symbols_sharded(
 #[cfg(test)]
 mod fuzzy_symbol_tests {
     use super::*;
+    use nova_index::SymbolLocation;
 
     fn indexed(name: &str, location: SymbolLocation) -> nova_index::IndexedSymbol {
         nova_index::IndexedSymbol {
