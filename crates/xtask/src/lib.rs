@@ -62,7 +62,7 @@ pub fn syntax_lint() -> Result<()> {
 }
 
 fn repo_root() -> Result<PathBuf> {
-    // `cargo run -p xtask -- ...` is executed with the workspace root as CWD.
+    // `cargo run --locked -p xtask -- ...` is executed with the workspace root as CWD.
     // Keep this helper anyway so tests can call into codegen from arbitrary CWDs.
     let cwd = env::current_dir().context("failed to read current working directory")?;
     Ok(cwd)

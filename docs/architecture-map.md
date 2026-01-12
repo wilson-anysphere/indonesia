@@ -34,7 +34,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Refactorings**: `crates/nova-refactor/` (editor-facing wiring currently lives in `crates/nova-lsp/`)
 - **Framework support**: `crates/nova-framework-*` (Spring/Micronaut/JPA/Quarkus/MapStruct/etc)
 - **Distributed mode**: `crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`
-- **Codegen / developer tasks**: `crates/xtask/` (`cargo run -p xtask -- codegen`)
+- **Codegen / developer tasks**: `crates/xtask/` (`cargo run --locked -p xtask -- codegen`)
 - **Repo invariants / layering / docs ↔ code checks**: `crates/nova-devtools/`, `scripts/check-repo-invariants.sh`, `crate-layers.toml`
 - **File watching / watcher architecture**: `docs/file-watching.md` (see also `crates/nova-vfs/src/watch.rs`, `crates/nova-workspace/src/engine.rs`)
 
@@ -574,7 +574,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Intentionally partial YAML implementation (not YAML 1.2-complete).
 
 ### `xtask`
-- **Purpose:** developer tooling tasks invoked via `cargo run -p xtask -- ...` (currently: codegen).
+- **Purpose:** developer tooling tasks invoked via `cargo run --locked -p xtask -- ...` (currently: codegen).
 - **Key entry points:** `crates/xtask/src/lib.rs` (`main`, `codegen`, `generate_ast`),
   `crates/xtask/src/main.rs`.
 - **Maturity:** productionizing

@@ -13,7 +13,7 @@ cargo_agent() {
 # Usage:
 #   ./scripts/check-deps.sh
 #
-# (Equivalent to `cargo run -p nova-devtools -- check-deps`.)
+# (Equivalent to `cargo run --locked -p nova-devtools -- check-deps`.)
 
 # Some environments configure a global rustc wrapper (commonly `sccache`) via cargo config.
 # This can be flaky in multi-agent sandboxes. Mirror `scripts/check-repo-invariants.sh` and disable

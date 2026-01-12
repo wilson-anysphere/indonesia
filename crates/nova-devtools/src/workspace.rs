@@ -85,7 +85,7 @@ fn load_workspace_graph_from_cargo(manifest_path: Option<&Path>) -> anyhow::Resu
         cmd.arg("--manifest-path").arg(path);
     }
 
-    // This tool is commonly executed via `cargo run -p nova-devtools -- <command>`.
+    // This tool is commonly executed via `cargo run --locked -p nova-devtools -- <command>`.
     //
     // `cargo run` holds an exclusive file lock on the default target directory for the duration of
     // the run (including while the compiled binary executes). If we were to spawn a nested

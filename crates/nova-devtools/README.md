@@ -14,7 +14,7 @@ Validates workspace crate dependency edges against ADR 0007 layering rules defin
 [`crate-layers.toml`](../../crate-layers.toml).
 
 ```
-cargo run -p nova-devtools -- check-deps
+cargo run --locked -p nova-devtools -- check-deps
 ```
 
 ### `check-layers`
@@ -27,7 +27,7 @@ Validates `crate-layers.toml` itself:
 - duplicate crate entries are rejected
 
 ```
-cargo run -p nova-devtools -- check-layers
+cargo run --locked -p nova-devtools -- check-layers
 ```
 
 ### `check-architecture-map`
@@ -45,7 +45,7 @@ Strict mode additionally requires each crate section to include:
 - **Known gaps**
 
 ```
-cargo run -p nova-devtools -- check-architecture-map --strict
+cargo run --locked -p nova-devtools -- check-architecture-map --strict
 ```
 
 ### `check-protocol-extensions`
@@ -58,7 +58,7 @@ Validates [`docs/protocol-extensions.md`](../../docs/protocol-extensions.md) aga
 This enforces that the protocol extension spec stays in sync with both server + client code.
 
 ```
-cargo run -p nova-devtools -- check-protocol-extensions
+cargo run --locked -p nova-devtools -- check-protocol-extensions
 ```
 
 ### `check-test-layout`
@@ -72,7 +72,7 @@ Validates integration test layout across the workspace:
 - crates with **more than two** root-level `tests/*.rs` files fail the check
 
 ```
-cargo run -p nova-devtools -- check-test-layout
+cargo run --locked -p nova-devtools -- check-test-layout
 ```
 
 ### `check-repo-invariants`
@@ -86,7 +86,7 @@ Runs the full CI-equivalent invariant suite in one command:
 - `check-test-layout`
 
 ```
-cargo run -p nova-devtools -- check-repo-invariants
+cargo run --locked -p nova-devtools -- check-repo-invariants
 ```
 
 ### `graph-deps`
@@ -97,7 +97,7 @@ Forbidden edges (per `crate-layers.toml`) are rendered in red and labeled as “
 review discussions concrete. Nodes are also clustered by layer to improve readability.
 
 ```
-cargo run -p nova-devtools -- graph-deps --output target/nova-deps.dot
+cargo run --locked -p nova-devtools -- graph-deps --output target/nova-deps.dot
 ```
 
 ## JSON output (`--json`)
@@ -131,11 +131,11 @@ checks via `--metadata-path`:
 tmp="$(mktemp)"
 cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 
-cargo run -p nova-devtools -- check-deps --metadata-path "$tmp"
-cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
-cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
-cargo run -p nova-devtools -- check-protocol-extensions
-cargo run -p nova-devtools -- check-test-layout --metadata-path "$tmp"
+cargo run --locked -p nova-devtools -- check-deps --metadata-path "$tmp"
+cargo run --locked -p nova-devtools -- check-layers --metadata-path "$tmp"
+cargo run --locked -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
+cargo run --locked -p nova-devtools -- check-protocol-extensions
+cargo run --locked -p nova-devtools -- check-test-layout --metadata-path "$tmp"
 ```
 
 For convenience, you can also run:
@@ -152,5 +152,5 @@ If you want to do that manually:
 ```bash
 tmp="$(mktemp)"
 cargo metadata --format-version=1 --no-deps --locked >"$tmp"
-cargo run -p nova-devtools -- check-repo-invariants --metadata-path "$tmp"
+cargo run --locked -p nova-devtools -- check-repo-invariants --metadata-path "$tmp"
 ```
