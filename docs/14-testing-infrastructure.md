@@ -184,6 +184,8 @@ bash scripts/cargo_agent.sh test --locked -p nova-syntax
 
 # one integration test harness + filter (e.g. navigation tests)
 cargo test --locked -p nova-lsp --test tests navigation
+# agent/multi-runner:
+bash scripts/cargo_agent.sh test --locked -p nova-lsp --test tests navigation
 
 # filter by test name substring
 cargo test --locked -p nova-refactor move_static_method_updates_call_sites
@@ -369,14 +371,21 @@ These are “black-box-ish” tests around Nova’s protocol surfaces.
 #### 3a) LSP (stdio) end-to-end tests
 
 **Where:** integration test harness `crates/nova-lsp/tests/tests.rs` (run via `cargo test --locked -p nova-lsp --test tests`),
-plus supporting modules under `crates/nova-lsp/tests/**` (spawns the `nova-lsp` binary and talks JSON-RPC over stdio).
+plus supporting modules under `crates/nova-lsp/tests/{suite,support}/**` (spawns the `nova-lsp` binary and talks JSON-RPC over stdio).
+
+Note: `crates/nova-lsp/tests/suite/stdio_server.rs` is a Rust module included by the harness, not the
+integration test binary name.
 
 **Run locally:**
 
 ```bash
 cargo test --locked -p nova-lsp --test tests
+# agent/multi-runner:
+bash scripts/cargo_agent.sh test --locked -p nova-lsp --test tests
 # filter by test name substring
 cargo test --locked -p nova-lsp --test tests stdio_
+# agent/multi-runner:
+bash scripts/cargo_agent.sh test --locked -p nova-lsp --test tests stdio_
 ```
 
 #### 3b) DAP end-to-end tests (in-memory transport)
