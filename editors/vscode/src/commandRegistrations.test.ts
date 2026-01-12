@@ -30,6 +30,7 @@ describe('command registrations', () => {
       'nova.installOrUpdateDebugAdapter',
       'nova.useLocalDebugAdapterBinary',
       'nova.showDebugAdapterVersion',
+      'nova.frameworks.search',
     ];
 
     const srcRoot = path.dirname(fileURLToPath(import.meta.url));
