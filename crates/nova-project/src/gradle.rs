@@ -2079,8 +2079,10 @@ fn parse_gradle_local_classpath_entries_from_text(
     let files_re = FILES_RE
         .get_or_init(|| Regex::new(r#"(?s)\bfiles\s*\((?P<args>.*?)\)"#).expect("valid regex"));
     let file_tree_dir_re = FILE_TREE_DIR_RE.get_or_init(|| {
-        Regex::new(r#"(?s)\bfileTree\s*\(\s*[^)]*?\bdir\s*(?:[:=])\s*['"](?P<dir>[^'"]+)['"]"#)
-            .expect("valid regex")
+        Regex::new(
+            r#"(?s)\bfileTree\s*\(\s*[^)]*?\bdir\s*(?:[:=])\s*(?:(?:[\w.]+\.)?file\s*\(\s*)?['"](?P<dir>[^'"]+)['"]"#,
+        )
+        .expect("valid regex")
     });
     let file_tree_positional_re = FILE_TREE_POSITIONAL_RE.get_or_init(|| {
         Regex::new(r#"(?s)\bfileTree\s*\(\s*['"](?P<dir>[^'"]+)['"]"#).expect("valid regex")

@@ -485,8 +485,6 @@ pub(crate) fn load_maven_workspace_model(
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
                 classpath.push(ClasspathEntry {
-                    // Support "exploded jar" directories on disk; omit missing artifacts so
-                    // downstream indexing doesn't fail trying to open them.
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {
@@ -548,7 +546,14 @@ pub(crate) fn load_maven_workspace_model(
                     });
 
                 if entry.kind == ClasspathEntryKind::Jar || is_archive {
-                    module_path.push(entry)
+                    // Preserve on-disk semantics for module-path entries: "exploded" jar
+                    // directories should stay as directories so downstream JPMS tooling can treat
+                    // them like directory archives.
+                    let mut entry = entry;
+                    if entry.kind == ClasspathEntryKind::Jar && entry.path.is_dir() {
+                        entry.kind = ClasspathEntryKind::Directory;
+                    }
+                    module_path.push(entry);
                 } else {
                     classpath.push(entry)
                 }
