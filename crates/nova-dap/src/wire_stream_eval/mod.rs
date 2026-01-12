@@ -122,19 +122,13 @@ pub(crate) async fn compile_and_inject_helper(
         format!("{package}.{simple_name}")
     };
 
-    let mut all_imports: Vec<String> = Vec::new();
-    all_imports.push("java.util.*".to_string());
-    all_imports.push("java.util.stream.*".to_string());
-    all_imports.push("java.util.function.*".to_string());
-    all_imports.extend(imports.iter().cloned());
-
     let locals_for_java_gen = bindings.locals_for_java_gen();
     let fields_for_java_gen = bindings.fields_for_java_gen();
     let static_fields_for_java_gen = bindings.static_fields_for_java_gen();
     let src = java_gen::generate_stream_eval_helper_java_source(
         &package,
         &simple_name,
-        &all_imports,
+        imports,
         &locals_for_java_gen,
         &fields_for_java_gen,
         &static_fields_for_java_gen,
