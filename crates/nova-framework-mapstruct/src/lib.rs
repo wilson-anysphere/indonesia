@@ -186,6 +186,61 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             .filter(|d| d.file.as_path() == path)
             .map(|d| d.diagnostic.clone())
             .collect();
+        let has_workspace_mapper = workspace
+            .analysis
+            .mappers
+            .iter()
+            .any(|m| m.file.as_path() == path);
+
+        // If the DB cannot enumerate project files (or doesn't include this file in
+        // `all_files`), the cached workspace model won't contain any mapper
+        // information for this file. In that case, still compute the cheap
+        // per-file diagnostics (missing dependency + ambiguous mapping methods)
+        // directly from the in-memory file text.
+        let mut file_mappers: Option<Vec<MapperModel>> = None;
+        if !has_workspace_mapper {
+            if let Ok(mappers) = discover_mappers_in_source(path, text) {
+                if !mappers.is_empty() {
+                    file_mappers = Some(mappers);
+                }
+            }
+        }
+        if let Some(mappers) = file_mappers.as_ref() {
+            let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
+                || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
+
+            if !has_mapstruct_dependency {
+                for mapper in mappers {
+                    diagnostics.push(Diagnostic::error(
+                        "MAPSTRUCT_MISSING_DEPENDENCY",
+                        "MapStruct annotations are present but no org.mapstruct dependency was detected",
+                        Some(mapper.name_span),
+                    ));
+                }
+            }
+
+            for mapper in mappers {
+                let mut seen: HashMap<(String, String), Span> = HashMap::new();
+                for method in &mapper.methods {
+                    let key = (
+                        method.source_type.qualified_name(),
+                        method.target_type.qualified_name(),
+                    );
+                    if let Some(prev) = seen.get(&key) {
+                        diagnostics.push(Diagnostic::error(
+                            "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD",
+                            format!(
+                                "Ambiguous mapping method for {} -> {} (another candidate at {}..{})",
+                                key.0, key.1, prev.start, prev.end
+                            ),
+                            Some(method.name_span),
+                        ));
+                    } else {
+                        seen.insert(key, method.name_span);
+                    }
+                }
+            }
+        }
 
         // Best-effort: if the in-memory workspace model can't compute unmapped target
         // properties (e.g. DTO sources aren't loaded in the DB), fall back to the
@@ -197,11 +252,17 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             .iter()
             .any(|d| d.code.as_ref() == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES");
         if !has_unmapped {
-            let has_mapping_methods = workspace
-                .analysis
-                .mappers
-                .iter()
-                .any(|m| m.file.as_path() == path && !m.methods.is_empty());
+            let has_mapping_methods = if has_workspace_mapper {
+                workspace
+                    .analysis
+                    .mappers
+                    .iter()
+                    .any(|m| m.file.as_path() == path && !m.methods.is_empty())
+            } else {
+                file_mappers
+                    .as_ref()
+                    .is_some_and(|mappers| mappers.iter().any(|m| !m.methods.is_empty()))
+            };
 
             if has_mapping_methods {
                 if let Some(root) = nova_project::workspace_root(path) {
