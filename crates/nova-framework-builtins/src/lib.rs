@@ -19,15 +19,11 @@ pub fn builtin_analyzers() -> Vec<Box<dyn FrameworkAnalyzer>> {
     analyzers.push(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
     analyzers.push(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
 
-    // Spring / JPA analyzers are feature-gated. These crates exist in the
-    // repository today but do not currently expose `FrameworkAnalyzer`
-    // implementations.
-    //
-    // Once `nova-framework-spring` / `nova-framework-jpa` provide analyzers, we
-    // can register them here behind the corresponding feature flags.
+    // Spring / JPA analyzers are feature-gated: they can be relatively expensive
+    // and/or pull in heavier dependencies.
     #[cfg(feature = "spring")]
     {
-        let _ = &nova_framework_spring::is_spring_applicable as *const _;
+        analyzers.push(Box::new(nova_framework_spring::SpringAnalyzer::new()));
     }
 
     #[cfg(feature = "jpa")]
