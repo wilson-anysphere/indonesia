@@ -1,5 +1,7 @@
 use crate::{SymbolKey, SymbolRange};
-use nova_cache::{atomic_write, deps_cache_dir, CacheConfig, CacheError, Fingerprint};
+use nova_cache::{deps_cache_dir, CacheConfig, CacheError, Fingerprint};
+#[cfg(not(unix))]
+use nova_cache::atomic_write;
 use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -82,7 +84,7 @@ impl DecompiledDocumentStore {
         if let Some(parent) = path.parent() {
             ensure_dir_safe(parent)?;
         }
-        atomic_write(&path, text.as_bytes())
+        atomic_write_store_file(&path, text.as_bytes())
     }
 
     /// Persist decompiled source text *and* decompiler symbol mappings.
@@ -105,7 +107,7 @@ impl DecompiledDocumentStore {
         }
         let stored = StoredDecompiledMappings::from_mappings(mappings);
         let bytes = serde_json::to_vec(&stored)?;
-        atomic_write(&meta_path, &bytes)
+        atomic_write_store_file(&meta_path, &bytes)
     }
 
     /// Load previously-persisted decompiled source text for a canonical `(content_hash,
@@ -852,6 +854,124 @@ fn open_cache_file_read(path: &Path) -> io::Result<std::fs::File> {
     #[cfg(not(unix))]
     {
         std::fs::File::open(path)
+    }
+}
+
+#[cfg(unix)]
+static STORE_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn atomic_write_store_file(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::io::Write as _;
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::io::{AsRawFd as _, FromRawFd as _};
+        use std::sync::atomic::Ordering;
+
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("cache file has no parent directory"))?;
+        let root = parent
+            .parent()
+            .ok_or_else(|| io::Error::other("cache file has no store root"))?;
+
+        let root_c = CString::new(root.as_os_str().as_bytes())
+            .map_err(|_| io::Error::other("cache root path contains NUL"))?;
+        let root_fd = unsafe {
+            libc::open(
+                root_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if root_fd < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let root_dir = unsafe { std::fs::File::from_raw_fd(root_fd) };
+
+        let hash_dir_name = parent
+            .file_name()
+            .ok_or_else(|| io::Error::other("cache directory has no basename"))?;
+        let hash_dir_c = CString::new(hash_dir_name.as_bytes())
+            .map_err(|_| io::Error::other("cache directory basename contains NUL"))?;
+        let hash_dir_fd = unsafe {
+            libc::openat(
+                root_dir.as_raw_fd(),
+                hash_dir_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if hash_dir_fd < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let hash_dir = unsafe { std::fs::File::from_raw_fd(hash_dir_fd) };
+
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("cache file has no filename"))?;
+
+        let dest_c = CString::new(file_name.as_bytes())
+            .map_err(|_| io::Error::other("cache filename contains NUL"))?;
+
+        const MAX_ATTEMPTS: usize = 1024;
+        for _ in 0..MAX_ATTEMPTS {
+            let pid = std::process::id();
+            let counter = STORE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+            let mut tmp_bytes = file_name.as_bytes().to_vec();
+            tmp_bytes.extend_from_slice(format!(".tmp.{pid}.{counter}").as_bytes());
+            let tmp_c = CString::new(tmp_bytes)
+                .map_err(|_| io::Error::other("tmp cache filename contains NUL"))?;
+
+            let fd = unsafe {
+                libc::openat(
+                    hash_dir.as_raw_fd(),
+                    tmp_c.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CLOEXEC
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW,
+                    0o600,
+                )
+            };
+            if fd < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EEXIST) {
+                    continue;
+                }
+                return Err(err.into());
+            }
+
+            let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+
+            let rename_rc = unsafe {
+                libc::renameat(
+                    hash_dir.as_raw_fd(),
+                    tmp_c.as_ptr(),
+                    hash_dir.as_raw_fd(),
+                    dest_c.as_ptr(),
+                )
+            };
+            if rename_rc < 0 {
+                let _ = unsafe { libc::unlinkat(hash_dir.as_raw_fd(), tmp_c.as_ptr(), 0) };
+                return Err(io::Error::last_os_error().into());
+            }
+
+            // Best-effort directory fsync (mirrors `nova_cache::atomic_write`).
+            let _ = hash_dir.sync_all();
+            return Ok(());
+        }
+
+        return Err(io::Error::other("failed to allocate unique temp file").into());
+    }
+
+    #[cfg(not(unix))]
+    {
+        atomic_write(path, bytes)
     }
 }
 
