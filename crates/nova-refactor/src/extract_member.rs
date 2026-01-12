@@ -20,6 +20,8 @@ pub enum ExtractError {
     SideEffectfulExpression,
     #[error("expression depends on method-local variables or parameters")]
     DependsOnLocal,
+    #[error("expression is not in an instance context and cannot be extracted to an instance field")]
+    NotInstanceContext,
     #[error("expression is not safe to extract to a static context")]
     NotStaticSafe,
     #[error("expression is not contained in a class body")]
@@ -115,6 +117,9 @@ fn extract_impl(
         .find_map(ast::ClassBody::cast)
         .ok_or(ExtractError::NotInClass)?;
 
+    if kind == ExtractKind::Field && is_in_static_context(&expr, &class_body) {
+        return Err(ExtractError::NotInstanceContext);
+    }
     if depends_on_local(&expr) {
         return Err(ExtractError::DependsOnLocal);
     }
@@ -143,7 +148,7 @@ fn extract_impl(
     name = make_unique(name, &existing_names);
 
     let occurrences = if options.replace_all {
-        find_equivalent_expressions(source, &class_body, &expr)
+        find_equivalent_expressions(source, &class_body, &expr, kind)
     } else {
         vec![expr_range]
     };
@@ -360,6 +365,39 @@ fn depends_on_local(expr: &ast::Expression) -> bool {
         return false;
     }
     expr_uses_any_name(expr.syntax(), &local_names)
+}
+
+fn is_directly_in_class_body(expr: &ast::Expression, class_body: &ast::ClassBody) -> bool {
+    expr.syntax()
+        .ancestors()
+        .find_map(ast::ClassBody::cast)
+        .is_some_and(|body| body.syntax().text_range() == class_body.syntax().text_range())
+}
+
+fn is_in_static_context(expr: &ast::Expression, class_body: &ast::ClassBody) -> bool {
+    // An instance field extracted by `extract_field` must only be used from an instance context.
+    // If the selected expression (or a replace-all occurrence) is inside a `static` member, then
+    // replacing it with an instance field reference will not compile.
+    let body_range = class_body.syntax().text_range();
+    for node in expr.syntax().ancestors() {
+        if node.text_range() == body_range {
+            break;
+        }
+        if let Some(method) = ast::MethodDeclaration::cast(node.clone()) {
+            return has_static_modifier(method.modifiers());
+        }
+        if let Some(init) = ast::InitializerBlock::cast(node.clone()) {
+            return has_static_modifier(init.modifiers());
+        }
+        if let Some(field) = ast::FieldDeclaration::cast(node.clone()) {
+            return has_static_modifier(field.modifiers());
+        }
+    }
+    false
+}
+
+fn has_static_modifier(modifiers: Option<ast::Modifiers>) -> bool {
+    modifiers.is_some_and(|mods| mods.keywords().any(|tok| tok.kind() == SyntaxKind::StaticKw))
 }
 
 fn enclosing_executable_container(
@@ -880,6 +918,7 @@ fn find_equivalent_expressions(
     source: &str,
     class_body: &ast::ClassBody,
     selected: &ast::Expression,
+    kind: ExtractKind,
 ) -> Vec<TextRange> {
     let selected_norm = normalize_expr_text(
         source
@@ -893,6 +932,15 @@ fn find_equivalent_expressions(
         .descendants()
         .filter_map(ast::Expression::cast)
     {
+        if !is_directly_in_class_body(&expr, class_body) {
+            continue;
+        }
+        if kind == ExtractKind::Field && is_in_static_context(&expr, class_body) {
+            continue;
+        }
+        if depends_on_local(&expr) {
+            continue;
+        }
         if has_side_effects(expr.syntax()) {
             continue;
         }

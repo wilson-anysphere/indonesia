@@ -599,6 +599,24 @@ class A {
 }
 
 #[test]
+fn extract_field_rejects_static_method_context() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static int foo = 1;
+
+    static void m() {
+        int x = /*[*/foo + 1/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::NotInstanceContext);
+}
+
+#[test]
 fn extract_constant_rejects_instance_dependency() {
     let (code, range) = fixture_range(
         r#"
@@ -684,6 +702,70 @@ class A {
 
     void m() {
         int x = value;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_field_replace_all_does_not_replace_nested_class_occurrences() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    int foo = 1;
+
+    void m() {
+        int x = /*[*/this.foo + 1/*]*/;
+        int y = this.foo + 1;
+    }
+
+    class Inner {
+        int foo = 2;
+
+        void n() {
+            int z = this.foo + 1;
+        }
+    }
+}
+"#,
+    );
+
+    let outcome = extract_field(
+        "A.java",
+        &code,
+        range,
+        ExtractOptions {
+            replace_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private final int value = this.foo + 1;
+
+    int foo = 1;
+
+    void m() {
+        int x = value;
+        int y = value;
+    }
+
+    class Inner {
+        int foo = 2;
+
+        void n() {
+            int z = this.foo + 1;
+        }
     }
 }
 "#
