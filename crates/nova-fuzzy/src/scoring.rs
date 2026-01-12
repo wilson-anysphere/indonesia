@@ -1046,6 +1046,14 @@ mod tests {
         }
 
         #[test]
+        fn dotless_i_is_not_ascii_i() {
+            // Unicode case folding is locale-independent. In particular, U+0131
+            // (LATIN SMALL LETTER DOTLESS I) does not fold to ASCII 'i'.
+            assert!(fuzzy_match("i", "ı").is_none());
+            assert!(fuzzy_match("ı", "i").is_none());
+        }
+
+        #[test]
         fn matcher_agrees_with_fuzzy_match_unicode_cases() {
             let cases = [
                 ("strasse", "Straße"),
