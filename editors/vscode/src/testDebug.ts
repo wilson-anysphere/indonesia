@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { NOVA_DEBUG_TYPE } from './debugAdapter';
+import { isRequestCancelledError } from './novaRequest';
 
 export type NovaRequest = <R>(
   method: string,
@@ -344,6 +345,7 @@ async function debugTestsFromTestExplorer(
     processesByRunId.set(runId, spawned);
 
     let startedSession: vscode.DebugSession | undefined;
+    let debugStartRequested = false;
     let cancelPromise: Promise<void> | undefined;
     const cancel = (reason: string): Promise<void> => {
       if (cancelPromise) {
@@ -362,21 +364,31 @@ async function debugTestsFromTestExplorer(
     };
 
     cancellationSubscription = token.onCancellationRequested(() => {
+      // Avoid waiting for a debug session when we haven't even started one yet. This keeps
+      // cancellation responsive during the "pre-attach" phase.
+      if (!debugStartRequested) {
+        void (async () => {
+          processesByRunId.delete(runId);
+          await spawned.dispose('cancelled');
+        })();
+        return;
+      }
+
       void cancel('cancelled');
     });
 
     const portFromOutput = await ready;
     const attachPort = portFromOutput ?? desiredPort;
 
-    if (child.exitCode !== null || child.signalCode !== null) {
-      processesByRunId.delete(runId);
-      throw new Error('Test debug process exited before the debugger could attach.');
-    }
-
     if (token.isCancellationRequested) {
       processesByRunId.delete(runId);
       await spawned.dispose('cancelled before debugger attach');
       return;
+    }
+
+    if (child.exitCode !== null || child.signalCode !== null) {
+      processesByRunId.delete(runId);
+      throw new Error('Test debug process exited before the debugger could attach.');
     }
 
     const debugConfig: vscode.DebugConfiguration & Record<string, unknown> = {
@@ -389,6 +401,7 @@ async function debugTestsFromTestExplorer(
       [NOVA_TEST_DEBUG_RUN_ID_KEY]: runId,
     };
 
+    debugStartRequested = true;
     const debugStarted = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
     if (!debugStarted) {
       processesByRunId.delete(runId);
@@ -415,6 +428,10 @@ async function debugTestsFromTestExplorer(
       }
     }
   } catch (err) {
+    if (token.isCancellationRequested || isRequestCancelledError(err)) {
+      // Treat cancellation as a non-error; VS Code will end the run when the token is cancelled.
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     run.appendOutput(`Nova: test debug failed: ${message}\n`);
     output.appendLine(`Nova: test debug failed: ${message}`);
