@@ -370,9 +370,9 @@ fn quarkus_config_property_prefix(text: &str, offset: usize) -> Option<String> {
     }
 
     // Ensure the nearest preceding annotation is `@ConfigProperty`.
-    let before_ident = &text[..ident_start];
+    let before_ident = text.get(..ident_start)?;
     let at_idx = before_ident.rfind('@')?;
-    let after_at = &before_ident[at_idx + 1..];
+    let after_at = before_ident.get(at_idx + 1..)?;
 
     let mut ann_end = 0usize;
     for (idx, ch) in after_at.char_indices() {
@@ -385,13 +385,13 @@ fn quarkus_config_property_prefix(text: &str, offset: usize) -> Option<String> {
     if ann_end == 0 {
         return None;
     }
-    let ann = &after_at[..ann_end];
+    let ann = after_at.get(..ann_end)?;
     let simple = ann.rsplit('.').next().unwrap_or(ann);
     if simple != "ConfigProperty" {
         return None;
     }
 
-    Some(text[start_quote + 1..offset].to_string())
+    Some(text.get(start_quote + 1..offset)?.to_string())
 }
 
 fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
@@ -2698,20 +2698,27 @@ fn static_import_completions(
 }
 
 fn static_import_owner_prefix(text: &str, offset: usize, prefix_start: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let offset = offset.min(bytes.len());
+    let prefix_start = prefix_start.min(offset);
+
     // We only support completing after the final `.` in `import static ...<dot><member_prefix>`.
     let before = skip_whitespace_backwards(text, prefix_start);
-    if before == 0 || text.as_bytes()[before - 1] != b'.' {
+    if before == 0 || bytes.get(before - 1) != Some(&b'.') {
         return None;
     }
     let dot_offset = before - 1;
 
     // Best-effort: only consider the current line.
-    let line_start = text[..dot_offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let line_start = text
+        .get(..dot_offset)
+        .unwrap_or("")
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
     if text.get(line_start..offset)?.contains(';') {
         return None;
     }
-
-    let bytes = text.as_bytes();
     let mut i = line_start;
     while i < offset && (bytes[i] as char).is_ascii_whitespace() {
         i += 1;
@@ -6424,7 +6431,8 @@ fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)> {
         return None;
     }
 
-    Some((text[start..end].to_string(), Span::new(start, end)))
+    let ident = text.get(start..end)?.to_string();
+    Some((ident, Span::new(start, end)))
 }
 
 pub fn prepare_type_hierarchy(
