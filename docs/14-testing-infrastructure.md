@@ -17,9 +17,41 @@ If you’re looking for *why* we test at each layer, start with the conceptual c
 
 ---
 
+## Running tests locally (workstations vs agent / multi-runner hosts)
+
+Many of the command lines throughout this doc are written in terms of **what CI runs** (raw `cargo ...`), and
+those commands are good “local equivalents” on a single developer machine.
+
+If you’re running in an **agent / multi-runner environment** (many concurrent workers on one host),
+follow [`AGENTS.md`](../AGENTS.md) + [`docs/00-operational-guide.md`](00-operational-guide.md):
+
+- Run cargo via the wrapper script: `bash scripts/cargo_agent.sh <subcommand> ...`
+  (enforces memory caps and throttles concurrent cargo invocations).
+- **Always scope test runs**. Avoid workspace-wide test runs (e.g. `cargo test --workspace` /
+  `cargo nextest run --workspace`) on shared agent hosts; always use a scope like `-p <crate>`, `--test <name>`,
+  `--lib`, or `--bin <name>`.
+
+Examples (CI command → agent-safe local equivalent):
+
+```bash
+# CI:
+cargo test -p nova-syntax --test javac_corpus
+# agent/multi-runner:
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+
+# CI:
+cargo bench -p nova-core --bench critical_paths
+# agent/multi-runner:
+bash scripts/cargo_agent.sh bench -p nova-core --bench critical_paths
+```
+
+Environment variables still apply; just prefix the wrapper instead of `cargo`:
+`BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax parse_class_snapshot`.
+
 ## CI-equivalent “smoke” run (what `ci.yml` enforces)
 
-From the repo root:
+From the repo root (these are the exact commands CI runs; on shared agent hosts use
+`bash scripts/cargo_agent.sh ...` and avoid unscoped/workspace-wide test runs):
 
 ```bash
 # Lint job (repo invariants + clippy)
@@ -27,11 +59,11 @@ From the repo root:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 
-# Test job (CI runs this on ubuntu/macos/windows)
+# Test job (CI runs this on ubuntu/macos/windows; workstation-only — do not run on shared agent hosts)
 # Install nextest first if needed: cargo install cargo-nextest --locked
 cargo nextest run --workspace --profile ci
 
-# Doctest job (CI runs this on ubuntu)
+# Doctest job (CI runs this on ubuntu; workstation-only — do not run on shared agent hosts)
 cargo test --workspace --doc
 ```
 
@@ -65,6 +97,7 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 # Install nextest first if needed: cargo install cargo-nextest --locked
+# CI-equivalent workspace run (workstation-only — do not run on shared agent hosts)
 cargo nextest run --workspace --profile ci
 cargo test --workspace --doc
 
@@ -107,10 +140,10 @@ cargo bench -p nova-classpath --bench index
 **Run locally:**
 
 ```bash
-# everything (CI uses nextest; `cargo test` is still fine locally)
+# everything (CI uses nextest; workstation-only — do not run on shared agent hosts)
 cargo nextest run --workspace --profile ci
-# or:
-# cargo test
+# or (workstation-only):
+# cargo test --workspace
 
 # one crate
 cargo test -p nova-syntax
@@ -623,6 +656,10 @@ In practice, Nova’s CI splits into:
 | `.github/workflows/test-all-features.yml` | in repo | Workspace tests with `--all-features` (main + schedule + manual; not a PR gate) | `RUST_BACKTRACE=1 cargo nextest run --workspace --profile ci --all-features` (or `cargo test --workspace --all-features`) |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.
+
+Reminder: CI runs raw `cargo ...` commands as shown above. On shared agent/multi-runner hosts, run the same
+commands via `bash scripts/cargo_agent.sh ...` and avoid unscoped/workspace-wide test runs (see “Running tests
+locally” near the top of this document).
 
 ---
 
