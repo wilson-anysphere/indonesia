@@ -5670,13 +5670,38 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
                 match body {
                     LambdaBody::Expr(expr_id) => {
-                        let body_info = if sam_return.is_errorish() {
-                            self.infer_expr(loader, *expr_id)
-                        } else {
-                            self.infer_expr_with_expected(loader, *expr_id, Some(&sam_return))
+                        // Expression-bodied lambdas:
+                        // - For non-void SAM return types, the expression is a return value.
+                        // - For void SAM return types, the expression must be "void-compatible"
+                        //   (JLS 15.27.2): a statement expression whose value (if any) is ignored.
+                        //
+                        // Avoid propagating `void` as an expected type into call/generic inference:
+                        // `void` is not a valid Java type argument and can lead to nonsensical
+                        // inferences like `T = void` in best-effort mode.
+                        let expected_body = (!sam_return.is_errorish() && sam_return != Type::Void)
+                            .then_some(&sam_return);
+                        let body_info = match expected_body {
+                            Some(expected) => {
+                                self.infer_expr_with_expected(loader, *expr_id, Some(expected))
+                            }
+                            None => self.infer_expr(loader, *expr_id),
                         };
 
-                        if sam_return != Type::Void
+                        if sam_return == Type::Void && !sam_return.is_errorish() {
+                            // `Runnable r = () -> foo();` is OK (statement expression),
+                            // but `Runnable r = () -> 1;` is not.
+                            if !self.is_statement_expression(*expr_id)
+                                && !body_info.ty.is_errorish()
+                            {
+                                let env_ro: &dyn TypeEnv = &*loader.store;
+                                let found = format_type(env_ro, &body_info.ty);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "return-mismatch",
+                                    format!("return type mismatch: expected void, found {found}"),
+                                    Some(self.body.exprs[*expr_id].range()),
+                                ));
+                            }
+                        } else if sam_return != Type::Void
                             && !sam_return.is_errorish()
                             && !body_info.ty.is_errorish()
                         {

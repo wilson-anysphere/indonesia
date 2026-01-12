@@ -7621,6 +7621,42 @@ class C {
 }
 
 #[test]
+fn lambda_expr_body_must_be_void_compatible_for_runnable_target() {
+    let src = r#"
+class C {
+    void m() {
+        Runnable r = () -> 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic for Runnable lambda with expression body, got {diags:?}"
+    );
+}
+
+#[test]
+fn lambda_expr_body_statement_expression_is_allowed_for_runnable_target() {
+    let src = r#"
+class C {
+    void m() {
+        Runnable r = () -> "x".substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
+        "expected Runnable lambda expression body to be allowed, got {diags:?}"
+    );
+}
+
+#[test]
 fn type_of_def_is_signature_only_and_does_not_execute_typeck_body() {
     let src = r#"
 class C {
