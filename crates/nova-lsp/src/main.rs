@@ -634,7 +634,9 @@ impl AnalysisState {
         new_version: i32,
         changes: &[lsp_types::TextDocumentContentChangeEvent],
     ) -> Result<ChangeEvent, DocumentError> {
-        let evt = self.vfs.apply_document_changes_lsp(uri, new_version, changes)?;
+        let evt = self
+            .vfs
+            .apply_document_changes_lsp(uri, new_version, changes)?;
         if let ChangeEvent::DocumentChanged { file_id, path, .. } = &evt {
             self.file_exists.insert(*file_id, true);
             if let Ok(text) = self.vfs.read_to_string(path) {
@@ -1539,9 +1541,10 @@ fn handle_notification(
             let uri = params.text_document.uri;
             let uri_string = uri.to_string();
             let version = params.text_document.version.unwrap_or(0);
-            let file_id = state
-                .analysis
-                .open_document(uri.clone(), params.text_document.text, version);
+            let file_id =
+                state
+                    .analysis
+                    .open_document(uri.clone(), params.text_document.text, version);
             let canonical_uri = state
                 .analysis
                 .vfs
@@ -1620,9 +1623,10 @@ fn handle_notification(
             };
 
             for file in params.files {
-                let (Ok(old_uri), Ok(new_uri)) =
-                    (file.old_uri.parse::<LspUri>(), file.new_uri.parse::<LspUri>())
-                else {
+                let (Ok(old_uri), Ok(new_uri)) = (
+                    file.old_uri.parse::<LspUri>(),
+                    file.new_uri.parse::<LspUri>(),
+                ) else {
                     continue;
                 };
                 state.analysis.rename_uri(&old_uri, &new_uri);
@@ -1837,9 +1841,8 @@ fn handle_code_action(
                                     SafeDeleteTarget::Symbol(target),
                                 ) {
                                     let mut action = action;
-                                    if let lsp_types::CodeActionOrCommand::CodeAction(
-                                        code_action,
-                                    ) = &mut action
+                                    if let lsp_types::CodeActionOrCommand::CodeAction(code_action) =
+                                        &mut action
                                     {
                                         if code_action.edit.is_none()
                                             && code_action.command.is_none()
@@ -3256,9 +3259,7 @@ mod tests {
         let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
 
         let text = "class Main { void m() { String s = \"\"; } }".to_string();
-        state
-            .analysis
-            .open_document(uri.clone(), text.clone(), 1);
+        state.analysis.open_document(uri.clone(), text.clone(), 1);
 
         let offset = text.find("String").expect("String token exists");
         let position = nova_lsp::text_pos::lsp_position(&text, offset).expect("position");
@@ -3279,7 +3280,10 @@ mod tests {
             .vfs
             .read_to_string(&vfs_path)
             .expect("read virtual document");
-        assert!(loaded.contains("class String"), "unexpected decompiled text: {loaded}");
+        assert!(
+            loaded.contains("class String"),
+            "unexpected decompiled text: {loaded}"
+        );
 
         match prior_java_home {
             Some(value) => std::env::set_var("JAVA_HOME", value),

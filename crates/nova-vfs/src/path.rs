@@ -75,7 +75,9 @@ impl VfsPath {
         if !is_decompiled_hash(&content_hash) {
             // Don't allow construction of the structured decompiled variant with a non-canonical
             // hash; callers that need to preserve arbitrary URIs can use `VfsPath::uri`.
-            return Self::Uri(format!("nova:///decompiled/{content_hash}/{binary_name}.java"));
+            return Self::Uri(format!(
+                "nova:///decompiled/{content_hash}/{binary_name}.java"
+            ));
         }
         Self::Decompiled {
             content_hash,
@@ -645,10 +647,7 @@ mod tests {
         let uri = format!("nova:////decompiled//{hash}//com.example.Foo.java");
         let parsed = VfsPath::uri(uri);
         let expected = format!("nova:///decompiled/{hash}/com.example.Foo.java");
-        assert_eq!(
-            parsed.to_uri().as_deref(),
-            Some(expected.as_str())
-        );
+        assert_eq!(parsed.to_uri().as_deref(), Some(expected.as_str()));
     }
 
     #[test]

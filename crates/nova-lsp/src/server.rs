@@ -132,7 +132,10 @@ mod tests {
             names.contains("Spring Boot: Application"),
             "configs: {names:?}"
         );
-        assert!(names.contains("Debug Tests: MainTest"), "configs: {names:?}");
+        assert!(
+            names.contains("Debug Tests: MainTest"),
+            "configs: {names:?}"
+        );
 
         let spring = configs
             .iter()

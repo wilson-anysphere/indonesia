@@ -74,7 +74,10 @@ fn legacy_uri_helpers_still_work() {
 fn canonicalize_decompiled_uri_upgrades_legacy_scheme() {
     let legacy = uri_for_class_internal_name(FOO_INTERNAL_NAME);
     let canonical = canonicalize_decompiled_uri(&legacy, FOO_CLASS).expect("canonicalize");
-    assert_eq!(canonical, decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME));
+    assert_eq!(
+        canonical,
+        decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME)
+    );
 }
 
 #[test]

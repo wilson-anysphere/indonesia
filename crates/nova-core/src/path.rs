@@ -444,7 +444,10 @@ mod tests {
     fn windows_drive_letter_is_canonicalized() {
         let uri = "file:///c:/tmp/a%20b.java";
         let path = file_uri_to_path(uri).unwrap();
-        assert_eq!(path, AbsPathBuf::new(PathBuf::from(r"C:\tmp\a b.java")).unwrap());
+        assert_eq!(
+            path,
+            AbsPathBuf::new(PathBuf::from(r"C:\tmp\a b.java")).unwrap()
+        );
 
         let uri2 = path_to_file_uri(&path).unwrap();
         assert_eq!(uri2, "file:///C:/tmp/a%20b.java");
