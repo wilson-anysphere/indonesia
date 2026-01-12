@@ -1986,7 +1986,9 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     };
 
     if version.ends_with("-SNAPSHOT") {
-        // Prefer using Maven metadata to resolve the timestamped SNAPSHOT jar filename.
+        // Prefer using Maven metadata to resolve the timestamped SNAPSHOT jar filename (when the
+        // timestamped jar exists on disk). Otherwise, fall back to the conventional
+        // `<artifactId>-<version>(-classifier).jar` path.
         if let Some(resolved) =
             resolve_snapshot_jar_file_name(&version_dir, &dep.artifact_id, classifier)
         {
