@@ -249,8 +249,10 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
     - Most shipped framework diagnostics/completions live in `crates/nova-ide/src/framework_cache.rs`.
     - Registry-backed analyzers can run via a best-effort adapter (`crates/nova-ide/src/framework_db.rs`)
       and `FrameworkAnalyzerRegistryProvider` (`crates/nova-ide/src/extensions.rs`).
-      The default IDE registry builds the analyzer list via `nova-framework-builtins` and registers
-      the provider for diagnostics/completions/navigation/inlay hints.
+      `nova-ide`'s generic `IdeExtensions::<DB>::with_default_registry` builds the analyzer list via
+      `nova-framework-builtins` and registers the provider for diagnostics/completions/navigation/inlay
+      hints, while the dyn-db constructor used by `nova-lsp` still registers
+      `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op).
 
 ### `nova-framework-builtins`
 - **Purpose:** centralized construction/registration of Nova’s built-in `nova-framework-*` analyzers so downstream crates (IDE, LSP, etc.) don’t need to maintain their own lists.
@@ -259,8 +261,9 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus by default.
   - Spring/JPA analyzers are feature-gated (`spring`/`jpa`) to avoid pulling heavier dependencies unless needed.
-  - Used by `nova-ide` to build the default `AnalyzerRegistry` (see `crates/nova-ide/src/extensions.rs`),
-    but some call sites still build their own registries.
+  - Used by `nova-ide`'s generic `IdeExtensions::with_default_registry` to build the default
+    `AnalyzerRegistry` (see `crates/nova-ide/src/extensions.rs`), but some call sites still build their
+    own registries.
 
 ### `nova-framework-dagger`
 - **Purpose:** best-effort Dagger DI graph extraction + diagnostics/navigation (text-based).
