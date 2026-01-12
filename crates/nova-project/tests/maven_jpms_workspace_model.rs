@@ -77,9 +77,22 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
         "expected Guava jar entry to be removed from classpath for JPMS workspaces"
     );
 
+    // Output directories should remain on the classpath.
+    assert!(
+        module.classpath.iter().any(|e| {
+            e.kind == ClasspathEntryKind::Directory && e.path.ends_with("target/classes")
+        }),
+        "expected target/classes to remain on module classpath"
+    );
+    assert!(
+        module.classpath.iter().any(|e| {
+            e.kind == ClasspathEntryKind::Directory && e.path.ends_with("target/test-classes")
+        }),
+        "expected target/test-classes to remain on module classpath"
+    );
+
     // Ensure model is deterministic (important for cache keys and downstream indexing).
     let model2 = load_workspace_model(root).expect("reload workspace model");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
-
