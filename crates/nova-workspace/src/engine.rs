@@ -651,22 +651,6 @@ impl WorkspaceEngine {
             };
             let watch_rx = watcher.receiver().clone();
 
-            fn vfs_change_to_normalized(change: FileChange) -> Option<NormalizedEvent> {
-                fn to_pathbuf(path: VfsPath) -> Option<PathBuf> {
-                    path.as_local_path().map(|path| path.to_path_buf())
-                }
-
-                match change {
-                    FileChange::Created { path } => Some(NormalizedEvent::Created(to_pathbuf(path)?)),
-                    FileChange::Modified { path } => Some(NormalizedEvent::Modified(to_pathbuf(path)?)),
-                    FileChange::Deleted { path } => Some(NormalizedEvent::Deleted(to_pathbuf(path)?)),
-                    FileChange::Moved { from, to } => Some(NormalizedEvent::Moved {
-                        from: to_pathbuf(from)?,
-                        to: to_pathbuf(to)?,
-                    }),
-                }
-            }
-
             let desired_roots = |workspace_root: &Path,
                                  config: &WatchConfig|
              -> std::collections::HashMap<PathBuf, WatchMode> {
@@ -744,7 +728,7 @@ impl WorkspaceEngine {
                                     .read()
                                     .expect("workspace watch config lock poisoned");
                                 for change in changes {
-                                    let Some(norm) = vfs_change_to_normalized(change) else {
+                                    let Some(norm) = NormalizedEvent::from_file_change(&change) else {
                                         continue;
                                     };
                                     if let Some(cat) = categorize_event(&config, &norm) {
