@@ -8,5 +8,4 @@
 #
 # One crate name per line. `#` comments and blank lines are ignored.
 
-nova-lsp
 nova-refactor
