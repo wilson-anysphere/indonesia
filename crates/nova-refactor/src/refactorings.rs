@@ -1220,11 +1220,13 @@ pub fn extract_variable(
 
         // For explicit-typed extraction we must be confident about the type. If we don't have
         // type-checker type information and our parser-only inference fell back to the generic
-        // "Object" type, reject the refactoring rather than guessing.
+        // "Object" type, we may be unable to distinguish between a value-returning expression and a
+        // `void`-typed method invocation. In those cases, reject the refactoring rather than
+        // guessing.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
-        if typeck_ty.is_none() && parser_ty == "Object" {
+        if typeck_ty.is_none() && parser_ty == "Object" && expr_might_be_void(&expr) {
             return Err(RefactorError::TypeInferenceFailed);
         }
 
@@ -3516,6 +3518,16 @@ fn check_extract_variable_name_conflicts(
 
 fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
     a.start < b.end && b.start < a.end
+}
+
+fn expr_might_be_void(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::MethodCallExpression(_) => true,
+        ast::Expression::ParenthesizedExpression(p) => {
+            p.expression().is_some_and(|e| expr_might_be_void(&e))
+        }
+        _ => false,
+    }
 }
 
 fn pattern_binding_scope_range(pat: &ast::TypePattern) -> Option<TextRange> {
