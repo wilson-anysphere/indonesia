@@ -23,11 +23,19 @@ pub struct Symbol {
 #[derive(Debug, Clone)]
 struct SymbolEntry {
     symbol: Symbol,
+    qualified_name_differs: bool,
 }
 
 impl SymbolEntry {
     fn new(symbol: Symbol) -> Self {
-        Self { symbol }
+        // `workspace/symbol` commonly sets `qualified_name == name`. Store this as
+        // a per-entry flag so candidate scoring doesn't need to compare strings
+        // on every query.
+        let qualified_name_differs = symbol.qualified_name != symbol.name;
+        Self {
+            symbol,
+            qualified_name_differs,
+        }
     }
 }
 
@@ -71,10 +79,10 @@ impl SymbolSearchIndex {
             let id = id as SymbolId;
             // `workspace/symbol` commonly sets `qualified_name == name`. Avoid
             // redundant trigram extraction in that case.
-            if entry.symbol.qualified_name == entry.symbol.name {
-                builder.insert(id, &entry.symbol.name);
-            } else {
+            if entry.qualified_name_differs {
                 builder.insert2(id, &entry.symbol.name, &entry.symbol.qualified_name);
+            } else {
+                builder.insert(id, &entry.symbol.name);
             }
         }
         let trigram = builder.build();
@@ -254,7 +262,7 @@ impl SymbolSearchIndex {
 
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
-        if entry.symbol.qualified_name != entry.symbol.name {
+        if entry.qualified_name_differs {
             let qual = matcher.score(&entry.symbol.qualified_name);
             if let (Some(a), Some(b)) = (best, qual) {
                 if b.rank_key() > a.rank_key() {
