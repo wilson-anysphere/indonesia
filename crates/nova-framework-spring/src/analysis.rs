@@ -46,6 +46,7 @@ pub enum InjectionKind {
     Field,
     ConstructorParam,
     BeanMethodParam,
+    MethodParam,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -595,15 +596,27 @@ fn parse_class_body(
                     constructors.push(parse_constructor(child, source_idx, source, class_name));
                 }
             }
-            "method_declaration" if is_configuration => {
-                if let Some(bean) = parse_bean_method(child, source_idx, source) {
-                    let bean_ty = bean.ty.clone();
-                    beans.push(bean);
-                    if collect_injections {
-                        parse_bean_method_param_injections(
-                            child, source_idx, source, &bean_ty, injections,
-                        );
+            "method_declaration" => {
+                if is_configuration {
+                    if let Some(bean) = parse_bean_method(child, source_idx, source) {
+                        let bean_ty = bean.ty.clone();
+                        beans.push(bean);
+                        if collect_injections {
+                            parse_bean_method_param_injections(
+                                child, source_idx, source, &bean_ty, injections,
+                            );
+                        }
                     }
+                }
+
+                if collect_injections {
+                    parse_autowired_method_param_injections(
+                        child,
+                        source_idx,
+                        source,
+                        class_name,
+                        injections,
+                    );
                 }
             }
             _ => {}
@@ -813,6 +826,54 @@ fn parse_bean_method_param_injections(
         injections.push(InjectionPoint {
             kind: InjectionKind::BeanMethodParam,
             owner_class: bean_ty.to_string(),
+            name: param.name,
+            ty: param.ty,
+            qualifier: param.qualifier,
+            location: SourceSpan {
+                source: source_idx,
+                span: param.span,
+            },
+        });
+    }
+}
+
+fn parse_autowired_method_param_injections(
+    node: Node<'_>,
+    source_idx: usize,
+    source: &str,
+    class_name: &str,
+    injections: &mut Vec<InjectionPoint>,
+) {
+    let annotations = modifier_node(node)
+        .map(|m| collect_annotations(m, source))
+        .unwrap_or_default();
+
+    if !annotations.iter().any(|a| a.simple_name == "Autowired") {
+        return;
+    }
+    // `@Bean` methods already have their parameters modeled as BeanMethodParam injections.
+    if annotations.iter().any(|a| a.simple_name == "Bean") {
+        return;
+    }
+
+    let params_node = node
+        .child_by_field_name("parameters")
+        .or_else(|| find_named_child(node, "formal_parameters"));
+    let Some(params_node) = params_node else {
+        return;
+    };
+
+    let mut cursor = params_node.walk();
+    for child in params_node.named_children(&mut cursor) {
+        if child.kind() != "formal_parameter" {
+            continue;
+        }
+        let Some(param) = parse_constructor_param(child, source) else {
+            continue;
+        };
+        injections.push(InjectionPoint {
+            kind: InjectionKind::MethodParam,
+            owner_class: class_name.to_string(),
             name: param.name,
             ty: param.ty,
             qualifier: param.qualifier,

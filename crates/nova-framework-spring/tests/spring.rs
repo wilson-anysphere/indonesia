@@ -172,6 +172,42 @@ fn bean_method_name_array_alias_matches_qualifier() {
 }
 
 #[test]
+fn autowired_method_param_injection_resolves() {
+    let foo = r#"
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Foo {}
+    "#;
+    let bar = r#"
+        import org.springframework.beans.factory.annotation.Autowired;
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Bar {
+            @Autowired
+            void setFoo(Foo foo) {}
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[foo, bar]);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "unexpected diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+
+    let inj_idx = analysis
+        .model
+        .injections
+        .iter()
+        .position(|i| i.owner_class == "Bar" && i.ty == "Foo")
+        .expect("missing Foo injection");
+    assert_eq!(analysis.model.injections[inj_idx].kind, InjectionKind::MethodParam);
+    assert_eq!(analysis.model.injection_candidates[inj_idx].len(), 1);
+}
+
+#[test]
 fn no_bean_diagnostic_triggers() {
     let bar = r#"
         import org.springframework.stereotype.Component;
