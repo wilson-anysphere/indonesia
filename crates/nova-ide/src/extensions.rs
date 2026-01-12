@@ -744,7 +744,8 @@ where
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
 
-        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
+        let fw_registry = nova_framework_builtins::builtin_registry();
+        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
         let _ = registry.register_completion_provider(provider.clone());
         let _ = registry.register_navigation_provider(provider.clone());
@@ -752,6 +753,7 @@ where
         this
     }
 }
+
 #[allow(private_bounds)]
 impl<DB: ?Sized> IdeExtensions<DB>
 where
@@ -1260,6 +1262,20 @@ fn type_mismatch_quick_fixes_from_context(
 
 struct FrameworkDiagnosticProvider;
 
+fn has_build_metadata(db: &dyn nova_db::Database, file: nova_ext::FileId) -> bool {
+    let Some(path) = db.file_path(file) else {
+        return false;
+    };
+    let root = crate::framework_cache::project_root_for_path(path);
+    let Some(config) = crate::framework_cache::project_config(&root) else {
+        return false;
+    };
+    // `nova_project::ProjectConfig` can also be synthesized for "simple" projects (a directory with
+    // a `src/` folder). Treat "real" build systems (Maven/Gradle/Bazel) as authoritative build
+    // metadata for analyzer-based framework intelligence.
+    config.build_system != nova_project::BuildSystem::Simple
+}
+
 impl<DB: ?Sized> DiagnosticProvider<DB> for FrameworkDiagnosticProvider
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
@@ -1273,11 +1289,11 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
-        crate::framework_cache::framework_diagnostics(
-            ctx.db.as_ref().as_dyn_nova_db(),
-            params.file,
-            &ctx.cancel,
-        )
+        let db = ctx.db.as_ref().as_dyn_nova_db();
+        if has_build_metadata(db, params.file) {
+            return Vec::new();
+        }
+        crate::framework_cache::framework_diagnostics(db, params.file, &ctx.cancel)
     }
 }
 
@@ -1296,8 +1312,12 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        let db = ctx.db.as_ref().as_dyn_nova_db();
+        if has_build_metadata(db, params.file) {
+            return Vec::new();
+        }
         crate::framework_cache::framework_completions(
-            ctx.db.as_ref().as_dyn_nova_db(),
+            db,
             params.file,
             params.offset,
             &ctx.cancel,

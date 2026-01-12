@@ -17,6 +17,7 @@ nova-project = { path = "../nova-project" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-db = { path = "../nova-db" }
 nova-framework = { path = "../nova-framework" }
+nova-framework-builtins = { path = "../nova-framework-builtins", features = ["spring", "jpa"] }
 nova-framework-lombok = { path = "../nova-framework-lombok" }
 nova-framework-mapstruct = { path = "../nova-framework-mapstruct" }
 nova-index = { path = "../nova-index" }

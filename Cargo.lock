@@ -3926,6 +3926,7 @@ dependencies = [
  "nova-decompile",
  "nova-ext",
  "nova-framework",
+ "nova-framework-builtins",
  "nova-framework-dagger",
  "nova-framework-jpa",
  "nova-framework-lombok",
