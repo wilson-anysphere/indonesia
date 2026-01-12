@@ -637,6 +637,14 @@ impl Workspace {
             snapshot.project_root(),
             PersistenceConfig::from_env(),
         );
+        // Workspace indexing can touch tens of thousands of files. Register the memo evictor so
+        // long-running indexing runs can stay within budget by dropping cold Salsa caches.
+        //
+        // NOTE: We intentionally do *not* register the memory-pressure cancellation hook here.
+        // Indexing is expected to run to completion and already respects the explicit `cancel`
+        // token; cancelling Salsa queries on High/Critical pressure could cause surprising
+        // mid-index failures.
+        db.register_salsa_memo_evictor(&self.memory);
 
         let mut files_indexed = 0usize;
         let mut bytes_indexed = 0u64;
@@ -650,6 +658,9 @@ impl Workspace {
         // owned and can be unwrapped without cloning.
         let mut file_fingerprints: std::collections::BTreeMap<Arc<String>, Fingerprint> =
             std::collections::BTreeMap::new();
+
+        const MEMORY_ENFORCE_EVERY_FILES: usize = 32;
+        let empty_text = Arc::new(String::new());
 
         for (idx, file) in files_to_index.iter().enumerate() {
             Cancelled::check(cancel)?;
@@ -667,16 +678,30 @@ impl Workspace {
             file_fingerprints.insert(rel_path.clone(), fingerprint);
 
             let file_id = FileId::from_raw(idx as u32);
-            // Set `file_rel_path` first so `set_file_text` doesn't synthesize (and then discard) a
-            // default rel-path like `file-123.java`.
+            // Set `file_rel_path` first so callers (and persistence) consistently identify the
+            // file.
             db.set_file_rel_path(file_id, rel_path);
-            // `set_file_text` clones from `&str`; keep `content` for (line, col) patching below.
-            db.set_file_text(file_id, content.as_str());
+            db.set_file_exists(file_id, true);
+            // Avoid cloning file contents into Salsa inputs: reuse the same Arc allocation we
+            // already loaded from disk. This keeps peak memory usage bounded during indexing.
+            db.set_file_content(file_id, Arc::clone(&content));
 
             let delta = db.with_snapshot(|snap| snap.file_index_delta(file_id));
             let mut delta = (*delta).clone();
             patch_indexed_symbol_locations(&content, file_id, &mut delta);
             indexes.merge_from(delta);
+
+            // We don't need to retain the full file contents once its index delta has been merged.
+            // Drop the input to keep the in-memory footprint bounded; memo eviction will rebuild
+            // the DB without resurrecting old file texts.
+            db.set_file_exists(file_id, false);
+            db.set_file_content(file_id, Arc::clone(&empty_text));
+
+            // Drive periodic enforcement to give the memory manager an opportunity to evict stale
+            // Salsa caches during large indexing runs.
+            if (idx + 1) % MEMORY_ENFORCE_EVERY_FILES == 0 {
+                let _ = self.memory.enforce();
+            }
         }
 
         drop(db);
