@@ -186,6 +186,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     ///
     /// To keep queries scoped to a single package (avoiding expensive `rdeps(//..., ...)`), this
     /// prefers `same_pkg_direct_rdeps(...)` when available and falls back to `rdeps(//pkg:*, ...)`.
+    ///
+    /// Returns an empty list when `file` is inside the workspace root but is not contained in any
+    /// Bazel package (no `BUILD` / `BUILD.bazel` found up to the workspace root).
     pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
         self.java_owning_targets_for_file_with_universe(file.as_ref(), None)
     }
