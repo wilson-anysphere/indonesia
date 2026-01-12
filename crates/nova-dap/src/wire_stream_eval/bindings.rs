@@ -415,10 +415,9 @@ mod tests {
         let thread = client.all_threads().await.unwrap()[0];
         let frame = client.frames(thread, 0, 1).await.unwrap()[0];
 
-        let bindings =
-            build_frame_bindings(&client, thread, frame.frame_id, frame.location)
-                .await
-                .unwrap();
+        let bindings = build_frame_bindings(&client, thread, frame.frame_id, frame.location)
+            .await
+            .unwrap();
 
         // Locals are sorted by name for deterministic helper signatures.
         assert_eq!(
@@ -445,7 +444,10 @@ mod tests {
         assert_eq!(bindings.fields[0].value, JdwpValue::Int(7));
 
         let args = bindings.args_for_helper();
-        assert_eq!(args.len(), 1 + bindings.locals.len() + bindings.fields.len());
+        assert_eq!(
+            args.len(),
+            1 + bindings.locals.len() + bindings.fields.len()
+        );
         assert_eq!(args[0], bindings.this.value);
         assert_eq!(args[1], bindings.locals[0].value);
         assert_eq!(args[2], bindings.locals[1].value);

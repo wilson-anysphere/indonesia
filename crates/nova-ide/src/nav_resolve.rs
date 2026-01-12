@@ -508,7 +508,11 @@ impl WorkspaceIndex {
             .split('.')
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|seg| seg.strip_suffix("()").map(|name| (name, true)).unwrap_or((seg, false)))
+            .map(|seg| {
+                seg.strip_suffix("()")
+                    .map(|name| (name, true))
+                    .unwrap_or((seg, false))
+            })
             .filter(|(name, _)| !name.is_empty())
             .collect();
         let &(first, first_is_call) = segments.first()?;
@@ -815,9 +819,7 @@ impl Resolver {
                 let receiver_ty =
                     self.index
                         .resolve_receiver_type(parsed, ident_span.start, &receiver)?;
-                let def = self
-                    .index
-                    .resolve_method_definition(&receiver_ty, &ident)?;
+                let def = self.index.resolve_method_definition(&receiver_ty, &ident)?;
                 Some(ResolvedSymbol {
                     name: ident,
                     kind: ResolvedKind::Method,

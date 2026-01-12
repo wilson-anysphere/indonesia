@@ -2,7 +2,9 @@ use lsp_types::{CodeActionKind, CodeActionOrCommand, NumberOrString};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
-use nova_ide::{code_action::diagnostic_quick_fixes, extensions::IdeExtensions, file_diagnostics_lsp};
+use nova_ide::{
+    code_action::diagnostic_quick_fixes, extensions::IdeExtensions, file_diagnostics_lsp,
+};
 use nova_refactor::position_to_offset_utf16;
 use nova_scheduler::CancellationToken;
 use std::path::PathBuf;
@@ -63,9 +65,7 @@ fn code_actions_lsp_offers_remove_unresolved_import_quick_fix() {
     let source = "import foo.Bar;\nclass A {}\n";
     db.set_file_text(file, source.to_string());
 
-    let cursor_offset = source
-        .find("foo.Bar")
-        .expect("expected import in fixture");
+    let cursor_offset = source.find("foo.Bar").expect("expected import in fixture");
     let selection = Span::new(cursor_offset, cursor_offset);
 
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
@@ -102,4 +102,3 @@ fn code_actions_lsp_offers_remove_unresolved_import_quick_fix() {
     updated.replace_range(start..end, &text_edit.new_text);
     assert_eq!(updated, "class A {}\n");
 }
-

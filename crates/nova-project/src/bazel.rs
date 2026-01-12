@@ -89,8 +89,7 @@ pub(crate) fn load_bazel_workspace_model(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -311,8 +310,7 @@ fn load_bazel_project_heuristic(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -458,8 +456,7 @@ pub fn load_bazel_workspace_project_model_with_runner<R: CommandRunner>(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -527,8 +524,7 @@ fn project_config_from_workspace_model(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory

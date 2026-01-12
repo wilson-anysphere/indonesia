@@ -179,6 +179,9 @@ public interface CarMapper {
     let prefix_start = mapper_text
         .find("sea")
         .expect("expected mapping prefix in fixture");
-    assert_eq!(edit.range.start, offset_to_position(&mapper_text, prefix_start));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&mapper_text, prefix_start)
+    );
     assert_eq!(edit.range.end, position);
 }

@@ -15,7 +15,10 @@ fn first_edit_new_text(action: &lsp_types::CodeAction) -> &str {
         .changes
         .as_ref()
         .expect("expected WorkspaceEdit.changes");
-    let (_, edits) = changes.iter().next().expect("expected at least one file edit");
+    let (_, edits) = changes
+        .iter()
+        .next()
+        .expect("expected at least one file edit");
     assert_eq!(edits.len(), 1, "expected exactly one text edit");
     edits[0].new_text.as_str()
 }
@@ -243,4 +246,3 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
     let cast_fix = cast_fix.expect("expected Cast to String quickfix");
     assert_eq!(first_edit_new_text(cast_fix), "(String) (a + b)");
 }
-

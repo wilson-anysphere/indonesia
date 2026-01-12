@@ -500,19 +500,21 @@ fn format_wire_value(value: &JdwpValue) -> String {
 }
 
 fn jdwp_primitive_type_name(value: &JdwpValue) -> Option<String> {
-    Some(match value {
-        JdwpValue::Void => "void",
-        JdwpValue::Boolean(_) => "boolean",
-        JdwpValue::Byte(_) => "byte",
-        JdwpValue::Char(_) => "char",
-        JdwpValue::Short(_) => "short",
-        JdwpValue::Int(_) => "int",
-        JdwpValue::Long(_) => "long",
-        JdwpValue::Float(_) => "float",
-        JdwpValue::Double(_) => "double",
-        JdwpValue::Object { .. } => return None,
-    }
-    .to_string())
+    Some(
+        match value {
+            JdwpValue::Void => "void",
+            JdwpValue::Boolean(_) => "boolean",
+            JdwpValue::Byte(_) => "byte",
+            JdwpValue::Char(_) => "char",
+            JdwpValue::Short(_) => "short",
+            JdwpValue::Int(_) => "int",
+            JdwpValue::Long(_) => "long",
+            JdwpValue::Float(_) => "float",
+            JdwpValue::Double(_) => "double",
+            JdwpValue::Object { .. } => return None,
+        }
+        .to_string(),
+    )
 }
 
 /// Stream-debug value formatter that mirrors `nova-stream-debug`'s legacy `format_sample_value`
@@ -530,7 +532,10 @@ pub(crate) async fn format_stream_sample_value(
         JdwpValue::Void => Ok(("void".to_string(), Some("void".to_string()))),
         JdwpValue::Boolean(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
         JdwpValue::Byte(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
-        JdwpValue::Char(v) => Ok((char::from_u32(*v as u32).unwrap_or('\u{FFFD}').to_string(), jdwp_primitive_type_name(value))),
+        JdwpValue::Char(v) => Ok((
+            char::from_u32(*v as u32).unwrap_or('\u{FFFD}').to_string(),
+            jdwp_primitive_type_name(value),
+        )),
         JdwpValue::Short(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
         JdwpValue::Int(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
         JdwpValue::Long(v) => Ok((v.to_string(), jdwp_primitive_type_name(value))),
@@ -565,7 +570,10 @@ pub(crate) async fn format_stream_sample_value(
                     };
                     Ok((display, Some(preview.runtime_type)))
                 }
-                _ => Ok((format!("{}#{id}", preview.runtime_type), Some(preview.runtime_type))),
+                _ => Ok((
+                    format!("{}#{id}", preview.runtime_type),
+                    Some(preview.runtime_type),
+                )),
             }
         }
     }
@@ -612,11 +620,13 @@ pub(crate) async fn stream_sample_from_list_object(
 
     let children = inspector.object_children(list_object_id).await?;
 
-    let returned_size = children.iter().find_map(|child| match (child.name.as_str(), &child.value)
-    {
-        ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
-        _ => None,
-    });
+    let returned_size =
+        children
+            .iter()
+            .find_map(|child| match (child.name.as_str(), &child.value) {
+                ("size" | "length", JdwpValue::Int(v)) => Some((*v).max(0) as usize),
+                _ => None,
+            });
 
     let mut indexed_children: Vec<(usize, JdwpValue)> = children
         .into_iter()

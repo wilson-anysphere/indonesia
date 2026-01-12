@@ -1,7 +1,7 @@
 use crate::{SymbolKey, SymbolRange};
-use nova_cache::{deps_cache_dir, CacheConfig, CacheError, Fingerprint};
 #[cfg(not(unix))]
 use nova_cache::atomic_write;
+use nova_cache::{deps_cache_dir, CacheConfig, CacheError, Fingerprint};
 use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -782,7 +782,9 @@ fn remove_corrupt_store_leaf_best_effort(path: &Path) {
         // If it's a directory, try removing it as an (empty) directory.
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::EISDIR) {
-            let _ = unsafe { libc::unlinkat(parent_dir.as_raw_fd(), file_c.as_ptr(), libc::AT_REMOVEDIR) };
+            let _ = unsafe {
+                libc::unlinkat(parent_dir.as_raw_fd(), file_c.as_ptr(), libc::AT_REMOVEDIR)
+            };
         }
 
         return;

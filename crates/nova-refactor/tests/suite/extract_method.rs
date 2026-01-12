@@ -913,7 +913,10 @@ class C {
     let err = refactoring
         .apply(&source)
         .expect_err("should reject selection");
-    assert!(err.contains("ConstructorInvocation"), "unexpected error: {err}");
+    assert!(
+        err.contains("ConstructorInvocation"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

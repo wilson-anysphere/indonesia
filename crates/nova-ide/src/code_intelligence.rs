@@ -3152,11 +3152,11 @@ fn import_completions(
                 new_text: remainder,
             })),
             ..Default::default()
-    };
-    mark_workspace_completion_item(&mut item);
-    items.push(item);
-}
-let mut seen_binary: HashSet<String> = HashSet::new();
+        };
+        mark_workspace_completion_item(&mut item);
+        items.push(item);
+    }
+    let mut seen_binary: HashSet<String> = HashSet::new();
 
     // Workspace nested types come from the completion-time `TypeStore` (Nova stores them using `$`
     // binary names, while Java source references them using `.`).
@@ -5322,7 +5322,11 @@ struct TypeCompletionQuery {
 /// Example: for `java.util.Arr` (cursor within/after `Arr`), returns:
 /// - qualifier prefix: `java.util.`
 /// - segment prefix: `Arr` (provided separately by the caller via `identifier_prefix`)
-fn type_completion_query(text: &str, segment_start: usize, segment_prefix: &str) -> TypeCompletionQuery {
+fn type_completion_query(
+    text: &str,
+    segment_start: usize,
+    segment_prefix: &str,
+) -> TypeCompletionQuery {
     let (_qualifier_start, qualifier_prefix) = dotted_qualifier_prefix(text, segment_start);
     let full_prefix = format!("{qualifier_prefix}{segment_prefix}");
     TypeCompletionQuery {
@@ -5498,7 +5502,11 @@ fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) 
     (start, qualifier_prefix)
 }
 
-fn type_completions(db: &dyn Database, segment_prefix: &str, query: TypeCompletionQuery) -> Vec<CompletionItem> {
+fn type_completions(
+    db: &dyn Database,
+    segment_prefix: &str,
+    query: TypeCompletionQuery,
+) -> Vec<CompletionItem> {
     const LIMIT: usize = 200;
 
     let mut items: Vec<CompletionItem> = Vec::new();
@@ -5526,7 +5534,10 @@ fn type_completions(db: &dyn Database, segment_prefix: &str, query: TypeCompleti
         .unwrap_or_else(|| Arc::new(JdkIndex::new()));
 
     let mut prefixes = Vec::new();
-    if query.qualifier_prefix.is_empty() && !query.full_prefix.contains('.') && !query.full_prefix.contains('/') {
+    if query.qualifier_prefix.is_empty()
+        && !query.full_prefix.contains('.')
+        && !query.full_prefix.contains('/')
+    {
         prefixes.push(format!("java.lang.{}", query.full_prefix));
     } else {
         prefixes.push(query.full_prefix.clone());
@@ -6674,7 +6685,10 @@ fn method_reference_completions(
     }
 
     if call_kind == CallKind::Static
-        && matches!(receiver_ty, Type::Class(_) | Type::Named(_) | Type::Array(_))
+        && matches!(
+            receiver_ty,
+            Type::Class(_) | Type::Named(_) | Type::Array(_)
+        )
     {
         items.push(CompletionItem {
             label: "new".to_string(),
@@ -14212,10 +14226,8 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
 
     // Note: `bool::then_some` eagerly evaluates its argument, so we must not write
     // `cond.then_some(before - 2)` here or we'll underflow when `before < 2`.
-    (before >= 2
-        && bytes.get(before - 1) == Some(&b':')
-        && bytes.get(before - 2) == Some(&b':'))
-    .then(|| before - 2)
+    (before >= 2 && bytes.get(before - 1) == Some(&b':') && bytes.get(before - 2) == Some(&b':'))
+        .then(|| before - 2)
 }
 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
@@ -14402,7 +14414,9 @@ class Foo {
             .iter()
             .find(|t| t.kind == TokenKind::StringLiteral)
             .expect("expected a string literal token");
-        let start = text.find("\"\"\"").expect("expected opening text block delimiter");
+        let start = text
+            .find("\"\"\"")
+            .expect("expected opening text block delimiter");
         let end = text.rfind(';').expect("expected semicolon");
         assert_eq!(
             lit.text,

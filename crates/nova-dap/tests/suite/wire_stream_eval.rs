@@ -1,7 +1,7 @@
 use nova_dap::wire_stream_eval::define_class_and_invoke_stage0;
-use nova_jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
 use nova_jdwp::wire::mock::DEFINED_STAGE0_METHOD_ID;
 use nova_jdwp::wire::types::INVOKE_SINGLE_THREADED;
+use nova_jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
 
 #[tokio::test]
 async fn wire_stream_eval_define_class_methods_and_invoke_stage0() {

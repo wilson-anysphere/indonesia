@@ -1631,9 +1631,9 @@ fn conflicts_to_json(
                     end_byte: usage_range.end,
                 })
             }
-            Conflict::FileAlreadyExists { file } => out.push(CliJsonConflict::FileAlreadyExists {
-                file: file.0,
-            }),
+            Conflict::FileAlreadyExists { file } => {
+                out.push(CliJsonConflict::FileAlreadyExists { file: file.0 })
+            }
         }
     }
 

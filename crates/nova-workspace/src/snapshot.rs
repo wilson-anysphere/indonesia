@@ -255,12 +255,7 @@ impl WorkspaceDbView {
     }
 
     fn snapshot_file_content(&self, file_id: FileId) -> Arc<String> {
-        if self
-            .salsa_file_ids
-            .as_ref()
-            .binary_search(&file_id)
-            .is_ok()
-        {
+        if self.salsa_file_ids.as_ref().binary_search(&file_id).is_ok() {
             nova_db::SourceDatabase::file_content(&self.snapshot, file_id)
         } else {
             Arc::clone(&self.empty_text)

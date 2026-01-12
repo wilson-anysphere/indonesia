@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nova_jdwp::wire::inspect::{self, Inspector};
-use nova_jdwp::wire::types::{FrameId, Location, MethodId, ReferenceTypeId, INVOKE_SINGLE_THREADED};
+use nova_jdwp::wire::types::{
+    FrameId, Location, MethodId, ReferenceTypeId, INVOKE_SINGLE_THREADED,
+};
 use nova_jdwp::wire::{JdwpClient, JdwpError, JdwpValue, ObjectId, ThreadId};
 use nova_scheduler::CancellationToken;
 use nova_stream_debug::StreamSample;
@@ -52,7 +54,11 @@ pub struct StreamEvalHelper {
 }
 
 impl StreamEvalHelper {
-    pub async fn invoke_stage(&self, jdwp: &JdwpClient, stage: usize) -> Result<JdwpValue, StreamEvalError> {
+    pub async fn invoke_stage(
+        &self,
+        jdwp: &JdwpClient,
+        stage: usize,
+    ) -> Result<JdwpValue, StreamEvalError> {
         let Some(method_id) = self.stage_method_ids.get(stage).copied() else {
             return Err(StreamEvalError::InvalidStage {
                 stage,
@@ -159,7 +165,8 @@ pub(crate) async fn compile_and_inject_helper(
         }
     }
 
-    let class_id = helper_class_id.ok_or_else(|| StreamEvalError::MissingHelperClass(fqcn.clone()))?;
+    let class_id =
+        helper_class_id.ok_or_else(|| StreamEvalError::MissingHelperClass(fqcn.clone()))?;
 
     // --- Method resolution -------------------------------------------------
     let methods = jdwp.reference_type_methods(class_id).await?;
@@ -338,7 +345,12 @@ async fn format_sample_value_wire(
         JdwpValue::Void => ("void".to_string(), Some("void".to_string())),
         JdwpValue::Boolean(v) => (v.to_string(), Some("boolean".to_string())),
         JdwpValue::Byte(v) => (v.to_string(), Some("byte".to_string())),
-        JdwpValue::Char(v) => (char::from_u32(u32::from(*v)).unwrap_or('\u{FFFD}').to_string(), Some("char".to_string())),
+        JdwpValue::Char(v) => (
+            char::from_u32(u32::from(*v))
+                .unwrap_or('\u{FFFD}')
+                .to_string(),
+            Some("char".to_string()),
+        ),
         JdwpValue::Short(v) => (v.to_string(), Some("short".to_string())),
         JdwpValue::Int(v) => (v.to_string(), Some("int".to_string())),
         JdwpValue::Long(v) => (v.to_string(), Some("long".to_string())),
@@ -361,7 +373,10 @@ async fn format_sample_value_wire(
                     };
                     (display, Some(preview.runtime_type))
                 }
-                _ => (format!("{}@0x{id:x}", preview.runtime_type), Some(preview.runtime_type)),
+                _ => (
+                    format!("{}@0x{id:x}", preview.runtime_type),
+                    Some(preview.runtime_type),
+                ),
             },
             Err(_) => (format!("object@0x{id:x}"), None),
         },
@@ -403,7 +418,9 @@ pub async fn define_class_and_invoke_stage0(
         .await?;
     if exception != 0 {
         let thrown = format_thrown_exception_best_effort(jdwp, exception).await;
-        return Err(JdwpError::Protocol(format!("stage0 invocation threw {thrown}")));
+        return Err(JdwpError::Protocol(format!(
+            "stage0 invocation threw {thrown}"
+        )));
     }
 
     Ok(value)

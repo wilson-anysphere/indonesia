@@ -64,12 +64,8 @@ fn integration_tests_are_consolidated_into_this_harness() {
             cases_dir.display()
         )
     }) {
-        let entry = entry.unwrap_or_else(|err| {
-            panic!(
-                "failed to read entry in {}: {err}",
-                cases_dir.display()
-            )
-        });
+        let entry = entry
+            .unwrap_or_else(|err| panic!("failed to read entry in {}: {err}", cases_dir.display()));
         let path = entry.path();
 
         if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {

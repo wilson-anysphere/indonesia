@@ -24,11 +24,13 @@ fn minimal_jdk_binary_names_are_in_sync_with_type_store() {
 
     // Ensure the list stays an exact match for the minimal JDK types, so additions
     // to `TypeStore::with_minimal_jdk()` can't silently drift from the published list.
-    let expected: HashSet<String> = MINIMAL_JDK_BINARY_NAMES.iter().map(|n| (*n).to_string()).collect();
+    let expected: HashSet<String> = MINIMAL_JDK_BINARY_NAMES
+        .iter()
+        .map(|n| (*n).to_string())
+        .collect();
     let actual: HashSet<String> = store
         .iter_classes()
         .map(|(_, def)| def.name.clone())
         .collect();
     assert_eq!(actual, expected);
 }
-

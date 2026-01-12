@@ -76,4 +76,3 @@ fn change_signature_does_not_rewrite_other_overload_declaration_header() {
 "#
     );
 }
-

@@ -2597,7 +2597,11 @@ impl Lowerer {
         let extra_dims = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Dims)
-            .map(|dims| dims.children().filter(|child| child.kind() == SyntaxKind::Dim).count())
+            .map(|dims| {
+                dims.children()
+                    .filter(|child| child.kind() == SyntaxKind::Dim)
+                    .count()
+            })
             .unwrap_or(0);
 
         ast::Expr::ArrayCreation(ast::ArrayCreationExpr {

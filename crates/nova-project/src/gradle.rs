@@ -461,8 +461,7 @@ pub(crate) fn load_gradle_project(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -777,8 +776,7 @@ pub(crate) fn load_gradle_workspace_model(
                     .and_then(|ext| ext.to_str())
                     .is_some_and(|ext| {
                         ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                    })
-                {
+                    }) {
                     ClasspathEntryKind::Jar
                 } else {
                     ClasspathEntryKind::Directory
@@ -852,8 +850,7 @@ pub(crate) fn load_gradle_workspace_model(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -2298,7 +2295,9 @@ fn parse_gradle_local_classpath_entries_from_text(
             if path
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod"))
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                })
             {
                 out.push(ClasspathEntry {
                     kind: ClasspathEntryKind::Jar,
@@ -2887,8 +2886,8 @@ mod tests {
     use super::{
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
         parse_gradle_settings_included_builds, parse_gradle_settings_projects,
-        parse_gradle_version_catalog_from_toml,
-        sort_dedup_dependencies, strip_gradle_comments, GradleProperties,
+        parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
+        GradleProperties,
     };
 
     #[test]

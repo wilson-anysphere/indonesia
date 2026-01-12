@@ -83,10 +83,11 @@ pub fn rename(
                 .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
 
             if file_ids_are_file_uris {
-                let abs = file_uri_to_path(&file.0).map_err(|err| RefactorError::InvalidFileId {
-                    file: file.clone(),
-                    reason: err.to_string(),
-                })?;
+                let abs =
+                    file_uri_to_path(&file.0).map_err(|err| RefactorError::InvalidFileId {
+                        file: file.clone(),
+                        reason: err.to_string(),
+                    })?;
                 let path = abs.into_path_buf();
                 path_to_file_id.insert(path.clone(), file.clone());
                 files.insert(path, text.to_string());
@@ -2972,8 +2973,9 @@ fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option
 fn infer_expr_type(expr: &ast::Expression) -> String {
     let inferred = match expr {
         ast::Expression::LiteralExpression(lit) => infer_type_from_literal(lit),
-        ast::Expression::NewExpression(new_expr) => infer_type_from_new_expression(new_expr)
-            .unwrap_or_else(|| "Object".to_string()),
+        ast::Expression::NewExpression(new_expr) => {
+            infer_type_from_new_expression(new_expr).unwrap_or_else(|| "Object".to_string())
+        }
         ast::Expression::ArrayCreationExpression(array_expr) => {
             let Some(base_ty) = array_expr.ty() else {
                 return "Object".to_string();

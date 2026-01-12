@@ -188,7 +188,11 @@ pub fn generate_stream_eval_helper_java_source(
     // Start with a conservative set of defaults so common stream expressions compile without
     // requiring fully-qualified names (e.g. `collect(toList())`).
     let mut seen_imports: HashSet<String> = HashSet::new();
-    for import in DEFAULT_IMPORTS.iter().copied().chain(imports.iter().map(|s| s.as_str())) {
+    for import in DEFAULT_IMPORTS
+        .iter()
+        .copied()
+        .chain(imports.iter().map(|s| s.as_str()))
+    {
         let import = import.trim();
         if import.is_empty() {
             continue;
@@ -711,7 +715,10 @@ mod tests {
         // Imports are emitted deterministically: defaults first, then file imports.
         let idx_default = src.find("import java.util.*;").unwrap();
         let idx_custom = src.find("import com.acme.Foo;").unwrap();
-        assert!(idx_default < idx_custom, "expected default imports before file imports:\n{src}");
+        assert!(
+            idx_default < idx_custom,
+            "expected default imports before file imports:\n{src}"
+        );
     }
 
     #[test]
@@ -915,7 +922,10 @@ mod tests {
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
-                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+                (
+                    "s".to_string(),
+                    "java.util.stream.Stream<Integer>".to_string(),
+                ),
             ],
             &[],
             &[],

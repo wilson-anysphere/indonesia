@@ -553,7 +553,11 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
         return true;
     }
     if name == "generated-roots.json"
-        && path.ends_with(&Path::new(".nova").join("apt-cache").join("generated-roots.json"))
+        && path.ends_with(
+            &Path::new(".nova")
+                .join("apt-cache")
+                .join("generated-roots.json"),
+        )
     {
         return true;
     }
@@ -601,11 +605,11 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             let is_gradle_version_catalog = !in_ignored_dir
                 && (name == "libs.versions.toml"
                     || (name.ends_with(".versions.toml")
-                        && path
-                            .parent()
-                            .is_some_and(|parent| parent.file_name().is_some_and(|dir| dir == "gradle"))));
-            let is_gradle_script_plugin = !in_ignored_dir
-                && (name.ends_with(".gradle") || name.ends_with(".gradle.kts"));
+                        && path.parent().is_some_and(|parent| {
+                            parent.file_name().is_some_and(|dir| dir == "gradle")
+                        })));
+            let is_gradle_script_plugin =
+                !in_ignored_dir && (name.ends_with(".gradle") || name.ends_with(".gradle.kts"));
             let is_gradle_dependency_lockfile = !in_ignored_dir
                 && (name == "gradle.lockfile"
                     || (name.ends_with(".lockfile")

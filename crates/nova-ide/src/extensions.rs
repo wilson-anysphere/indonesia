@@ -1162,7 +1162,7 @@ where
                 }
             }
         }
- 
+
         if let (Some(uri), Some(span)) = (uri, span) {
             let source_index = TextIndex::new(source);
             let selection = source_index.span_to_lsp_range(span);
@@ -1786,7 +1786,10 @@ fn mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
 
     let has_mapstruct_dependency = config.dependencies.iter().any(|dep| {
         dep.group_id == "org.mapstruct"
-            && matches!(dep.artifact_id.as_str(), "mapstruct" | "mapstruct-processor")
+            && matches!(
+                dep.artifact_id.as_str(),
+                "mapstruct" | "mapstruct-processor"
+            )
     });
     if has_mapstruct_dependency {
         return Vec::new();

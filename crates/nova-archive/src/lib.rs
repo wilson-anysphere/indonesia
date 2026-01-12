@@ -58,11 +58,11 @@ where
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let base = self.base;
         let adjusted = match pos {
-            SeekFrom::Start(offset) => SeekFrom::Start(
-                offset
-                    .checked_add(base)
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow"))?,
-            ),
+            SeekFrom::Start(offset) => {
+                SeekFrom::Start(offset.checked_add(base).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow")
+                })?)
+            }
             SeekFrom::End(offset) => SeekFrom::End(offset),
             SeekFrom::Current(offset) => SeekFrom::Current(offset),
         };
@@ -156,31 +156,35 @@ impl Archive {
                         );
                     }
 
-                // Allocate only up to the declared size (which is already bounded)
-                // to avoid oversized allocations from untrusted metadata.
-                let mut buf = Vec::with_capacity(declared_size as usize);
+                    // Allocate only up to the declared size (which is already bounded)
+                    // to avoid oversized allocations from untrusted metadata.
+                    let mut buf = Vec::with_capacity(declared_size as usize);
 
-                // Defense in depth: even if the declared size is wrong or missing,
-                // never read more than MAX+1 bytes from the decompressor.
-                let mut limited = (&mut entry).take((MAX_ARCHIVE_ENTRY_BYTES as u64) + 1);
-                limited.read_to_end(&mut buf).with_context(|| {
-                    format!("failed to read {} from {}", name, archive_path.display())
-                })?;
-                if buf.len() > MAX_ARCHIVE_ENTRY_BYTES {
-                    bail!(
-                        "refusing to read more than {} bytes from {}:{} (read: {} bytes)",
-                        MAX_ARCHIVE_ENTRY_BYTES,
-                        archive_path.display(),
-                        name,
-                        buf.len()
-                    );
-                }
+                    // Defense in depth: even if the declared size is wrong or missing,
+                    // never read more than MAX+1 bytes from the decompressor.
+                    let mut limited = (&mut entry).take((MAX_ARCHIVE_ENTRY_BYTES as u64) + 1);
+                    limited.read_to_end(&mut buf).with_context(|| {
+                        format!("failed to read {} from {}", name, archive_path.display())
+                    })?;
+                    if buf.len() > MAX_ARCHIVE_ENTRY_BYTES {
+                        bail!(
+                            "refusing to read more than {} bytes from {}:{} (read: {} bytes)",
+                            MAX_ARCHIVE_ENTRY_BYTES,
+                            archive_path.display(),
+                            name,
+                            buf.len()
+                        );
+                    }
 
-                Ok(Some(buf))
+                    Ok(Some(buf))
                 }
                 Err(zip::result::ZipError::FileNotFound) => Ok(None),
                 Err(err) => Err(err).with_context(|| {
-                    format!("failed to read {} from zip {}", name, archive_path.display())
+                    format!(
+                        "failed to read {} from zip {}",
+                        name,
+                        archive_path.display()
+                    )
                 }),
             };
 

@@ -507,8 +507,7 @@ fn type_of_expr_demand_result(
     let resolver = if let Some((index, _)) = jpms_ctx.as_ref() {
         nova_resolve::Resolver::new(index)
     } else {
-        nova_resolve::Resolver::new(&*jdk)
-            .with_classpath(&workspace_index)
+        nova_resolve::Resolver::new(&*jdk).with_classpath(&workspace_index)
     }
     .with_workspace(&workspace);
 
@@ -1734,8 +1733,7 @@ fn signature_type_diagnostics(
     let resolver = if let Some((index, _)) = jpms_ctx.as_ref() {
         nova_resolve::Resolver::new(index)
     } else {
-        nova_resolve::Resolver::new(&*jdk)
-            .with_classpath(&workspace_index)
+        nova_resolve::Resolver::new(&*jdk).with_classpath(&workspace_index)
     }
     .with_workspace(&workspace);
 
@@ -2997,13 +2995,15 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
                 jdk: &*jdk,
                 from,
             };
-            let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, &jpms_provider);
+            let shadowing_provider =
+                WorkspaceShadowingTypeProvider::new(&workspace, &jpms_provider);
             let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
             let _ = define_source_types(&resolver, &scopes, &tree, &mut loader);
         }
     } else {
-        let shadowing_provider = WorkspaceShadowingTypeProvider::new(&workspace, &java_only_provider);
+        let shadowing_provider =
+            WorkspaceShadowingTypeProvider::new(&workspace, &java_only_provider);
         let mut loader = ExternalTypeLoader::new(&mut store, &shadowing_provider);
 
         for (idx, file) in files.iter().enumerate() {
@@ -3922,9 +3922,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     })
                     .collect::<Vec<_>>();
 
-                let canonical_exists = constructors.iter().any(|ctor| {
-                    !ctor.is_varargs && ctor.params == canonical_params
-                });
+                let canonical_exists = constructors
+                    .iter()
+                    .any(|ctor| !ctor.is_varargs && ctor.params == canonical_params);
                 if !canonical_exists {
                     constructors.push(ConstructorDef {
                         params: canonical_params,
@@ -8312,9 +8312,9 @@ fn define_source_types<'idx>(
                     })
                     .collect::<Vec<_>>();
 
-                let canonical_exists = constructors.iter().any(|ctor| {
-                    !ctor.is_varargs && ctor.params == canonical_params
-                });
+                let canonical_exists = constructors
+                    .iter()
+                    .any(|ctor| !ctor.is_varargs && ctor.params == canonical_params);
                 if !canonical_exists {
                     constructors.push(ConstructorDef {
                         params: canonical_params,
@@ -9462,26 +9462,26 @@ fn is_java_lang_string(store: &TypeStore, ty: &Type) -> bool {
 
 fn parse_java_int_literal(text: &str) -> Option<i64> {
     let mut s = text.trim();
-    let has_long_suffix = if let Some(stripped) = s.strip_suffix('l').or_else(|| s.strip_suffix('L'))
-    {
-        s = stripped;
-        true
-    } else {
-        false
-    };
+    let has_long_suffix =
+        if let Some(stripped) = s.strip_suffix('l').or_else(|| s.strip_suffix('L')) {
+            s = stripped;
+            true
+        } else {
+            false
+        };
     let s: String = s.chars().filter(|c| *c != '_').collect();
     let s = s.as_str();
 
-    let (radix, digits) =
-        if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-            (16, rest)
-        } else if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-            (2, rest)
-        } else if s.starts_with('0') && s.len() > 1 {
-            (8, &s[1..])
-        } else {
-            (10, s)
-        };
+    let (radix, digits) = if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
+    {
+        (16, rest)
+    } else if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+        (2, rest)
+    } else if s.starts_with('0') && s.len() > 1 {
+        (8, &s[1..])
+    } else {
+        (10, s)
+    };
 
     if has_long_suffix {
         // Best-effort support for long literals. Note that the syntax layer may not lower long

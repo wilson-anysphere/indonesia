@@ -167,7 +167,8 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
         //
         // If `args` is missing entries (raw or malformed), fall back to `Unknown` so downstream
         // callers still get a stable shape.
-        let mut subst: HashMap<TypeVarId, Type> = HashMap::with_capacity(class_def.type_params.len());
+        let mut subst: HashMap<TypeVarId, Type> =
+            HashMap::with_capacity(class_def.type_params.len());
         for (idx, formal) in class_def.type_params.iter().copied().enumerate() {
             subst.insert(formal, args.get(idx).cloned().unwrap_or(Type::Unknown));
         }
@@ -178,7 +179,11 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
                 continue;
             }
 
-            let params: Vec<Type> = m.params.iter().map(|p| crate::substitute(p, &subst)).collect();
+            let params: Vec<Type> = m
+                .params
+                .iter()
+                .map(|p| crate::substitute(p, &subst))
+                .collect();
             let return_type = crate::substitute(&m.return_type, &subst);
 
             if is_object_method(env, &m.name, &params, &return_type) {
@@ -218,7 +223,10 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
         return None;
     }
     let ((_name, params), return_type) = candidates.into_iter().next()?;
-    Some(SamSignature { params, return_type })
+    Some(SamSignature {
+        params,
+        return_type,
+    })
 }
 
 fn merge_return_types(env: &dyn TypeEnv, a: Type, b: Type) -> Option<Type> {
@@ -309,9 +317,7 @@ mod tests {
         });
 
         {
-            let array_list_def = store
-                .class_mut(array_list)
-                .expect("ArrayList should exist");
+            let array_list_def = store.class_mut(array_list).expect("ArrayList should exist");
             assert_eq!(array_list_def.type_params.len(), 1);
             let array_list_e = array_list_def.type_params[0];
             array_list_def.super_class = Some(Type::class(

@@ -225,7 +225,11 @@ pub fn is_build_file(path: &Path) -> bool {
     // `.nova/apt-cache/generated-roots.json`. Updates to this file should
     // trigger a project reload so newly discovered generated roots are watched.
     if name == "generated-roots.json"
-        && path.ends_with(&Path::new(".nova").join("apt-cache").join("generated-roots.json"))
+        && path.ends_with(
+            &Path::new(".nova")
+                .join("apt-cache")
+                .join("generated-roots.json"),
+        )
     {
         return true;
     }
@@ -265,9 +269,10 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
     if name.ends_with(".lockfile")
-        && path
-            .ancestors()
-            .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+        && path.ancestors().any(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "dependency-locks")
+        })
     {
         return true;
     }
@@ -727,7 +732,10 @@ mod tests {
         );
 
         let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/module/../gen/A.java"));
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[test]

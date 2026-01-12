@@ -382,8 +382,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     let Some(parsed) = index.file(file) else {
         return Vec::new();
     };
-    let Some(offset) =
-        position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+    let Some(offset) = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
     else {
         return Vec::new();
     };
@@ -420,9 +419,8 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     let lookup_type_info = |name: &str| index.type_info(name);
     let lookup_file = |uri: &Uri| index.file_by_uri(uri);
     let lombok_fallback = |receiver_ty: &str, method_name: &str| {
-        lombok_intel::goto_virtual_member_definition(db, file, receiver_ty, method_name).map(
-            |(target_file, target_span)| (uri_for_file(db, target_file), target_span),
-        )
+        lombok_intel::goto_virtual_member_definition(db, file, receiver_ty, method_name)
+            .map(|(target_file, target_span)| (uri_for_file(db, target_file), target_span))
     };
 
     let mut locations = if let Some(call) = parsed
@@ -476,16 +474,13 @@ pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Optio
     let lookup_type_info = |name: &str| index.type_info(name);
     let lookup_file = |uri: &Uri| index.file_by_uri(uri);
 
-    let mut location = if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset)
+    let mut location = if let Some((ty_name, method_name)) =
+        nav_core::method_decl_at(parsed, offset)
     {
-        nav_core::declaration_for_override(
-            &lookup_type_info,
-            &lookup_file,
-            &ty_name,
-            &method_name,
-        )
+        nav_core::declaration_for_override(&lookup_type_info, &lookup_file, &ty_name, &method_name)
     } else if let Some((ident, _span)) = nav_core::identifier_at(&parsed.text, offset) {
-        if let Some((decl_uri, decl_span)) = nav_core::variable_declaration(parsed, offset, &ident) {
+        if let Some((decl_uri, decl_span)) = nav_core::variable_declaration(parsed, offset, &ident)
+        {
             if let Some(decl_parsed) = index.file_by_uri(&decl_uri) {
                 Some(Location {
                     uri: decl_uri,
@@ -544,11 +539,11 @@ fn mapstruct_fallback_locations(
     }
 
     let root = framework_cache::project_root_for_path(path);
-    let targets = match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset)
-    {
-        Ok(targets) => targets,
-        Err(_) => return Vec::new(),
-    };
+    let targets =
+        match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset) {
+            Ok(targets) => targets,
+            Err(_) => return Vec::new(),
+        };
 
     targets
         .into_iter()

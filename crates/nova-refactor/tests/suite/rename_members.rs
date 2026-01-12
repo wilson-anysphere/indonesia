@@ -104,7 +104,10 @@ fn rename_field_updates_super_reference_even_when_shadowed() {
 
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
     assert!(after.contains("class Base { int y; }"), "{after}");
-    assert!(after.contains("class Derived extends Base { int y;"), "{after}");
+    assert!(
+        after.contains("class Derived extends Base { int y;"),
+        "{after}"
+    );
     assert!(after.contains("super.y = 1"), "{after}");
     assert!(!after.contains("super.x"), "{after}");
 }

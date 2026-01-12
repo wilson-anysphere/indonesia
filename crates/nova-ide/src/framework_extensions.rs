@@ -32,7 +32,8 @@ impl<A> FrameworkAnalyzerAdapterOnTextDb<A> {
     }
 }
 
-impl<A> DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A> DiagnosticProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -66,7 +67,8 @@ where
     }
 }
 
-impl<A> CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A> CompletionProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -105,7 +107,8 @@ where
     }
 }
 
-impl<A> NavigationProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A> NavigationProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -174,7 +177,8 @@ where
     }
 }
 
-impl<A> InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerAdapterOnTextDb<A>
+impl<A> InlayHintProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {

@@ -336,7 +336,10 @@ class Use {
         after_use.contains("p.Foo.bar();"),
         "expected fully qualified call updated: {after_use}"
     );
-    assert!(!after_use.contains("p.Foo.foo();"), "expected old call gone: {after_use}");
+    assert!(
+        !after_use.contains("p.Foo.foo();"),
+        "expected old call gone: {after_use}"
+    );
 }
 
 #[test]
@@ -394,5 +397,8 @@ class Use {
         after_use.contains("p.Foo.SBAR"),
         "expected fully qualified access updated: {after_use}"
     );
-    assert!(!after_use.contains("p.Foo.SFOO"), "expected old access gone: {after_use}");
+    assert!(
+        !after_use.contains("p.Foo.SFOO"),
+        "expected old access gone: {after_use}"
+    );
 }

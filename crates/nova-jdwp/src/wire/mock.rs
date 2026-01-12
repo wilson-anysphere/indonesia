@@ -2555,7 +2555,11 @@ async fn handle_packet(
                         let start = first_index.max(0) as usize;
                         let req = length.max(0) as usize;
                         let end = start.saturating_add(req).min(values.len());
-                        let slice = if start < end { &values[start..end] } else { &[] };
+                        let slice = if start < end {
+                            &values[start..end]
+                        } else {
+                            &[]
+                        };
 
                         w.write_u8(b'L');
                         w.write_u32(slice.len() as u32);

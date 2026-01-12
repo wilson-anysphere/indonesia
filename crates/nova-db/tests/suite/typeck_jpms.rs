@@ -10,11 +10,11 @@ use nova_hir::module_info::lower_module_info_source_strict;
 use nova_hir::{hir::Stmt as HirStmt, ids::MethodId};
 use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
-use nova_resolve::ids::DefWithBodyId;
 use nova_project::{
     BuildSystem, ClasspathEntry as ProjectClasspathEntry, ClasspathEntryKind, JavaConfig,
     JpmsModuleRoot, Module, ProjectConfig,
 };
+use nova_resolve::ids::DefWithBodyId;
 use tempfile::TempDir;
 
 fn test_dep_jar() -> PathBuf {

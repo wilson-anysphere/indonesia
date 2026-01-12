@@ -3821,7 +3821,10 @@ class Test {
 
     let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
-    assert_eq!(db.symbol_kind(symbol), Some(nova_refactor::JavaSymbolKind::Type));
+    assert_eq!(
+        db.symbol_kind(symbol),
+        Some(nova_refactor::JavaSymbolKind::Type)
+    );
 
     let edit = rename(
         &db,
@@ -4060,7 +4063,10 @@ fn inline_variable_inline_all_rejected_when_unindexed_qualified_occurrence_exist
     )
     .unwrap();
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
-    assert!(after.contains("String a = \"hi\";"), "declaration must remain");
+    assert!(
+        after.contains("String a = \"hi\";"),
+        "declaration must remain"
+    );
     assert!(
         after.contains("System.out.println(\"hi\");"),
         "selected usage should be inlined: {after}"
@@ -5091,7 +5097,8 @@ fn inline_variable_rejects_assert_when_initializer_is_order_sensitive() {
 }
 
 #[test]
-fn inline_variable_rejects_switch_expression_rule_expression_body_when_initializer_is_order_sensitive() {
+fn inline_variable_rejects_switch_expression_rule_expression_body_when_initializer_is_order_sensitive(
+) {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   int m(int x) {
@@ -5480,7 +5487,10 @@ fn inline_variable_rejects_mutated_dependency() {
         },
     )
     .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineWouldChangeValue { .. }));
+    assert!(matches!(
+        err,
+        SemanticRefactorError::InlineWouldChangeValue { .. }
+    ));
 }
 
 #[test]

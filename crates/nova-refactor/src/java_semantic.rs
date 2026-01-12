@@ -2150,11 +2150,11 @@ fn record_body_references(
                             TypeResolution::External(_) => {
                                 // Treat external types as types too, but only record workspace
                                 // symbols for refactorings.
-                                 return;
-                             }
-                         }
-                     }
-                 }
+                                return;
+                            }
+                        }
+                    }
+                }
 
                 // `super.x` and `this.x` need special casing: `WorkspaceDefMap::type_def` does not
                 // include inherited members, and `super` should bind to the direct superclass even
@@ -4275,7 +4275,11 @@ fn record_syntax_only_references(
             .name()
             .and_then(|name| {
                 let qn = QualifiedName::from_dotted(&name.text());
-                resolver.resolve_qualified_type_resolution_in_scope(&scope_result.scopes, scope, &qn)
+                resolver.resolve_qualified_type_resolution_in_scope(
+                    &scope_result.scopes,
+                    scope,
+                    &qn,
+                )
             })
             .and_then(|resolved| match resolved {
                 TypeResolution::Source(item) => workspace.type_def(item),

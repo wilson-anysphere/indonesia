@@ -1524,12 +1524,13 @@ mod fuzzy_symbol_tests {
         fs::write(java_dir.join("ClassName.java"), content).expect("write");
 
         let ws = Workspace::open(root).expect("workspace open");
-        let results = ws.workspace_symbols("ClassName").expect("workspace symbols");
+        let results = ws
+            .workspace_symbols("ClassName")
+            .expect("workspace symbols");
 
         let name_offset = content.find("ClassName").expect("class name");
         let line_index = nova_core::LineIndex::new(content);
-        let expected =
-            line_index.position(content, nova_core::TextSize::from(name_offset as u32));
+        let expected = line_index.position(content, nova_core::TextSize::from(name_offset as u32));
 
         let symbol = results
             .iter()
@@ -1878,23 +1879,30 @@ fn patch_indexed_symbol_locations(content: &str, file_id: FileId, delta: &mut Pr
         for symbol in symbols.iter_mut() {
             let ast_id = AstId::new(symbol.ast_id);
             let name_range = match symbol.kind {
-                nova_index::IndexSymbolKind::Class => tree.classes.get(&ast_id).map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Interface => tree
-                    .interfaces
-                    .get(&ast_id)
-                    .map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Enum => tree.enums.get(&ast_id).map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Record => tree.records.get(&ast_id).map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Annotation => tree
-                    .annotations
-                    .get(&ast_id)
-                    .map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Method => tree.methods.get(&ast_id).map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Field => tree.fields.get(&ast_id).map(|it| it.name_range),
-                nova_index::IndexSymbolKind::Constructor => tree
-                    .constructors
-                    .get(&ast_id)
-                    .map(|it| it.name_range),
+                nova_index::IndexSymbolKind::Class => {
+                    tree.classes.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Interface => {
+                    tree.interfaces.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Enum => {
+                    tree.enums.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Record => {
+                    tree.records.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Annotation => {
+                    tree.annotations.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Method => {
+                    tree.methods.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Field => {
+                    tree.fields.get(&ast_id).map(|it| it.name_range)
+                }
+                nova_index::IndexSymbolKind::Constructor => {
+                    tree.constructors.get(&ast_id).map(|it| it.name_range)
+                }
             };
 
             let Some(name_range) = name_range else {

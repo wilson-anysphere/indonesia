@@ -445,7 +445,10 @@ fn collect_method_call_reference_edits(
     let mut edits = Vec::new();
     let root = file.parse.syntax();
 
-    for call in root.descendants().filter_map(ast::MethodCallExpression::cast) {
+    for call in root
+        .descendants()
+        .filter_map(ast::MethodCallExpression::cast)
+    {
         let Some(callee) = call.callee() else {
             continue;
         };

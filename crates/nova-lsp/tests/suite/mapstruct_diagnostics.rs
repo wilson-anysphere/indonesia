@@ -97,4 +97,3 @@ public class TargetDto {
         "expected MapStruct unmapped target properties diagnostic; got {diagnostics:#?}"
     );
 }
-

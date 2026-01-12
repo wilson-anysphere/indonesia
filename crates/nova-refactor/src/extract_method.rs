@@ -1938,7 +1938,11 @@ fn collect_thrown_exceptions_in_statements(
     let mut seen = HashSet::new();
 
     for stmt in selection_statements {
-        for throw_stmt in stmt.syntax().descendants().filter_map(ast::ThrowStatement::cast) {
+        for throw_stmt in stmt
+            .syntax()
+            .descendants()
+            .filter_map(ast::ThrowStatement::cast)
+        {
             if control_flow_is_deferred(throw_stmt.syntax()) {
                 continue;
             }
@@ -2610,7 +2614,8 @@ fn compute_return_value(
         .copied()
         .filter(|local| {
             live_after_selection.contains(local)
-                || capture_reads_after_selection.contains(body.locals()[local.index()].name.as_str())
+                || capture_reads_after_selection
+                    .contains(body.locals()[local.index()].name.as_str())
         })
         .collect();
 

@@ -27,7 +27,10 @@ class Use {}
     .unwrap();
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
 
-    assert!(after.contains("int baz();"), "method declaration renamed: {after}");
+    assert!(
+        after.contains("int baz();"),
+        "method declaration renamed: {after}"
+    );
     assert!(
         after.contains("@Foo(baz = 1)"),
         "annotation usage element name renamed: {after}"
@@ -67,7 +70,10 @@ class Use {}
     .unwrap();
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
 
-    assert!(after.contains("void baz()"), "method declaration renamed: {after}");
+    assert!(
+        after.contains("void baz()"),
+        "method declaration renamed: {after}"
+    );
     assert!(
         after.contains("@Foo(bar = 1)"),
         "annotation element name should remain unchanged: {after}"
@@ -77,4 +83,3 @@ class Use {}
         "annotation method should remain unchanged: {after}"
     );
 }
-

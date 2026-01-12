@@ -1778,7 +1778,13 @@ async fn handle_request_inner(
                             *guard = Some(proc);
                         }
 
-                        (vec![host], port, attach_target_label, main_class.to_string(), pid)
+                        (
+                            vec![host],
+                            port,
+                            attach_target_label,
+                            main_class.to_string(),
+                            pid,
+                        )
                     }
                 };
 

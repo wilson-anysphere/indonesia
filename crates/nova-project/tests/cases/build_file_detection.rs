@@ -145,7 +145,9 @@ fn build_markers_under_ignored_dirs_are_not_build_files() {
     let cases = [
         (
             BuildSystem::Gradle,
-            PathBuf::from("node_modules").join("foo").join("build.gradle"),
+            PathBuf::from("node_modules")
+                .join("foo")
+                .join("build.gradle"),
         ),
         (
             BuildSystem::Bazel,
@@ -157,7 +159,9 @@ fn build_markers_under_ignored_dirs_are_not_build_files() {
         ),
         (
             BuildSystem::Bazel,
-            PathBuf::from("bazel-testlogs").join("foo").join("rules.bzl"),
+            PathBuf::from("bazel-testlogs")
+                .join("foo")
+                .join("rules.bzl"),
         ),
         (
             BuildSystem::Bazel,

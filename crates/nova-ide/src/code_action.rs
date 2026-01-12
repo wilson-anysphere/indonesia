@@ -412,7 +412,11 @@ fn type_mismatch_quick_fixes(
     actions.push(CodeAction {
         title: format!("Cast to {expected}"),
         kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(single_replace_edit(uri, range, format!("({expected}) {expr}"))),
+        edit: Some(single_replace_edit(
+            uri,
+            range,
+            format!("({expected}) {expr}"),
+        )),
         diagnostics: Some(vec![diagnostic.clone()]),
         is_preferred: Some(expected != "String"),
         ..CodeAction::default()

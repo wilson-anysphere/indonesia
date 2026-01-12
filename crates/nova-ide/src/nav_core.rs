@@ -362,9 +362,12 @@ where
     // Prefer walking the superclass chain before interfaces (class methods win over
     // interface default methods in Java).
     if let Some(super_name) = info.def().super_class.as_deref() {
-        if let Some(def) =
-            resolve_method_definition_inner::<TI, FTypeInfo>(lookup_type_info, super_name, method_name, visited)
-        {
+        if let Some(def) = resolve_method_definition_inner::<TI, FTypeInfo>(
+            lookup_type_info,
+            super_name,
+            method_name,
+            visited,
+        ) {
             return Some(def);
         }
     }
@@ -372,9 +375,12 @@ where
     // If the method isn't found on the class/superclass chain, try interfaces.
     // For interfaces, `TypeDef.interfaces` represents extended interfaces.
     for iface in &info.def().interfaces {
-        if let Some(def) =
-            resolve_method_definition_inner::<TI, FTypeInfo>(lookup_type_info, iface, method_name, visited)
-        {
+        if let Some(def) = resolve_method_definition_inner::<TI, FTypeInfo>(
+            lookup_type_info,
+            iface,
+            method_name,
+            visited,
+        ) {
             return Some(def);
         }
     }

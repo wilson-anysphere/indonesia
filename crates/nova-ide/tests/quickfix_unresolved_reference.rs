@@ -44,4 +44,3 @@ fn unresolved_reference_offers_create_method_quickfix() {
         "expected `Create method 'foo'` quickfix; got {titles:?}"
     );
 }
-

@@ -1626,7 +1626,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "invalid-constructor-invocation"),
         "expected invalid-constructor-invocation diagnostic, got {diags:?}"
     );
@@ -1646,7 +1647,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "constructor-invocation-not-first"),
         "expected constructor-invocation-not-first diagnostic, got {diags:?}"
     );
@@ -1665,7 +1667,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected super() to resolve against Object(), got {diags:?}"
     );
@@ -6392,7 +6395,9 @@ class C { void m(){ new R(1); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected record canonical constructor call to resolve; got {diags:?}"
     );
 }

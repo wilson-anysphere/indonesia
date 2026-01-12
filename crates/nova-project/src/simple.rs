@@ -49,8 +49,7 @@ pub(crate) fn load_simple_project(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -144,8 +143,7 @@ pub(crate) fn load_simple_workspace_model(
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
-                })
-            {
+                }) {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory

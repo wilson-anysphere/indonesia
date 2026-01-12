@@ -69,7 +69,11 @@ fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_
             }
         }
     });
-    std::fs::write(&snapshot_path, serde_json::to_vec_pretty(&snapshot_json).unwrap()).unwrap();
+    std::fs::write(
+        &snapshot_path,
+        serde_json::to_vec_pretty(&snapshot_json).unwrap(),
+    )
+    .unwrap();
 
     let gradle_home = tempfile::tempdir().expect("tempdir");
     let options = LoadOptions {
@@ -114,7 +118,9 @@ fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_
 
     let model =
         load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
-    let app = model.module_by_id("gradle::app").expect("app module config");
+    let app = model
+        .module_by_id("gradle::app")
+        .expect("app module config");
     assert_eq!(app.root, app_root);
 
     assert!(

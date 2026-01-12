@@ -70,4 +70,3 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
         character: col_utf16,
     }
 }
-

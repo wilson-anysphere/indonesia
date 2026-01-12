@@ -349,7 +349,8 @@ class A {
 }
 
 #[test]
-fn completion_method_reference_with_explicit_type_arguments_after_double_colon_triggers_completions() {
+fn completion_method_reference_with_explicit_type_arguments_after_double_colon_triggers_completions(
+) {
     let (db, file, pos, _text) = fixture(
         r#"
 class Foo {

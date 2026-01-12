@@ -23,9 +23,9 @@ pub mod quick_fixes;
 pub mod semantics;
 
 pub mod code_intelligence;
-mod framework_extensions;
 mod completion;
 mod file_navigation;
+mod framework_extensions;
 mod jpa_intel;
 mod micronaut_intel;
 mod project;

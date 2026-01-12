@@ -1,6 +1,8 @@
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
-use nova_ext::{CodeAction, CodeActionParams, CodeActionProvider, ExtensionContext, ProjectId, Span};
+use nova_ext::{
+    CodeAction, CodeActionParams, CodeActionProvider, ExtensionContext, ProjectId, Span,
+};
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use std::path::PathBuf;
@@ -127,4 +129,3 @@ fn code_actions_lsp_dedupes_actions_by_kind_and_title() {
         "expected the retained action to be the built-in quick fix (with an edit)"
     );
 }
-

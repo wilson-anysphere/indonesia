@@ -61,7 +61,10 @@ fn first_text_edit(action: &lsp_types::CodeAction) -> &lsp_types::TextEdit {
         .changes
         .as_ref()
         .expect("expected WorkspaceEdit.changes (not document_changes)");
-    let (_uri, edits) = changes.iter().next().expect("expected at least one file edit");
+    let (_uri, edits) = changes
+        .iter()
+        .next()
+        .expect("expected at least one file edit");
     edits.first().expect("expected at least one TextEdit")
 }
 
@@ -136,10 +139,7 @@ fn void_method_return_value_offers_remove_returned_value_quickfix() {
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
-    let expr_start = source
-        .find("return 1")
-        .expect("expected return statement")
-        + "return ".len();
+    let expr_start = source.find("return 1").expect("expected return statement") + "return ".len();
     let expr_span = Span::new(expr_start, expr_start + 1);
 
     let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(expr_span));
@@ -179,10 +179,7 @@ fn return_type_mismatch_offers_cast_quickfix() {
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
-    let expr_start = source
-        .find("return o")
-        .expect("expected return statement")
-        + "return ".len();
+    let expr_start = source.find("return o").expect("expected return statement") + "return ".len();
     let expr_span = Span::new(expr_start, expr_start + 1);
 
     let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(expr_span));

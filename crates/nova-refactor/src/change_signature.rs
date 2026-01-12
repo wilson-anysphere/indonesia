@@ -2175,8 +2175,11 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
                 // Best-effort heuristic: count `<`/`>` only when the `<` is directly attached to
                 // the preceding token (no whitespace) and that token looks like either a type
                 // (UpperCamelCase) or an explicit type-arg prefix (`obj.<T>m()`).
-                let immediately_preceded_by_ws =
-                    i > 0 && bytes.get(i - 1).copied().is_some_and(|b| b.is_ascii_whitespace());
+                let immediately_preceded_by_ws = i > 0
+                    && bytes
+                        .get(i - 1)
+                        .copied()
+                        .is_some_and(|b| b.is_ascii_whitespace());
                 if depth_angle > 0 {
                     depth_angle += 1;
                 } else if !immediately_preceded_by_ws {
@@ -2227,11 +2230,7 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
             _ => {}
         }
 
-        if ch == sep
-            && depth_paren == 0
-            && depth_brack == 0
-            && depth_brace == 0
-            && depth_angle == 0
+        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && depth_angle == 0
         {
             out.push(text[start..i].to_string());
             start = i + 1;

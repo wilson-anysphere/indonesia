@@ -1635,7 +1635,8 @@ fn mapping_property_completions_fs(
         ty.clone()
     };
 
-    let Some(prop_types) = property_types_for_type_fs_cached(cache, project_root, roots, &resolved_ty)
+    let Some(prop_types) =
+        property_types_for_type_fs_cached(cache, project_root, roots, &resolved_ty)
     else {
         return Vec::new();
     };
@@ -1693,7 +1694,9 @@ fn property_types_for_type_fs_cached(
         return cached.clone();
     }
 
-    let value = property_types_for_type_fs(project_root, roots, ty).ok().flatten();
+    let value = property_types_for_type_fs(project_root, roots, ty)
+        .ok()
+        .flatten();
     cache.insert(key, value.clone());
     value
 }

@@ -43,7 +43,11 @@ impl FrameworkAnalyzer for TestAnalyzer {
         }]
     }
 
-    fn inlay_hints(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<nova_framework::InlayHint> {
+    fn inlay_hints(
+        &self,
+        _db: &dyn Database,
+        _file: nova_ext::FileId,
+    ) -> Vec<nova_framework::InlayHint> {
         vec![nova_framework::InlayHint {
             span: Some(Span::new(0, 1)),
             label: "test hint".to_string(),
@@ -92,4 +96,3 @@ fn framework_analyzer_adapter_on_text_db_surfaces_results() {
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].label, "test hint");
 }
-

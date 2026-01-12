@@ -7782,7 +7782,9 @@ mod tests {
         // get help with the diagnostic message itself. Code-editing actions are omitted.
         let explain = excluded_actions
             .iter()
-            .find(|action| action.get("kind").and_then(|k| k.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN))
+            .find(|action| {
+                action.get("kind").and_then(|k| k.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN)
+            })
             .expect("expected explain action for excluded file");
         let explain_code = explain
             .get("command")
@@ -7829,7 +7831,9 @@ mod tests {
         let allowed_actions = allowed_actions.as_array().expect("array");
         let explain = allowed_actions
             .iter()
-            .find(|action| action.get("kind").and_then(|k| k.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN))
+            .find(|action| {
+                action.get("kind").and_then(|k| k.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN)
+            })
             .expect("expected explain action for non-excluded file when AI is configured");
         let explain_code = explain
             .get("command")
@@ -8205,7 +8209,8 @@ fn run_ai_generate_tests_code_action(
     // one from the source file's package + class name. This allows the AI patch to safely create
     // a new file (e.g. `ExampleTest.java`) instead of editing the production source file.
     let mut config = nova_ai_codegen::CodeGenerationConfig::default();
-    let mut workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source.clone())]);
+    let mut workspace =
+        nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source.clone())]);
     if let Some(test_file) = derive_test_file_path(&source, &file_path) {
         config.safety.allow_new_files = true;
         config.safety.allowed_path_prefixes = vec![file_rel.clone(), test_file.clone()];
@@ -8220,11 +8225,8 @@ fn run_ai_generate_tests_code_action(
     }
     let ai_client =
         nova_ai::AiClient::from_config(&state.ai_config).map_err(|e| (-32603, e.to_string()))?;
-    let executor = nova_lsp::AiCodeActionExecutor::new(
-        &ai_client,
-        config,
-        state.ai_config.privacy.clone(),
-    );
+    let executor =
+        nova_lsp::AiCodeActionExecutor::new(&ai_client, config, state.ai_config.privacy.clone());
 
     let outcome = runtime
         .block_on(executor.execute(
@@ -8303,11 +8305,7 @@ fn run_ai_explain_error(
         )
     };
     let mut ctx = build_context_request_from_args(
-        state,
-        uri,
-        range,
-        code,
-        /*fallback_enclosing=*/ None,
+        state, uri, range, code, /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
     ctx.diagnostics.push(ContextDiagnostic {

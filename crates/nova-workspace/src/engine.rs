@@ -2954,9 +2954,10 @@ fn is_build_tool_input_file(path: &Path) -> bool {
     }
     if !in_ignored_dir
         && name.ends_with(".lockfile")
-        && path
-            .ancestors()
-            .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+        && path.ancestors().any(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "dependency-locks")
+        })
     {
         return true;
     }
@@ -6001,7 +6002,11 @@ mod tests {
                 }
             }
         });
-        fs::write(&snapshot_path, serde_json::to_vec_pretty(&snapshot_json).unwrap()).unwrap();
+        fs::write(
+            &snapshot_path,
+            serde_json::to_vec_pretty(&snapshot_json).unwrap(),
+        )
+        .unwrap();
 
         engine.reload_project_now(&[snapshot_path.clone()]).unwrap();
 
@@ -6579,7 +6584,9 @@ enabled = false
             .expect("expected VFS id for Main.java");
 
         // Ensure the file content is initially resident in Salsa.
-        let before = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let before = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
         assert!(
             !before.is_empty(),
             "expected Main.java content to be loaded into Salsa before eviction"
@@ -6591,7 +6598,9 @@ enabled = false
             target_bytes: 0,
         });
 
-        let after = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let after = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
         assert_eq!(
             after.as_str(),
             "",
@@ -6611,7 +6620,9 @@ enabled = false
         );
 
         // The fallback should not restore the Salsa input.
-        let final_text = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let final_text = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
         assert_eq!(
             final_text.as_str(),
             "",
@@ -6957,7 +6968,11 @@ public class Bar {}"#;
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
         fs::create_dir_all(project_root.join("src")).unwrap();
-        fs::write(project_root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let project_root = project_root.canonicalize().unwrap();
 
