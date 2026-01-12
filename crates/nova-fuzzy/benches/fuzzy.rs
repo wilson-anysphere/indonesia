@@ -17,6 +17,11 @@ fn configure_rayon() {
     });
 }
 
+fn criterion_config() -> Criterion {
+    configure_rayon();
+    Criterion::default()
+}
+
 fn lcg(seed: &mut u64) -> u64 {
     // Deterministic, cheap RNG (not cryptographically secure).
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -74,8 +79,6 @@ struct FuzzyScoreCase {
 }
 
 fn bench_fuzzy_score(c: &mut Criterion) {
-    configure_rayon();
-
     let mut group = c.benchmark_group("fuzzy_score");
     group.measurement_time(Duration::from_secs(2));
     group.warm_up_time(Duration::from_secs(1));
@@ -112,8 +115,6 @@ fn bench_fuzzy_score(c: &mut Criterion) {
 }
 
 fn bench_trigram_candidates(c: &mut Criterion) {
-    configure_rayon();
-
     // Keep the corpus size large enough to be representative but small enough
     // to keep `cargo bench` runs reasonable in CI-ish environments.
     const SYMBOLS: usize = 100_000;
@@ -169,7 +170,8 @@ fn bench_trigram_candidates(c: &mut Criterion) {
                 .len(),
         );
         b.iter(|| {
-            let candidates = dense_index.candidates_with_scratch(black_box(dense_query), &mut scratch);
+            let candidates =
+                dense_index.candidates_with_scratch(black_box(dense_query), &mut scratch);
             black_box(candidates.len())
         })
     });
@@ -177,5 +179,9 @@ fn bench_trigram_candidates(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_fuzzy_score, bench_trigram_candidates);
+criterion_group! {
+    name = benches;
+    config = criterion_config();
+    targets = bench_fuzzy_score, bench_trigram_candidates
+}
 criterion_main!(benches);
