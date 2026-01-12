@@ -3,6 +3,7 @@ mod index_view;
 mod persistence_concurrency;
 mod persistence_generations;
 mod persistence_roundtrip;
+mod reference_kind;
 mod segments_persistence;
 mod sharded_persistence;
 mod sketch_parser_hardening;

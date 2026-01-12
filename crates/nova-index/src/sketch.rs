@@ -3,7 +3,7 @@
 //! This module intentionally favors recall over precision. Refactorings are
 //! expected to follow up with semantic verification passes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -327,11 +327,22 @@ impl Index {
     pub fn find_name_candidates(&self, name: &str) -> Vec<ReferenceCandidate> {
         let mut out = Vec::new();
         for (file, text) in &self.files {
+            // Precompute `@Override` method declaration name ranges for this file so we can quickly
+            // distinguish declaration-site occurrences from call-sites.
+            let override_method_names: HashSet<TextRange> = self
+                .symbols_in_file(file)
+                .filter(|sym| sym.kind == SymbolKind::Method && sym.is_override)
+                .map(|sym| sym.name_range)
+                .collect();
             out.extend(
                 find_identifier_occurrences(text, name)
                     .into_iter()
                     .map(|range| {
-                        let kind = classify_occurrence(text, range);
+                        let kind = if override_method_names.contains(&range) {
+                            ReferenceKind::Override
+                        } else {
+                            classify_occurrence_extended(text, range)
+                        };
                         ReferenceCandidate {
                             file: file.clone(),
                             range,
@@ -816,6 +827,66 @@ fn classify_occurrence(text: &str, range: TextRange) -> ReferenceKind {
     }
 
     ReferenceKind::Unknown
+}
+
+fn classify_occurrence_extended(text: &str, range: TextRange) -> ReferenceKind {
+    if is_in_extends_or_implements_clause(text, range) {
+        return ReferenceKind::Implements;
+    }
+
+    if is_type_after_new(text, range) {
+        return ReferenceKind::TypeUsage;
+    }
+
+    classify_occurrence(text, range)
+}
+
+fn is_type_after_new(text: &str, range: TextRange) -> bool {
+    let before = &text[..range.start.min(text.len())];
+    let end = trim_end_ws_and_comments(before);
+    let before = &before[..end];
+    let Some((tok_start, tok_end)) = last_identifier_range(before) else {
+        return false;
+    };
+    &before[tok_start..tok_end] == "new"
+}
+
+fn is_in_extends_or_implements_clause(text: &str, range: TextRange) -> bool {
+    let start = range.start.min(text.len());
+    let line_start = text[..start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let prefix = &text[line_start..start];
+
+    // Don't scan past statement or block boundaries.
+    let stop = match (prefix.rfind('{'), prefix.rfind(';')) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    let prefix = match stop {
+        Some(pos) => &prefix[pos + 1..],
+        None => prefix,
+    };
+
+    let implements_pos = rfind_keyword_token(prefix, "implements");
+    let extends_pos = rfind_keyword_token(prefix, "extends");
+
+    implements_pos.is_some() || extends_pos.is_some()
+}
+
+fn rfind_keyword_token(haystack: &str, needle: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let mut search_end = haystack.len();
+    while let Some(pos) = haystack[..search_end].rfind(needle) {
+        let before_ok = pos == 0 || !is_ident_continue(bytes[pos - 1]);
+        let after_pos = pos + needle.len();
+        let after_ok = after_pos == haystack.len() || !is_ident_continue(bytes[after_pos]);
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        search_end = pos;
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
