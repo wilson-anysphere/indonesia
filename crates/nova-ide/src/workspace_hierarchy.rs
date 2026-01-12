@@ -270,34 +270,62 @@ impl WorkspaceHierarchyIndex {
         method_name: &str,
         visited: &mut BTreeSet<String>,
     ) -> Option<MethodInfo> {
-        if !visited.insert(type_name.to_string()) {
-            return None;
+        // Keep superclass resolution as the primary path (classes first), but when no
+        // method exists on the class/superclass chain, fall back to searching
+        // interfaces transitively (superinterfaces). This enables resolving calls
+        // to interface `default` methods for call hierarchy.
+        let mut interface_roots: Vec<String> = Vec::new();
+
+        // 1) Walk the class/superclass chain first.
+        let mut cur: Option<String> = Some(type_name.to_string());
+        while let Some(name) = cur {
+            if !visited.insert(name.clone()) {
+                break;
+            }
+
+            let Some(type_info) = self.type_info(&name) else {
+                break;
+            };
+
+            if let Some(method) = type_info.def.methods.iter().find(|m| m.name == method_name) {
+                return Some(method_info_from_def(
+                    type_info.file_id,
+                    &type_info.uri,
+                    &type_info.def.name,
+                    method,
+                ));
+            }
+
+            interface_roots.extend(type_info.def.interfaces.iter().cloned());
+            cur = type_info.def.super_class.clone();
         }
 
-        let type_info = self.type_info(type_name)?;
-        if let Some(method) = type_info.def.methods.iter().find(|m| m.name == method_name) {
-            return Some(method_info_from_def(
-                type_info.file_id,
-                &type_info.uri,
-                &type_info.def.name,
-                method,
-            ));
-        }
-
-        // Java method lookup prefers the superclass chain over interfaces.
-        if let Some(super_name) = type_info.def.super_class.as_deref() {
-            if let Some(found) =
-                self.resolve_method_definition_inner(super_name, method_name, visited)
-            {
-                return Some(found);
+        // 2) No method found on the class chain; search interfaces breadth-first.
+        let mut queue: VecDeque<String> = VecDeque::new();
+        for iface in interface_roots {
+            if visited.insert(iface.clone()) {
+                queue.push_back(iface);
             }
         }
 
-        // If we can't find a declaration/definition in the class chain, fall back
-        // to interfaces (including extended interfaces).
-        for iface in &type_info.def.interfaces {
-            if let Some(found) = self.resolve_method_definition_inner(iface, method_name, visited) {
-                return Some(found);
+        while let Some(iface) = queue.pop_front() {
+            let Some(type_info) = self.type_info(&iface) else {
+                continue;
+            };
+
+            if let Some(method) = type_info.def.methods.iter().find(|m| m.name == method_name) {
+                return Some(method_info_from_def(
+                    type_info.file_id,
+                    &type_info.uri,
+                    &type_info.def.name,
+                    method,
+                ));
+            }
+
+            for super_iface in &type_info.def.interfaces {
+                if visited.insert(super_iface.clone()) {
+                    queue.push_back(super_iface.clone());
+                }
             }
         }
 

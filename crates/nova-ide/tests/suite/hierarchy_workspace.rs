@@ -285,10 +285,50 @@ class C implements I { void $0test(){ C c=null; c.foo(); } }
 
     let outgoing = call_hierarchy_outgoing_calls(&fixture.db, file_c, "test");
     assert!(
-        outgoing
-            .iter()
-            .any(|call| call.to.name == "foo" && call.to.uri == fixture.marker_uri(1)),
+        outgoing.iter().any(|call| {
+            call.to.name == "foo"
+                && call.to.uri == fixture.marker_uri(1)
+                && call.to.selection_range.start == fixture.marker_position(1)
+        }),
         "expected outgoing calls to include foo in I.java; got {outgoing:#?}"
+    );
+}
+
+#[test]
+fn call_hierarchy_resolves_receiverless_interface_default_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { default void $1foo(){} }
+//- /C.java
+class C implements I { void $0bar(){ foo(); } }
+"#,
+    );
+
+    let file_c = fixture.marker_file(0);
+    let pos_bar = fixture.marker_position(0);
+    let items = prepare_call_hierarchy(&fixture.db, file_c, pos_bar)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "bar");
+
+    let outgoing = call_hierarchy_outgoing_calls(&fixture.db, file_c, "bar");
+    assert!(
+        outgoing.iter().any(|call| {
+            call.to.name == "foo"
+                && call.to.uri == fixture.marker_uri(1)
+                && call.to.selection_range.start == fixture.marker_position(1)
+        }),
+        "expected outgoing calls to include foo in I.java; got {outgoing:#?}"
+    );
+
+    let file_i = fixture.marker_file(1);
+    let incoming = call_hierarchy_incoming_calls(&fixture.db, file_i, "foo");
+    assert!(
+        incoming
+            .iter()
+            .any(|call| call.from.name == "bar" && call.from.uri == fixture.marker_uri(0)),
+        "expected incoming calls to include bar in C.java; got {incoming:#?}"
     );
 }
 

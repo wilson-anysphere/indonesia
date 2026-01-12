@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use lsp_types::{Location, Uri};
 use nova_index::InheritanceIndex;
@@ -326,62 +326,75 @@ where
     TI: NavTypeInfo + 'a,
     FTypeInfo: Fn(&str) -> Option<&'a TI>,
 {
-    let mut visited = BTreeSet::new();
-    resolve_method_definition_inner::<TI, FTypeInfo>(
-        lookup_type_info,
-        ty_name,
-        method_name,
-        &mut visited,
-    )
-}
+    // 1) Walk the class/superclass chain first, collecting implemented interfaces.
+    //
+    // We only treat methods with bodies as "definitions" (this matches prior behavior
+    // and is critical for interface `default` methods).
+    //
+    // If no class/superclass definition exists, we fall back to searching interfaces
+    // transitively (superinterfaces) in a deterministic breadth-first order.
+    let mut seen_types: HashSet<String> = HashSet::new();
+    let mut interface_roots: Vec<String> = Vec::new();
 
-fn resolve_method_definition_inner<'a, TI, FTypeInfo>(
-    lookup_type_info: &'a FTypeInfo,
-    ty_name: &str,
-    method_name: &str,
-    visited: &mut BTreeSet<String>,
-) -> Option<(Uri, Span)>
-where
-    TI: NavTypeInfo + 'a,
-    FTypeInfo: Fn(&str) -> Option<&'a TI>,
-{
-    if !visited.insert(ty_name.to_string()) {
-        return None;
+    let mut cur = ty_name.to_string();
+    loop {
+        if !seen_types.insert(cur.clone()) {
+            // Cycle in the superclass chain.
+            break;
+        }
+
+        let Some(info) = lookup_type_info(&cur) else {
+            break;
+        };
+
+        if let Some(method) = info
+            .def()
+            .methods
+            .iter()
+            .find(|m| m.name == method_name && m.body_span.is_some())
+        {
+            return Some((info.uri().clone(), method.name_span));
+        }
+
+        // Record interfaces for later lookup (after class-chain resolution fails),
+        // preserving declaration order across the class chain.
+        interface_roots.extend(info.def().interfaces.iter().cloned());
+
+        let Some(next) = info.def().super_class.clone() else {
+            break;
+        };
+        cur = next;
     }
 
-    let info = lookup_type_info(ty_name)?;
-    if let Some(method) = info
-        .def()
-        .methods
-        .iter()
-        .find(|m| m.name == method_name && m.body_span.is_some())
-    {
-        return Some((info.uri().clone(), method.name_span));
-    }
+    // 2) No class/superclass definition was found. Search interfaces transitively for
+    // a `default` method definition.
+    let mut visited_ifaces: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
 
-    // Prefer walking the superclass chain before interfaces (class methods win over
-    // interface default methods in Java).
-    if let Some(super_name) = info.def().super_class.as_deref() {
-        if let Some(def) = resolve_method_definition_inner::<TI, FTypeInfo>(
-            lookup_type_info,
-            super_name,
-            method_name,
-            visited,
-        ) {
-            return Some(def);
+    for iface in interface_roots {
+        if visited_ifaces.insert(iface.clone()) {
+            queue.push_back(iface);
         }
     }
 
-    // If the method isn't found on the class/superclass chain, try interfaces.
-    // For interfaces, `TypeDef.interfaces` represents extended interfaces.
-    for iface in &info.def().interfaces {
-        if let Some(def) = resolve_method_definition_inner::<TI, FTypeInfo>(
-            lookup_type_info,
-            iface,
-            method_name,
-            visited,
-        ) {
-            return Some(def);
+    while let Some(iface) = queue.pop_front() {
+        let Some(info) = lookup_type_info(&iface) else {
+            continue;
+        };
+
+        if let Some(method) = info
+            .def()
+            .methods
+            .iter()
+            .find(|m| m.name == method_name && m.body_span.is_some())
+        {
+            return Some((info.uri().clone(), method.name_span));
+        }
+
+        for super_iface in &info.def().interfaces {
+            if visited_ifaces.insert(super_iface.clone()) {
+                queue.push_back(super_iface.clone());
+            }
         }
     }
 
