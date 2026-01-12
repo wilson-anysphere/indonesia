@@ -267,6 +267,22 @@ impl MockJdwpServer {
         self.state.define_class_calls.lock().await.clone()
     }
 
+    pub async fn reference_type_methods_calls(&self) -> Vec<ReferenceTypeMethodsCall> {
+        self.state
+            .reference_type_methods_calls
+            .lock()
+            .await
+            .clone()
+    }
+
+    pub async fn class_type_invoke_method_calls(&self) -> Vec<ClassTypeInvokeMethodCall> {
+        self.state
+            .class_type_invoke_method_calls
+            .lock()
+            .await
+            .clone()
+    }
+
     pub async fn stack_frame_set_values_calls(&self) -> Vec<StackFrameSetValuesCall> {
         self.state.stack_frame_set_values_calls.lock().await.clone()
     }
@@ -465,10 +481,12 @@ struct State {
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
     create_string_calls: tokio::sync::Mutex<Vec<CreateStringCall>>,
     define_class_calls: tokio::sync::Mutex<Vec<DefineClassCall>>,
+    reference_type_methods_calls: tokio::sync::Mutex<Vec<ReferenceTypeMethodsCall>>,
     stack_frame_set_values_calls: tokio::sync::Mutex<Vec<StackFrameSetValuesCall>>,
     object_reference_set_values_calls: tokio::sync::Mutex<Vec<ObjectReferenceSetValuesCall>>,
     class_type_set_values_calls: tokio::sync::Mutex<Vec<ClassTypeSetValuesCall>>,
     array_reference_set_values_calls: tokio::sync::Mutex<Vec<ArrayReferenceSetValuesCall>>,
+    class_type_invoke_method_calls: tokio::sync::Mutex<Vec<ClassTypeInvokeMethodCall>>,
     class_type_new_instance_calls: tokio::sync::Mutex<Vec<ClassTypeNewInstanceCall>>,
     array_type_new_instance_calls: tokio::sync::Mutex<Vec<ArrayTypeNewInstanceCall>>,
     interface_type_invoke_method_calls: tokio::sync::Mutex<Vec<InterfaceTypeInvokeMethodCall>>,
@@ -559,10 +577,12 @@ impl State {
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
             create_string_calls: tokio::sync::Mutex::new(Vec::new()),
             define_class_calls: tokio::sync::Mutex::new(Vec::new()),
+            reference_type_methods_calls: tokio::sync::Mutex::new(Vec::new()),
             stack_frame_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
             object_reference_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
             class_type_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
             array_reference_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
+            class_type_invoke_method_calls: tokio::sync::Mutex::new(Vec::new()),
             class_type_new_instance_calls: tokio::sync::Mutex::new(Vec::new()),
             array_type_new_instance_calls: tokio::sync::Mutex::new(Vec::new()),
             interface_type_invoke_method_calls: tokio::sync::Mutex::new(Vec::new()),
@@ -690,6 +710,21 @@ pub struct DefineClassCall {
     pub loader: ObjectId,
     pub name: String,
     pub bytecode_len: usize,
+    pub returned_id: ReferenceTypeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceTypeMethodsCall {
+    pub class_id: ReferenceTypeId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassTypeInvokeMethodCall {
+    pub class_id: ReferenceTypeId,
+    pub thread: ThreadId,
+    pub method_id: MethodId,
+    pub args: Vec<JdwpValue>,
+    pub options: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1513,6 +1548,11 @@ async fn handle_packet(
         // ReferenceType.Methods
         (2, 5) => {
             let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            state
+                .reference_type_methods_calls
+                .lock()
+                .await
+                .push(ReferenceTypeMethodsCall { class_id });
             let mut w = JdwpWriter::new();
             match class_id {
                 DEFINED_CLASS_ID => {
@@ -2286,6 +2326,7 @@ async fn handle_packet(
                             loader,
                             name,
                             bytecode_len: len,
+                            returned_id: DEFINED_CLASS_ID,
                         });
                     let mut w = JdwpWriter::new();
                     w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
@@ -2342,20 +2383,20 @@ async fn handle_packet(
         // ClassType.InvokeMethod
         (3, 3) => {
             let res = (|| {
-                let _class_id = r.read_reference_type_id(sizes)?;
-                let _thread_id = r.read_object_id(sizes)?;
-                let _method_id = r.read_id(sizes.method_id)?;
+                let class_id = r.read_reference_type_id(sizes)?;
+                let thread = r.read_object_id(sizes)?;
+                let method_id = r.read_id(sizes.method_id)?;
                 let arg_count = r.read_u32()? as usize;
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(r.read_tagged_value(sizes)?);
                 }
-                let _options = r.read_u32()?;
-                Ok::<_, super::types::JdwpError>(args)
+                let options = r.read_u32()?;
+                Ok::<_, super::types::JdwpError>((class_id, thread, method_id, args, options))
             })();
 
             match res {
-                Ok(args) => {
+                Ok((class_id, thread, method_id, args, options)) => {
                     // When the reply is intentionally delayed (used by higher-level adapter tests),
                     // also emit a breakpoint event while the command is "in flight". This mimics
                     // real JDWP behavior where `InvokeMethod` can execute user code and trigger
@@ -2403,6 +2444,15 @@ async fn handle_packet(
                     }
 
                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    state.class_type_invoke_method_calls.lock().await.push(
+                        ClassTypeInvokeMethodCall {
+                            class_id,
+                            thread,
+                            method_id,
+                            args,
+                            options,
+                        },
+                    );
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
                     w.write_object_id(0, sizes); // exception

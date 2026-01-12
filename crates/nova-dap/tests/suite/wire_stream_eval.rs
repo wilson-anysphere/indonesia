@@ -31,5 +31,17 @@ async fn wire_stream_eval_define_class_methods_and_invoke_stage0() {
     assert_eq!(calls[0].loader, loader);
     assert_eq!(calls[0].name, "Injected");
     assert_eq!(calls[0].bytecode_len, bytecode.len());
-}
 
+    let defined_class_id = calls[0].returned_id;
+
+    let methods_calls = server.reference_type_methods_calls().await;
+    assert_eq!(methods_calls.len(), 1);
+    assert_eq!(methods_calls[0].class_id, defined_class_id);
+
+    let invoke_calls = server.class_type_invoke_method_calls().await;
+    assert_eq!(invoke_calls.len(), 1);
+    assert_eq!(invoke_calls[0].class_id, defined_class_id);
+    assert_eq!(invoke_calls[0].thread, thread);
+    assert_eq!(invoke_calls[0].args, vec![JdwpValue::Int(42)]);
+    assert_eq!(invoke_calls[0].options, 0);
+}
