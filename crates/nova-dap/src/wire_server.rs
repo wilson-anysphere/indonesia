@@ -11,6 +11,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
+use futures::FutureExt;
 use nova_jdwp::wire::{JdwpClient, JdwpError, JdwpValue, ObjectId};
 use nova_scheduler::CancellationToken;
 use serde::Deserialize;
@@ -289,7 +290,7 @@ async fn handle_request(
         RequestMetricsGuard::new(&request.command, nova_metrics::MetricsRegistry::global());
     let request_seq = request.seq;
 
-    handle_request_inner(
+    let res = std::panic::AssertUnwindSafe(handle_request_inner(
         &request,
         &cancel,
         &out_tx,
@@ -306,8 +307,34 @@ async fn handle_request(
         &server_shutdown,
         &terminated_sent,
         &exited_sent,
-    )
+    ))
+    .catch_unwind()
     .await;
+
+    if res.is_err() {
+        // `catch_unwind` prevents panics in request handlers from taking down the
+        // adapter task and leaking in-flight cancellation tokens.
+        nova_metrics::MetricsRegistry::global().record_panic(&request.command);
+
+        let message = {
+            #[cfg(not(test))]
+            {
+                let mut message = "Internal error (panic).".to_string();
+                // Best-effort: include a bugreport bundle to aid debugging.
+                if let Ok(Some(path)) = std::panic::catch_unwind(|| build_panic_bug_report_bundle())
+                {
+                    message.push_str(&format!(" Bug report: {path}"));
+                }
+                message
+            }
+            #[cfg(test)]
+            {
+                "Internal error (panic).".to_string()
+            }
+        };
+
+        send_response(&out_tx, &seq, &request, false, None, Some(message));
+    }
 
     let mut guard = in_flight.lock().await;
     guard.remove(&request_seq);
@@ -401,6 +428,10 @@ async fn handle_request_inner(
                 Ok(snapshot) => send_response(out_tx, seq, request, true, Some(snapshot), None),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
+        }
+        #[cfg(test)]
+        "nova/__testPanic" => {
+            panic!("intentional panic from nova/__testPanic");
         }
         "nova/bugReport" => {
             if cancel.is_cancelled() {
@@ -4593,6 +4624,33 @@ fn send_response(
     let _ = tx.send(serde_json::to_value(resp).unwrap_or_else(|_| json!({})));
 }
 
+#[cfg(not(test))]
+fn build_panic_bug_report_bundle() -> Option<String> {
+    let cfg = NovaConfig::default();
+    let log_buffer = nova_config::init_tracing_with_config(&cfg);
+    let crash_store = global_crash_store();
+    let perf = PerfStats::default();
+    let options = BugReportOptions {
+        max_log_lines: 500,
+        reproduction: Some("panic in wire DAP request handler".to_string()),
+    };
+
+    let bundle = BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
+        .options(options)
+        .extra_attachments(|dir| {
+            if let Ok(metrics_json) =
+                serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
+            {
+                let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+            }
+            Ok(())
+        })
+        .build()
+        .ok()?;
+
+    Some(bundle.path().display().to_string())
+}
+
 struct RequestMetricsGuard<'a> {
     command: &'a str,
     start: Instant,
@@ -5066,4 +5124,121 @@ fn signature_to_object_type_name(sig: &str) -> Option<String> {
         out.push_str("[]");
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::time::{timeout, Duration};
+
+    async fn read_message<R: tokio::io::AsyncRead + Unpin>(reader: &mut DapReader<R>) -> Value {
+        timeout(Duration::from_secs(2), reader.read_value())
+            .await
+            .expect("timed out waiting for DAP message")
+            .expect("failed to read DAP message")
+            .expect("unexpected EOF from server")
+    }
+
+    async fn read_response<R: tokio::io::AsyncRead + Unpin>(
+        reader: &mut DapReader<R>,
+        request_seq: i64,
+    ) -> Value {
+        loop {
+            let msg = read_message(reader).await;
+            let is_response = msg.get("type").and_then(|v| v.as_str()) == Some("response");
+            let matches_seq = msg.get("request_seq").and_then(|v| v.as_i64()) == Some(request_seq);
+            if is_response && matches_seq {
+                return msg;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_handler_panics_are_isolated_and_do_not_wedge_server() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server);
+
+        let server_task = tokio::spawn(async move { run(server_read, server_write).await });
+
+        let (client_read, client_write) = tokio::io::split(client);
+        let mut writer = DapWriter::new(client_write);
+        let mut reader = DapReader::new(client_read);
+
+        // Initialize the adapter so subsequent requests don't block on the
+        // `requires_initialized` gate.
+        let init = Request {
+            seq: 1,
+            message_type: "request".to_string(),
+            command: "initialize".to_string(),
+            arguments: json!({}),
+        };
+        writer
+            .write_value(&serde_json::to_value(init).unwrap())
+            .await
+            .unwrap();
+        let init_resp = read_response(&mut reader, 1).await;
+        assert_eq!(init_resp["success"], true);
+        let init_event = read_message(&mut reader).await;
+        assert_eq!(init_event["type"], "event");
+        assert_eq!(init_event["event"], "initialized");
+
+        // Trigger a deterministic panic inside the request handler.
+        let panic_req = Request {
+            seq: 2,
+            message_type: "request".to_string(),
+            command: "nova/__testPanic".to_string(),
+            arguments: json!({}),
+        };
+        writer
+            .write_value(&serde_json::to_value(panic_req).unwrap())
+            .await
+            .unwrap();
+
+        let panic_resp = read_response(&mut reader, 2).await;
+        assert_eq!(panic_resp["success"], false);
+        let message = panic_resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(message.contains("Internal error (panic)"));
+
+        // The adapter should continue serving follow-up requests.
+        let metrics_req = Request {
+            seq: 3,
+            message_type: "request".to_string(),
+            command: "nova/metrics".to_string(),
+            arguments: json!({}),
+        };
+        writer
+            .write_value(&serde_json::to_value(metrics_req).unwrap())
+            .await
+            .unwrap();
+
+        let metrics_resp = read_response(&mut reader, 3).await;
+        assert_eq!(metrics_resp["success"], true);
+
+        // Clean shutdown.
+        let disconnect_req = Request {
+            seq: 4,
+            message_type: "request".to_string(),
+            command: "disconnect".to_string(),
+            arguments: json!({ "terminateDebuggee": false }),
+        };
+        writer
+            .write_value(&serde_json::to_value(disconnect_req).unwrap())
+            .await
+            .unwrap();
+        let disconnect_resp = read_response(&mut reader, 4).await;
+        assert_eq!(disconnect_resp["success"], true);
+        let terminated_event = read_message(&mut reader).await;
+        assert_eq!(terminated_event["type"], "event");
+        assert_eq!(terminated_event["event"], "terminated");
+
+        let server_res = timeout(Duration::from_secs(2), server_task)
+            .await
+            .expect("server did not shut down in time")
+            .expect("server task panicked");
+        server_res.expect("server returned error");
+    }
 }

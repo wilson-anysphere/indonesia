@@ -3569,6 +3569,7 @@ dependencies = [
  "async-recursion",
  "base64 0.22.1",
  "clap",
+ "futures",
  "libc",
  "nova-bugreport",
  "nova-build",
