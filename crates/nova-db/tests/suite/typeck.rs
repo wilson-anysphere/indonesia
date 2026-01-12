@@ -214,6 +214,10 @@ class C {
         diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
         "expected cast expression to provide the target type; got {diags:?}"
     );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-cast"),
+        "expected valid cast to avoid invalid-cast diagnostic; got {diags:?}"
+    );
 }
 
 #[test]
@@ -276,6 +280,24 @@ fn invalid_cast_produces_diagnostic() {
 class C {
     void m() {
         String s = (String) 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-cast"),
+        "expected invalid-cast diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn invalid_primitive_cast_produces_diagnostic() {
+    let src = r#"
+class C {
+    void m() {
+        int x = (int) "x";
     }
 }
 "#;
