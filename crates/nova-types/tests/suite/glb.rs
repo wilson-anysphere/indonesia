@@ -658,3 +658,60 @@ fn infer_upper_bound_normalizes_single_intersection_bound() {
         vec![Type::Intersection(vec![serializable, cloneable])]
     );
 }
+
+#[test]
+fn infer_upper_bound_flattens_nested_intersection_bounds() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+
+    let cloneable = Type::class(env.well_known().cloneable, vec![]);
+    let serializable = Type::class(env.well_known().serializable, vec![]);
+
+    // Intentionally nested + duplicated intersection:
+    //   (Cloneable & Serializable) & Cloneable
+    // A fully-normalized result should be `Serializable & Cloneable`.
+    let nested = Type::Intersection(vec![
+        Type::Intersection(vec![cloneable.clone(), serializable.clone()]),
+        cloneable.clone(),
+    ]);
+
+    let t = env.add_type_param("T", vec![nested]);
+
+    let test = env.add_class(ClassDef {
+        name: "com.example.GlbDeterminismNestedIntersection".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "m".to_string(),
+            type_params: vec![t],
+            params: vec![],
+            return_type: Type::Void,
+            is_static: true,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    let call = MethodCall {
+        receiver: Type::class(test, vec![]),
+        call_kind: CallKind::Static,
+        name: "m",
+        args: vec![],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
+        panic!("expected method resolution success for m");
+    };
+
+    assert_eq!(
+        res.inferred_type_args,
+        vec![Type::Intersection(vec![serializable, cloneable])]
+    );
+}
