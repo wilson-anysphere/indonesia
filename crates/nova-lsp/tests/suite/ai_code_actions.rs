@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 
-use nova_core::{path_to_file_uri, AbsPathBuf};
+use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex, TextSize};
 use nova_lsp::text_pos::TextPos;
 use tempfile::TempDir;
 
@@ -489,12 +489,15 @@ fn stdio_server_generate_tests_with_ai_applies_workspace_edit() {
     let placeholder_end_offset = placeholder_start_offset + placeholder_line.len();
 
     let pos = TextPos::new(source);
-    let replace_start = pos
+    let selection_start = pos
         .lsp_position(placeholder_start_offset)
-        .expect("replace start pos");
-    let replace_end = pos
+        .expect("selection start pos");
+    let selection_end = pos
         .lsp_position(placeholder_end_offset)
-        .expect("replace end pos");
+        .expect("selection end pos");
+
+    let replace_start = selection_start;
+    let replace_end = selection_end;
 
     let patch = json!({
         "edits": [{
@@ -587,13 +590,6 @@ local_only = true
             }
         }),
     );
-
-    let selection_start = pos
-        .lsp_position(placeholder_start_offset)
-        .expect("selection start pos");
-    let selection_end = pos
-        .lsp_position(placeholder_end_offset)
-        .expect("selection end pos");
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1280,10 +1276,19 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
 
     // 3) request code actions with a diagnostic range over an identifier so hover returns info.
     let offset = text.find("s =").expect("variable occurrence");
-    let pos = TextPos::new(text);
-    let start = pos.lsp_position(offset).expect("start pos");
-    let end = pos.lsp_position(offset + 1).expect("end pos");
-    let range = Range { start, end };
+    let index = LineIndex::new(text);
+    let start = index.position(
+        text,
+        TextSize::from(u32::try_from(offset).expect("offset fits in u32")),
+    );
+    let end = index.position(
+        text,
+        TextSize::from(u32::try_from(offset + 1).expect("offset fits in u32")),
+    );
+    let range = Range {
+        start: Position::new(start.line, start.character),
+        end: Position::new(end.line, end.character),
+    };
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1524,7 +1529,7 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("Generate method body with AI")
+        Some("AI: Generate method body")
     );
 
     let edit = apply_edit
@@ -1591,18 +1596,38 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("end pos");
     let range = Range::new(start, end);
 
-    // LSP `executeCommand` for this code action uses a patch pipeline with `allow_new_files=false`.
-    // Keep the patch constrained to the source file to avoid tripping safety/validation.
+    // The patch-based `generateTests` implementation prefers editing a conventional test file under
+    // `src/test/java/`. Pre-create that file so we get a simple `WorkspaceEdit.changes` response
+    // (rather than `documentChanges` for file creation).
+    let test_dir = root.join("src/test/java/com/example");
+    std::fs::create_dir_all(&test_dir).expect("create test dir");
+    let test_file_path = test_dir.join("ExampleTest.java");
+    let test_file_rel = "src/test/java/com/example/ExampleTest.java";
+    let test_file_uri = uri_for_path(&test_file_path);
+    let test_source = "package com.example;\n\npublic class ExampleTest {\n    // AI_TESTS_PLACEHOLDER\n}\n";
+    std::fs::write(&test_file_path, test_source).expect("write test file");
+
+    let placeholder_line = "    // AI_TESTS_PLACEHOLDER";
+    let placeholder_start = test_source
+        .find(placeholder_line)
+        .expect("placeholder start");
+    let placeholder_end = placeholder_start + placeholder_line.len();
+    let test_pos = TextPos::new(test_source);
+    let replace_start = test_pos.lsp_position(placeholder_start).expect("replace start");
+    let replace_end = test_pos.lsp_position(placeholder_end).expect("replace end");
+
     let patch = json!({
       "edits": [
         {
-          "file": "src/main/java/com/example/Example.java",
-          "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 0 } },
+          "file": test_file_rel,
+          "range": {
+              "start": { "line": replace_start.line, "character": replace_start.character },
+              "end": { "line": replace_end.line, "character": replace_end.character }
+          },
           "text": "    // AI-generated tests would go here\n"
         }
       ]
-    })
-    .to_string();
+    }).to_string();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -1716,7 +1741,7 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("Generate tests with AI")
+        Some("AI: Generate tests")
     );
     let edit = apply_edit
         .get("params")
@@ -1725,7 +1750,7 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let edit_value = edit.clone();
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
     let changes = edit.changes.expect("changes map");
-    let expected_uri = file_uri.parse::<Uri>().expect("file uri");
+    let expected_uri = test_file_uri.parse::<Uri>().expect("file uri");
     let edits = changes.get(&expected_uri).expect("edits for file");
     assert!(
         edits
@@ -2033,9 +2058,12 @@ completion_ranking = true
     );
 
     let offset = text.find("s.").expect("cursor");
-    let pos = TextPos::new(text)
-        .lsp_position(offset + 2)
-        .expect("position");
+    let index = LineIndex::new(text);
+    let pos = index.position(
+        text,
+        TextSize::from(u32::try_from(offset + 2).expect("offset fits in u32")),
+    );
+    let pos = Position::new(pos.line, pos.character);
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -2144,11 +2172,19 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     );
 
     let emoji_offset = text.find('😀').expect("emoji present");
-    let pos = TextPos::new(text);
-    let start = pos.lsp_position(emoji_offset).expect("start pos");
-    let end = pos
-        .lsp_position(emoji_offset + '😀'.len_utf8())
-        .expect("end pos");
+    let index = LineIndex::new(text);
+    let start = index.position(
+        text,
+        TextSize::from(u32::try_from(emoji_offset).expect("offset fits in u32")),
+    );
+    let end = index.position(
+        text,
+        TextSize::from(
+            u32::try_from(emoji_offset + '😀'.len_utf8()).expect("offset fits in u32"),
+        ),
+    );
+    let start = Position::new(start.line, start.character);
+    let end = Position::new(end.line, end.character);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -2276,8 +2312,12 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
     );
 
     let emoji_offset = text.find('😀').expect("emoji present");
-    let pos = TextPos::new(text);
-    let start = pos.lsp_position(emoji_offset).expect("start pos");
+    let index = LineIndex::new(text);
+    let start = index.position(
+        text,
+        TextSize::from(u32::try_from(emoji_offset).expect("offset fits in u32")),
+    );
+    let start = Position::new(start.line, start.character);
     let inside = Position::new(start.line, start.character + 1);
     let end = Position::new(start.line, start.character + 2);
 

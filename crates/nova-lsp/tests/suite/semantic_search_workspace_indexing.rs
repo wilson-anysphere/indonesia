@@ -1,6 +1,5 @@
 use httpmock::prelude::*;
 use lsp_types::Range;
-mod support;
 use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
@@ -11,7 +10,7 @@ use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_lsp::text_pos::TextPos;
 use tempfile::TempDir;
 
-use support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -51,7 +50,7 @@ fn wait_for_semantic_search_indexing(
 
 #[test]
 fn stdio_server_semantic_search_indexes_non_open_workspace_files_for_ai_context() {
-    let _lock = support::stdio_server_lock();
+    let _lock = crate::support::stdio_server_lock();
 
     let mock_server = MockServer::start();
     let mock = mock_server.mock(|when, then| {

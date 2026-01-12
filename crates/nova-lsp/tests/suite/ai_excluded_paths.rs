@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use tempfile::TempDir;
 
-mod support;
+use crate::support;
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");

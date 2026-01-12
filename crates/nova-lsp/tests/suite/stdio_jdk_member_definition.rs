@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-mod support;
-use support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
 
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");

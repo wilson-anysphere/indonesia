@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-mod support;
+use crate::support;
 use support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
 
 fn uri_for_path(path: &std::path::Path) -> Uri {

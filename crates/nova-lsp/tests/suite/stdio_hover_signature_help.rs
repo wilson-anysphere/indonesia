@@ -2,7 +2,6 @@ use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-mod support;
 use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 fn lsp_position(text: &str, offset: usize) -> lsp_types::Position {

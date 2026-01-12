@@ -2,7 +2,7 @@ use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-mod support;
+use crate::support;
 use support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]

@@ -3,7 +3,6 @@ use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-mod support;
 use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]

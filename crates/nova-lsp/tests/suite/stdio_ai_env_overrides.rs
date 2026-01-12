@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tempfile::TempDir;
 
-mod support;
+use crate::support;
 
 fn run_completion_request_with_env(env_key: &str, env_value: &str) {
     let _lock = support::stdio_server_lock();

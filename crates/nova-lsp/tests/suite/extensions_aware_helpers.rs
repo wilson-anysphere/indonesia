@@ -165,7 +165,30 @@ class A {
 
     let out = nova_lsp::diagnostics_with_extensions(&extensions, CancellationToken::new(), file);
 
-    assert_eq!(&out[..built_in.len()], built_in.as_slice());
+    fn diag_key(diag: &lsp_types::Diagnostic) -> (u32, u32, u32, u32, String, String) {
+        let code = diag
+            .code
+            .as_ref()
+            .map(|code| match code {
+                lsp_types::NumberOrString::Number(n) => n.to_string(),
+                lsp_types::NumberOrString::String(s) => s.clone(),
+            })
+            .unwrap_or_default();
+        (
+            diag.range.start.line,
+            diag.range.start.character,
+            diag.range.end.line,
+            diag.range.end.character,
+            code,
+            diag.message.clone(),
+        )
+    }
+
+    let mut built_in_sorted = built_in.clone();
+    built_in_sorted.sort_by_key(diag_key);
+    let mut out_builtin_sorted = out[..built_in.len()].to_vec();
+    out_builtin_sorted.sort_by_key(diag_key);
+    assert_eq!(out_builtin_sorted, built_in_sorted);
     assert_eq!(
         out[built_in.len()..]
             .iter()

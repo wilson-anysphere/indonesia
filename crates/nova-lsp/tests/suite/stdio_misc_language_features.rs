@@ -5,8 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-mod support;
-use support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -21,7 +20,7 @@ fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
 
 #[test]
 fn stdio_server_supports_document_highlight_folding_range_and_selection_range() {
-    let _lock = support::stdio_server_lock();
+    let _lock = stdio_server_lock();
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();

@@ -334,7 +334,7 @@ fn stdio_server_supports_field_rename() {
         }),
     );
 
-    // 3) prepareRename on field
+    // 3) prepareRename on field => null
     write_jsonrpc_message(
         &mut stdin,
         &json!({

@@ -2,8 +2,7 @@ use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-mod support;
-use support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
