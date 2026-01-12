@@ -431,25 +431,24 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return Type::Named(resolved_name.to_string());
         }
 
-        // If the resolver can't map the name (usually because the external index is incomplete),
-        // fall back to the `TypeEnv` for a couple of common cases:
-        // - fully-qualified names (`java.io.Serializable`)
-        // - implicit `java.lang.*` for simple names (`Cloneable`)
+        // If the resolver can't map the name, fall back to the `TypeEnv` for the
+        // implicit `java.lang.*` universe scope (JLS 7.5.5).
         //
-        // Note: `TypeStore::intern_class_id` inserts a placeholder `ClassDef` that is visible
-        // through `TypeEnv::lookup_class`. We intentionally ignore those placeholders here so
-        // pre-interning external types does not bypass name-resolution rules (e.g. JPMS
-        // readability / exports checks enforced by the resolver).
+        // Note: `TypeStore::intern_class_id` inserts a placeholder `ClassDef` that
+        // is visible through `TypeEnv::lookup_class`. We intentionally ignore
+        // those placeholders here so pre-interning external types does not bypass
+        // name-resolution rules (e.g. JPMS readability/exports checks enforced by
+        // the resolver).
+        //
+        // IMPORTANT: Avoid falling back to `env.lookup_class` for qualified
+        // names. In JPMS mode the resolver is module-aware and will intentionally
+        // return `None` for unreadable/unexported types. The `TypeEnv`/`TypeStore`
+        // may still contain those types (pre-interned from a flattened classpath
+        // index), so resolving qualified names here would bypass module-access
+        // restrictions and suppress `unresolved-type` diagnostics.
         if segments.len() == 1 {
             let java_lang = format!("java.lang.{}", segments[0]);
             if let Some(class_id) = self.lookup_non_placeholder_class(&java_lang) {
-                return Type::class(class_id, args_for_class(class_id));
-            }
-        } else if dotted.starts_with("java.")
-            || dotted.starts_with("javax.")
-            || dotted.starts_with("jdk.")
-        {
-            if let Some(class_id) = self.lookup_non_placeholder_class(&dotted) {
                 return Type::class(class_id, args_for_class(class_id));
             }
         }
@@ -474,8 +473,12 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             }
         }
 
-        // If we successfully guessed a binary nested name, try resolving it in the environment
-        // before reporting an unresolved-type diagnostic.
+        // If we successfully guessed a binary nested name, try resolving it in
+        // the environment before reporting an unresolved-type diagnostic.
+        //
+        // IMPORTANT: Only consult the environment for the binary nested-name
+        // guess (`Outer$Inner`). Never resolve the original dotted spelling via
+        // the environment, since that can bypass JPMS/module-access restrictions.
         if best_guess != dotted {
             if let Some(class_id) = self.lookup_non_placeholder_class(&best_guess) {
                 return Type::class(class_id, args_for_class(class_id));

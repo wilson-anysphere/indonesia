@@ -417,6 +417,43 @@ fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
 }
 
 #[test]
+fn does_not_fallback_to_env_for_unresolved_qualified_name() {
+    // Regression test: type_ref parsing previously fell back to `TypeEnv::lookup_class`
+    // for unresolved qualified names, which can bypass JPMS/module-access restrictions
+    // when the resolver intentionally returns `None` for inaccessible types.
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+    // Ensure the type exists in the environment, but not in the resolver's index.
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    env.add_class(ClassDef {
+        name: "com.example.Hidden".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let type_vars = HashMap::new();
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "com.example.Hidden",
+        None,
+    );
+
+    assert_eq!(ty.ty, Type::Named("com.example.Hidden".to_string()));
+    assert!(ty.diagnostics.iter().any(|d| d.code == "unresolved-type"));
+}
+
+#[test]
 fn malformed_inputs_produce_diagnostics_but_do_not_crash() {
     let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
