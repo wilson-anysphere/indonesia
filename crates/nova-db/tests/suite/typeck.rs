@@ -2375,6 +2375,70 @@ fn workspace_type_wins_over_classpath_when_binary_names_collide() {
 }
 
 #[test]
+fn workspace_type_name_expr_does_not_load_classpath_stub_with_same_binary_name() {
+    // Ensure the classpath contains com.example.dep.Foo.
+    let classpath = ClasspathIndex::build_with_deps_store(
+        &[ClasspathEntry::Jar(test_dep_jar())],
+        None,
+        None,
+        None,
+    )
+    .expect("failed to build dep.jar classpath index");
+
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let foo_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    // dep.jar's `com.example.dep.Foo` stub does *not* include `static foo()`. Ensure we resolve the
+    // call through the workspace definition (no collisions / accidental overwrites from
+    // `ExternalTypeLoader`).
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/com/example/dep/Foo.java",
+        r#"
+package com.example.dep;
+class Foo {
+    static void foo() {}
+}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/com/example/dep/Use.java",
+        r#"
+package com.example.dep;
+class Use {
+    void m() {
+        Foo.foo();
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![foo_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unresolved-static-member"),
+        "expected Foo.foo() to resolve against workspace Foo (not dep.jar), got {diags:?}"
+    );
+}
+
+#[test]
 fn differential_javac_type_mismatch() {
     use nova_test_utils::javac::{javac_available, run_javac_snippet};
 
