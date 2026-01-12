@@ -1984,9 +1984,16 @@ fn package_decl_completions(
     items
 }
 
-fn offset_in_java_comment(text: &str, offset: usize) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JavaCommentKind {
+    Line,
+    Block,
+    Doc,
+}
+
+fn java_comment_kind_at_offset(text: &str, offset: usize) -> Option<JavaCommentKind> {
     if offset > text.len() {
-        return false;
+        return None;
     }
 
     // Best-effort: use the lightweight lexer-backed parser so we don't accidentally treat `//`
@@ -2006,7 +2013,7 @@ fn offset_in_java_comment(text: &str, offset: usize) -> bool {
                 // editor point of view the cursor at the end-of-line still counts as "inside" the
                 // comment.
                 if offset >= start.saturating_add(2) && offset <= end {
-                    return true;
+                    return Some(JavaCommentKind::Line);
                 }
             }
             nova_syntax::SyntaxKind::BlockComment | nova_syntax::SyntaxKind::DocComment => {
@@ -2018,14 +2025,110 @@ fn offset_in_java_comment(text: &str, offset: usize) -> bool {
                 // If the comment is unterminated, allow `offset == end` (EOF) to count as inside.
                 let terminated = tok.text(text).ends_with("*/");
                 if offset < end || (!terminated && offset == end) {
-                    return true;
+                    return Some(match tok.kind {
+                        nova_syntax::SyntaxKind::DocComment => JavaCommentKind::Doc,
+                        _ => JavaCommentKind::Block,
+                    });
                 }
             }
             _ => {}
         }
     }
 
-    false
+    None
+}
+
+fn offset_in_java_comment(text: &str, offset: usize) -> bool {
+    java_comment_kind_at_offset(text, offset).is_some()
+}
+
+fn javadoc_tag_snippet_completions(
+    text: &str,
+    text_index: &TextIndex<'_>,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let bytes = text.as_bytes();
+    if offset > bytes.len() {
+        return None;
+    }
+
+    // Complete `{@link ...}` when the user just typed `{`.
+    if offset > 0 && bytes[offset - 1] == b'{' {
+        let items = vec![CompletionItem {
+            label: "{@link}".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some("{@link ${1:TypeOrMember}}$0".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        }];
+        return Some(decorate_completions(text_index, offset - 1, offset, items));
+    }
+
+    let (prefix_start, prefix) = identifier_prefix(text, offset);
+    if prefix_start == 0 || bytes[prefix_start - 1] != b'@' {
+        return None;
+    }
+    let at_pos = prefix_start - 1;
+
+    // Inline tag completion: `{@link ...}`
+    if at_pos > 0 && bytes[at_pos - 1] == b'{' {
+        if "link".starts_with(prefix.as_str()) {
+            let items = vec![CompletionItem {
+                label: "{@link}".to_string(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                insert_text: Some("{@link ${1:TypeOrMember}}$0".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            }];
+            return Some(decorate_completions(text_index, at_pos - 1, offset, items));
+        }
+        return Some(Vec::new());
+    }
+
+    // Line tag completion: `@param`, `@return`, ...
+    let mut items = Vec::new();
+
+    if "param".starts_with(prefix.as_str()) {
+        items.push(CompletionItem {
+            label: "@param".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some("@param ${1:name} $0".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    if "return".starts_with(prefix.as_str()) {
+        items.push(CompletionItem {
+            label: "@return".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some("@return $0".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    if "throws".starts_with(prefix.as_str()) {
+        items.push(CompletionItem {
+            label: "@throws".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some("@throws ${1:Exception} $0".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    if "see".starts_with(prefix.as_str()) {
+        items.push(CompletionItem {
+            label: "@see".to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            insert_text: Some("@see ${1:Reference} $0".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    Some(decorate_completions(text_index, at_pos, offset, items))
 }
 
 /// Core (non-framework) completions for a Java source file.
@@ -2049,7 +2152,12 @@ pub(crate) fn core_completions(
     let Some(offset) = text_index.position_to_offset(position) else {
         return Vec::new();
     };
-    if offset_in_java_comment(text, offset) {
+    if let Some(kind) = java_comment_kind_at_offset(text, offset) {
+        if kind == JavaCommentKind::Doc {
+            if let Some(items) = javadoc_tag_snippet_completions(text, &text_index, offset) {
+                return items;
+            }
+        }
         return Vec::new();
     }
     let (prefix_start, prefix) = identifier_prefix(text, offset);
@@ -2196,12 +2304,21 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
-    if db
+    let is_java = db
         .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-        && offset_in_java_comment(text, offset)
-    {
-        return Vec::new();
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
+
+    // Javadoc tag snippets should be available even though general completion is
+    // suppressed inside comments.
+    if is_java {
+        if let Some(kind) = java_comment_kind_at_offset(text, offset) {
+            if kind == JavaCommentKind::Doc {
+                if let Some(items) = javadoc_tag_snippet_completions(text, &text_index, offset) {
+                    return items;
+                }
+            }
+            return Vec::new();
+        }
     }
 
     // Spring DI completions inside Java source.

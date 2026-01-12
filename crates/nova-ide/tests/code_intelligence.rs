@@ -1,4 +1,4 @@
-use lsp_types::InsertTextFormat;
+use lsp_types::{CompletionTextEdit, InsertTextFormat};
 use nova_db::InMemoryFileStore;
 use nova_ide::completions;
 use std::path::PathBuf;
@@ -146,6 +146,40 @@ class A {
         !labels.contains(&"s"),
         "expected completion list to exclude String variable `s` for int parameter; got {labels:?}"
     );
+}
+
+#[test]
+fn completion_includes_javadoc_param_snippet() {
+    let (db, file, pos) = fixture(
+        r#"
+/**
+ * @par<|>
+ */
+void m(int x) {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "@param")
+        .expect("expected @param snippet completion");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "@param ${1:name} $0");
+}
+
+#[test]
+fn completion_suppressed_in_block_comment() {
+    let (db, file, pos) = fixture("/* ret<|> */");
+    let items = completions(&db, file, pos);
+    assert!(items.is_empty(), "expected no completions; got {items:#?}");
 }
 
 #[test]
