@@ -14,7 +14,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-pub const INDEX_SCHEMA_VERSION: u32 = 3;
+// Bump whenever the on-disk index format or interpretation changes.
+//
+// This intentionally invalidates existing persisted indexes so Nova can rebuild
+// them, e.g. when we start storing real symbol (line, column) locations instead
+// of placeholder `(0, 0)` values.
+pub const INDEX_SCHEMA_VERSION: u32 = 4;
 
 const INDEX_WRITE_LOCK_NAME: &str = ".lock";
 
