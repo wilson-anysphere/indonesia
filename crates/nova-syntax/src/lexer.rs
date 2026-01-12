@@ -52,6 +52,20 @@ impl Token {
     pub fn text<'a>(&self, input: &'a str) -> &'a str {
         &input[self.range.start as usize..self.range.end as usize]
     }
+
+    pub fn is_underscore_identifier(&self, input: &str) -> bool {
+        if self.kind != SyntaxKind::Identifier {
+            return false;
+        }
+        let raw = self.text(input);
+        if raw == "_" {
+            return true;
+        }
+        // Unicode escape translation happens before lexical analysis in Java, so `\u005F` should
+        // behave the same as `_`.
+        let (processed, _) = translate_unicode_escapes(raw);
+        processed.as_ref() == "_"
+    }
 }
 
 pub fn lex(input: &str) -> Vec<Token> {

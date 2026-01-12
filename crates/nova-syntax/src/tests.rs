@@ -1495,6 +1495,36 @@ fn feature_gate_unnamed_variables_version_matrix() {
 }
 
 #[test]
+fn feature_gate_unnamed_variables_handles_unicode_escape_underscore() {
+    let input = r#"class Foo { void m(Object o) { if (o instanceof String \u005F) { return; } } }"#;
+
+    let java21_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java21_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_UNNAMED_VARIABLES"]
+    );
+
+    let java21_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21.with_preview(true),
+        },
+    );
+    assert_eq!(java21_preview.result.errors, Vec::new());
+    assert!(java21_preview.diagnostics.is_empty());
+}
+
+#[test]
 fn java8_allows_single_underscore_identifier() {
     let input = "class Foo { void m() { int _ = 0; Runnable r = (_) -> {}; } }";
 

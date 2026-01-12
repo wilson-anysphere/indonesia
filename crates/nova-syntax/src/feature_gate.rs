@@ -388,9 +388,6 @@ fn gate_unnamed_variables(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut
         let Some(tok) = first_token(&node) else {
             continue;
         };
-        if tok.text() != "_" {
-            continue;
-        }
         out.push(feature_error(level, JavaFeature::UnnamedVariables, &tok));
     }
 }

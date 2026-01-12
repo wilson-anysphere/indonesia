@@ -3972,7 +3972,7 @@ impl<'a> Parser<'a> {
             && self
                 .tokens
                 .front()
-                .is_some_and(|tok| tok.text(self.input) == "_")
+                .is_some_and(|tok| tok.is_underscore_identifier(self.input))
     }
 
     fn parse_unnamed_pattern(&mut self) {
