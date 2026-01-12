@@ -41,6 +41,15 @@ Some framework items may not include a file/line location (for example, when the
 determine the handler source file). In that case, Nova still lists the item but disables navigation
 and shows “location unavailable”.
 
+### Context menu (copy + reveal)
+
+Right-click endpoints / beans in the **Nova Frameworks** view to:
+
+- Copy endpoint path
+- Copy endpoint method + path
+- Copy bean id / type (Micronaut)
+- Reveal the backing source file (OS explorer when possible; otherwise Nova falls back to opening the file)
+
 For quick navigation (including Micronaut endpoints and beans), you can also run **Nova: Search Framework Items…** (`nova.frameworks.search`).
 
 ### Refresh
