@@ -117,6 +117,22 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
       }
     }
 
+    // On Windows, updating the binary while it's running will fail due to file locks.
+    if (process.platform === 'win32' && vscode.debug.activeDebugSession?.type === NOVA_DEBUG_TYPE) {
+      const choice = await vscode.window.showWarningMessage(
+        'Nova: A Nova debug session is running. Updating nova-dap on Windows can fail due to file locks. Stop debugging first?',
+        'Stop Debugging and Install',
+        'Install Anyway',
+        'Cancel',
+      );
+      if (!choice || choice === 'Cancel') {
+        throw new Error('cancelled');
+      }
+      if (choice === 'Stop Debugging and Install') {
+        await vscode.debug.stopDebugging(vscode.debug.activeDebugSession);
+      }
+    }
+
     const installedPath = await this.installOrUpdateDap(config);
     const version = await getBinaryVersion(installedPath);
     void vscode.window.showInformationMessage(`Nova: Installed nova-dap v${version}.`);
@@ -124,7 +140,10 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
 
   async useLocalDebugAdapterBinary(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('nova');
-    await this.pickLocalDapBinary(cfg);
+    const picked = await this.pickLocalDapBinary(cfg);
+    if (picked) {
+      void vscode.window.showInformationMessage(`Nova: using nova-dap at ${picked}`);
+    }
   }
 
   async showDebugAdapterVersion(workspaceFolder: vscode.WorkspaceFolder | undefined): Promise<void> {
@@ -254,44 +273,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
       } else if (action === 'Select local binary…') {
         const pickedPath = await this.pickLocalDapBinary(config);
         if (pickedPath) {
-          const allowMismatch = this.allowVersionMismatch(config);
-          const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
-          if (check.ok && check.version) {
-            return pickedPath;
-          }
-
-          const suffix = check.version
-            ? `found v${check.version}, expected v${this.extensionVersion}`
-            : check.error
-              ? check.error
-              : 'unavailable';
-          const actions: string[] = [];
-          if (check.error && this.isPermissionError(check.error)) {
-            actions.push('Make Executable');
-          }
-          if (check.version && !allowMismatch) {
-            actions.push('Enable allowVersionMismatch');
-          }
-          actions.push('Cancel');
-          const followup = await vscode.window.showErrorMessage(
-            `Nova: selected nova-dap is not usable (${suffix}): ${pickedPath}`,
-            ...actions,
-          );
-          if (followup === 'Make Executable') {
-            const updated = await this.makeExecutable(pickedPath);
-            if (updated) {
-              const rechecked = await this.checkBinaryVersion(pickedPath, allowMismatch);
-              if (rechecked.ok && rechecked.version) {
-                return pickedPath;
-              }
-            }
-          } else if (followup === 'Enable allowVersionMismatch') {
-            await this.setAllowVersionMismatch(true);
-            const rechecked = await this.checkBinaryVersion(pickedPath, true);
-            if (rechecked.ok && rechecked.version) {
-              return pickedPath;
-            }
-          }
+          return pickedPath;
         }
       } else if (action === 'Open Settings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download');
@@ -359,10 +341,52 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
     }
 
     const pickedPath = picked[0].fsPath;
+
+    const allowMismatch = this.allowVersionMismatch(config);
+    const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
+    if (!check.ok || !check.version) {
+      const suffix = check.version
+        ? `found v${check.version}, expected v${this.extensionVersion}`
+        : check.error
+          ? check.error
+          : 'unavailable';
+      const actions: string[] = [];
+      if (check.error && this.isPermissionError(check.error)) {
+        actions.push('Make Executable');
+      }
+      if (check.version && !allowMismatch) {
+        actions.push('Enable allowVersionMismatch');
+      }
+      actions.push('Cancel');
+      const choice = await vscode.window.showErrorMessage(
+        `Nova: selected nova-dap is not usable (${suffix}): ${pickedPath}`,
+        ...actions,
+      );
+      if (choice === 'Make Executable') {
+        const updated = await this.makeExecutable(pickedPath);
+        if (!updated) {
+          return undefined;
+        }
+        const rechecked = await this.checkBinaryVersion(pickedPath, allowMismatch);
+        if (!rechecked.ok || !rechecked.version) {
+          return undefined;
+        }
+      } else if (choice === 'Enable allowVersionMismatch') {
+        await this.setAllowVersionMismatch(true);
+        const rechecked = await this.checkBinaryVersion(pickedPath, true);
+        if (!rechecked.ok || !rechecked.version) {
+          return undefined;
+        }
+      } else {
+        return undefined;
+      }
+    }
+
     // Clear higher-precedence workspace/workspaceFolder overrides so the selected user setting takes effect.
     await clearSettingAtAllTargets('dap.path');
     await clearSettingAtAllTargets('debug.adapterPath');
     await config.update('dap.path', pickedPath, vscode.ConfigurationTarget.Global);
+    await config.update('debug.adapterPath', pickedPath, vscode.ConfigurationTarget.Global);
     return pickedPath;
   }
 
@@ -461,10 +485,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
       if (action === 'Select local binary…') {
         const pickedPath = await this.pickLocalDapBinary(config);
         if (pickedPath) {
-          const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
-          if (check.ok && check.version) {
-            return pickedPath;
-          }
+          return pickedPath;
         }
       } else if (action === 'Open Settings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.mode');
@@ -492,17 +513,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
     if (choice === 'Select local binary…') {
       const pickedPath = await this.pickLocalDapBinary(config);
       if (pickedPath) {
-        const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
-        if (check.ok && check.version) {
-          return pickedPath;
-        }
-
-        const suffix = check.version
-          ? `found v${check.version}, expected v${this.extensionVersion}`
-          : check.error
-            ? check.error
-            : 'unavailable';
-        void vscode.window.showErrorMessage(`Nova: selected nova-dap is not usable (${suffix}): ${pickedPath}`);
+        return pickedPath;
       }
     }
     if (choice === 'Open Settings') {
