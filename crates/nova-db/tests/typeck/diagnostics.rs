@@ -113,3 +113,32 @@ fn diagnostic_cmp(a: &Diagnostic, b: &Diagnostic) -> Ordering {
         .then_with(|| a.message.cmp(&b.message))
 }
 
+#[test]
+fn not_requires_boolean() {
+    let src = r#"
+class C { void m(){ boolean b = !1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-unary-op"
+            && d.message == "operator ! requires boolean operand"),
+        "expected invalid-unary-op diagnostic for !1, got: {diags:?}"
+    );
+}
+
+#[test]
+fn bitnot_requires_integral() {
+    let src = r#"
+class C { void m(){ int x = ~true; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-unary-op"
+            && d.message == "operator ~ requires integral operand"),
+        "expected invalid-unary-op diagnostic for ~true, got: {diags:?}"
+    );
+}

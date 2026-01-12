@@ -1258,20 +1258,26 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Unary { op, expr, .. } => {
-                let inner = self.infer_expr(loader, *expr).ty;
+            HirExpr::Unary {
+                op,
+                expr: operand,
+                ..
+            } => {
+                let inner = self.infer_expr(loader, *operand).ty;
+                let span = self.body.exprs[expr].range();
+
                 let ty = match op {
                     UnaryOp::Not => {
                         if !inner.is_errorish() && !inner.is_primitive_boolean() {
                             self.diagnostics.push(Diagnostic::error(
-                                "invalid-unary",
-                                "operator ! requires boolean",
-                                Some(self.body.exprs[*expr].range()),
+                                "invalid-unary-op",
+                                "operator ! requires boolean operand",
+                                Some(span),
                             ));
                         }
                         Type::Primitive(PrimitiveType::Boolean)
                     }
-                    UnaryOp::Plus | UnaryOp::Minus | UnaryOp::BitNot => match inner {
+                    UnaryOp::Plus | UnaryOp::Minus => match inner {
                         Type::Primitive(primitive) if primitive.is_numeric() => {
                             // Unary numeric promotion.
                             match primitive {
@@ -1281,7 +1287,39 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 _ => Type::Primitive(primitive),
                             }
                         }
-                        _ => Type::Unknown,
+                        _ if inner.is_errorish() => inner,
+                        _ => {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-unary-op",
+                                "operator +/- requires numeric operand",
+                                Some(span),
+                            ));
+                            Type::Error
+                        }
+                    },
+                    UnaryOp::BitNot => match inner {
+                        Type::Primitive(
+                            primitive @ (PrimitiveType::Byte
+                            | PrimitiveType::Short
+                            | PrimitiveType::Char
+                            | PrimitiveType::Int
+                            | PrimitiveType::Long),
+                        ) => {
+                            // Unary numeric promotion, but `~` is restricted to integral types.
+                            match primitive {
+                                PrimitiveType::Long => Type::Primitive(PrimitiveType::Long),
+                                _ => Type::Primitive(PrimitiveType::Int),
+                            }
+                        }
+                        _ if inner.is_errorish() => inner,
+                        _ => {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-unary-op",
+                                "operator ~ requires integral operand",
+                                Some(span),
+                            ));
+                            Type::Error
+                        }
                     },
                     UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec => {
                         inner
