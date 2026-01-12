@@ -2986,6 +2986,18 @@ impl<'a> Parser<'a> {
                     self.builder.finish_node();
                 }
             }
+            SyntaxKind::Less if self.at_explicit_generic_invocation_start() => {
+                // Explicit generic invocation: `<T>method(args)`.
+                //
+                // Model this as a `FieldAccessExpression` (without a receiver) so the
+                // `TypeArguments` sit in the same place as they do for
+                // `expr.<T>method(args)`.
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
+                self.parse_type_arguments();
+                self.expect_ident_like("expected name after type arguments");
+                self.builder.finish_node();
+            }
             kind if (is_primitive_type(kind) && self.at_primitive_type_suffix_start())
                 || (kind == SyntaxKind::VoidKw && self.at_primitive_class_literal_start()) =>
             {
@@ -3193,6 +3205,20 @@ impl<'a> Parser<'a> {
 
             break;
         }
+    }
+
+    fn at_explicit_generic_invocation_start(&mut self) -> bool {
+        if !self.at(SyntaxKind::Less) {
+            return false;
+        }
+
+        // Ensure we can match a complete `<...>` and that it's followed by an
+        // identifier-like token (`<T>foo(...)`). This avoids producing a
+        // cascading error node while typing an incomplete `<`.
+        let lookahead = skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, 0));
+        self.tokens
+            .get(lookahead)
+            .is_some_and(|t| t.kind.is_identifier_like())
     }
 
     fn at_primitive_class_literal_start(&mut self) -> bool {

@@ -1066,6 +1066,33 @@ fn generic_method_invocation_type_arguments_are_on_field_access() {
 }
 
 #[test]
+fn explicit_generic_invocation_without_receiver_has_type_arguments() {
+    let src = r#"
+        class Foo {
+          <T> T id(T t) { return t; }
+          void m(String s) { <String>id(s); }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let access = parse
+        .syntax()
+        .descendants()
+        .filter_map(FieldAccessExpression::cast)
+        .find(|it| it.type_arguments().is_some() && it.expression().is_none())
+        .expect("expected an explicit generic invocation callee");
+
+    assert_eq!(access.name_token().unwrap().text(), "id");
+
+    let args = access.type_arguments().expect("type arguments");
+    assert_eq!(args.arguments().count(), 1);
+    let arg = args.arguments().next().unwrap().ty().unwrap();
+    assert_eq!(arg.syntax().text().to_string(), "String");
+}
+
+#[test]
 fn lambda_parameter_iteration_typed() {
     let parse = parse_java_expression_fragment("(int x, String y) -> x", 0);
     assert!(parse.parse.errors.is_empty());
