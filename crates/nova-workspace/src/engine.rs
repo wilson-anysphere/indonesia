@@ -5317,6 +5317,14 @@ mod tests {
                 "class Main { overlay }"
             );
         });
+
+        // Closing the document should release the overlay contents since the file does not exist
+        // on disk.
+        workspace.close_document(&vfs_path);
+        engine.query_db.with_snapshot(|snap| {
+            assert!(!snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "");
+        });
     }
 
     #[test]
