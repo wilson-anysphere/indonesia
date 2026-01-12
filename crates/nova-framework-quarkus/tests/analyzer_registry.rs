@@ -1,0 +1,98 @@
+use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
+use nova_framework_quarkus::{QuarkusAnalyzer, CDI_UNSATISFIED_CODE};
+
+#[test]
+fn registry_reports_cdi_diagnostics_for_the_correct_file() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "io.quarkus", "quarkus-arc");
+
+    let file_with_issue = db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/ServiceA.java",
+        r#"
+            import jakarta.enterprise.context.ApplicationScoped;
+            import jakarta.inject.Inject;
+
+            @ApplicationScoped
+            public class ServiceA {
+              @Inject ServiceB missing;
+            }
+        "#,
+    );
+
+    let other_file = db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/Other.java",
+        r#"
+            public class Other {}
+        "#,
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let file_diags = registry.framework_diagnostics(&db, file_with_issue);
+    assert!(
+        file_diags.iter().any(|d| d.code == CDI_UNSATISFIED_CODE),
+        "expected {CDI_UNSATISFIED_CODE} diagnostic, got: {file_diags:#?}",
+    );
+
+    let other_diags = registry.framework_diagnostics(&db, other_file);
+    assert!(
+        other_diags.iter().all(|d| d.code != CDI_UNSATISFIED_CODE),
+        "did not expect {CDI_UNSATISFIED_CODE} diagnostic for other file, got: {other_diags:#?}",
+    );
+}
+
+#[test]
+fn registry_completes_config_property_names_from_application_properties() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "io.quarkus", "quarkus-smallrye-config");
+
+    let src = r#"
+        import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+        public class MyConfig {
+          @ConfigProperty(name="qu")
+          String prop;
+        }
+    "#;
+
+    let java_file = db.add_file_with_path_and_text(project, "src/main/java/MyConfig.java", src);
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/resources/application.properties",
+        r#"
+            quarkus.http.port=8080
+            quarkus.datasource.username=sa
+        "#,
+    );
+
+    let cursor_base = src
+        .find("name=\"")
+        .expect("expected to find ConfigProperty name string")
+        + "name=\"".len();
+    let ctx = CompletionContext {
+        project,
+        file: java_file,
+        offset: cursor_base + 2, // after `qu`
+    };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let items = registry.framework_completions(&db, &ctx);
+    assert!(
+        items.iter().any(|c| c.label == "quarkus.http.port"),
+        "expected completion for quarkus.http.port, got: {items:#?}",
+    );
+
+    let item = items
+        .iter()
+        .find(|c| c.label == "quarkus.http.port")
+        .expect("expected quarkus.http.port completion item");
+    assert_eq!(item.replace_span, Some(nova_types::Span::new(cursor_base, cursor_base + 2)));
+}
+
