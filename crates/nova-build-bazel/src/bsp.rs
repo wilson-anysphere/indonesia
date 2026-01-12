@@ -136,6 +136,63 @@ pub fn discover_bsp_connection(workspace_root: &Path) -> Option<(String, Vec<Str
 }
 
 #[cfg(any(test, feature = "bsp"))]
+fn split_bsp_args_whitespace(args_raw: &str) -> Vec<String> {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Quote {
+        Single,
+        Double,
+    }
+
+    // Minimal whitespace splitting with single/double-quote support.
+    //
+    // This is used for env vars like `NOVA_BSP_ARGS` where users commonly pass:
+    //   --foo "bar baz"
+    //
+    // Notes:
+    // - Quotes are removed.
+    // - We intentionally do not interpret escape sequences (e.g. `\"`); callers that need that can
+    //   use the JSON-array form: `NOVA_BSP_ARGS='[\"--foo\", \"bar baz\"]'`.
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<Quote> = None;
+
+    for ch in args_raw.chars() {
+        match quote {
+            None => match ch {
+                '\'' => quote = Some(Quote::Single),
+                '"' => quote = Some(Quote::Double),
+                c if c.is_whitespace() => {
+                    if !current.is_empty() {
+                        args.push(std::mem::take(&mut current));
+                    }
+                }
+                c => current.push(c),
+            },
+            Some(Quote::Single) => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some(Quote::Double) => {
+                if ch == '"' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+}
+
+#[cfg(any(test, feature = "bsp"))]
 fn parse_bsp_args_env(args_raw: &str) -> Vec<String> {
     let args_raw = args_raw.trim();
     if args_raw.is_empty() {
@@ -144,9 +201,9 @@ fn parse_bsp_args_env(args_raw: &str) -> Vec<String> {
 
     if args_raw.starts_with('[') {
         serde_json::from_str::<Vec<String>>(args_raw)
-            .unwrap_or_else(|_| args_raw.split_whitespace().map(|s| s.to_string()).collect())
+            .unwrap_or_else(|_| split_bsp_args_whitespace(args_raw))
     } else {
-        args_raw.split_whitespace().map(|s| s.to_string()).collect()
+        split_bsp_args_whitespace(args_raw)
     }
 }
 
@@ -1578,6 +1635,21 @@ mod tests {
         let config = BazelBspConfig::discover(root.path()).unwrap();
         assert_eq!(config.program, "bsp-from-env");
         assert_eq!(config.args, vec!["--from-env".to_string()]);
+    }
+
+    #[test]
+    fn bsp_args_env_parses_whitespace_with_quotes() {
+        let raw = r#"--foo "bar baz" --qux='x y' --arg="value with spaces""#;
+        let args = parse_bsp_args_env(raw);
+        assert_eq!(
+            args,
+            vec![
+                "--foo".to_string(),
+                "bar baz".to_string(),
+                "--qux=x y".to_string(),
+                "--arg=value with spaces".to_string(),
+            ]
+        );
     }
 
     #[cfg(feature = "bsp")]
