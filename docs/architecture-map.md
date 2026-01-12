@@ -35,7 +35,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Framework support**: `crates/nova-framework-*` (Spring/Micronaut/JPA/Quarkus/MapStruct/etc)
 - **Distributed mode**: `crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`
 - **Codegen / developer tasks**: `crates/xtask/` (`cargo run -p xtask -- codegen`)
-- **Crate layering / dependency boundaries (ADR 0007)**: `crate-layers.toml`, `crates/nova-devtools/`, `scripts/check-deps.sh`
+- **Repo invariants / layering / docs ↔ code checks**: `crates/nova-devtools/`, `scripts/check-repo-invariants.sh`, `crate-layers.toml`
 
 ---
 
