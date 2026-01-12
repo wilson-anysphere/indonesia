@@ -362,6 +362,16 @@
         },
         {
           "command": "nova.buildProject",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
+          "group": "inline"
+        },
+        {
+          "command": "nova.buildProject",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerUnit",
+          "group": "inline"
+        },
+        {
+          "command": "nova.reloadProject",
           "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerUnit",
           "group": "inline"
         }
