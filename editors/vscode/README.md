@@ -343,6 +343,11 @@ extension intercepts these AI code actions client-side and surfaces the returned
 
 Each UI includes a **Copy to Clipboard** action for convenience.
 
+These actions are also available as command-palette commands:
+**Nova AI: Explain Error**, **Nova AI: Generate Method Body**, **Nova AI: Generate Tests**. When run
+from the command palette, Nova derives arguments from the active Java editor (diagnostic under the
+cursor for Explain Error; selection or prompt for Generate Method Body/Tests).
+
 #### Configuring AI
 
 Nova AI features require configuring `nova-lsp` with an AI provider. The current (legacy) wiring uses
