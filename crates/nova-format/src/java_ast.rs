@@ -206,33 +206,6 @@ fn format_compilation_unit(
             sections.in_package = true;
         }
 
-        if token.kind() == SyntaxKind::StringTemplateStart {
-            if let Some(end_idx) = find_string_template_end(&tokens, token_idx) {
-                let start = u32::from(token.text_range().start()) as usize;
-                let end = u32::from(tokens[end_idx].text_range().end()) as usize;
-                if let Some(slice) = source.get(start..end) {
-                    state.write_indent(&mut out);
-                    if needs_space_between(
-                        state.last_sig.as_ref(),
-                        SyntaxKind::StringLiteral,
-                        token.text(),
-                    ) {
-                        state.ensure_space(&mut out);
-                    }
-                    out.push_str(slice);
-                    let sig = SigToken::Token {
-                        kind: SyntaxKind::StringLiteral,
-                        text: token.text().to_string(),
-                    };
-                    state.last_sig = Some(sig.clone());
-                    state.last_code_sig = Some(sig);
-                    state.pending_for = false;
-                    idx = end_idx + 1;
-                    continue;
-                }
-            }
-        }
-
         let next = next_significant(&tokens, idx);
         state.write_token(&mut out, &tokens, token_idx, token, next);
 
@@ -285,25 +258,6 @@ fn lookahead_import_is_static(tokens: &[SyntaxToken], mut idx: usize) -> bool {
         }
     }
     false
-}
-
-fn find_string_template_end(tokens: &[SyntaxToken], start_idx: usize) -> Option<usize> {
-    let mut depth: usize = 1;
-    let mut idx = start_idx + 1;
-    while idx < tokens.len() {
-        match tokens[idx].kind() {
-            SyntaxKind::StringTemplateStart => depth = depth.saturating_add(1),
-            SyntaxKind::StringTemplateEnd => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(idx);
-                }
-            }
-            _ => {}
-        }
-        idx += 1;
-    }
-    None
 }
 
 fn is_unterminated_lex_error(token: &SyntaxToken) -> bool {
