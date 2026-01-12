@@ -174,6 +174,92 @@ model = "default"
     ai_server.assert_hits(0);
 }
 
+fn run_ai_explain_error_request_with_env(env_key: &str, env_value: &str) {
+    let _lock = support::stdio_server_lock();
+    let ai_server = support::TestAiServer::start(json!({ "completion": "mock explanation" }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        // Configure AI via the legacy env-var provider wiring, but also set the override env var
+        // under test. The server should never hit the provider endpoint when AI is force-disabled.
+        .env("NOVA_AI_PROVIDER", "http")
+        .env("NOVA_AI_ENDPOINT", &endpoint)
+        .env("NOVA_AI_MODEL", "default")
+        .env(env_key, env_value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = support::read_response_with_id(&mut stdout, 1);
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": "file:///Test.java", "languageId": "java", "version": 1, "text": "class Test { void run() { unknown(); } }" } }
+        }),
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/explainError",
+            "params": {
+                "diagnostic_message": "cannot find symbol",
+                "code": "unknown()"
+            }
+        }),
+    );
+    let explain_resp = support::read_response_with_id(&mut stdout, 2);
+    let error = explain_resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response when AI is disabled");
+    assert_eq!(
+        error
+            .get("code")
+            .and_then(|v| v.as_i64())
+            .expect("error.code"),
+        -32600,
+        "expected AI request to fail with 'AI is not configured' when {env_key}={env_value}"
+    );
+
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = support::read_response_with_id(&mut stdout, 3);
+    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+
+    ai_server.assert_hits(0);
+}
+
 #[test]
 fn stdio_server_honors_nova_disable_ai_env_var() {
     run_completion_request_with_env("NOVA_DISABLE_AI", "1");
@@ -187,4 +273,9 @@ fn stdio_server_honors_nova_disable_ai_completions_env_var() {
 #[test]
 fn stdio_server_honors_nova_ai_completions_max_items_env_var() {
     run_completion_request_with_env("NOVA_AI_COMPLETIONS_MAX_ITEMS", "0");
+}
+
+#[test]
+fn stdio_server_honors_nova_disable_ai_env_var_for_ai_requests() {
+    run_ai_explain_error_request_with_env("NOVA_DISABLE_AI", "1");
 }
