@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nova_core::FileId;
 use nova_framework::Database;
@@ -10,6 +10,12 @@ use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
 use nova_framework_spring::{
     completion_span_for_value_placeholder, SpringAnalyzer, SPRING_NO_BEAN,
 };
+use tempfile::TempDir;
+
+fn write_file(path: &Path, contents: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
 
 /// Database wrapper used to verify analyzer fallbacks when the database does not
 /// support project-wide file enumeration.
@@ -173,6 +179,110 @@ fn value_completions_include_application_properties_key_and_set_replace_span() {
 
     let offset = java.find("${server.p}").unwrap() + "${server.p".len();
     let expected_span = completion_span_for_value_placeholder(java, offset).expect("span");
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let ctx = CompletionContext {
+        project,
+        file: java_file,
+        offset,
+    };
+    let items = registry.framework_completions(&db, &ctx);
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "server.port")
+        .expect("expected server.port completion item");
+    assert_eq!(item.replace_span, Some(expected_span));
+}
+
+#[test]
+fn value_completions_read_application_properties_from_disk_when_file_text_is_unavailable() {
+    struct NoConfigTextDb {
+        inner: MemoryDatabase,
+        hidden: FileId,
+    }
+
+    impl Database for NoConfigTextDb {
+        fn class(&self, class: ClassId) -> &ClassData {
+            self.inner.class(class)
+        }
+
+        fn project_of_class(&self, class: ClassId) -> nova_core::ProjectId {
+            self.inner.project_of_class(class)
+        }
+
+        fn project_of_file(&self, file: FileId) -> nova_core::ProjectId {
+            self.inner.project_of_file(file)
+        }
+
+        fn file_text(&self, file: FileId) -> Option<&str> {
+            if file == self.hidden {
+                return None;
+            }
+            self.inner.file_text(file)
+        }
+
+        fn file_path(&self, file: FileId) -> Option<&Path> {
+            self.inner.file_path(file)
+        }
+
+        fn file_id(&self, path: &Path) -> Option<FileId> {
+            self.inner.file_id(path)
+        }
+
+        fn all_files(&self, project: nova_core::ProjectId) -> Vec<FileId> {
+            self.inner.all_files(project)
+        }
+
+        fn all_classes(&self, project: nova_core::ProjectId) -> Vec<ClassId> {
+            self.inner.all_classes(project)
+        }
+
+        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+            self.inner.has_dependency(project, group, artifact)
+        }
+
+        fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+            self.inner.has_class_on_classpath(project, binary_name)
+        }
+
+        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+            self.inner.has_class_on_classpath_prefix(project, prefix)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let root: PathBuf = temp.path().canonicalize().unwrap();
+
+    let config_path = root.join("src/main/resources/application.properties");
+    write_file(&config_path, "server.port=8080\n");
+
+    let java = r#"
+        import org.springframework.beans.factory.annotation.Value;
+        class App {
+            @Value("${server.p}")
+            String port;
+        }
+    "#;
+    let java_path = root.join("src/App.java");
+    write_file(&java_path, java);
+
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_classpath_class(project, "org.springframework.context.ApplicationContext");
+
+    let config_file = inner.add_file_with_path_and_text(project, config_path, "server.port=8080\n");
+    let java_file = inner.add_file_with_path_and_text(project, java_path, java);
+
+    let offset = java.find("${server.p}").unwrap() + "${server.p".len();
+    let expected_span = completion_span_for_value_placeholder(java, offset).expect("span");
+
+    let db = NoConfigTextDb {
+        inner,
+        hidden: config_file,
+    };
 
     let mut registry = AnalyzerRegistry::new();
     registry.register(Box::new(SpringAnalyzer::new()));

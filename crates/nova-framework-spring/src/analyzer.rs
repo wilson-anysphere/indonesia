@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_config_metadata::MetadataIndex;
 use nova_core::{FileId, ProjectId};
@@ -586,13 +588,31 @@ fn workspace_fingerprint(db: &dyn Database, all_files: &[FileId]) -> (u64, Vec<F
     let mut hasher = DefaultHasher::new();
     for &file in &relevant {
         file.to_raw().hash(&mut hasher);
-        if let Some(path) = db.file_path(file) {
+        let path = db.file_path(file);
+        if let Some(path) = path {
             path.hash(&mut hasher);
         }
-        if let Some(text) = db.file_text(file) {
-            fingerprint_text(text, &mut hasher);
-        } else {
-            0usize.hash(&mut hasher);
+
+        match db.file_text(file) {
+            Some(text) => fingerprint_text(text, &mut hasher),
+            None => {
+                // Best-effort invalidation for hosts that don't provide file contents for
+                // unopened buffers: hash basic on-disk metadata (len + mtime).
+                let Some(path) = path else {
+                    0usize.hash(&mut hasher);
+                    continue;
+                };
+                match std::fs::metadata(path) {
+                    Ok(meta) => {
+                        meta.len().hash(&mut hasher);
+                        hash_mtime(&mut hasher, meta.modified().ok());
+                    }
+                    Err(_) => {
+                        0u64.hash(&mut hasher);
+                        0u32.hash(&mut hasher);
+                    }
+                }
+            }
         }
     }
 
@@ -616,6 +636,20 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     if bytes.len() > EDGE {
         bytes[bytes.len() - EDGE..].hash(hasher);
     }
+}
+
+fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
+    let Some(time) = time else {
+        0u64.hash(hasher);
+        0u32.hash(hasher);
+        return;
+    };
+
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    duration.as_secs().hash(hasher);
+    duration.subsec_nanos().hash(hasher);
 }
 
 fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
@@ -660,9 +694,13 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
     let profiles: Vec<String> = profiles.into_iter().collect();
 
     let mut metadata = MetadataIndex::new();
-    for (_path, file) in &metadata_files {
-        let Some(text) = db.file_text(*file) else {
-            continue;
+    for (path, file) in &metadata_files {
+        let text: Cow<'_, str> = match db.file_text(*file) {
+            Some(text) => Cow::Borrowed(text),
+            None => match std::fs::read_to_string(path) {
+                Ok(text) => Cow::Owned(text),
+                Err(_) => continue,
+            },
         };
         let _ = metadata.ingest_json_bytes(text.as_bytes());
     }
@@ -670,19 +708,27 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
 
     let mut index = SpringWorkspaceIndex::new(Arc::clone(&metadata));
     for (path, file) in &config_files {
-        let Some(text) = db.file_text(*file) else {
-            continue;
+        let text: Cow<'_, str> = match db.file_text(*file) {
+            Some(text) => Cow::Borrowed(text),
+            None => match std::fs::read_to_string(path) {
+                Ok(text) => Cow::Owned(text),
+                Err(_) => continue,
+            },
         };
-        index.add_config_file(path.clone(), text);
+        index.add_config_file(path.clone(), text.as_ref());
     }
     for (path, file) in &java_files {
-        let Some(text) = db.file_text(*file) else {
-            continue;
+        let text: Cow<'_, str> = match db.file_text(*file) {
+            Some(text) => Cow::Borrowed(text),
+            None => match std::fs::read_to_string(path) {
+                Ok(text) => Cow::Owned(text),
+                Err(_) => continue,
+            },
         };
         // Avoid scanning every Java file in the project; only ones that can
         // contribute config keys/usages to the workspace index.
         if text.contains("@Value") || text.contains("@ConfigurationProperties") {
-            index.add_java_file(path.clone(), text);
+            index.add_java_file(path.clone(), text.as_ref());
         }
     }
     let index = Arc::new(index);
