@@ -154,7 +154,6 @@ impl JdkIndex {
         this.add_type("java.lang", "Iterable");
         this.add_type("java.lang", "Runnable");
         this.add_type("java.lang", "String");
-        this.add_type("java.lang", "Boolean");
         this.add_type("java.lang", "Integer");
         this.add_type("java.lang", "Number");
         this.add_type("java.lang", "Boolean");
@@ -208,6 +207,7 @@ impl JdkIndex {
 
         // Ensure deterministic ordering for callers that iterate the built-in index.
         this.builtin_binary_names_sorted.sort();
+        this.builtin_binary_names_sorted.dedup();
         this.builtin_packages_sorted = this.packages.iter().cloned().collect();
         this.builtin_packages_sorted.sort();
         this.builtin_packages_sorted.dedup();
