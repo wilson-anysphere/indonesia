@@ -484,6 +484,28 @@ fn loads_gradle_includeflat_kts_workspace() {
 }
 
 #[test]
+fn loads_gradle_root_buildscript_dependencies() {
+    let root = testdata_path("gradle-multi-root-deps");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone(), d.version.clone()))
+        .collect();
+    assert!(deps.contains(&(
+        "com.google.guava".to_string(),
+        "guava".to_string(),
+        Some("33.0.0-jre".to_string())
+    )));
+}
+
+#[test]
 fn loads_gradle_projectdir_mapping_workspace() {
     let root = testdata_path("gradle-projectdir-mapping");
     let gradle_home = tempdir().expect("tempdir");
@@ -1055,6 +1077,30 @@ fn loads_gradle_includeflat_kts_workspace_model() {
         .expect("module for Lib.java");
     assert_eq!(match_lib.module.id, "gradle::lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
+fn loads_gradle_root_buildscript_dependencies_workspace_model() {
+    let root = testdata_path("gradle-multi-root-deps");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    let app = model.module_by_id("gradle::app").expect("app module");
+    let deps: BTreeSet<_> = app
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone(), d.version.clone()))
+        .collect();
+    assert!(deps.contains(&(
+        "com.google.guava".to_string(),
+        "guava".to_string(),
+        Some("33.0.0-jre".to_string())
+    )));
 }
 
 #[test]

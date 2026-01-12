@@ -1876,6 +1876,15 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         {
             return Some(version_dir.join(resolved));
         }
+
+        // If the timestamped SNAPSHOT jar isn't present in the repo, fall back to the
+        // conventional `<artifactId>-<version>(-classifier).jar` path.
+        let fallback = version_dir.join(default_file_name(version));
+        return if fallback.is_file() || fallback.is_dir() {
+            Some(fallback)
+        } else {
+            None
+        };
     }
 
     Some(version_dir.join(default_file_name(version)))

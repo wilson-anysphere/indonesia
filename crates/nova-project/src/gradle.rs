@@ -411,6 +411,7 @@ pub(crate) fn load_gradle_project(
         root_java = java;
     }
     let version_catalog = load_gradle_version_catalog(root);
+    dependencies.extend(parse_gradle_root_dependencies(root));
 
     for module_ref in module_refs {
         let project_path = &module_ref.project_path;
@@ -713,6 +714,7 @@ pub(crate) fn load_gradle_workspace_model(
         .clone()
         .or_else(default_gradle_user_home);
     let version_catalog = load_gradle_version_catalog(root);
+    let root_dependencies = parse_gradle_root_dependencies(root);
 
     let module_root_by_project_path: BTreeMap<String, PathBuf> = module_refs
         .iter()
@@ -922,6 +924,7 @@ pub(crate) fn load_gradle_workspace_model(
             });
         }
         let mut dependencies = parse_gradle_dependencies(&module_root, version_catalog.as_ref());
+        dependencies.extend(root_dependencies.iter().cloned());
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
         // for the same coordinates.
@@ -1741,6 +1744,16 @@ fn parse_gradle_dependencies(
         out.extend(parse_gradle_dependencies_from_text(&contents, version_catalog));
     }
     out
+}
+
+fn parse_gradle_root_dependencies(root: &Path) -> Vec<Dependency> {
+    // Root build scripts in multi-project Gradle repos often declare shared dependencies via
+    // `allprojects { dependencies { ... } }` or `subprojects { dependencies { ... } }`.
+    //
+    // Parse them separately so we still discover dependencies even when subproject build scripts
+    // are minimal.
+    let version_catalog = load_gradle_version_catalog(root);
+    parse_gradle_dependencies(root, version_catalog.as_ref())
 }
 
 fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
