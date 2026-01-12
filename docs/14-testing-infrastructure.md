@@ -571,7 +571,7 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
 ./scripts/run-real-project-tests.sh
 
 # or, run the suites directly (after cloning)
-cargo test --locked -p nova-project --test real_projects -- --ignored
+cargo test --locked -p nova-project --test harness -- --ignored
 cargo test --locked -p nova-cli --test real_projects -- --ignored
 ```
 

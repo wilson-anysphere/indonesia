@@ -142,11 +142,11 @@ bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differentia
 
 # or run directly after cloning fixtures:
 # Local dev
-cargo test --locked -p nova-project --test real_projects -- --ignored
+cargo test --locked -p nova-project --test harness -- --ignored
 cargo test --locked -p nova-cli --test real_projects -- --ignored
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh test --locked -p nova-project --test real_projects -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-project --test harness -- --ignored
 bash scripts/cargo_agent.sh test --locked -p nova-cli --test real_projects -- --ignored
 ```
 

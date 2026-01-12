@@ -234,7 +234,7 @@ RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
 NOVA_REAL_PROJECT=guava ./scripts/run-real-project-tests.sh
 
 # (Advanced) Run the test binaries directly (still using the agent wrapper):
-bash scripts/cargo_agent.sh test --locked -p nova-project --test real_projects -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-project --test harness -- --ignored
 bash scripts/cargo_agent.sh test --locked -p nova-cli --test real_projects -- --ignored
 ```
 

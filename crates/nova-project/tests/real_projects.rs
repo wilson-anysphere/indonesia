@@ -17,7 +17,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
 
     assert_eq!(
         expected, "real_projects.rs",
-        "expected nova-project integration test harness to be named real_projects.rs (so `cargo test --locked -p nova-project --test real_projects` works); got: {expected}"
+        "expected nova-project integration test harness to be named real_projects.rs (so `cargo test --locked -p nova-project --test harness` works); got: {expected}"
     );
 
     let mut root_rs_files = Vec::new();
