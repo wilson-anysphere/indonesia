@@ -13,27 +13,47 @@ fn mapstruct_mapping_target_completions_are_surfaced_via_ide_extensions() {
     let pkg_dir = root.join("src/main/java/com/example");
     std::fs::create_dir_all(&pkg_dir).unwrap();
 
-    // Target DTO type with a `seatCount` property.
-    let dto_path = pkg_dir.join("CarDto.java");
+    // Provide a minimal build config so `nova_project::load_project` can surface a `ProjectConfig`,
+    // enabling `nova-framework` analyzer applicability checks.
     std::fs::write(
-        &dto_path,
-        r#"package com.example;
-public class CarDto {
-  private int seatCount;
-}
-"#,
+        root.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.mapstruct</groupId>
+      <artifactId>mapstruct</artifactId>
+      <version>1.5.5.Final</version>
+    </dependency>
+    <dependency>
+      <groupId>org.mapstruct</groupId>
+      <artifactId>mapstruct-processor</artifactId>
+      <version>1.5.5.Final</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>"#,
     )
     .unwrap();
 
+    // Target DTO type with a `seatCount` property.
+    let dto_path = pkg_dir.join("CarDto.java");
+    let dto_text = r#"package com.example;
+ public class CarDto {
+   private int seatCount;
+ }
+ "#;
+    std::fs::write(&dto_path, dto_text).unwrap();
+
     // A tiny source type (not used for this completion test, but keeps the mapper realistic).
     let car_path = pkg_dir.join("Car.java");
-    std::fs::write(
-        &car_path,
-        r#"package com.example;
-public class Car {}
-"#,
-    )
-    .unwrap();
+    let car_text = r#"package com.example;
+ public class Car {}
+ "#;
+    std::fs::write(&car_path, car_text).unwrap();
 
     let mapper_path = pkg_dir.join("CarMapper.java");
     let mapper_text_with_caret = r#"package com.example;
@@ -58,6 +78,11 @@ public interface CarMapper {
     std::fs::write(&mapper_path, &mapper_text).unwrap();
 
     let mut db = InMemoryFileStore::new();
+    let dto_file = db.file_id_for_path(&dto_path);
+    db.set_file_text(dto_file, dto_text.to_string());
+    let car_file = db.file_id_for_path(&car_path);
+    db.set_file_text(car_file, car_text.to_string());
+
     let mapper_file = db.file_id_for_path(&mapper_path);
     db.set_file_text(mapper_file, mapper_text.clone());
 

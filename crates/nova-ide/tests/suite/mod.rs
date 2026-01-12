@@ -25,6 +25,7 @@ mod framework_analyzer_per_analyzer_adapter;
 mod framework_analyzer_registry;
 mod framework_cache;
 mod framework_class_data;
+mod framework_default_registry_no_duplicates;
 mod framework_db_adapter;
 mod framework_db_spring_metadata_from_jars;
 mod framework_extensions;

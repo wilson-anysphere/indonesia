@@ -1846,6 +1846,10 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let db = ctx.db.as_ref().as_dyn_nova_db();
         if has_build_metadata(db, params.file) {
             // In "real" build system projects, most framework intelligence should be sourced from
@@ -1877,6 +1881,10 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let db = ctx.db.as_ref().as_dyn_nova_db();
         if has_build_metadata(db, params.file) {
             return Vec::new();
