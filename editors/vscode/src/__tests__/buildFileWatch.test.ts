@@ -135,4 +135,83 @@ describe('buildFileWatch', () => {
 
     vi.useRealTimers();
   });
+
+  it('treats build.buildTool=prompt as auto (no prompting during file-watch reloads)', async () => {
+    vi.useFakeTimers();
+
+    const watchers: MockFileSystemWatcher[] = [];
+
+    const workspaceFolder = {
+      uri: { fsPath: '/workspace', toString: () => 'file:///workspace' },
+      name: 'workspace',
+      index: 0,
+    };
+
+    const fileUri = { fsPath: '/workspace/pom.xml', toString: () => 'file:///workspace/pom.xml' };
+
+    const output = { appendLine: vi.fn() };
+
+    const request = vi.fn(async () => undefined);
+
+    let resolveDiagnosticsRefresh: (() => void) | undefined;
+    const diagnosticsRefresh = new Promise<void>((resolve) => {
+      resolveDiagnosticsRefresh = resolve;
+    });
+
+    const executeCommand = vi.fn(async (command: string) => {
+      if (command === 'nova.build.refreshDiagnostics') {
+        resolveDiagnosticsRefresh?.();
+      }
+      return undefined;
+    });
+
+    vi.doMock(
+      'vscode',
+      () => ({
+        workspace: {
+          getConfiguration: () => ({
+            get: (key: string, defaultValue: unknown) => {
+              if (key === 'build.buildTool') {
+                return 'prompt';
+              }
+              return defaultValue;
+            },
+          }),
+          getWorkspaceFolder: () => workspaceFolder,
+          createFileSystemWatcher: () => {
+            const watcher = new MockFileSystemWatcher();
+            watchers.push(watcher);
+            return watcher;
+          },
+        },
+        commands: { executeCommand },
+        Disposable: MockDisposable,
+      }),
+      { virtual: true },
+    );
+
+    const { registerNovaBuildFileWatchers } = await import('../buildFileWatch');
+
+    const context = { subscriptions: [] as unknown[] };
+
+    registerNovaBuildFileWatchers(context as never, request as never, {
+      output: output as never,
+      formatError: (err: unknown) => String(err),
+      isMethodNotFoundError: () => false,
+    });
+
+    watchers[0].fireDidChange(fileUri);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await diagnosticsRefresh;
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      'nova/reloadProject',
+      { projectRoot: '/workspace', buildTool: 'auto' },
+      { allowMethodFallback: true },
+    );
+
+    vi.useRealTimers();
+  });
 });
