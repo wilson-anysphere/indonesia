@@ -187,6 +187,20 @@ fn analyze_dotted_expr(
     expr: &str,
     dotted: &DottedExpr,
 ) -> Result<StreamChain, StreamAnalysisError> {
+    fn stream_kind_from_class_expr(class_expr: &str) -> Option<StreamValueKind> {
+        if class_expr.ends_with("IntStream") {
+            Some(StreamValueKind::IntStream)
+        } else if class_expr.ends_with("LongStream") {
+            Some(StreamValueKind::LongStream)
+        } else if class_expr.ends_with("DoubleStream") {
+            Some(StreamValueKind::DoubleStream)
+        } else if class_expr.ends_with("Stream") {
+            Some(StreamValueKind::Stream)
+        } else {
+            None
+        }
+    }
+
     if dotted.segments.is_empty() {
         return Err(StreamAnalysisError::NoStreamPipeline);
     }
@@ -214,17 +228,7 @@ fn analyze_dotted_expr(
             }
             "of" if idx > 0 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                let kind = if class_expr.ends_with("IntStream") {
-                    Some(StreamValueKind::IntStream)
-                } else if class_expr.ends_with("LongStream") {
-                    Some(StreamValueKind::LongStream)
-                } else if class_expr.ends_with("DoubleStream") {
-                    Some(StreamValueKind::DoubleStream)
-                } else if class_expr.ends_with("Stream") {
-                    Some(StreamValueKind::Stream)
-                } else {
-                    None
-                };
+                let kind = stream_kind_from_class_expr(&class_expr);
 
                 if let Some(kind) = kind {
                     source_end = Some(idx);
@@ -239,13 +243,9 @@ fn analyze_dotted_expr(
             }
             "range" | "rangeClosed" if idx > 0 && arg_count == 2 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                let kind = if class_expr.ends_with("IntStream") {
-                    Some(StreamValueKind::IntStream)
-                } else if class_expr.ends_with("LongStream") {
-                    Some(StreamValueKind::LongStream)
-                } else {
-                    None
-                };
+                let kind = stream_kind_from_class_expr(&class_expr).filter(|k| {
+                    matches!(*k, StreamValueKind::IntStream | StreamValueKind::LongStream)
+                });
 
                 if let Some(kind) = kind {
                     source_end = Some(idx);
@@ -260,17 +260,7 @@ fn analyze_dotted_expr(
             }
             "iterate" if idx > 0 && matches!(arg_count, 2 | 3) => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                let kind = if class_expr.ends_with("IntStream") {
-                    Some(StreamValueKind::IntStream)
-                } else if class_expr.ends_with("LongStream") {
-                    Some(StreamValueKind::LongStream)
-                } else if class_expr.ends_with("DoubleStream") {
-                    Some(StreamValueKind::DoubleStream)
-                } else if class_expr.ends_with("Stream") {
-                    Some(StreamValueKind::Stream)
-                } else {
-                    None
-                };
+                let kind = stream_kind_from_class_expr(&class_expr);
 
                 if let Some(kind) = kind {
                     source_end = Some(idx);
@@ -285,17 +275,7 @@ fn analyze_dotted_expr(
             }
             "generate" if idx > 0 && arg_count == 1 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                let kind = if class_expr.ends_with("IntStream") {
-                    Some(StreamValueKind::IntStream)
-                } else if class_expr.ends_with("LongStream") {
-                    Some(StreamValueKind::LongStream)
-                } else if class_expr.ends_with("DoubleStream") {
-                    Some(StreamValueKind::DoubleStream)
-                } else if class_expr.ends_with("Stream") {
-                    Some(StreamValueKind::Stream)
-                } else {
-                    None
-                };
+                let kind = stream_kind_from_class_expr(&class_expr);
 
                 if let Some(kind) = kind {
                     source_end = Some(idx);
@@ -310,17 +290,7 @@ fn analyze_dotted_expr(
             }
             "empty" if idx > 0 && arg_count == 0 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                let kind = if class_expr.ends_with("IntStream") {
-                    Some(StreamValueKind::IntStream)
-                } else if class_expr.ends_with("LongStream") {
-                    Some(StreamValueKind::LongStream)
-                } else if class_expr.ends_with("DoubleStream") {
-                    Some(StreamValueKind::DoubleStream)
-                } else if class_expr.ends_with("Stream") {
-                    Some(StreamValueKind::Stream)
-                } else {
-                    None
-                };
+                let kind = stream_kind_from_class_expr(&class_expr);
 
                 if let Some(kind) = kind {
                     source_end = Some(idx);
@@ -335,17 +305,7 @@ fn analyze_dotted_expr(
             }
             "concat" if idx > 0 && arg_count == 2 => {
                 let class_expr = dotted.prefix_source(idx - 1);
-                let kind = if class_expr.ends_with("IntStream") {
-                    Some(StreamValueKind::IntStream)
-                } else if class_expr.ends_with("LongStream") {
-                    Some(StreamValueKind::LongStream)
-                } else if class_expr.ends_with("DoubleStream") {
-                    Some(StreamValueKind::DoubleStream)
-                } else if class_expr.ends_with("Stream") {
-                    Some(StreamValueKind::Stream)
-                } else {
-                    None
-                };
+                let kind = stream_kind_from_class_expr(&class_expr);
 
                 if let Some(kind) = kind {
                     source_end = Some(idx);
