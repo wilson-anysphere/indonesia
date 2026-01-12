@@ -89,7 +89,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// the requested selection range (e.g. `CodeActionParams.context.diagnostics`).
 ///
 /// Today this provides quick-fixes:
-/// - `unresolved-type` → `Create class '<Name>'`
+/// - `unresolved-type` → `Create class '<Name>'` / `Import <fqn>` / `Use fully qualified name '<fqn>'`
 /// - `unresolved-method` / `UNRESOLVED_REFERENCE` → `Create method '<name>'`
 /// - `unresolved-field` → `Create field '<name>'`
 /// - `FLOW_UNREACHABLE` → `Remove unreachable code`
@@ -114,6 +114,10 @@ pub fn diagnostic_quick_fixes(
         if let Some(action) = create_class_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
+        actions.extend(unresolved_type_import_and_qualify_quick_fixes(
+            source, &uri, &selection, diag,
+        ));
+
         for action in create_symbol_quick_fixes(source, &uri, &selection, diag) {
             if !seen_create_symbol_titles.insert(action.title.clone()) {
                 continue;
@@ -296,6 +300,83 @@ fn create_class_quick_fix(
         diagnostics: Some(vec![diagnostic.clone()]),
         ..CodeAction::default()
     })
+}
+
+fn unresolved_type_import_and_qualify_quick_fixes(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
+    let Some(code) = diagnostic_code(diagnostic) else {
+        return Vec::new();
+    };
+    if code != "unresolved-type" {
+        return Vec::new();
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return Vec::new();
+    }
+
+    let name = source_range_text(source, &diagnostic.range)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| unresolved_type_name(&diagnostic.message).map(str::to_string));
+    let Some(name) = name else {
+        return Vec::new();
+    };
+
+    // If the unresolved "type" text contains dots, it's already qualified (e.g. `java.util.List`).
+    // Avoid offering import/FQN fixes in that case.
+    if !is_simple_type_identifier(&name) {
+        return Vec::new();
+    }
+
+    let candidates = crate::quickfix::import_candidates(&name);
+    let mut actions = Vec::new();
+
+    for fqn in candidates {
+        if let Some(import_edit) = crate::quickfix::java_import_text_edit(source, &fqn) {
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![import_edit]);
+            actions.push(CodeAction {
+                title: format!("Import {fqn}"),
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                ..CodeAction::default()
+            });
+        }
+
+        let (start, end) = normalize_range(&diagnostic.range);
+        let mut changes = HashMap::new();
+        changes.insert(
+            uri.clone(),
+            vec![TextEdit {
+                range: Range { start, end },
+                new_text: fqn.clone(),
+            }],
+        );
+        actions.push(CodeAction {
+            title: format!("Use fully qualified name '{fqn}'"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            ..CodeAction::default()
+        });
+    }
+
+    actions
 }
 
 fn remove_unreachable_code_quick_fix(
@@ -964,7 +1045,7 @@ fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize)
 }
 
 fn position_within_range(start: Position, end: Position, pos: Position) -> bool {
-    pos_leq(&start, &pos) && pos_lt(&pos, &end)
+    pos_leq(&start, &pos) && pos_leq(&pos, &end)
 }
 
 fn pos_lt(a: &Position, b: &Position) -> bool {

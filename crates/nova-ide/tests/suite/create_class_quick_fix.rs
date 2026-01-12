@@ -5,6 +5,23 @@ use nova_ide::code_action::diagnostic_quick_fixes;
 
 use crate::framework_harness::offset_to_position;
 
+fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
+    let index = nova_core::LineIndex::new(text);
+    let core_edits: Vec<nova_core::TextEdit> = edits
+        .iter()
+        .map(|edit| {
+            let range = nova_core::Range::new(
+                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
+                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
+            );
+            let range = index.text_range(text, range).expect("valid range");
+            nova_core::TextEdit::new(range, edit.new_text.clone())
+        })
+        .collect();
+
+    nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
+}
+
 #[test]
 fn create_class_quick_fix_inserts_skeleton_at_eof() {
     let source = "class A { MissingType x; }";
@@ -103,5 +120,66 @@ fn create_class_quick_fix_is_not_suggested_for_qualified_names() {
     assert!(
         actions.is_empty(),
         "expected no actions for qualified type names; got {actions:#?}"
+    );
+}
+
+#[test]
+fn unresolved_type_quick_fixes_include_import_and_fully_qualified_name_for_cursor_at_end() {
+    let source = r#"class A {
+  void m(List<String> xs) {}
+}
+"#;
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let list_start = source.find("List<String>").expect("List occurrence");
+    let list_end = list_start + "List".len();
+
+    let diagnostic = Diagnostic {
+        range: Range::new(
+            offset_to_position(source, list_start),
+            offset_to_position(source, list_end),
+        ),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-type".to_string())),
+        message: "unresolved type `List`".to_string(),
+        ..Diagnostic::default()
+    };
+
+    // Cursor selection at the end of `List` (common when the cursor is placed after the token).
+    let selection = Range::new(
+        offset_to_position(source, list_end),
+        offset_to_position(source, list_end),
+    );
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), selection, &[diagnostic]);
+
+    let import_action = actions
+        .iter()
+        .find(|action| action.title == "Import java.util.List")
+        .expect("expected Import java.util.List quick fix");
+    let fqn_action = actions
+        .iter()
+        .find(|action| action.title == "Use fully qualified name 'java.util.List'")
+        .expect("expected FQN quick fix");
+
+    assert_eq!(import_action.kind, Some(CodeActionKind::QUICKFIX));
+    assert_eq!(fqn_action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let import_edit = import_action.edit.as_ref().expect("expected import edit");
+    let import_changes = import_edit.changes.as_ref().expect("expected changes map");
+    let import_edits = import_changes.get(&uri).expect("expected edits for file");
+    let imported = apply_lsp_edits(source, import_edits);
+    assert!(
+        imported.contains("import java.util.List;"),
+        "expected import insertion; got:\n{imported}"
+    );
+
+    let fqn_edit = fqn_action.edit.as_ref().expect("expected fqn edit");
+    let fqn_changes = fqn_edit.changes.as_ref().expect("expected changes map");
+    let fqn_edits = fqn_changes.get(&uri).expect("expected edits for file");
+    let qualified = apply_lsp_edits(source, fqn_edits);
+    assert!(
+        qualified.contains("void m(java.util.List<String> xs) {}"),
+        "expected fully qualified type reference; got:\n{qualified}"
     );
 }

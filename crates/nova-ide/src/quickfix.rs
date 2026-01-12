@@ -150,7 +150,7 @@ fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) ->
 
 /// Returns `None` when `path` is already imported (either exactly or via a wildcard).
 /// Otherwise returns a `TextEdit` inserting the requested import at an appropriate location.
-fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
+pub(crate) fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
     let request = normalize_import_request(path)?;
 
     let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
