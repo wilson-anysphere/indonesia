@@ -558,9 +558,8 @@ impl MemoryEvictor for ClosedFileTextStore {
 
     fn eviction_priority(&self) -> u8 {
         // Closed-file texts are needed to compute semantic queries (imports, typechecking, etc).
-        // Prefer evicting memoized query results (e.g. Salsa memos) before replacing file contents
-        // with empty placeholders, which would otherwise degrade diagnostics even under moderate
-        // budgets.
+        // Prefer evicting memoized query results and other cheap caches before replacing file
+        // contents with empty placeholders (which would otherwise force disk reloads).
         20
     }
 
@@ -5130,6 +5129,70 @@ mode = "off"
                 after_bytes: after,
             }
         }
+    }
+
+    #[test]
+    fn closed_file_texts_eviction_runs_after_other_query_cache_evictors() {
+        use nova_memory::MemoryPressureThresholds;
+        use nova_vfs::OpenDocuments;
+
+        // Keep the overall budget large so process RSS doesn't force `Critical` pressure, but set
+        // the QueryCache category budget to just below our test usage so eviction runs.
+        let budget_total = 2 * 1024 * 1024;
+        let mut budget = MemoryBudget::from_total(budget_total);
+        budget.categories.query_cache = 2_999;
+        let assigned = budget.categories.query_cache
+            + budget.categories.syntax_trees
+            + budget.categories.indexes
+            + budget.categories.type_info;
+        budget.categories.other = budget.total.saturating_sub(assigned);
+
+        let memory = MemoryManager::with_thresholds(
+            budget,
+            MemoryPressureThresholds {
+                medium: 1000.0,
+                high: 1000.0,
+                critical: 1000.0,
+            },
+        );
+
+        let open_docs = Arc::new(OpenDocuments::default());
+        let query_db = salsa::Database::new_with_open_documents(open_docs.clone());
+        let closed_file_texts = ClosedFileTextStore::new(&memory, query_db.clone(), open_docs);
+
+        // Track a single closed-file `file_content` input. This should not be evicted when another
+        // QueryCache evictor can satisfy the category target.
+        let file = FileId::from_raw(1);
+        query_db.set_file_exists(file, true);
+        let text = Arc::new("x".repeat(2_000));
+        query_db.set_file_content(file, Arc::clone(&text));
+        query_db.set_file_is_dirty(file, false);
+        closed_file_texts.track_closed_file_content(file, &text);
+
+        // Register a second QueryCache evictor with lower eviction priority (default 0) but a
+        // smaller footprint than `workspace_closed_file_texts`. With priority ordering, it should
+        // be evicted first even though it is smaller.
+        let query_cache_evictor = TestEvictor::new(&memory, "test_query_cache", MemoryCategory::QueryCache);
+        query_cache_evictor.set_bytes(1_000);
+
+        let before = query_db.with_snapshot(|snap| snap.file_content(file));
+        assert!(Arc::ptr_eq(&before, &text));
+        assert!(!closed_file_texts.is_evicted(file));
+
+        memory.enforce();
+
+        assert!(
+            query_cache_evictor.evict_calls() > 0,
+            "expected QueryCache evictor to be invoked"
+        );
+        assert_eq!(query_cache_evictor.bytes(), 999);
+
+        let after = query_db.with_snapshot(|snap| snap.file_content(file));
+        assert!(
+            Arc::ptr_eq(&after, &text),
+            "expected closed file text input to remain resident when other QueryCache eviction suffices"
+        );
+        assert!(!closed_file_texts.is_evicted(file));
     }
 
     #[test]
