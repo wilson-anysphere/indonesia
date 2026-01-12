@@ -2560,6 +2560,53 @@ class C {
 }
 
 #[test]
+fn static_type_receiver_calling_ambiguous_instance_method_emits_static_context_diag() {
+    let src = r#"
+class C {
+    void foo(String s) {}
+    void foo(Integer i) {}
+    static void m() {
+        C.foo(null);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let static_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "static-context")
+        .collect();
+    assert_eq!(
+        static_diags.len(),
+        1,
+        "expected exactly one static-context diagnostic, got {diags:?}"
+    );
+    let diag = static_diags[0];
+    assert_eq!(
+        diag.message,
+        "cannot call instance method `foo` from a static context",
+        "unexpected diagnostic message: {diag:?}"
+    );
+    let span = diag.span.expect("static-context diagnostic should have a span");
+    let snippet = src
+        .get(span.start..span.end)
+        .unwrap_or("<invalid span>")
+        .trim()
+        .trim_end_matches(';');
+    assert_eq!(snippet, "C.foo(null)", "unexpected span snippet for {diag:?}");
+
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected no unresolved-method diagnostics; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "ambiguous-call"),
+        "expected no ambiguous-call diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_type_receiver_accessing_instance_field_emits_static_context_diag() {
     let src = r#"
 class C {
