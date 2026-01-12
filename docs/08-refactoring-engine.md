@@ -190,7 +190,7 @@ let edit = extract_variable(
 
 Current implementation policy:
 
-- **Target:** currently limited to *local variables* (not fields/parameters), and only when a suitable initializer is available.
+- **Target:** currently limited to *local variables* (not fields/parameters), and only when a suitable initializer is available. The implementation is conservative about supported declaration forms (for example, it may reject variables declared in `for (...)` headers).
 - **Two modes:**
   - **Inline at cursor**: inline the single usage that the user invoked the refactoring on.
   - **Inline all usages**: inline every usage of the variable within its scope.
