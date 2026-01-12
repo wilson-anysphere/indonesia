@@ -2821,13 +2821,15 @@ async function runTestsFromTestExplorer(
   }
 
   const run = testController.createTestRun(request);
+  let ids: string[] = [];
+  const completedIds = new Set<string>();
   try {
     const include = request.include ?? getRootTestItems(testController);
     const exclude = request.exclude ?? [];
 
     const includeIds = collectLeafIds(include);
     const excludeIds = new Set(collectLeafIds(exclude));
-    const ids = Array.from(new Set(includeIds.filter((id) => !excludeIds.has(id))));
+    ids = Array.from(new Set(includeIds.filter((id) => !excludeIds.has(id))));
 
     const runPlanByWorkspace = new Map<
       string,
@@ -2911,14 +2913,17 @@ async function runTestsFromTestExplorer(
         const result = resultsById.get(lspId);
         if (!result) {
           run.skipped(item);
+          completedIds.add(vscodeId);
           continue;
         }
         switch (result.status) {
           case 'passed':
             run.passed(item);
+            completedIds.add(vscodeId);
             break;
           case 'skipped':
             run.skipped(item);
+            completedIds.add(vscodeId);
             break;
           case 'failed': {
             const parts = [
@@ -2928,6 +2933,7 @@ async function runTestsFromTestExplorer(
             ].filter(Boolean);
             const message = new vscode.TestMessage(parts.join('\n'));
             run.failed(item, message);
+            completedIds.add(vscodeId);
             break;
           }
         }
@@ -2937,6 +2943,17 @@ async function runTestsFromTestExplorer(
     const message = formatError(err);
     run.appendOutput(`Nova: test run failed: ${message}\n`);
   } finally {
+    if (token.isCancellationRequested) {
+      for (const id of ids) {
+        if (completedIds.has(id)) {
+          continue;
+        }
+        const item = vscodeTestItemsById.get(id);
+        if (item) {
+          run.skipped(item);
+        }
+      }
+    }
     run.end();
     void token;
   }

@@ -265,6 +265,8 @@ async function debugTestsFromTestExplorer(
 
   const run = controller.createTestRun(request);
   let cancellationSubscription: vscode.Disposable | undefined;
+  let completed = false;
+  let currentItem: vscode.TestItem | undefined;
   try {
     const vsTestId = ids[0];
     const target = resolveTestTarget(vsTestId);
@@ -277,6 +279,7 @@ async function debugTestsFromTestExplorer(
 
     const testId = target.lspId;
     const item = target.item;
+    currentItem = item;
 
     if (item) {
       run.enqueued(item);
@@ -297,6 +300,7 @@ async function debugTestsFromTestExplorer(
     )) as TestDebugResponse | undefined;
     if (!resp) {
       if (item) {
+        completed = true;
         run.skipped(item);
       }
       return;
@@ -319,6 +323,7 @@ async function debugTestsFromTestExplorer(
         desiredPort = await findFreeLocalPort(desiredHost);
       } else if (choice !== 'Continue') {
         if (item) {
+          completed = true;
           run.skipped(item);
         }
         return;
@@ -347,6 +352,18 @@ async function debugTestsFromTestExplorer(
     let startedSession: vscode.DebugSession | undefined;
     let debugStartRequested = false;
     let cancelPromise: Promise<void> | undefined;
+
+    const markSkippedIfPending = (): void => {
+      if (completed) {
+        return;
+      }
+      if (!currentItem) {
+        return;
+      }
+      completed = true;
+      run.skipped(currentItem);
+    };
+
     const cancel = (reason: string): Promise<void> => {
       if (cancelPromise) {
         return cancelPromise;
@@ -366,6 +383,7 @@ async function debugTestsFromTestExplorer(
     cancellationSubscription = token.onCancellationRequested(() => {
       // Avoid waiting for a debug session when we haven't even started one yet. This keeps
       // cancellation responsive during the "pre-attach" phase.
+      markSkippedIfPending();
       if (!debugStartRequested) {
         void (async () => {
           processesByRunId.delete(runId);
@@ -383,6 +401,7 @@ async function debugTestsFromTestExplorer(
     if (token.isCancellationRequested) {
       processesByRunId.delete(runId);
       await spawned.dispose('cancelled before debugger attach');
+      markSkippedIfPending();
       return;
     }
 
@@ -414,22 +433,32 @@ async function debugTestsFromTestExplorer(
 
     if (token.isCancellationRequested) {
       await cancel('cancelled');
+      markSkippedIfPending();
       return;
     }
 
     const exit = await waitForExit(child);
     if (item) {
       if (exit.code === 0) {
+        completed = true;
         run.passed(item);
       } else if (exit.signal) {
+        completed = true;
         run.skipped(item);
       } else {
+        completed = true;
         run.failed(item, new vscode.TestMessage(`Exit code ${exit.code ?? 'unknown'}`));
       }
     }
   } catch (err) {
     if (token.isCancellationRequested || isRequestCancelledError(err)) {
       // Treat cancellation as a non-error; VS Code will end the run when the token is cancelled.
+      if (!completed) {
+        completed = true;
+        if (currentItem) {
+          run.skipped(currentItem);
+        }
+      }
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -437,6 +466,10 @@ async function debugTestsFromTestExplorer(
     output.appendLine(`Nova: test debug failed: ${message}`);
   } finally {
     cancellationSubscription?.dispose();
+    if (token.isCancellationRequested && !completed && currentItem) {
+      completed = true;
+      run.skipped(currentItem);
+    }
     run.end();
   }
 }
