@@ -254,7 +254,9 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   registerFrameworkDashboardCommands(context);
-  const frameworksView: NovaFrameworksViewController = registerNovaFrameworksView(context, sendNovaRequest);
+  const frameworksView: NovaFrameworksViewController = registerNovaFrameworksView(context, (method, params) =>
+    sendNovaRequest(method, params, { allowMethodFallback: true }),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.frameworks.refresh', () => {
       frameworksView.refresh();
