@@ -43,6 +43,21 @@ impl PartialEq for AnnotationUse {
 impl Eq for AnnotationUse {}
 
 #[derive(Debug, Clone)]
+pub struct TypeParam {
+    pub name: String,
+    pub name_range: Span,
+    pub bounds: Vec<String>,
+}
+
+impl PartialEq for TypeParam {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.bounds == other.bounds
+    }
+}
+
+impl Eq for TypeParam {}
+
+#[derive(Debug, Clone)]
 pub struct ModuleDecl {
     pub name: String,
     pub name_range: Span,
@@ -286,12 +301,6 @@ impl PartialEq for Import {
 impl Eq for Import {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeParam {
-    pub name: String,
-    pub bounds: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordComponent {
     pub ty: String,
     pub name: String,
@@ -455,6 +464,7 @@ pub enum Member {
 pub enum FieldKind {
     Field,
     EnumConstant,
+    RecordComponent,
 }
 
 #[derive(Debug, Clone)]
@@ -514,6 +524,7 @@ pub struct Method {
     pub range: Span,
     pub name_range: Span,
     pub params: Vec<Param>,
+    pub throws: Vec<String>,
     pub body: Option<AstId>,
 }
 
@@ -525,6 +536,7 @@ impl PartialEq for Method {
             && self.return_ty == other.return_ty
             && self.name == other.name
             && self.params == other.params
+            && self.throws == other.throws
             && self.body.is_some() == other.body.is_some()
     }
 }
@@ -540,6 +552,7 @@ pub struct Constructor {
     pub range: Span,
     pub name_range: Span,
     pub params: Vec<Param>,
+    pub throws: Vec<String>,
     pub body: Option<AstId>,
 }
 
@@ -550,6 +563,7 @@ impl PartialEq for Constructor {
             && self.type_params == other.type_params
             && self.name == other.name
             && self.params == other.params
+            && self.throws == other.throws
             && self.body.is_some() == other.body.is_some()
     }
 }

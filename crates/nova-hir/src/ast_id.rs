@@ -113,6 +113,7 @@ fn is_relevant_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::FieldDeclaration
             | SyntaxKind::EnumConstant
             | SyntaxKind::VariableDeclarator
+            | SyntaxKind::Parameter
             | SyntaxKind::MethodDeclaration
             | SyntaxKind::ConstructorDeclaration
             | SyntaxKind::CompactConstructorDeclaration

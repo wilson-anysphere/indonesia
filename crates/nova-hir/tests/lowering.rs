@@ -362,6 +362,15 @@ class Foo {
         method.return_ty
     );
     assert!(method.body.is_some());
+    assert_eq!(
+        method
+            .type_params
+            .iter()
+            .map(|tp| tp.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["T"]
+    );
+    assert_eq!(method.throws, vec!["Exception"]);
 
     let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
     let body = body(&db, method_id);
@@ -418,6 +427,159 @@ record Point(int x, int y) {
         .map(|(_, local)| local.name.as_str())
         .collect();
     assert_eq!(local_names, vec!["z"]);
+}
+
+#[test]
+fn lower_type_header_clauses_and_generics() {
+    let source = r#"
+sealed class C<T> extends Base implements I, J permits A, B {}
+sealed interface IFace<T> extends X, Y permits Z {}
+record R<T>(int x) implements I, J permits A {}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+
+    let class = tree
+        .classes
+        .values()
+        .find(|c| c.name == "C")
+        .expect("class C");
+    assert_eq!(
+        class
+            .type_params
+            .iter()
+            .map(|tp| tp.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["T"]
+    );
+    assert_eq!(class.extends, vec!["Base"]);
+    assert_eq!(class.implements, vec!["I", "J"]);
+    assert_eq!(class.permits, vec!["A", "B"]);
+
+    let interface = tree
+        .interfaces
+        .values()
+        .find(|i| i.name == "IFace")
+        .expect("interface IFace");
+    assert_eq!(
+        interface
+            .type_params
+            .iter()
+            .map(|tp| tp.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["T"]
+    );
+    assert_eq!(interface.extends, vec!["X", "Y"]);
+    assert_eq!(interface.permits, vec!["Z"]);
+
+    let record = tree
+        .records
+        .values()
+        .find(|r| r.name == "R")
+        .expect("record R");
+    assert_eq!(
+        record
+            .type_params
+            .iter()
+            .map(|tp| tp.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["T"]
+    );
+    assert_eq!(record.implements, vec!["I", "J"]);
+    assert_eq!(record.permits, vec!["A"]);
+}
+
+#[test]
+fn lower_record_components_as_fields() {
+    let source = r#"record Point(int x, int y) {}"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.items.len(), 1);
+    let record_id = match tree.items[0] {
+        nova_hir::item_tree::Item::Record(id) => id,
+        other => panic!("expected record item, got {other:?}"),
+    };
+    let record = tree.record(record_id);
+
+    let component_fields: Vec<_> = tree
+        .fields
+        .values()
+        .filter(|field| field.kind == nova_hir::item_tree::FieldKind::RecordComponent)
+        .collect();
+    assert_eq!(component_fields.len(), 2);
+
+    let component_names: Vec<_> = component_fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(component_names.contains(&"x"));
+    assert!(component_names.contains(&"y"));
+
+    let x = tree
+        .fields
+        .values()
+        .find(|f| f.kind == nova_hir::item_tree::FieldKind::RecordComponent && f.name == "x")
+        .expect("x component");
+    assert_eq!(x.ty, "int");
+
+    let y = tree
+        .fields
+        .values()
+        .find(|f| f.kind == nova_hir::item_tree::FieldKind::RecordComponent && f.name == "y")
+        .expect("y component");
+    assert_eq!(y.ty, "int");
+
+    let member_fields: Vec<_> = record
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            nova_hir::item_tree::Member::Field(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(member_fields.len(), 2);
+
+    // Ensure the record's members list contains the record component fields.
+    let component_ids: Vec<_> = tree
+        .fields
+        .iter()
+        .filter(|(_, field)| field.kind == nova_hir::item_tree::FieldKind::RecordComponent)
+        .map(|(ast_id, _)| nova_hir::ids::FieldId::new(file, *ast_id))
+        .collect();
+    for member in member_fields {
+        assert!(component_ids.contains(&member));
+    }
+}
+
+#[test]
+fn record_component_ids_are_stable_under_whitespace_only_edits() {
+    let v1 = r#"record Point(int x, int y) {}"#;
+    let v2 = r#"record Point(int x ,  int y) {}"#;
+
+    let file = FileId::from_raw(0);
+
+    let tree1 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v1)],
+        },
+        file,
+    );
+    let tree2 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v2)],
+        },
+        file,
+    );
+
+    assert_eq!(field_id_by_name(&tree1, file, "x"), field_id_by_name(&tree2, file, "x"));
+    assert_eq!(field_id_by_name(&tree1, file, "y"), field_id_by_name(&tree2, file, "y"));
 }
 
 #[test]

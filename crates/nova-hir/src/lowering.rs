@@ -13,8 +13,7 @@ use crate::item_tree::{
     Param, Record, RecordComponent, TypeParam,
 };
 use nova_syntax::java::ast as syntax;
-use nova_syntax::ast::{self as rowan_ast, AstNode as _};
-use nova_syntax::{JavaParseResult, SyntaxKind, SyntaxNode};
+use nova_syntax::{JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::Span;
 use nova_vfs::FileId;
 
@@ -100,21 +99,14 @@ impl ItemTreeLower<'_> {
         match decl {
             syntax::TypeDecl::Class(class) => {
                 let members = self.lower_members(&class.members);
-                let (type_params, extends, implements, permits) = self
-                    .syntax_node_for_name(SyntaxKind::ClassDeclaration, class.name_range)
-                    .and_then(rowan_ast::ClassDeclaration::cast)
-                    .map(|decl| {
-                        (
-                            lower_type_params(decl.type_parameters()),
-                            lower_type_clause(decl.extends_clause()),
-                            lower_type_clause(decl.implements_clause()),
-                            lower_type_clause(decl.permits_clause()),
-                        )
-                    })
-                    .unwrap_or_default();
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::ClassDeclaration, class.name_range)?;
+                let node =
+                    self.syntax_node_for_name(SyntaxKind::ClassDeclaration, class.name_range)?;
+                let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = ClassId::new(self.file, ast_id);
+                let type_params = lower_type_params(&node);
+                let extends = collect_clause_types(&node, SyntaxKind::ExtendsClause);
+                let implements = collect_clause_types(&node, SyntaxKind::ImplementsClause);
+                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.classes.insert(
                     ast_id,
                     Class {
@@ -135,20 +127,15 @@ impl ItemTreeLower<'_> {
             }
             syntax::TypeDecl::Interface(interface) => {
                 let members = self.lower_members(&interface.members);
-                let (type_params, extends, permits) = self
-                    .syntax_node_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range)
-                    .and_then(rowan_ast::InterfaceDeclaration::cast)
-                    .map(|decl| {
-                        (
-                            lower_type_params(decl.type_parameters()),
-                            lower_type_clause(decl.extends_clause()),
-                            lower_type_clause(decl.permits_clause()),
-                        )
-                    })
-                    .unwrap_or_default();
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range)?;
+                let node = self.syntax_node_for_name(
+                    SyntaxKind::InterfaceDeclaration,
+                    interface.name_range,
+                )?;
+                let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = InterfaceId::new(self.file, ast_id);
+                let type_params = lower_type_params(&node);
+                let extends = collect_clause_types(&node, SyntaxKind::ExtendsClause);
+                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.interfaces.insert(
                     ast_id,
                     Interface {
@@ -178,18 +165,15 @@ impl ItemTreeLower<'_> {
 
                 members.extend(self.lower_members(&enm.members));
 
-                let (implements, permits) = self
-                    .syntax_node_for_name(SyntaxKind::EnumDeclaration, enm.name_range)
-                    .and_then(rowan_ast::EnumDeclaration::cast)
-                    .map(|decl| {
-                        (
-                            lower_type_clause(decl.implements_clause()),
-                            lower_type_clause(decl.permits_clause()),
-                        )
-                    })
-                    .unwrap_or_default();
-                let ast_id = self.ast_id_for_name(SyntaxKind::EnumDeclaration, enm.name_range)?;
+                let node = self.syntax_node_for_name(SyntaxKind::EnumDeclaration, enm.name_range)?;
+                let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = EnumId::new(self.file, ast_id);
+                let implements = collect_direct_child_types_after_token(
+                    &node,
+                    SyntaxKind::ImplementsKw,
+                    SyntaxKind::EnumBody,
+                );
+                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.enums.insert(
                     ast_id,
                     Enum {
@@ -207,22 +191,19 @@ impl ItemTreeLower<'_> {
                 Some(Item::Enum(id))
             }
             syntax::TypeDecl::Record(record) => {
-                let members = self.lower_members(&record.members);
-                let (type_params, implements, permits, components) = self
-                    .syntax_node_for_name(SyntaxKind::RecordDeclaration, record.name_range)
-                    .and_then(rowan_ast::RecordDeclaration::cast)
-                    .map(|decl| {
-                        (
-                            lower_type_params(decl.type_parameters()),
-                            lower_type_clause(decl.implements_clause()),
-                            lower_type_clause(decl.permits_clause()),
-                            lower_record_components(decl.parameter_list()),
-                        )
-                    })
-                    .unwrap_or_default();
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::RecordDeclaration, record.name_range)?;
+                let node =
+                    self.syntax_node_for_name(SyntaxKind::RecordDeclaration, record.name_range)?;
+                let ast_id = self.ast_id_map.ast_id(&node)?;
+                let (mut members, components) = self.lower_record_components(&node);
+                members.extend(self.lower_members(&record.members));
                 let id = RecordId::new(self.file, ast_id);
+                let type_params = lower_type_params(&node);
+                let implements = collect_direct_child_types_after_token(
+                    &node,
+                    SyntaxKind::ImplementsKw,
+                    SyntaxKind::RecordBody,
+                );
+                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.records.insert(
                     ast_id,
                     Record {
@@ -299,14 +280,11 @@ impl ItemTreeLower<'_> {
                 Some(Member::Field(id))
             }
             syntax::MemberDecl::Method(method) => {
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range)?;
+                let node =
+                    self.syntax_node_for_name(SyntaxKind::MethodDeclaration, method.name_range)?;
+                let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = MethodId::new(self.file, ast_id);
-                let type_params = self
-                    .syntax_node_for_name(SyntaxKind::MethodDeclaration, method.name_range)
-                    .and_then(rowan_ast::MethodDeclaration::cast)
-                    .map(|decl| lower_type_params(decl.type_parameters()))
-                    .unwrap_or_default();
+                let type_params = lower_type_params(&node);
                 let params = {
                     let mut params = Vec::with_capacity(method.params.len());
                     for param in &method.params {
@@ -315,6 +293,8 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
+                let throws =
+                    collect_direct_child_types_after_token(&node, SyntaxKind::ThrowsKw, SyntaxKind::Block);
                 let body = method
                     .body
                     .as_ref()
@@ -331,34 +311,24 @@ impl ItemTreeLower<'_> {
                         range: method.range,
                         name_range: method.name_range,
                         params,
+                        throws,
                         body,
                     },
                 );
                 Some(Member::Method(id))
             }
             syntax::MemberDecl::Constructor(cons) => {
-                let ast_id = self
-                    .ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)
-                    .or_else(|| {
-                        self.ast_id_for_name(
-                            SyntaxKind::CompactConstructorDeclaration,
-                            cons.name_range,
-                        )
-                    })?;
-                let id = ConstructorId::new(self.file, ast_id);
-                let type_params = self
+                let node = self
                     .syntax_node_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)
-                    .and_then(rowan_ast::ConstructorDeclaration::cast)
-                    .map(|decl| lower_type_params(decl.type_parameters()))
                     .or_else(|| {
                         self.syntax_node_for_name(
                             SyntaxKind::CompactConstructorDeclaration,
                             cons.name_range,
                         )
-                        .and_then(rowan_ast::CompactConstructorDeclaration::cast)
-                        .map(|decl| lower_type_params(decl.type_parameters()))
-                    })
-                    .unwrap_or_default();
+                    })?;
+                let ast_id = self.ast_id_map.ast_id(&node)?;
+                let id = ConstructorId::new(self.file, ast_id);
+                let type_params = lower_type_params(&node);
                 let params = {
                     let mut params = Vec::with_capacity(cons.params.len());
                     for param in &cons.params {
@@ -367,6 +337,8 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
+                let throws =
+                    collect_direct_child_types_after_token(&node, SyntaxKind::ThrowsKw, SyntaxKind::Block);
                 let body = self.ast_id_for_range(SyntaxKind::Block, cons.body.range);
                 self.tree.constructors.insert(
                     ast_id,
@@ -378,6 +350,7 @@ impl ItemTreeLower<'_> {
                         range: cons.range,
                         name_range: cons.name_range,
                         params,
+                        throws,
                         body,
                     },
                 );
@@ -478,6 +451,60 @@ impl ItemTreeLower<'_> {
             .ancestors()
             .find(|ancestor| ancestor.kind() == kind)
     }
+
+    fn lower_record_components(
+        &mut self,
+        record_decl: &SyntaxNode,
+    ) -> (Vec<Member>, Vec<RecordComponent>) {
+        let Some(param_list) = record_decl
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ParameterList)
+        else {
+            return (Vec::new(), Vec::new());
+        };
+
+        let mut members = Vec::new();
+        let mut components = Vec::new();
+
+        for param in param_list
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::Parameter)
+        {
+            self.check_cancelled();
+
+            let Some(ast_id) = self.ast_id_map.ast_id(&param) else {
+                continue;
+            };
+
+            let Some((ty, ty_range, name, range, name_range)) = lower_parameter_signature(&param)
+            else {
+                continue;
+            };
+
+            components.push(RecordComponent {
+                ty: ty.clone(),
+                name: name.clone(),
+            });
+
+            let id = FieldId::new(self.file, ast_id);
+            self.tree.fields.insert(
+                ast_id,
+                Field {
+                    kind: FieldKind::RecordComponent,
+                    modifiers: Modifiers::default(),
+                    annotations: Vec::new(),
+                    ty,
+                    ty_range,
+                    name,
+                    range,
+                    name_range,
+                },
+            );
+            members.push(Member::Field(id));
+        }
+
+        (members, components)
+    }
 }
 
 fn lower_modifiers(modifiers: syntax::Modifiers) -> Modifiers {
@@ -490,85 +517,6 @@ fn lower_annotation_uses(annotations: &[syntax::AnnotationUse]) -> Vec<Annotatio
         .map(|annotation| AnnotationUse {
             name: annotation.name.clone(),
             range: annotation.range,
-        })
-        .collect()
-}
-
-fn syntax_text_no_trivia(node: &SyntaxNode) -> String {
-    let mut out = String::new();
-    for tok in node.descendants_with_tokens().filter_map(|el| el.into_token()) {
-        if tok.kind().is_trivia() {
-            continue;
-        }
-        out.push_str(tok.text());
-    }
-    out
-}
-
-fn lower_type_params(params: Option<rowan_ast::TypeParameters>) -> Vec<TypeParam> {
-    let Some(params) = params else {
-        return Vec::new();
-    };
-
-    params
-        .type_parameters()
-        .filter_map(|param| {
-            let name = param.name_token()?.text().to_string();
-            let bounds = param
-                .bounds()
-                .map(|ty| syntax_text_no_trivia(ty.syntax()))
-                .filter(|ty| !ty.is_empty())
-                .collect();
-            Some(TypeParam { name, bounds })
-        })
-        .collect()
-}
-
-trait TypeListClause {
-    fn into_types(self) -> Vec<rowan_ast::Type>;
-}
-
-impl TypeListClause for rowan_ast::ExtendsClause {
-    fn into_types(self) -> Vec<rowan_ast::Type> {
-        self.types().collect()
-    }
-}
-
-impl TypeListClause for rowan_ast::ImplementsClause {
-    fn into_types(self) -> Vec<rowan_ast::Type> {
-        self.types().collect()
-    }
-}
-
-impl TypeListClause for rowan_ast::PermitsClause {
-    fn into_types(self) -> Vec<rowan_ast::Type> {
-        self.types().collect()
-    }
-}
-
-fn lower_type_clause<C: TypeListClause>(clause: Option<C>) -> Vec<String> {
-    let Some(clause) = clause else {
-        return Vec::new();
-    };
-
-    clause
-        .into_types()
-        .into_iter()
-        .map(|ty| syntax_text_no_trivia(ty.syntax()))
-        .filter(|ty| !ty.is_empty())
-        .collect()
-}
-
-fn lower_record_components(list: Option<rowan_ast::ParameterList>) -> Vec<RecordComponent> {
-    let Some(list) = list else {
-        return Vec::new();
-    };
-
-    list.parameters()
-        .filter_map(|param| {
-            let name = param.name_token()?.text().to_string();
-            let ty = param.ty().map(|ty| syntax_text_no_trivia(ty.syntax()))?;
-            Some(RecordComponent { ty, name })
         })
         .collect()
 }
@@ -623,6 +571,155 @@ fn lower_param(param: &syntax::ParamDecl) -> Param {
         range: param.range,
         name_range: param.name_range,
     }
+}
+
+fn lower_type_params(node: &SyntaxNode) -> Vec<TypeParam> {
+    let Some(type_params) = node
+        .children()
+        .find(|child| child.kind() == SyntaxKind::TypeParameters)
+    else {
+        return Vec::new();
+    };
+
+    type_params
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::TypeParameter)
+        .filter_map(|type_param| lower_type_param(&type_param))
+        .collect()
+}
+
+fn lower_type_param(node: &SyntaxNode) -> Option<TypeParam> {
+    let name_tok = node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| tok.kind().is_identifier_like())?;
+
+    let name = name_tok.text().to_string();
+    let name_range = token_text_range_to_span(&name_tok);
+    let bounds = node
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::Type)
+        .map(|ty| non_trivia_text(&ty))
+        .collect();
+
+    Some(TypeParam {
+        name,
+        name_range,
+        bounds,
+    })
+}
+
+fn collect_clause_types(decl: &SyntaxNode, clause_kind: SyntaxKind) -> Vec<String> {
+    let Some(clause) = decl.children().find(|child| child.kind() == clause_kind) else {
+        return Vec::new();
+    };
+
+    clause
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::Type)
+        .map(|ty| non_trivia_text(&ty))
+        .collect()
+}
+
+fn collect_direct_child_types_after_token(
+    decl: &SyntaxNode,
+    keyword: SyntaxKind,
+    end_node_kind: SyntaxKind,
+) -> Vec<String> {
+    let Some(keyword_end) = decl
+        .children_with_tokens()
+        .filter_map(|child| child.into_token())
+        .find(|tok| tok.kind() == keyword)
+        .map(|tok| tok.text_range().end())
+    else {
+        return Vec::new();
+    };
+
+    let end_start = decl
+        .children()
+        .find(|child| child.kind() == end_node_kind)
+        .map(|node| node.text_range().start())
+        .unwrap_or_else(|| decl.text_range().end());
+
+    decl.children()
+        .filter(|child| child.kind() == SyntaxKind::Type)
+        .filter(|ty| ty.text_range().start() >= keyword_end && ty.text_range().end() <= end_start)
+        .map(|ty| non_trivia_text(&ty))
+        .collect()
+}
+
+fn non_trivia_text(node: &SyntaxNode) -> String {
+    let mut text = String::new();
+    for tok in node.descendants_with_tokens().filter_map(|el| el.into_token()) {
+        if tok.kind().is_trivia() {
+            continue;
+        }
+        text.push_str(tok.text());
+    }
+    text
+}
+
+fn node_text_range_to_span(node: &SyntaxNode) -> Span {
+    let range = node.text_range();
+    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+}
+
+fn token_text_range_to_span(tok: &SyntaxToken) -> Span {
+    let range = tok.text_range();
+    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+}
+
+fn lower_parameter_signature(param: &SyntaxNode) -> Option<(String, Span, String, Span, Span)> {
+    let range = node_text_range_to_span(param);
+
+    let ty_node = param.children().find(|child| child.kind() == SyntaxKind::Type)?;
+    let mut ty_range = node_text_range_to_span(&ty_node);
+    let mut ty = non_trivia_text(&ty_node);
+
+    if let Some(ellipsis) = param
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| tok.kind() == SyntaxKind::Ellipsis)
+    {
+        ty.push_str("...");
+        ty_range.end = u32::from(ellipsis.text_range().end()) as usize;
+    }
+
+    let mut name: Option<String> = None;
+    let mut name_range: Option<Span> = None;
+    let mut saw_name = false;
+    let mut dims = 0usize;
+    let mut saw_lbracket = false;
+
+    for tok in param.children_with_tokens().filter_map(|el| el.into_token()) {
+        if tok.kind().is_trivia() {
+            continue;
+        }
+
+        if !saw_name && tok.kind().is_identifier_like() {
+            name = Some(tok.text().to_string());
+            name_range = Some(token_text_range_to_span(&tok));
+            saw_name = true;
+            continue;
+        }
+
+        if !saw_name {
+            continue;
+        }
+
+        match tok.kind() {
+            SyntaxKind::LBracket => saw_lbracket = true,
+            SyntaxKind::RBracket if saw_lbracket => {
+                dims += 1;
+                saw_lbracket = false;
+            }
+            _ => saw_lbracket = false,
+        }
+    }
+
+    ty.push_str(&"[]".repeat(dims));
+
+    Some((ty, ty_range, name?, range, name_range?))
 }
 
 #[must_use]
