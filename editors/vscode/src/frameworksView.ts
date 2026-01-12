@@ -214,7 +214,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         const classParts = handler.className.split('.').filter(Boolean);
         const shortClassName = classParts.length ? classParts[classParts.length - 1] : handler.className;
         item.description = `${shortClassName}${handler.methodName ? `#${handler.methodName}` : ''}`.trim() || undefined;
-        item.tooltip = `${handler.file}`;
+        item.tooltip = handler.file || 'location unavailable';
 
         const uri = uriFromFileLike(handler.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
         if (uri) {
@@ -233,7 +233,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
         item.contextValue = NOVA_FRAMEWORK_BEAN_CONTEXT;
         item.description = bean.ty || undefined;
-        item.tooltip = bean.id ? `Bean id: ${bean.id}\n${bean.file}` : bean.file;
+        const fileLabel = bean.file || 'location unavailable';
+        item.tooltip = bean.id ? `Bean id: ${bean.id}\n${fileLabel}` : fileLabel;
 
         const uri = uriFromFileLike(bean.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
         if (uri) {
@@ -447,7 +448,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     }
 
     const normalized = endpoints
-      .filter((ep) => ep && typeof ep.path === 'string' && typeof ep.method === 'string' && ep.handler && typeof ep.handler.file === 'string')
+      .map((endpoint) => normalizeMicronautEndpoint(endpoint))
+      .filter((endpoint): endpoint is MicronautEndpoint => Boolean(endpoint))
       .sort(compareMicronautEndpoint);
 
     return normalized.map((endpoint) => ({
@@ -481,7 +483,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     }
 
     const normalized = beans
-      .filter((b) => b && typeof b.name === 'string' && typeof b.ty === 'string' && typeof b.file === 'string')
+      .map((bean) => normalizeMicronautBean(bean))
+      .filter((bean): bean is MicronautBean => Boolean(bean))
       .sort(compareMicronautBean);
 
     return normalized.map((bean) => ({
@@ -588,8 +591,8 @@ function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
     return pathCmp;
   }
 
-  const aMethod = a.methods[0] ?? 'ANY';
-  const bMethod = b.methods[0] ?? 'ANY';
+  const aMethod = a.methods.length > 0 ? a.methods.join(', ') : 'ANY';
+  const bMethod = b.methods.length > 0 ? b.methods.join(', ') : 'ANY';
   const methodCmp = aMethod.localeCompare(bMethod);
   if (methodCmp !== 0) {
     return methodCmp;
@@ -668,4 +671,77 @@ function compareMicronautBean(a: MicronautBean, b: MicronautBean): number {
   const aStart = typeof a.span?.start === 'number' ? a.span.start : 0;
   const bStart = typeof b.span?.start === 'number' ? b.span.start : 0;
   return aStart - bStart;
+}
+
+function normalizeMicronautEndpoint(value: unknown): MicronautEndpoint | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const raw = value as Partial<MicronautEndpoint> & { handler?: unknown };
+  const handlerRaw = raw.handler && typeof raw.handler === 'object' ? (raw.handler as Partial<MicronautHandlerLocation>) : undefined;
+  const spanRaw = handlerRaw?.span && typeof handlerRaw.span === 'object' ? (handlerRaw.span as Partial<MicronautSpan>) : undefined;
+
+  const start = typeof spanRaw?.start === 'number' ? spanRaw.start : Number((spanRaw as { start?: unknown } | undefined)?.start);
+  const end = typeof spanRaw?.end === 'number' ? spanRaw.end : Number((spanRaw as { end?: unknown } | undefined)?.end);
+  const safeStart = Number.isFinite(start) ? start : 0;
+  const safeEnd = Number.isFinite(end) ? end : safeStart;
+
+  const methodRaw = typeof raw.method === 'string' ? raw.method : String((raw as { method?: unknown }).method ?? '');
+  const pathRaw = typeof raw.path === 'string' ? raw.path : String((raw as { path?: unknown }).path ?? '');
+
+  const classNameRaw =
+    typeof handlerRaw?.className === 'string' ? handlerRaw.className : String((handlerRaw as { className?: unknown } | undefined)?.className ?? '');
+  const methodNameRaw =
+    typeof handlerRaw?.methodName === 'string' ? handlerRaw.methodName : String((handlerRaw as { methodName?: unknown } | undefined)?.methodName ?? '');
+  const fileRaw =
+    typeof handlerRaw?.file === 'string' ? handlerRaw.file : String((handlerRaw as { file?: unknown } | undefined)?.file ?? '');
+
+  return {
+    method: methodRaw.trim().toUpperCase(),
+    path: pathRaw.trim(),
+    handler: {
+      file: fileRaw.trim(),
+      span: { start: safeStart, end: safeEnd },
+      className: classNameRaw.trim(),
+      methodName: methodNameRaw.trim(),
+    },
+  };
+}
+
+function normalizeMicronautBean(value: unknown): MicronautBean | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const raw = value as Partial<MicronautBean> & { span?: unknown; qualifiers?: unknown };
+  const spanRaw = raw.span && typeof raw.span === 'object' ? (raw.span as Partial<MicronautSpan>) : undefined;
+
+  const start = typeof spanRaw?.start === 'number' ? spanRaw.start : Number((spanRaw as { start?: unknown } | undefined)?.start);
+  const end = typeof spanRaw?.end === 'number' ? spanRaw.end : Number((spanRaw as { end?: unknown } | undefined)?.end);
+  const safeStart = Number.isFinite(start) ? start : 0;
+  const safeEnd = Number.isFinite(end) ? end : safeStart;
+
+  const qualifiers = Array.isArray(raw.qualifiers)
+    ? raw.qualifiers
+        .filter((q): q is string => typeof q === 'string')
+        .map((q) => q.trim())
+        .filter((q) => q.length > 0)
+    : [];
+
+  const idRaw = typeof raw.id === 'string' ? raw.id : String((raw as { id?: unknown }).id ?? '');
+  const nameRaw = typeof raw.name === 'string' ? raw.name : String((raw as { name?: unknown }).name ?? '');
+  const tyRaw = typeof raw.ty === 'string' ? raw.ty : String((raw as { ty?: unknown }).ty ?? '');
+  const kindRaw = typeof raw.kind === 'string' ? raw.kind : String((raw as { kind?: unknown }).kind ?? '');
+  const fileRaw = typeof raw.file === 'string' ? raw.file : String((raw as { file?: unknown }).file ?? '');
+
+  return {
+    id: idRaw.trim(),
+    name: nameRaw.trim(),
+    ty: tyRaw.trim(),
+    kind: kindRaw.trim(),
+    qualifiers,
+    file: fileRaw.trim(),
+    span: { start: safeStart, end: safeEnd },
+  };
 }
