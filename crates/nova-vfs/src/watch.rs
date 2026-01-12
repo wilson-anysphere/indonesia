@@ -781,10 +781,6 @@ mod notify_impl {
             let (events_tx, events_rx) = channel::bounded::<WatchMessage>(1);
             let (stop_tx, stop_rx) = channel::bounded::<()>(0);
             let overflowed = Arc::new(AtomicBool::new(false));
-            let overflowed_for_thread = Arc::clone(&overflowed);
-            let thread = std::thread::spawn(move || {
-                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
-            });
 
             let make_event = |path: &str| notify::Event {
                 kind: EventKind::Modify(ModifyKind::Any),
@@ -792,10 +788,26 @@ mod notify_impl {
                 attrs: Default::default(),
             };
 
-            // Fill the downstream queue with one Changes event.
+            // Fill the downstream queue before starting the drain loop so the next Changes message
+            // deterministically overflows it.
+            events_tx
+                .try_send(Ok(WatchEvent::Changes { changes: Vec::new() }))
+                .unwrap();
             raw_tx.send(Ok(make_event("/tmp/A.java"))).unwrap();
-            // The next change should overflow the downstream queue, triggering a Rescan.
-            raw_tx.send(Ok(make_event("/tmp/B.java"))).unwrap();
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
+
+            // Wait for the drain loop to observe the overflow.
+            let started_at = Instant::now();
+            while !overflowed.load(Ordering::Acquire) {
+                if started_at.elapsed() > Duration::from_secs(1) {
+                    panic!("expected overflow flag to be set");
+                }
+                std::thread::yield_now();
+            }
 
             let msg = events_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -817,9 +829,6 @@ mod notify_impl {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("expected watcher message")
                 .expect("expected ok watcher event");
-            assert_eq!(msg, WatchEvent::Rescan);
-
-            let _ = stop_tx.send(());
             assert_eq!(msg, WatchEvent::Rescan);
 
             let _ = stop_tx.send(());
