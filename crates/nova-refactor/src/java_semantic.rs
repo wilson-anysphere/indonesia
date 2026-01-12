@@ -5775,13 +5775,8 @@ fn collect_switch_contexts(
                 for dim in dim_exprs {
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
                 }
-                if let Some(init) = initializer {
-                    walk_expr(body, *init, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
+                if let Some(expr) = initializer {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
             }
             hir::Expr::Unary { expr, .. }
