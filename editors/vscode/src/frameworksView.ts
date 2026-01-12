@@ -1,15 +1,21 @@
 import * as vscode from 'vscode';
-import { isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
-import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT, uriFromFileLike } from './frameworkDashboard';
-import { formatError, isSafeModeError } from './safeMode';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+import { isNovaMethodNotFoundError } from './novaCapabilities';
+import {
+  NOVA_FRAMEWORK_BEAN_CONTEXT,
+  NOVA_FRAMEWORK_ENDPOINT_CONTEXT,
+  uriFromFileLike,
+  type NovaRequest,
+} from './frameworkDashboard';
+
+type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
 type WebEndpoint = {
   path: string;
   methods: string[];
   // Best-effort relative path. May be `null`/missing when the server can't determine a source location.
   file?: string | null;
+  // 1-based line number.
   line: number;
 };
 
@@ -17,26 +23,98 @@ type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
 };
 
-type EndpointNode = {
-  kind: 'endpoint';
+type MicronautSpan = {
+  // UTF-8 byte offsets.
+  start: number;
+  end: number;
+};
+
+type MicronautHandlerLocation = {
+  file: string;
+  span: MicronautSpan;
+  className: string;
+  methodName: string;
+};
+
+type MicronautEndpoint = {
+  method: string;
+  path: string;
+  handler: MicronautHandlerLocation;
+};
+
+type MicronautEndpointsResponse = {
+  schemaVersion: number;
+  endpoints: MicronautEndpoint[];
+};
+
+type MicronautBean = {
+  id: string;
+  name: string;
+  ty: string;
+  kind: string;
+  qualifiers: string[];
+  file: string;
+  span: MicronautSpan;
+};
+
+type MicronautBeansResponse = {
+  schemaVersion: number;
+  beans: MicronautBean[];
+};
+
+type WorkspaceNode = {
+  kind: 'workspace';
+  workspaceFolder: vscode.WorkspaceFolder;
+  baseUri: vscode.Uri;
+  projectRoot: string;
+};
+
+type CategoryNode = {
+  kind: 'category';
+  workspaceFolder: vscode.WorkspaceFolder;
+  baseUri: vscode.Uri;
+  projectRoot: string;
+  category: FrameworkCategory;
+};
+
+type WebEndpointNode = {
+  kind: 'web-endpoint';
   workspaceFolder: vscode.WorkspaceFolder;
   baseUri: vscode.Uri;
   projectRoot: string;
   endpoint: WebEndpoint;
 };
 
+type MicronautEndpointNode = {
+  kind: 'micronaut-endpoint';
+  workspaceFolder: vscode.WorkspaceFolder;
+  baseUri: vscode.Uri;
+  projectRoot: string;
+  endpoint: MicronautEndpoint;
+};
+
+type MicronautBeanNode = {
+  kind: 'micronaut-bean';
+  workspaceFolder: vscode.WorkspaceFolder;
+  baseUri: vscode.Uri;
+  projectRoot: string;
+  bean: MicronautBean;
+};
+
+type MessageNode = {
+  kind: 'message';
+  label: string;
+  description?: string;
+  icon?: vscode.ThemeIcon;
+};
+
+type FrameworkNode = WorkspaceNode | CategoryNode | WebEndpointNode | MicronautEndpointNode | MicronautBeanNode | MessageNode;
+
 export type NovaFrameworksViewController = {
   refresh(): void;
 };
 
-const OPEN_ENDPOINT_COMMAND = 'nova.frameworks.openEndpoint';
-const MICRONAUT_ENDPOINTS_METHOD = 'nova/micronaut/endpoints';
-const MICRONAUT_BEANS_METHOD = 'nova/micronaut/beans';
-
-export function registerNovaFrameworksView(
-  context: vscode.ExtensionContext,
-  request: NovaRequest,
-): NovaFrameworksViewController {
+export function registerNovaFrameworksView(context: vscode.ExtensionContext, request: NovaRequest): NovaFrameworksViewController {
   const provider = new NovaFrameworksTreeDataProvider(request);
   const view = vscode.window.createTreeView('novaFrameworks', {
     treeDataProvider: provider,
@@ -46,37 +124,31 @@ export function registerNovaFrameworksView(
 
   context.subscriptions.push(view);
   context.subscriptions.push(provider);
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand(OPEN_ENDPOINT_COMMAND, async (target: { uri: vscode.Uri; line: number }) => {
-      await openFileAtLine(target.uri, target.line);
-    }),
-  );
-
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh()));
 
   return provider;
 }
 
-class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<EndpointNode>, vscode.Disposable, NovaFrameworksViewController {
-  private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<EndpointNode | undefined | void>();
+class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<FrameworkNode>, vscode.Disposable, NovaFrameworksViewController {
+  private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<FrameworkNode | undefined | void>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
-  private treeView: vscode.TreeView<EndpointNode> | undefined;
+  private treeView: vscode.TreeView<FrameworkNode> | undefined;
   private disposed = false;
 
-  private lastContextServerRunning: boolean | undefined;
-  private lastContextWebEndpointsSupported: boolean | undefined;
-  private lastContextMicronautEndpointsSupported: boolean | undefined;
-  private lastContextMicronautBeansSupported: boolean | undefined;
+  // Cache leaf children per workspace+category to avoid repeatedly invoking expensive introspection endpoints.
+  private readonly categoryCache = new Map<string, FrameworkNode[]>();
+  private readonly categoryInFlight = new Map<string, Promise<FrameworkNode[]>>();
 
-  constructor(private readonly request: NovaRequest) {}
+  constructor(private readonly sendRequest: NovaRequest) {}
 
-  attachTreeView(view: vscode.TreeView<EndpointNode>): void {
+  attachTreeView(view: vscode.TreeView<FrameworkNode>): void {
     this.treeView = view;
   }
 
   refresh(): void {
+    this.categoryCache.clear();
+    this.categoryInFlight.clear();
     this.onDidChangeTreeDataEmitter.fire();
   }
 
@@ -85,367 +157,421 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     this.onDidChangeTreeDataEmitter.dispose();
   }
 
-  getTreeItem(element: EndpointNode): vscode.TreeItem {
-    const { endpoint } = element;
-    const methods = Array.isArray(endpoint.methods) ? endpoint.methods.filter((m) => typeof m === 'string' && m.length > 0) : [];
-    const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
-    const label = `${methodLabel} ${endpoint.path}`;
+  getTreeItem(element: FrameworkNode): vscode.TreeItem {
+    switch (element.kind) {
+      case 'workspace': {
+        const item = new vscode.TreeItem(element.workspaceFolder.name, vscode.TreeItemCollapsibleState.Collapsed);
+        item.iconPath = vscode.ThemeIcon.Folder;
+        item.id = `novaFrameworks:workspace:${element.workspaceFolder.uri.toString()}`;
+        return item;
+      }
+      case 'category': {
+        const label = categoryLabel(element.category);
+        const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
+        item.id = `novaFrameworks:category:${element.workspaceFolder.uri.toString()}:${element.category}`;
+        item.iconPath = categoryIcon(element.category);
+        return item;
+      }
+      case 'web-endpoint': {
+        const endpoint = element.endpoint;
+        const methods = Array.isArray(endpoint.methods)
+          ? endpoint.methods.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).sort((a, b) => a.localeCompare(b))
+          : [];
+        const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
+        const label = `${methodLabel} ${endpoint.path}`.trim();
 
-    const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-    item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
-    const file = typeof endpoint.file === 'string' && endpoint.file.length > 0 ? endpoint.file : undefined;
-    item.tooltip = file ? `${file}:${endpoint.line}` : 'Location unavailable';
+        const item = new vscode.TreeItem(label || '(unknown endpoint)', vscode.TreeItemCollapsibleState.None);
+        item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
 
-    const uri = uriFromFileLike(endpoint.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
-    if (uri) {
-      item.resourceUri = uri;
-      item.command = {
-        command: OPEN_ENDPOINT_COMMAND,
-        title: 'Open Endpoint',
-        arguments: [{ uri, line: endpoint.line }],
-      };
+        const file = typeof endpoint.file === 'string' && endpoint.file.trim().length > 0 ? endpoint.file.trim() : undefined;
+        item.tooltip = file ? `${file}:${endpoint.line}` : 'Location unavailable';
+
+        const uri = uriFromFileLike(endpoint.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
+        if (uri && typeof endpoint.line === 'number' && Number.isFinite(endpoint.line)) {
+          item.resourceUri = uri;
+          item.command = {
+            command: 'nova.frameworks.open',
+            title: 'Open Endpoint',
+            arguments: [{ kind: 'line', uri, line: endpoint.line }],
+          };
+        }
+        return item;
+      }
+      case 'micronaut-endpoint': {
+        const endpoint = element.endpoint;
+        const handler = endpoint.handler;
+        const item = new vscode.TreeItem(`${endpoint.method} ${endpoint.path}`.trim() || '(unknown endpoint)', vscode.TreeItemCollapsibleState.None);
+        item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
+
+        const classParts = handler.className.split('.').filter(Boolean);
+        const shortClassName = classParts.length ? classParts[classParts.length - 1] : handler.className;
+        item.description = `${shortClassName}${handler.methodName ? `#${handler.methodName}` : ''}`.trim() || undefined;
+        item.tooltip = `${handler.file}`;
+
+        const uri = uriFromFileLike(handler.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
+        if (uri) {
+          item.resourceUri = uri;
+          item.command = {
+            command: 'nova.frameworks.open',
+            title: 'Open Endpoint',
+            arguments: [{ kind: 'span', uri, span: handler.span }],
+          };
+        }
+        return item;
+      }
+      case 'micronaut-bean': {
+        const bean = element.bean;
+        const item = new vscode.TreeItem(bean.name || '(unnamed bean)', vscode.TreeItemCollapsibleState.None);
+        item.contextValue = NOVA_FRAMEWORK_BEAN_CONTEXT;
+        item.description = bean.ty || undefined;
+        item.tooltip = bean.file;
+
+        const uri = uriFromFileLike(bean.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
+        if (uri) {
+          item.resourceUri = uri;
+          item.command = {
+            command: 'nova.frameworks.open',
+            title: 'Open Bean',
+            arguments: [{ kind: 'span', uri, span: bean.span }],
+          };
+        }
+        return item;
+      }
+      case 'message': {
+        const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
+        item.description = element.description;
+        item.iconPath = element.icon;
+        item.contextValue = 'novaFrameworkMessage';
+        return item;
+      }
     }
-
-    return item;
   }
 
-  async getChildren(element?: EndpointNode): Promise<EndpointNode[]> {
+  async getChildren(element?: FrameworkNode): Promise<FrameworkNode[]> {
     if (this.disposed) {
       return [];
     }
 
-    if (element) {
-      return [];
-    }
-
     const workspaces = vscode.workspace.workspaceFolders ?? [];
-    if (workspaces.length === 0) {
-      await this.setContexts({
-        serverRunning: false,
-        webEndpointsSupported: true,
-        micronautEndpointsSupported: true,
-        micronautBeansSupported: true,
-      });
-      this.setMessage(undefined);
-      return [];
-    }
 
-    const endpoints: EndpointNode[] = [];
-    const workspacesWithUnsupported: vscode.WorkspaceFolder[] = [];
-    const workspacesWithSafeMode: vscode.WorkspaceFolder[] = [];
-    const workspacesWithErrors: Array<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }> = [];
-    const workspacesWithNoServer: Array<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }> = [];
-    let foundSupportedWorkspace = false;
-    let foundRunningServer = false;
-
-    for (const workspaceFolder of workspaces) {
-      const workspaceKey = workspaceFolder.uri.toString();
-      const projectRoot = workspaceFolder.uri.fsPath;
-      try {
-        const resp = await fetchWebEndpoints(this.request, workspaceKey, projectRoot);
-
-        // `sendNovaRequest` returns `undefined` when the server does not support a method.
-        // Preserve the old behavior of treating that as "method not found" for this view.
-        foundRunningServer = true;
-        if (!resp) {
-          workspacesWithUnsupported.push(workspaceFolder);
-          continue;
-        }
-
-        foundSupportedWorkspace = true;
-        const values = Array.isArray(resp?.endpoints) ? resp.endpoints : [];
-        for (const endpoint of values) {
-          endpoints.push({ kind: 'endpoint', workspaceFolder, projectRoot, baseUri: workspaceFolder.uri, endpoint });
-        }
-      } catch (err) {
-        if (isNovaMethodNotFoundError(err)) {
-          foundRunningServer = true;
-          workspacesWithUnsupported.push(workspaceFolder);
-          continue;
-        }
-
-        if (isSafeModeError(err)) {
-          foundRunningServer = true;
-          workspacesWithSafeMode.push(workspaceFolder);
-          continue;
-        }
-
-        if (isNoServerError(err)) {
-          workspacesWithNoServer.push({ workspaceFolder, error: err });
-          continue;
-        }
-
-        foundRunningServer = true;
-        workspacesWithErrors.push({ workspaceFolder, error: err });
+    if (!element) {
+      if (workspaces.length === 0) {
+        // `viewsWelcome` handles the no-workspace state.
+        return [];
       }
+
+      if (workspaces.length === 1) {
+        return categoryNodesForWorkspace(workspaces[0]);
+      }
+
+      return workspaces.map((workspaceFolder) => ({
+        kind: 'workspace',
+        workspaceFolder,
+        baseUri: workspaceFolder.uri,
+        projectRoot: workspaceFolder.uri.fsPath,
+      }));
     }
 
-    // If we couldn't reach any running server, treat the view as disconnected (old behavior).
-    if (!foundRunningServer) {
-      await this.setContexts({
-        serverRunning: false,
-        webEndpointsSupported: true,
-        micronautEndpointsSupported: true,
-        micronautBeansSupported: true,
+    if (element.kind === 'workspace') {
+      return categoryNodesForWorkspace(element.workspaceFolder);
+    }
+
+    if (element.kind === 'category') {
+      return await this.getCategoryChildren(element);
+    }
+
+    return [];
+  }
+
+  private async getCategoryChildren(element: CategoryNode): Promise<FrameworkNode[]> {
+    const key = `${element.workspaceFolder.uri.toString()}|${element.category}`;
+    const cached = this.categoryCache.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const existing = this.categoryInFlight.get(key);
+    if (existing) {
+      return await existing;
+    }
+
+    const task = this.loadCategoryChildren(element)
+      .then((children) => {
+        this.categoryCache.set(key, children);
+        return children;
+      })
+      .catch((err) => {
+        const message = formatError(err);
+        const children = [messageNode(`Failed to load ${categoryLabel(element.category)}`, message, new vscode.ThemeIcon('error'))];
+        this.categoryCache.set(key, children);
+        return children;
+      })
+      .finally(() => {
+        this.categoryInFlight.delete(key);
       });
-      this.setMessage(undefined);
-      return [];
+
+    this.categoryInFlight.set(key, task);
+    return await task;
+  }
+
+  private async loadCategoryChildren(element: CategoryNode): Promise<FrameworkNode[]> {
+    switch (element.category) {
+      case 'web-endpoints':
+        return await this.loadWebEndpoints(element);
+      case 'micronaut-endpoints':
+        return await this.loadMicronautEndpoints(element);
+      case 'micronaut-beans':
+        return await this.loadMicronautBeans(element);
+    }
+  }
+
+  private async loadWebEndpoints(element: CategoryNode): Promise<FrameworkNode[]> {
+    const projectRoot = element.projectRoot;
+
+    let response: WebEndpointsResponse | undefined;
+    response = await this.callRequest<WebEndpointsResponse>('nova/web/endpoints', { projectRoot });
+    if (!response) {
+      // Backward compatible alias.
+      response = await this.callRequest<WebEndpointsResponse>('nova/quarkus/endpoints', { projectRoot });
     }
 
-    const probeWorkspaceKey = workspaces[0].uri.toString();
-    const probeProjectRoot = workspaces[0].uri.fsPath;
-    const [micronautEndpointsSupported, micronautBeansSupported] = await Promise.all([
-      probeNovaRequestSupport(this.request, probeWorkspaceKey, MICRONAUT_ENDPOINTS_METHOD, { projectRoot: probeProjectRoot }),
-      probeNovaRequestSupport(this.request, probeWorkspaceKey, MICRONAUT_BEANS_METHOD, { projectRoot: probeProjectRoot }),
-    ]);
-
-    const webEndpointsSupported =
-      foundSupportedWorkspace || workspacesWithSafeMode.length > 0 || workspacesWithErrors.length > 0;
-    await this.setContexts({
-      serverRunning: true,
-      webEndpointsSupported,
-      micronautEndpointsSupported,
-      micronautBeansSupported,
-    });
-
-    if (!webEndpointsSupported) {
-      this.setMessage('nova/web/endpoints not supported by this server');
-      return [];
+    if (!response) {
+      return [messageNode('Web endpoints are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
     }
 
-    const failedCount =
-      workspacesWithUnsupported.length +
-      workspacesWithSafeMode.length +
-      workspacesWithErrors.length +
-      workspacesWithNoServer.length;
-
+    const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      if (workspacesWithSafeMode.length > 0 && workspacesWithErrors.length === 0) {
-        // Preserve old single-workspace behavior: safe-mode is treated as a distinct message.
-        this.setMessage('Nova is in safe mode. Run Nova: Generate Bug Report.');
-        return [];
-      }
-
-      if (workspacesWithErrors.length > 0) {
-        this.setMessage(`Failed to load web endpoints: ${formatError(workspacesWithErrors[0].error)}`);
-        return [];
-      }
-
-      if (failedCount > 0) {
-        this.setMessage(
-          summarizeWorkspaceFailures(workspaces, {
-            unsupported: workspacesWithUnsupported,
-            safeMode: workspacesWithSafeMode,
-            errors: workspacesWithErrors,
-            noServer: workspacesWithNoServer,
-          }),
-        );
-        return [];
-      }
-
-      this.setMessage('No web endpoints found.');
-      return [];
+      return [messageNode('No endpoints found')];
     }
 
-    if (failedCount > 0) {
-      this.setMessage(
-        summarizeWorkspaceFailures(workspaces, {
-          unsupported: workspacesWithUnsupported,
-          safeMode: workspacesWithSafeMode,
-          errors: workspacesWithErrors,
-          noServer: workspacesWithNoServer,
-        }),
-      );
-    } else {
-      this.setMessage(undefined);
-    }
-    return endpoints;
+    const normalized = endpoints
+      .map((ep) => ({
+        path: typeof ep.path === 'string' ? ep.path : String((ep as { path?: unknown }).path ?? ''),
+        methods: Array.isArray(ep.methods)
+          ? ep.methods.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).sort((a, b) => a.localeCompare(b))
+          : [],
+        file: typeof ep.file === 'string' ? ep.file : ep.file == null ? null : String(ep.file),
+        line: typeof ep.line === 'number' ? ep.line : Number(ep.line),
+      }))
+      .filter((ep) => ep.path.length > 0)
+      .sort(compareWebEndpoint);
+
+    return normalized.map((endpoint) => ({
+      kind: 'web-endpoint',
+      workspaceFolder: element.workspaceFolder,
+      baseUri: element.baseUri,
+      projectRoot: element.projectRoot,
+      endpoint,
+    }));
   }
 
-  private setMessage(message: string | undefined): void {
-    if (!this.treeView) {
-      return;
+  private async loadMicronautEndpoints(element: CategoryNode): Promise<FrameworkNode[]> {
+    const projectRoot = element.projectRoot;
+    const response = await this.callRequest<MicronautEndpointsResponse>('nova/micronaut/endpoints', { projectRoot });
+
+    if (!response) {
+      return [messageNode('Micronaut endpoints are not supported by this server.')];
     }
-    this.treeView.message = message;
+
+    if (typeof response.schemaVersion !== 'number') {
+      return [messageNode('Micronaut endpoints: invalid response schemaVersion.', undefined, new vscode.ThemeIcon('error'))];
+    }
+    if (response.schemaVersion !== 1) {
+      return [
+        messageNode(
+          `Micronaut endpoints: unsupported schemaVersion ${response.schemaVersion}.`,
+          undefined,
+          new vscode.ThemeIcon('error'),
+        ),
+      ];
+    }
+
+    const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
+    if (endpoints.length === 0) {
+      return [messageNode('No endpoints found')];
+    }
+
+    const normalized = endpoints
+      .filter((ep) => ep && typeof ep.path === 'string' && typeof ep.method === 'string' && ep.handler && typeof ep.handler.file === 'string')
+      .sort(compareMicronautEndpoint);
+
+    return normalized.map((endpoint) => ({
+      kind: 'micronaut-endpoint',
+      workspaceFolder: element.workspaceFolder,
+      baseUri: element.baseUri,
+      projectRoot: element.projectRoot,
+      endpoint,
+    }));
   }
 
-  private async setContexts(opts: {
-    serverRunning: boolean;
-    webEndpointsSupported: boolean;
-    micronautEndpointsSupported: boolean;
-    micronautBeansSupported: boolean;
-  }): Promise<void> {
-    if (this.lastContextServerRunning !== opts.serverRunning) {
-      this.lastContextServerRunning = opts.serverRunning;
-      await vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', opts.serverRunning);
+  private async loadMicronautBeans(element: CategoryNode): Promise<FrameworkNode[]> {
+    const projectRoot = element.projectRoot;
+    const response = await this.callRequest<MicronautBeansResponse>('nova/micronaut/beans', { projectRoot });
+
+    if (!response) {
+      return [messageNode('Micronaut beans are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
     }
 
-    if (this.lastContextWebEndpointsSupported !== opts.webEndpointsSupported) {
-      this.lastContextWebEndpointsSupported = opts.webEndpointsSupported;
-      await vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', opts.webEndpointsSupported);
+    if (typeof response.schemaVersion !== 'number') {
+      return [messageNode('Micronaut beans: invalid response schemaVersion.', undefined, new vscode.ThemeIcon('error'))];
+    }
+    if (response.schemaVersion !== 1) {
+      return [messageNode(`Micronaut beans: unsupported schemaVersion ${response.schemaVersion}.`, undefined, new vscode.ThemeIcon('error'))];
     }
 
-    if (this.lastContextMicronautEndpointsSupported !== opts.micronautEndpointsSupported) {
-      this.lastContextMicronautEndpointsSupported = opts.micronautEndpointsSupported;
-      await vscode.commands.executeCommand(
-        'setContext',
-        'nova.frameworks.micronautEndpointsSupported',
-        opts.micronautEndpointsSupported,
-      );
+    const beans = Array.isArray(response.beans) ? response.beans : [];
+    if (beans.length === 0) {
+      return [messageNode('No beans found')];
     }
 
-    if (this.lastContextMicronautBeansSupported !== opts.micronautBeansSupported) {
-      this.lastContextMicronautBeansSupported = opts.micronautBeansSupported;
-      await vscode.commands.executeCommand(
-        'setContext',
-        'nova.frameworks.micronautBeansSupported',
-        opts.micronautBeansSupported,
-      );
-    }
-  }
-}
+    const normalized = beans
+      .filter((b) => b && typeof b.name === 'string' && typeof b.ty === 'string' && typeof b.file === 'string')
+      .sort(compareMicronautBean);
 
-async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<void> {
-  const parsedLine = typeof oneBasedLine === 'number' ? oneBasedLine : Number(oneBasedLine);
-  const doc = await vscode.workspace.openTextDocument(uri);
-  const requestedLine = (Number.isFinite(parsedLine) ? parsedLine : 1) - 1;
-  const maxLine = Math.max(0, doc.lineCount - 1);
-  const line = Math.max(0, Math.min(requestedLine, maxLine));
-  const range = new vscode.Range(line, 0, line, 0);
-  await vscode.window.showTextDocument(doc, { selection: range, preview: true });
-}
-
-async function probeNovaRequestSupport(
-  request: NovaRequest,
-  workspaceKey: string,
-  method: string,
-  params: Record<string, unknown>,
-): Promise<boolean> {
-  const supported = isNovaRequestSupported(workspaceKey, method);
-  if (supported === true) {
-    return true;
-  }
-  if (supported === false) {
-    return false;
+    return normalized.map((bean) => ({
+      kind: 'micronaut-bean',
+      workspaceFolder: element.workspaceFolder,
+      baseUri: element.baseUri,
+      projectRoot: element.projectRoot,
+      bean,
+    }));
   }
 
-  try {
-    await request<unknown>(method, params);
-    return true;
-  } catch (err) {
-    if (isNovaMethodNotFoundError(err)) {
-      return false;
-    }
-    return true;
-  }
-}
-
-async function fetchWebEndpoints(
-  request: NovaRequest,
-  workspaceKey: string,
-  projectRoot: string,
-): Promise<WebEndpointsResponse | undefined> {
-  const method = 'nova/web/endpoints';
-  const alias = 'nova/quarkus/endpoints';
-
-  const supportedWeb = isNovaRequestSupported(workspaceKey, method);
-  const supportedAlias = isNovaRequestSupported(workspaceKey, alias);
-
-  const candidates: string[] = [];
-  if (supportedWeb === true) {
-    candidates.push(method);
-    if (supportedAlias !== false) {
-      candidates.push(alias);
-    }
-  } else if (supportedAlias === true) {
-    candidates.push(alias);
-    if (supportedWeb === 'unknown') {
-      candidates.push(method);
-    }
-  } else if (supportedWeb === false) {
-    if (supportedAlias !== false) {
-      candidates.push(alias);
-    }
-  } else if (supportedAlias === false) {
-    candidates.push(method);
-  } else {
-    // Prefer the alias when we don't have capability lists (older Nova builds).
-    candidates.push(alias, method);
-  }
-
-  // De-dup candidates while preserving order.
-  const seen = new Set<string>();
-  const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
-
-  for (const candidate of ordered) {
+  private async callRequest<R>(method: string, params: unknown): Promise<R | undefined> {
     try {
-      const resp = (await request<WebEndpointsResponse>(candidate, { projectRoot })) as WebEndpointsResponse | undefined;
-      if (resp) {
-        return resp;
-      }
+      return await this.sendRequest<R>(method, params, { allowMethodFallback: true });
     } catch (err) {
       if (isNovaMethodNotFoundError(err)) {
-        continue;
+        return undefined;
       }
       throw err;
     }
   }
-
-  return undefined;
 }
 
-function isNoServerError(err: unknown): boolean {
-  const message = formatError(err).toLowerCase();
-  if (message.includes('language client is not running')) {
-    return true;
-  }
-
-  // Heuristic: treat obvious startup failures as "server not running" so we preserve the view's
-  // welcome messaging when Nova can't start.
-  if (message.includes('failed to start') || message.includes('launching server')) {
-    return true;
-  }
-  if (message.includes('spawn') && message.includes('enoent')) {
-    return true;
-  }
-  if (message.includes('enoent') || message.includes('eacces') || message.includes('permission denied')) {
-    return true;
-  }
-  return false;
+function categoryNodesForWorkspace(workspaceFolder: vscode.WorkspaceFolder): CategoryNode[] {
+  return [
+    {
+      kind: 'category',
+      workspaceFolder,
+      baseUri: workspaceFolder.uri,
+      projectRoot: workspaceFolder.uri.fsPath,
+      category: 'web-endpoints',
+    },
+    {
+      kind: 'category',
+      workspaceFolder,
+      baseUri: workspaceFolder.uri,
+      projectRoot: workspaceFolder.uri.fsPath,
+      category: 'micronaut-endpoints',
+    },
+    {
+      kind: 'category',
+      workspaceFolder,
+      baseUri: workspaceFolder.uri,
+      projectRoot: workspaceFolder.uri.fsPath,
+      category: 'micronaut-beans',
+    },
+  ];
 }
 
-function summarizeWorkspaceFailures(
-  allWorkspaces: readonly vscode.WorkspaceFolder[],
-  failures: {
-    unsupported: readonly vscode.WorkspaceFolder[];
-    safeMode: readonly vscode.WorkspaceFolder[];
-    errors: ReadonlyArray<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }>;
-    noServer: ReadonlyArray<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }>;
-  },
-): string {
-  const totalFailed =
-    failures.unsupported.length + failures.safeMode.length + failures.errors.length + failures.noServer.length;
-  if (totalFailed === 0) {
-    return '';
+function categoryLabel(category: FrameworkCategory): string {
+  switch (category) {
+    case 'web-endpoints':
+      return 'Web Endpoints';
+    case 'micronaut-endpoints':
+      return 'Micronaut Endpoints';
+    case 'micronaut-beans':
+      return 'Micronaut Beans';
+  }
+}
+
+function categoryIcon(category: FrameworkCategory): vscode.ThemeIcon {
+  switch (category) {
+    case 'web-endpoints':
+      return new vscode.ThemeIcon('globe');
+    case 'micronaut-endpoints':
+      return new vscode.ThemeIcon('link');
+    case 'micronaut-beans':
+      return new vscode.ThemeIcon('symbol-class');
+  }
+}
+
+function messageNode(label: string, description?: string, icon: vscode.ThemeIcon = new vscode.ThemeIcon('info')): MessageNode {
+  return { kind: 'message', label, description, icon };
+}
+
+function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
+  const pathCmp = a.path.localeCompare(b.path);
+  if (pathCmp !== 0) {
+    return pathCmp;
   }
 
-  // Keep the message short for the TreeView header.
-  const names = new Set<string>();
-  for (const w of failures.unsupported) {
-    names.add(w.name);
-  }
-  for (const w of failures.safeMode) {
-    names.add(w.name);
-  }
-  for (const w of failures.errors) {
-    names.add(w.workspaceFolder.name);
-  }
-  for (const w of failures.noServer) {
-    names.add(w.workspaceFolder.name);
+  const aMethod = a.methods?.[0] ?? '';
+  const bMethod = b.methods?.[0] ?? '';
+  const methodCmp = aMethod.localeCompare(bMethod);
+  if (methodCmp !== 0) {
+    return methodCmp;
   }
 
-  const sortedNames = Array.from(names).sort((a, b) => a.localeCompare(b));
-  const suffix = sortedNames.length > 0 ? `: ${sortedNames.join(', ')}` : '';
-  const multiRootPrefix = allWorkspaces.length > 1 ? ` (${totalFailed}/${allWorkspaces.length})` : '';
-  return `Some workspaces failed to load web endpoints${multiRootPrefix}${suffix}.`;
+  const aFile = a.file ?? '';
+  const bFile = b.file ?? '';
+  const fileCmp = aFile.localeCompare(bFile);
+  if (fileCmp !== 0) {
+    return fileCmp;
+  }
+
+  const aLine = typeof a.line === 'number' ? a.line : 0;
+  const bLine = typeof b.line === 'number' ? b.line : 0;
+  return aLine - bLine;
+}
+
+function compareMicronautEndpoint(a: MicronautEndpoint, b: MicronautEndpoint): number {
+  const pathCmp = a.path.localeCompare(b.path);
+  if (pathCmp !== 0) {
+    return pathCmp;
+  }
+
+  const methodCmp = a.method.localeCompare(b.method);
+  if (methodCmp !== 0) {
+    return methodCmp;
+  }
+
+  const classCmp = a.handler.className.localeCompare(b.handler.className);
+  if (classCmp !== 0) {
+    return classCmp;
+  }
+
+  return a.handler.methodName.localeCompare(b.handler.methodName);
+}
+
+function compareMicronautBean(a: MicronautBean, b: MicronautBean): number {
+  const nameCmp = a.name.localeCompare(b.name);
+  if (nameCmp !== 0) {
+    return nameCmp;
+  }
+
+  const tyCmp = a.ty.localeCompare(b.ty);
+  if (tyCmp !== 0) {
+    return tyCmp;
+  }
+
+  return a.file.localeCompare(b.file);
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === 'string') {
+    return err;
+  }
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
 }

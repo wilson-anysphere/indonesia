@@ -2,6 +2,15 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { formatError } from './safeMode';
 
+import type { NovaFrameworksViewController } from './frameworksView';
+import { utf8ByteOffsetToUtf16Offset } from './utf8';
+
+export type NovaRequest = <R>(
+  method: string,
+  params?: unknown,
+  opts?: { allowMethodFallback?: boolean },
+) => Promise<R | undefined>;
+
 export const NOVA_FRAMEWORK_ENDPOINT_CONTEXT = 'novaFrameworkEndpoint';
 export const NOVA_FRAMEWORK_BEAN_CONTEXT = 'novaFrameworkBean';
 
@@ -94,7 +103,10 @@ export function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; p
 
   // Absolute path: if we have a base URI with a non-file scheme, best-effort use it.
   if (baseUri && baseUri.scheme !== 'file') {
-    return baseUri.with({ path: raw });
+    // `Uri.file` handles platform-specific path normalization (notably Windows drive letters)
+    // and produces a URI-safe `path` component. Reuse that `path` but swap in the workspace
+    // scheme/authority so it works in remote workspaces.
+    return vscode.Uri.file(raw).with({ scheme: baseUri.scheme, authority: baseUri.authority });
   }
 
   return vscode.Uri.file(raw);
@@ -315,4 +327,114 @@ export function registerFrameworkDashboardCommands(context: vscode.ExtensionCont
       await revealUri(uri);
     }),
   );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.frameworks.open', async (target: unknown) => {
+      try {
+        await openFrameworkTarget(target);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Nova: Failed to open framework item: ${formatError(err)}`);
+      }
+    }),
+  );
+}
+
+type FrameworkOpenTarget =
+  | { kind: 'line'; uri: vscode.Uri; line: number }
+  | { kind: 'span'; uri: vscode.Uri; span: { start: number; end: number } };
+
+function asFrameworkOpenTarget(value: unknown): FrameworkOpenTarget | undefined {
+  const obj = asRecord(value);
+  if (!obj) {
+    return undefined;
+  }
+
+  const uri = obj.uri instanceof vscode.Uri ? obj.uri : undefined;
+  if (!uri) {
+    return undefined;
+  }
+
+  const kind = asNonEmptyString(obj.kind);
+  if (kind === 'line') {
+    const line = typeof obj.line === 'number' ? obj.line : Number(obj.line);
+    return { kind: 'line', uri, line: Number.isFinite(line) ? line : 1 };
+  }
+
+  if (kind === 'span') {
+    const span = asRecord(obj.span);
+    const start = typeof span?.start === 'number' ? span.start : Number(span?.start);
+    const end = typeof span?.end === 'number' ? span.end : Number(span?.end);
+    if (!Number.isFinite(start)) {
+      return undefined;
+    }
+    return { kind: 'span', uri, span: { start, end: Number.isFinite(end) ? end : start } };
+  }
+
+  return undefined;
+}
+
+async function openFrameworkTarget(value: unknown): Promise<void> {
+  const target = asFrameworkOpenTarget(value);
+  if (!target) {
+    void vscode.window.showErrorMessage('Nova: Unable to open this framework item.');
+    return;
+  }
+
+  const doc = await vscode.workspace.openTextDocument(target.uri);
+  const editor = await vscode.window.showTextDocument(doc, { preview: true });
+
+  if (target.kind === 'line') {
+    const line0 = Math.max(0, (Number.isFinite(target.line) ? target.line : 1) - 1);
+    const pos = new vscode.Position(line0, 0);
+    editor.selection = new vscode.Selection(pos, pos);
+    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    return;
+  }
+
+  const range = utf8SpanToRange(doc, target.span);
+  editor.selection = new vscode.Selection(range.start, range.end);
+  editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+}
+
+function utf8SpanToRange(document: vscode.TextDocument, span: { start: number; end: number }): vscode.Range {
+  const text = document.getText();
+  const docLen = text.length;
+
+  const startByte = typeof span.start === 'number' && Number.isFinite(span.start) ? span.start : 0;
+  const endByte = typeof span.end === 'number' && Number.isFinite(span.end) ? span.end : startByte;
+
+  let startOffset = utf8ByteOffsetToUtf16Offset(text, startByte);
+  let endOffset = utf8ByteOffsetToUtf16Offset(text, Math.max(endByte, startByte));
+
+  startOffset = Math.min(Math.max(0, startOffset), docLen);
+  endOffset = Math.min(Math.max(0, endOffset), docLen);
+  if (endOffset < startOffset) {
+    endOffset = startOffset;
+  }
+
+  return new vscode.Range(document.positionAt(startOffset), document.positionAt(endOffset));
+}
+
+export function registerNovaFrameworkDashboard(
+  context: vscode.ExtensionContext,
+  request: NovaRequest,
+): NovaFrameworksViewController {
+  registerFrameworkDashboardCommands(context);
+
+  // Defer these imports to avoid a circular dependency between the tree view implementation
+  // and `frameworkDashboard` (which provides shared helper utilities).
+  const { registerNovaFrameworksView } = require('./frameworksView') as typeof import('./frameworksView');
+  const { registerNovaFrameworkSearch } = require('./frameworkSearch') as typeof import('./frameworkSearch');
+
+  registerNovaFrameworkSearch(context, (method: string, params?: unknown) => request(method, params, { allowMethodFallback: true }));
+
+  const controller: NovaFrameworksViewController = registerNovaFrameworksView(context, request);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.frameworks.refresh', () => {
+      controller.refresh();
+    }),
+  );
+
+  return controller;
 }

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { uriFromFileLike } from './frameworkDashboard';
 import { formatError, isSafeModeError } from './safeMode';
+import { utf8ByteOffsetToUtf16Offset } from './utf8';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -435,35 +436,6 @@ function utf8SpanToRange(document: vscode.TextDocument, span: MicronautSpan): vs
   const start = document.positionAt(startOffset);
   const end = document.positionAt(endOffset);
   return new vscode.Range(start, end);
-}
-
-function utf8ByteOffsetToUtf16Offset(text: string, byteOffset: number): number {
-  if (Number.isNaN(byteOffset) || byteOffset <= 0) {
-    return 0;
-  }
-
-  let consumedBytes = 0;
-  let utf16Offset = 0;
-
-  while (utf16Offset < text.length) {
-    const codePoint = text.codePointAt(utf16Offset);
-    if (typeof codePoint !== 'number') {
-      break;
-    }
-
-    const utf16Width = codePoint > 0xffff ? 2 : 1;
-    const utf8Width =
-      codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
-
-    if (consumedBytes + utf8Width > byteOffset) {
-      break;
-    }
-
-    consumedBytes += utf8Width;
-    utf16Offset += utf16Width;
-  }
-
-  return utf16Offset;
 }
 
 async function showSafeModeError(): Promise<void> {

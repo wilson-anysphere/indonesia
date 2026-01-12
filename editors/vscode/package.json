@@ -40,6 +40,7 @@
     "onCommand:nova.addDebugConfiguration",
     "onCommand:nova.frameworks.search",
     "onCommand:nova.frameworks.refresh",
+    "onCommand:nova.frameworks.open",
     "onCommand:nova.hotSwapChangedFiles",
     "onCommand:nova.frameworks.copyEndpointPath",
     "onCommand:nova.frameworks.copyEndpointMethodAndPath",
@@ -145,6 +146,10 @@
           "light": "resources/light/refresh.svg",
           "dark": "resources/dark/refresh.svg"
         }
+      },
+      {
+        "command": "nova.frameworks.open",
+        "title": "Nova: Open Framework Item"
       },
       {
         "command": "nova.frameworks.copyEndpointPath",
