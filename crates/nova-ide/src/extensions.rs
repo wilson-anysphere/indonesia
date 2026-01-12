@@ -158,11 +158,29 @@ pub const FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID: &str = "nova.framework.analyz
 /// `nova_framework::Database` adapter (see [`crate::framework_db`]).
 pub struct FrameworkAnalyzerRegistryProvider {
     registry: Arc<AnalyzerRegistry>,
+    fast_noop: bool,
 }
 
 impl FrameworkAnalyzerRegistryProvider {
     pub fn new(registry: Arc<AnalyzerRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            fast_noop: false,
+        }
+    }
+
+    /// Construct a provider that always returns empty results without attempting to build the
+    /// framework database.
+    ///
+    /// This is used by `IdeExtensions::with_default_registry` to register the provider ID in the
+    /// registry (so downstream callers can opt into registry-backed analyzers) without adding per
+    /// request overhead while Nova's legacy `framework_cache` providers are still the source of
+    /// built-in framework intelligence.
+    pub fn empty() -> Self {
+        Self {
+            registry: Arc::new(AnalyzerRegistry::new()),
+            fast_noop: true,
+        }
     }
 
     pub fn into_arc(self) -> Arc<Self> {
@@ -195,6 +213,9 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
@@ -216,6 +237,9 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
@@ -245,6 +269,9 @@ where
         ctx: ExtensionContext<DB>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let file = match params.symbol {
             Symbol::File(file) => file,
             // `nova-ext` navigation currently doesn't provide a way to recover the owning file for a
@@ -287,6 +314,9 @@ where
         ctx: ExtensionContext<DB>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let host_db: Arc<dyn nova_db::Database + Send + Sync> = ctx.db.clone();
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
@@ -313,6 +343,9 @@ impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -330,6 +363,9 @@ impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -355,6 +391,9 @@ impl NavigationProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let file = match params.symbol {
             Symbol::File(file) => file,
             Symbol::Class(_) => return Vec::new(),
@@ -391,6 +430,9 @@ impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyze
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
+        if self.fast_noop || ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
             return Vec::new();
         };
@@ -524,17 +566,9 @@ where
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
 
-        let mut fw_registry = AnalyzerRegistry::new();
-        fw_registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
-        fw_registry.register(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
-        fw_registry.register(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
-        fw_registry.register(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
-
-        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
+        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider.clone());
-        let _ = registry.register_navigation_provider(provider.clone());
-        let _ = registry.register_inlay_hint_provider(provider);
+        let _ = registry.register_completion_provider(provider);
         this
     }
 }
@@ -550,17 +584,9 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
         let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
 
-        let mut fw_registry = AnalyzerRegistry::new();
-        fw_registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
-        fw_registry.register(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
-        fw_registry.register(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
-        fw_registry.register(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
-
-        let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
+        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider.clone());
-        let _ = registry.register_navigation_provider(provider.clone());
-        let _ = registry.register_inlay_hint_provider(provider);
+        let _ = registry.register_completion_provider(provider);
         this
     }
 }
