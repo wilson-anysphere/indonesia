@@ -153,7 +153,9 @@ impl<'a> TypeStoreLoader<'a> {
             return id;
         }
 
-        self.store.add_class(ClassDef {
+        // Use `upsert_class` to avoid panicking if the class was previously
+        // removed (and is now in `tombstones`).
+        self.store.upsert_class(ClassDef {
             name: binary_name.to_string(),
             kind,
             type_params: vec![],

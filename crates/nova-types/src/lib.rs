@@ -554,7 +554,7 @@ pub trait ClasspathTypes {
 
 impl ClasspathTypes for () {}
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TypeStore {
     classes: Vec<ClassDef>,
     class_by_name: HashMap<String, ClassId>,
@@ -563,31 +563,143 @@ pub struct TypeStore {
     well_known: Option<WellKnownTypes>,
 }
 
+impl Default for TypeStore {
+    fn default() -> Self {
+        let mut store = Self {
+            classes: Vec::new(),
+            class_by_name: HashMap::new(),
+            tombstones: HashMap::new(),
+            type_params: Vec::new(),
+            well_known: None,
+        };
+
+        // `nova-types` algorithms assume a baseline set of well-known JDK types
+        // always exists. Initializing these here avoids a common footgun where
+        // callers construct `TypeStore::default()` but forget to run a loader
+        // bootstrap step before calling into subtyping/LUB/etc.
+        let object = store.intern_class_id("java.lang.Object");
+        let object_ty = Type::class(object, vec![]);
+
+        let string = store.intern_class_id("java.lang.String");
+        let integer = store.intern_class_id("java.lang.Integer");
+        let cloneable = store.intern_class_id("java.lang.Cloneable");
+        let serializable = store.intern_class_id("java.io.Serializable");
+
+        store.define_class(
+            object,
+            ClassDef {
+                name: "java.lang.Object".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: None,
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            string,
+            ClassDef {
+                name: "java.lang.String".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            integer,
+            ClassDef {
+                name: "java.lang.Integer".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            cloneable,
+            ClassDef {
+                name: "java.lang.Cloneable".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: None,
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            serializable,
+            ClassDef {
+                name: "java.io.Serializable".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: None,
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+
+        store.well_known = Some(WellKnownTypes {
+            object,
+            string,
+            integer,
+            cloneable,
+            serializable,
+        });
+
+        store
+    }
+}
+
 impl TypeStore {
     pub fn with_minimal_jdk() -> Self {
         let mut store = TypeStore::default();
 
         // java.lang
-        let object = store.add_class(ClassDef {
-            name: "java.lang.Object".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: None,
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let string = store.add_class(ClassDef {
-            name: "java.lang.String".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        let object = store.intern_class_id("java.lang.Object");
+        let string = store.intern_class_id("java.lang.String");
+        let integer = store.intern_class_id("java.lang.Integer");
+        let cloneable = store.intern_class_id("java.lang.Cloneable");
+        let serializable = store.intern_class_id("java.io.Serializable");
+
+        store.define_class(
+            object,
+            ClassDef {
+                name: "java.lang.Object".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: None,
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            string,
+            ClassDef {
+                name: "java.lang.String".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
         if let Some(string_def) = store.class_mut(string) {
             let string_ty = Type::class(string, vec![]);
             string_def.methods = vec![
@@ -691,16 +803,19 @@ impl TypeStore {
             constructors: vec![],
             methods: vec![],
         });
-        let integer = store.add_class(ClassDef {
-            name: "java.lang.Integer".to_string(),
-            kind: ClassKind::Class,
-            type_params: vec![],
-            super_class: Some(Type::class(number, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        store.define_class(
+            integer,
+            ClassDef {
+                name: "java.lang.Integer".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(Type::class(number, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
         let _long = store.add_class(ClassDef {
             name: "java.lang.Long".to_string(),
             kind: ClassKind::Class,
@@ -731,26 +846,32 @@ impl TypeStore {
             constructors: vec![],
             methods: vec![],
         });
-        let cloneable = store.add_class(ClassDef {
-            name: "java.lang.Cloneable".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
-        let serializable = store.add_class(ClassDef {
-            name: "java.io.Serializable".to_string(),
-            kind: ClassKind::Interface,
-            type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
-            interfaces: vec![],
-            fields: vec![],
-            constructors: vec![],
-            methods: vec![],
-        });
+        store.define_class(
+            cloneable,
+            ClassDef {
+                name: "java.lang.Cloneable".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            serializable,
+            ClassDef {
+                name: "java.io.Serializable".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
 
         // java.util.List<E>
         let list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
@@ -1290,7 +1411,7 @@ impl TypeEnv for TypeStore {
     fn well_known(&self) -> &WellKnownTypes {
         self.well_known
             .as_ref()
-            .expect("TypeStore::with_minimal_jdk must initialize well-known types")
+            .expect("TypeStore must initialize well-known types")
     }
 }
 
