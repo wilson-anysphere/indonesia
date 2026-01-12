@@ -343,6 +343,94 @@ impl RefactorJavaDatabase {
                 }
             }
 
+            // Lambda parameters are modeled as locals in HIR and introduced via `ScopeKind::Lambda`
+            // scopes (not block scopes), so we need to walk bodies to index them.
+            let mut add_lambda_params = |owner: BodyOwner, body: &hir::Body| {
+                walk_hir_body(body, |expr_id| {
+                    let hir::Expr::Lambda {
+                        params,
+                        body: lambda_body,
+                        ..
+                    } = &body.exprs[expr_id]
+                    else {
+                        return;
+                    };
+
+                    let start_scope = match lambda_body {
+                        hir::LambdaBody::Expr(expr) => {
+                            scope_result.expr_scopes.get(&(owner, *expr)).copied()
+                        }
+                        hir::LambdaBody::Block(stmt) => {
+                            scope_result.stmt_scopes.get(&(owner, *stmt)).copied()
+                        }
+                    };
+                    let Some(mut current) = start_scope else {
+                        return;
+                    };
+
+                    // Find the exact lambda scope for this expression by walking up the scope
+                    // chain. This is the scope that contains the parameter locals.
+                    let lambda_scope = loop {
+                        match scope_result.scopes.scope(current).kind() {
+                            ScopeKind::Lambda {
+                                owner: scope_owner,
+                                expr,
+                            } if *scope_owner == owner && *expr == expr_id => break current,
+                            _ => {}
+                        }
+                        let Some(parent) = scope_result.scopes.scope(current).parent() else {
+                            return;
+                        };
+                        current = parent;
+                    };
+
+                    let scope = scope_interner.intern(*file_id, lambda_scope);
+
+                    for param in params {
+                        let local_id = param.local;
+                        let local = &body.locals[local_id];
+                        candidates.push(SymbolCandidate {
+                            key: ResolutionKey::Local(LocalRef { owner, local: local_id }),
+                            file: file.clone(),
+                            name: local.name.clone(),
+                            name_range: TextRange::new(local.name_range.start, local.name_range.end),
+                            scope,
+                            kind: JavaSymbolKind::Local,
+                        });
+                    }
+                });
+            };
+
+            let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
+            method_ids.sort();
+            for method in method_ids {
+                let owner = BodyOwner::Method(method);
+                let body = body_cache
+                    .entry(owner)
+                    .or_insert_with(|| snap.hir_body(method));
+                add_lambda_params(owner, body.as_ref());
+            }
+
+            let mut ctor_ids: Vec<_> = scope_result.constructor_scopes.keys().copied().collect();
+            ctor_ids.sort();
+            for ctor in ctor_ids {
+                let owner = BodyOwner::Constructor(ctor);
+                let body = body_cache
+                    .entry(owner)
+                    .or_insert_with(|| snap.hir_constructor_body(ctor));
+                add_lambda_params(owner, body.as_ref());
+            }
+
+            let mut init_ids: Vec<_> = scope_result.initializer_scopes.keys().copied().collect();
+            init_ids.sort();
+            for init in init_ids {
+                let owner = BodyOwner::Initializer(init);
+                let body = body_cache
+                    .entry(owner)
+                    .or_insert_with(|| snap.hir_initializer_body(init));
+                add_lambda_params(owner, body.as_ref());
+            }
+
             scopes.insert(*file_id, scope_result);
         }
 

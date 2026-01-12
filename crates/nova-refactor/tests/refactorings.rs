@@ -3475,3 +3475,79 @@ class Foo {
     assert!(updated_foo.contains("class Bar"));
     assert!(!updated_foo.contains("class Foo"));
 }
+
+#[test]
+fn rename_lambda_parameter_expression_body_updates_all_occurrences() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C { void m(){ java.util.function.Function<Integer,String> f = x -> x.toString(); } }"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let decl_offset = src.find("x ->").unwrap();
+    let usage_offset = src.find("-> x.toString").unwrap() + "-> ".len();
+
+    let decl_symbol = db
+        .symbol_at(&file, decl_offset)
+        .expect("symbol at lambda parameter x");
+    let usage_symbol = db
+        .symbol_at(&file, usage_offset)
+        .expect("symbol at lambda parameter usage x");
+    assert_eq!(decl_symbol, usage_symbol);
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol: decl_symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("f = y -> y.toString()"),
+        "expected both occurrences to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("x ->") && !after.contains("-> x.toString"),
+        "expected no remaining x references: {after}"
+    );
+}
+
+#[test]
+fn rename_lambda_parameter_block_body_updates_all_occurrences() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C { void m(){ java.util.function.Function<Integer,Integer> f = (x) -> { return x + 1; }; } }"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let decl_offset = src.find("(x)").unwrap() + 1; // inside parens
+    let usage_offset = src.find("return x").unwrap() + "return ".len();
+
+    let decl_symbol = db
+        .symbol_at(&file, decl_offset)
+        .expect("symbol at lambda parameter x");
+    let usage_symbol = db
+        .symbol_at(&file, usage_offset)
+        .expect("symbol at lambda parameter usage x");
+    assert_eq!(decl_symbol, usage_symbol);
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol: decl_symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("f = (y) -> { return y + 1; }"),
+        "expected both occurrences to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("(x)") && !after.contains("return x"),
+        "expected no remaining x references: {after}"
+    );
+}
