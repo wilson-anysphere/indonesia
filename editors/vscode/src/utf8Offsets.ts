@@ -54,13 +54,26 @@ export function utf8ByteOffsetToUtf16Offset(text: string, byteOffset: number): n
 }
 
 export function utf8SpanToUtf16Offsets(text: string, span: Utf8Span): Utf8Span {
-  const startByte = typeof span.start === 'number' ? span.start : 0;
-  const endByte = typeof span.end === 'number' ? span.end : startByte;
+  // Normalize offsets defensively: treat NaN/negative/missing as 0. This keeps span conversion
+  // resilient even when server responses are partially invalid.
+  const startByte = normalizeByteOffset(span.start);
+  const endByte = normalizeByteOffset(span.end);
+  const endByteClamped = endByte < startByte ? startByte : endByte;
 
   return {
     start: utf8ByteOffsetToUtf16Offset(text, startByte),
-    end: utf8ByteOffsetToUtf16Offset(text, Math.max(endByte, startByte)),
+    end: utf8ByteOffsetToUtf16Offset(text, endByteClamped),
   };
+}
+
+function normalizeByteOffset(byteOffset: unknown): number {
+  if (typeof byteOffset !== 'number') {
+    return 0;
+  }
+  if (Number.isNaN(byteOffset) || byteOffset <= 0) {
+    return 0;
+  }
+  return byteOffset;
 }
 
 function utf8ByteLengthOfCodePoint(codePoint: number): number {
@@ -75,4 +88,3 @@ function utf8ByteLengthOfCodePoint(codePoint: number): number {
   }
   return 4;
 }
-

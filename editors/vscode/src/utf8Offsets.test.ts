@@ -67,4 +67,14 @@ describe('utf8SpanToUtf16Offsets', () => {
     // End < start should still produce a non-negative range.
     expect(utf8SpanToUtf16Offsets(text, { start: 5, end: 1 })).toEqual({ start: 3, end: 3 });
   });
+
+  it('handles NaN start/end without propagating NaN through Math.max', () => {
+    const text = 'a😀b';
+
+    // NaN start clamps to 0, while end remains usable.
+    expect(utf8SpanToUtf16Offsets(text, { start: Number.NaN, end: 5 })).toEqual({ start: 0, end: 3 });
+
+    // NaN end clamps to start (zero-length range at start).
+    expect(utf8SpanToUtf16Offsets(text, { start: 1, end: Number.NaN })).toEqual({ start: 1, end: 1 });
+  });
 });
