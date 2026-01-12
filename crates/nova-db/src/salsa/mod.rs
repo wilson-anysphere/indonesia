@@ -1451,7 +1451,13 @@ impl Database {
     /// NOTE: This is primarily intended for incremental parsing benchmarks and LSP-style
     /// incremental document updates. Query-level incremental reparsing is implemented
     /// separately (see `parse_java_incremental` in `nova-syntax`).
-    pub fn apply_file_text_edit(&self, file: FileId, edit: nova_syntax::TextEdit) {
+    pub fn apply_file_text_edit<E>(&self, file: FileId, edit: E)
+    where
+        E: TryInto<nova_syntax::TextEdit>,
+        E::Error: std::fmt::Debug,
+    {
+        let edit: nova_syntax::TextEdit =
+            edit.try_into().expect("failed to convert edit into nova_syntax::TextEdit");
         use std::collections::hash_map::Entry;
 
         let default_project = ProjectId::from_raw(0);
