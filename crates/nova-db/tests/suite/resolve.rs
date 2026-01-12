@@ -185,6 +185,44 @@ class C {}
 }
 
 #[test]
+fn unresolved_star_import_produces_diagnostic_with_span() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    let text = r#"
+package p;
+import does.not.*;
+
+class C {}
+"#;
+    set_file(&mut db, project, file, "src/C.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-import" && d.message.contains("does.not.*"))
+        .unwrap_or_else(|| {
+            panic!("expected unresolved-import diagnostic for does.not.*, got {diags:?}")
+        });
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("does.not.*"),
+        "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+}
+
+#[test]
 fn unresolved_static_import_produces_diagnostic_with_span() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
@@ -224,6 +262,129 @@ class C {}
         text[span.start..span.end].contains("java.lang.Math.doesNotExist"),
         "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
         &text[span.start..span.end]
+    );
+}
+
+#[test]
+fn unresolved_static_star_import_produces_diagnostic_with_span() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    let text = r#"
+package p;
+import static does.not.Exist.*;
+
+class C {}
+"#;
+    set_file(&mut db, project, file, "src/C.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| {
+            d.code.as_ref() == "unresolved-import" && d.message.contains("static does.not.Exist.*")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected unresolved-import diagnostic for static does.not.Exist.*, got {diags:?}"
+            )
+        });
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("does.not.Exist.*"),
+        "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+}
+
+#[test]
+fn star_import_from_type_does_not_produce_unresolved_diagnostic() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+package p;
+import java.util.Map.*;
+
+class C {}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected no unresolved-import diagnostics for `import java.util.Map.*;`, got {diags:?}"
+    );
+}
+
+#[test]
+fn nested_type_import_resolves_and_produces_no_diagnostic() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+package p;
+import java.util.Map.Entry;
+
+class C {
+    Entry field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        diags.is_empty(),
+        "expected no import diagnostics for nested type import, got {diags:?}"
+    );
+
+    let scopes = db.scope_graph(file);
+    let resolved = db.resolve_name(file, scopes.file_scope, Name::from("Entry"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "java.util.Map$Entry"
+        ))))
     );
 }
 
