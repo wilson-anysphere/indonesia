@@ -55,6 +55,12 @@ enum ResolutionKey {
     Local(LocalRef),
     Param(ParamRef),
     Field(FieldId),
+    /// Method-group key (overload set).
+    ///
+    /// Nova's scope graph stores overloaded methods as `Resolution::Methods(Vec<MethodId>)`.
+    /// We intern one symbol per (declaring type, method name) and pick a representative `MethodId`
+    /// for the group. During database construction we map all overload `MethodId`s to that same
+    /// symbol, so any `MethodId` from the set can be used to recover the group's `SymbolId`.
     Method(MethodId),
     Type(ItemId),
     Package(DbFileId),
@@ -1120,8 +1126,10 @@ impl RefactorDatabase for RefactorJavaDatabase {
         let (file, local_scope) = self.decode_scope(scope)?;
         let scope_result = self.scopes.get(&file)?;
 
+        // Walk parent scopes and report the first symbol that would be shadowed by introducing
+        // `name` in the current scope. This is intentionally conservative and includes members and
+        // types (not just locals/parameters).
         let name = Name::from(name);
-
         let mut current = scope_result.scopes.scope(local_scope).parent();
         while let Some(scope_id) = current {
             let data = scope_result.scopes.scope(scope_id);

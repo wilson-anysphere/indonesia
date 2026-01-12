@@ -4858,3 +4858,62 @@ fn inline_variable_rejects_shadowing_by_lambda_parameter() {
         "expected InlineShadowedDependency for `b`, got: {err:?}"
     );
 }
+
+#[test]
+fn symbol_at_returns_type_for_class_name() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 0;
+  void method() {}
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Test").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at type name");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+}
+
+#[test]
+fn symbol_at_returns_field_for_field_identifier() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 0;
+  void method() {}
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at field name");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Field));
+}
+
+#[test]
+fn symbol_at_returns_method_for_method_identifier() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 0;
+  void method() {}
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("void method").unwrap() + "void ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at method name");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Method));
+}
+
+#[test]
+fn symbol_at_returns_type_for_nested_class_name() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  class Inner {}
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Inner").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at nested type name");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+}
