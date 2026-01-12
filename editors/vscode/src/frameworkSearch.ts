@@ -432,8 +432,14 @@ async function fetchWebEndpoints(
 
   let sawHandledUnsupported = false;
   for (const candidate of ordered) {
+    if (token?.isCancellationRequested) {
+      return undefined;
+    }
     try {
       const resp = await request<WebEndpointsResponse | undefined>(candidate, { projectRoot }, token ? { token } : undefined);
+      if (token?.isCancellationRequested) {
+        return undefined;
+      }
       if (!resp) {
         // `sendNovaRequest` returns `undefined` for unsupported methods (after showing a message).
         sawHandledUnsupported = true;
@@ -441,6 +447,9 @@ async function fetchWebEndpoints(
       }
       return resp;
     } catch (err) {
+      if (token?.isCancellationRequested || isRequestCancelledError(err)) {
+        return undefined;
+      }
       if (isNovaMethodNotFoundError(err)) {
         // Try the next candidate before surfacing an error.
         continue;
