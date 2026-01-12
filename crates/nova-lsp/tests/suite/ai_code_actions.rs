@@ -3005,9 +3005,9 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
         // the `http` provider).
         .env("NOVA_AI_LOCAL_ONLY", "1")
         .env("NOVA_AI_PROVIDER", "http")
-        // Ensure patch-based AI code actions are allowed so this test exercises UTF-16 range
-        // extraction rather than privacy gating.
-        .env("NOVA_AI_LOCAL_ONLY", "1")
+        // Force local-only mode so patch-based AI code actions are offered; this
+        // test focuses on UTF-16 range extraction rather than privacy gating.
+        .env("NOVA_AI_LOCAL_ONLY", "true")
         .env(
             "NOVA_AI_ENDPOINT",
             format!("{}/complete", ai_server.base_url()),
@@ -3141,9 +3141,9 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
-        // Ensure patch-based AI code actions are allowed so this test exercises UTF-16 range
-        // validation rather than privacy gating.
-        .env("NOVA_AI_LOCAL_ONLY", "1")
+        // Force local-only so absence of code actions is due to invalid UTF-16,
+        // not privacy policy gating.
+        .env("NOVA_AI_LOCAL_ONLY", "true")
         .env(
             "NOVA_AI_ENDPOINT",
             format!("{}/complete", ai_server.base_url()),

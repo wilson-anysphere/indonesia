@@ -3063,7 +3063,6 @@ fn record_body_references(
                         }
                     }
                 }
-
                 // `super.x` and `this.x` need special casing: `WorkspaceDefMap::type_def` does not
                 // include inherited members, and `super` should bind to the direct superclass even
                 // if the subclass defines a shadowing field.

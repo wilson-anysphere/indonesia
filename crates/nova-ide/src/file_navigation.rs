@@ -438,15 +438,8 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
                     offset,
                 ) {
                     if let Some(target) = targets.into_iter().next() {
-                        if target
-                            .file
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.ends_with("Impl.java"))
-                        {
-                            if let Some(location) = mapstruct_target_location(db, &index, target) {
-                                return vec![location];
-                            }
+                        if let Some(location) = mapstruct_target_location(db, &index, target) {
+                            return vec![location];
                         }
                     }
                 }

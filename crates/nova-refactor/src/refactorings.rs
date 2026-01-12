@@ -1127,10 +1127,7 @@ pub fn extract_variable(
 
     // Extracting a side-effectful expression into a new statement can change evaluation order or
     // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    //
-    // For explicit-typed extraction we allow side-effectful expressions as a best-effort fallback,
-    // since many common selections (`new Foo()`) would otherwise be rejected entirely.
-    if params.use_var && has_side_effects(expr.syntax()) {
+    if has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractSideEffects);
     }
 
@@ -1261,13 +1258,11 @@ pub fn extract_variable(
 
         // For explicit-typed extraction we must be confident about the type. If we don't have
         // type-checker type information and our parser-only inference fell back to the generic
-        // "Object" type, we may be unable to distinguish between a value-returning expression and a
-        // `void`-typed method invocation. In those cases, reject the refactoring rather than
-        // guessing.
+        // "Object" type, reject the refactoring rather than guessing.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
-        if typeck_ty.is_none() && parser_ty == "Object" && expr_might_be_void(&expr) {
+        if typeck_ty.is_none() && parser_ty == "Object" {
             return Err(RefactorError::TypeInferenceFailed);
         }
 

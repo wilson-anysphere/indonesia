@@ -4751,8 +4751,10 @@ fn handle_prepare_rename(
         Ok(snapshot) => snapshot,
         Err(_) => return Ok(serde_json::Value::Null),
     };
+
     let file = RefactorFileId::new(uri.to_string());
-    let Some(source) = snapshot.db().file_text(&file) else {
+    let db = snapshot.db();
+    let Some(source) = db.file_text(&file) else {
         return Ok(serde_json::Value::Null);
     };
 
@@ -4760,32 +4762,39 @@ fn handle_prepare_rename(
         return Ok(serde_json::Value::Null);
     };
 
-    let symbol = snapshot.db().symbol_at(&file, offset).or_else(|| {
+    let symbol = db.symbol_at(&file, offset).or_else(|| {
         offset
             .checked_sub(1)
-            .and_then(|offset| snapshot.db().symbol_at(&file, offset))
+            .and_then(|offset| db.symbol_at(&file, offset))
     });
     let Some(symbol) = symbol else {
         return Ok(serde_json::Value::Null);
     };
 
-    let (start, end) = if matches!(
-        snapshot.db().symbol_kind(symbol),
-        Some(JavaSymbolKind::Package)
-    ) {
-        let Some(def) = snapshot.db().symbol_definition(symbol) else {
-            return Ok(serde_json::Value::Null);
-        };
-        (def.name_range.start, def.name_range.end)
-    } else {
-        // Prepare rename should only succeed when there is an identifier *and* a refactorable
-        // symbol at (or adjacent to) the cursor. The identifier check is important because some
-        // clients call prepareRename opportunistically and expect a null result when the cursor
-        // isn't on an identifier.
-        let Some((start, end)) = ident_range_at(source, offset) else {
-            return Ok(serde_json::Value::Null);
-        };
-        (start, end)
+    let (start, end) = match db.symbol_kind(symbol) {
+        Some(JavaSymbolKind::Package) => {
+            let Some(def) = db.symbol_definition(symbol) else {
+                return Ok(serde_json::Value::Null);
+            };
+            (def.name_range.start, def.name_range.end)
+        }
+        Some(
+            JavaSymbolKind::Local
+            | JavaSymbolKind::Parameter
+            | JavaSymbolKind::Field
+            | JavaSymbolKind::Method
+            | JavaSymbolKind::Type,
+        ) => {
+            // Prepare rename should only succeed when there is an identifier *and* a refactorable
+            // symbol at (or adjacent to) the cursor. The identifier check is important because some
+            // clients call prepareRename opportunistically and expect a null result when the cursor
+            // isn't on an identifier.
+            let Some((start, end)) = ident_range_at(source, offset) else {
+                return Ok(serde_json::Value::Null);
+            };
+            (start, end)
+        }
+        _ => return Ok(serde_json::Value::Null),
     };
 
     let range = LspTypesRange::new(
@@ -4805,8 +4814,10 @@ fn handle_rename(
     let snapshot = state
         .refactor_snapshot(&uri)
         .map_err(|e| (-32602, e.to_string()))?;
+
     let file = RefactorFileId::new(uri.to_string());
-    let source = snapshot.db().file_text(&file).ok_or_else(|| {
+    let db = snapshot.db();
+    let source = db.file_text(&file).ok_or_else(|| {
         (
             -32602,
             format!("missing document text for `{}`", uri.as_str()),
@@ -4818,10 +4829,10 @@ fn handle_rename(
         return Err((-32602, "position out of bounds".to_string()));
     };
 
-    let symbol = snapshot.db().symbol_at(&file, offset).or_else(|| {
+    let symbol = db.symbol_at(&file, offset).or_else(|| {
         offset
             .checked_sub(1)
-            .and_then(|offset| snapshot.db().symbol_at(&file, offset))
+            .and_then(|offset| db.symbol_at(&file, offset))
     });
     let Some(symbol) = symbol else {
         // If the cursor is on an identifier but we can't resolve it to a refactor symbol, prefer a
@@ -6919,42 +6930,40 @@ fn handle_workspace_symbol(
             return LspSymbolKind::OBJECT;
         };
         match kind {
-            serde_json::Value::String(s) => {
-                match s.trim().to_ascii_lowercase().as_str() {
-                    "file" => LspSymbolKind::FILE,
-                    "module" => LspSymbolKind::MODULE,
-                    "namespace" => LspSymbolKind::NAMESPACE,
-                    "package" => LspSymbolKind::PACKAGE,
-                    "class" => LspSymbolKind::CLASS,
-                    "record" => LspSymbolKind::STRUCT,
-                    // LSP's `SymbolKind` does not have a dedicated annotation kind; treat as interface.
-                    "annotation" => LspSymbolKind::INTERFACE,
-                    "method" => LspSymbolKind::METHOD,
-                    "property" => LspSymbolKind::PROPERTY,
-                    "field" => LspSymbolKind::FIELD,
-                    "constructor" => LspSymbolKind::CONSTRUCTOR,
-                    "enum" => LspSymbolKind::ENUM,
-                    "interface" => LspSymbolKind::INTERFACE,
-                    "function" => LspSymbolKind::FUNCTION,
-                    "variable" => LspSymbolKind::VARIABLE,
-                    "constant" => LspSymbolKind::CONSTANT,
-                    "string" => LspSymbolKind::STRING,
-                    "number" => LspSymbolKind::NUMBER,
-                    "boolean" => LspSymbolKind::BOOLEAN,
-                    "array" => LspSymbolKind::ARRAY,
-                    "object" => LspSymbolKind::OBJECT,
-                    "key" => LspSymbolKind::KEY,
-                    "null" => LspSymbolKind::NULL,
-                    "enumconstant" | "enum_constant" | "enummember" | "enum_member" => {
-                        LspSymbolKind::ENUM_MEMBER
-                    }
-                    "struct" => LspSymbolKind::STRUCT,
-                    "event" => LspSymbolKind::EVENT,
-                    "operator" => LspSymbolKind::OPERATOR,
-                    "typeparam" | "type_parameter" => LspSymbolKind::TYPE_PARAMETER,
-                    _ => LspSymbolKind::OBJECT,
+            serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "file" => LspSymbolKind::FILE,
+                "module" => LspSymbolKind::MODULE,
+                "namespace" => LspSymbolKind::NAMESPACE,
+                "package" => LspSymbolKind::PACKAGE,
+                "class" => LspSymbolKind::CLASS,
+                "record" => LspSymbolKind::STRUCT,
+                // LSP's `SymbolKind` does not have a dedicated annotation kind; treat as interface.
+                "annotation" => LspSymbolKind::INTERFACE,
+                "method" => LspSymbolKind::METHOD,
+                "property" => LspSymbolKind::PROPERTY,
+                "field" => LspSymbolKind::FIELD,
+                "constructor" => LspSymbolKind::CONSTRUCTOR,
+                "enum" => LspSymbolKind::ENUM,
+                "interface" => LspSymbolKind::INTERFACE,
+                "function" => LspSymbolKind::FUNCTION,
+                "variable" => LspSymbolKind::VARIABLE,
+                "constant" => LspSymbolKind::CONSTANT,
+                "string" => LspSymbolKind::STRING,
+                "number" => LspSymbolKind::NUMBER,
+                "boolean" => LspSymbolKind::BOOLEAN,
+                "array" => LspSymbolKind::ARRAY,
+                "object" => LspSymbolKind::OBJECT,
+                "key" => LspSymbolKind::KEY,
+                "null" => LspSymbolKind::NULL,
+                "enumconstant" | "enum_constant" | "enummember" | "enum_member" => {
+                    LspSymbolKind::ENUM_MEMBER
                 }
-            }
+                "struct" => LspSymbolKind::STRUCT,
+                "event" => LspSymbolKind::EVENT,
+                "operator" => LspSymbolKind::OPERATOR,
+                "typeparam" | "type_parameter" => LspSymbolKind::TYPE_PARAMETER,
+                _ => LspSymbolKind::OBJECT,
+            },
             serde_json::Value::Number(n) => match n.as_u64() {
                 Some(1) => LspSymbolKind::FILE,
                 Some(2) => LspSymbolKind::MODULE,
