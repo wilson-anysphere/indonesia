@@ -638,14 +638,7 @@ fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
     // String templates lex their delimiters/text as dedicated tokens. These tokens should never
     // be treated as word-like for spacing heuristics: inserting spaces inside template payloads
     // can change semantics (e.g. `STR."Hello \{name}"`).
-    if matches!(
-        kind,
-        SyntaxKind::StringTemplateStart
-            | SyntaxKind::StringTemplateText
-            | SyntaxKind::StringTemplateExprStart
-            | SyntaxKind::StringTemplateExprEnd
-            | SyntaxKind::StringTemplateEnd
-    ) {
+    if is_string_template_token(kind) {
         return false;
     }
     if matches!(
@@ -666,10 +659,26 @@ fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
         .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
 }
 
-fn is_control_keyword(text: &str) -> bool {
+fn is_string_template_token(kind: SyntaxKind) -> bool {
     matches!(
-        text,
-        "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+        kind,
+        SyntaxKind::StringTemplateStart
+            | SyntaxKind::StringTemplateText
+            | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateExprEnd
+            | SyntaxKind::StringTemplateEnd
+    )
+}
+
+fn is_control_keyword_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::IfKw
+            | SyntaxKind::ForKw
+            | SyntaxKind::WhileKw
+            | SyntaxKind::SwitchKw
+            | SyntaxKind::CatchKw
+            | SyntaxKind::SynchronizedKw
     )
 }
 
@@ -678,13 +687,35 @@ fn needs_space_between(last: Option<&LastSig<'_>>, next_kind: SyntaxKind, next_t
         return false;
     };
 
-    if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
+    // Do not apply generic whitespace heuristics within string template token streams: template
+    // text segments can be arbitrary and may equal punctuation like `,` or `}`.
+    if is_string_template_token(next_kind) || is_string_template_token(last.kind) {
         return false;
     }
-    if matches!(last.text, "(" | "[" | "." | "@" | "::") {
+
+    if matches!(
+        next_kind,
+        SyntaxKind::RParen
+            | SyntaxKind::RBracket
+            | SyntaxKind::RBrace
+            | SyntaxKind::Semicolon
+            | SyntaxKind::Comma
+            | SyntaxKind::Dot
+            | SyntaxKind::DoubleColon
+    ) {
         return false;
     }
-    if next_text == "@" {
+    if matches!(
+        last.kind,
+        SyntaxKind::LParen
+            | SyntaxKind::LBracket
+            | SyntaxKind::Dot
+            | SyntaxKind::At
+            | SyntaxKind::DoubleColon
+    ) {
+        return false;
+    }
+    if next_kind == SyntaxKind::At {
         // Do not insert whitespace between `<` and a type-argument annotation:
         // `List<@A T>` (not `List< @A T>`).
         if last.kind == SyntaxKind::Less {
@@ -692,14 +723,14 @@ fn needs_space_between(last: Option<&LastSig<'_>>, next_kind: SyntaxKind, next_t
         }
         return true;
     }
-    if is_control_keyword(last.text) && next_text == "(" {
+    if is_control_keyword_kind(last.kind) && next_kind == SyntaxKind::LParen {
         return true;
     }
-    if matches!(last.text, "," | "?") {
+    if matches!(last.kind, SyntaxKind::Comma | SyntaxKind::Question) {
         return true;
     }
 
-    if last.text == "]" && is_word_token(next_kind, next_text) {
+    if last.kind == SyntaxKind::RBracket && is_word_token(next_kind, next_text) {
         return true;
     }
 
