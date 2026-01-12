@@ -291,9 +291,14 @@ pub fn workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
     };
 
     // If the caller explicitly provided a directory that already looks like a self-contained
-    // project root, prefer it over ancestor build markers. This prevents unrelated files in
-    // shared temp directories (e.g. `/tmp`) from "stealing" workspace root discovery.
-    if !start.is_file() && start_dir.join("src").is_dir() {
+    // "simple project" root, prefer it over ancestor build markers. This prevents unrelated
+    // files in shared temp directories (e.g. `/tmp`) from "stealing" workspace root discovery.
+    if start_dir.join("src").is_dir()
+        && !start_dir.join("pom.xml").is_file()
+        && !has_gradle_settings(start_dir)
+        && !has_gradle_build(start_dir)
+        && !is_bazel_workspace(start_dir)
+    {
         return Some(start_dir.to_path_buf());
     }
 

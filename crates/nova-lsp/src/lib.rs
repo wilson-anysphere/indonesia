@@ -635,6 +635,9 @@ fn looks_like_project_root(root: &Path) -> bool {
         "build.gradle.kts",
         "settings.gradle",
         "settings.gradle.kts",
+        // Simple projects use `src/` as their only marker. Include it so multi-file refactors
+        // still work for ad-hoc folders without a build tool.
+        "src",
         "gradlew",
         "gradlew.bat",
         // Bazel

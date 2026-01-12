@@ -786,6 +786,7 @@ impl ServerState {
                     let worker_threads = ai_config.provider.effective_concurrency().clamp(1, 4);
                     let runtime = tokio::runtime::Builder::new_multi_thread()
                         .worker_threads(worker_threads)
+                        .max_blocking_threads(worker_threads)
                         .enable_all()
                         .build()
                         .expect("tokio runtime");

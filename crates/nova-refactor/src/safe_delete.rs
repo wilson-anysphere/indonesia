@@ -365,27 +365,48 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
 
     // If the receiver ends with a call expression (e.g. `new Foo()` or `factory()`),
     // walk back to the identifier preceding the `(` so `new Foo().bar()` resolves to `Foo`.
-    if bytes.get(end - 1) == Some(&b')') {
-        let close = end - 1;
-        let Some(open) = find_matching_open_paren(bytes, close) else {
-            return Receiver::Unknown;
-        };
-        end = open;
-        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-            end -= 1;
+    let (start, token_end) = if bytes.get(end - 1) == Some(&b')') {
+        let mut depth: i32 = 0;
+        let mut k = end - 1;
+        loop {
+            match bytes[k] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if k == 0 {
+                return Receiver::Unknown;
+            }
+            k -= 1;
         }
-        if end == 0 {
-            return Receiver::Unknown;
-        }
-    }
 
-    // Handle `new Foo()`
-    // Find start of the receiver expression by scanning back through identifier chars.
-    let mut start = end;
-    while start > 0 && is_ident_continue(bytes[start - 1]) {
-        start -= 1;
-    }
-    let token = &text[start..end];
+        let mut token_end = k;
+        while token_end > 0 && bytes[token_end - 1].is_ascii_whitespace() {
+            token_end -= 1;
+        }
+        if token_end == 0 {
+            return Receiver::Unknown;
+        }
+
+        let mut start = token_end;
+        while start > 0 && is_ident_continue(bytes[start - 1]) {
+            start -= 1;
+        }
+        (start, token_end)
+    } else {
+        let mut start = end;
+        while start > 0 && is_ident_continue(bytes[start - 1]) {
+            start -= 1;
+        }
+        (start, end)
+    };
+
+    let token = &text[start..token_end];
     if token.is_empty() {
         return Receiver::Unknown;
     }
@@ -413,28 +434,6 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
         Receiver::Var(token.to_string())
     }
 }
-
-fn find_matching_open_paren(bytes: &[u8], mut close: usize) -> Option<usize> {
-    let mut depth: usize = 0;
-    loop {
-        match bytes.get(close)? {
-            b')' => depth = depth.saturating_add(1),
-            b'(' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(close);
-                }
-            }
-            _ => {}
-        }
-        if close == 0 {
-            break;
-        }
-        close -= 1;
-    }
-    None
-}
-
 fn is_ident_continue(b: u8) -> bool {
     (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }

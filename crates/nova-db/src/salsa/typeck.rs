@@ -1032,6 +1032,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     is_type_ref: false,
                                 };
                             }
+                            return ExprInfo {
+                                ty: Type::Unknown,
+                                is_type_ref: false,
+                            };
                         }
                         MethodResolution::NotFound(_) => {}
                     }
@@ -1432,11 +1436,15 @@ fn define_source_types<'idx>(
                     )
                     .ty;
                     field_types.insert(*fid, ty.clone());
+                    let is_static =
+                        field.modifiers.raw & nova_hir::item_tree::Modifiers::STATIC != 0;
+                    let is_final =
+                        field.modifiers.raw & nova_hir::item_tree::Modifiers::FINAL != 0;
                     fields.push(FieldDef {
                         name: field.name.clone(),
                         ty,
-                        is_static: false,
-                        is_final: false,
+                        is_static,
+                        is_final,
                     });
                 }
                 nova_hir::item_tree::Member::Method(mid) => {
@@ -1478,13 +1486,15 @@ fn define_source_types<'idx>(
                     )
                     .ty;
                     method_types.insert(*mid, (params.clone(), return_type.clone()));
+                    let is_static =
+                        method.modifiers.raw & nova_hir::item_tree::Modifiers::STATIC != 0;
 
                     methods.push(MethodDef {
                         name: method.name.clone(),
                         type_params: Vec::new(),
                         params,
                         return_type,
-                        is_static: false,
+                        is_static,
                         is_varargs: false,
                         is_abstract: method.body.is_none(),
                     });

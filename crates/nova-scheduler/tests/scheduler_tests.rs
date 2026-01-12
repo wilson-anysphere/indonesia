@@ -3,9 +3,21 @@ use std::time::Duration;
 use nova_scheduler::{Cancelled, KeyedDebouncer, PoolKind, ProgressEvent, Scheduler, TaskError};
 use tokio::sync::mpsc;
 
-#[tokio::test]
+fn test_scheduler() -> Scheduler {
+    nova_scheduler::Scheduler::new_with_io_handle(
+        nova_scheduler::SchedulerConfig {
+            compute_threads: 1,
+            background_threads: 1,
+            io_threads: 1,
+            progress_channel_capacity: 16,
+        },
+        tokio::runtime::Handle::current(),
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn debouncer_coalesces_and_cancels_previous_job() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let debouncer = KeyedDebouncer::new(
         scheduler.clone(),
         PoolKind::Compute,
@@ -39,9 +51,9 @@ async fn debouncer_coalesces_and_cancels_previous_job() {
     assert!(no_more.is_err(), "unexpected extra debounced job executed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn blocking_task_join_unblocks_on_cancellation_even_if_worker_does_not_cooperate() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let token = nova_scheduler::CancellationToken::new();
 
     let task = scheduler.spawn_compute_with_token(token.clone(), |_token| {
@@ -57,9 +69,9 @@ async fn blocking_task_join_unblocks_on_cancellation_even_if_worker_does_not_coo
     assert_eq!(result, Err(TaskError::Cancelled));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn async_task_join_unblocks_on_cancellation_even_if_worker_does_not_cooperate() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let token = nova_scheduler::CancellationToken::new();
 
     let task = scheduler.spawn_io_with_token(token.clone(), |_token| async move {
@@ -75,9 +87,9 @@ async fn async_task_join_unblocks_on_cancellation_even_if_worker_does_not_cooper
     assert_eq!(result, Err(TaskError::Cancelled));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn scheduler_request_cancellation_cancels_blocking_task() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let token = nova_scheduler::CancellationToken::new();
 
     let task = scheduler.spawn_compute_with_token(token.clone(), |token| {
@@ -95,9 +107,9 @@ async fn scheduler_request_cancellation_cancels_blocking_task() {
     assert_eq!(result, Err(TaskError::Cancelled));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn scheduler_request_cancellation_cancels_async_task() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let token = nova_scheduler::CancellationToken::new();
 
     let task = scheduler.spawn_io_with_token(token.clone(), |token| async move {
@@ -113,9 +125,9 @@ async fn scheduler_request_cancellation_cancels_async_task() {
     assert_eq!(result, Err(TaskError::Cancelled));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn request_context_deadline_cancels_tasks() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let ctx = scheduler
         .request_context("deadline-test")
         .with_timeout(Duration::from_millis(50));
@@ -133,9 +145,9 @@ async fn request_context_deadline_cancels_tasks() {
     assert_eq!(result, Err(TaskError::Cancelled));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn progress_events_are_ordered() {
-    let scheduler = Scheduler::default();
+    let scheduler = test_scheduler();
     let mut rx = scheduler.subscribe_progress();
 
     let progress = scheduler.progress().start("indexing");

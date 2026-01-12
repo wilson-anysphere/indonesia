@@ -77,7 +77,6 @@ fn build_io_runtime(threads: usize) -> Runtime {
         }
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolKind {
     Compute,
@@ -99,10 +98,11 @@ impl Default for SchedulerConfig {
             .unwrap_or(1);
         Self {
             // In containers, `available_parallelism()` can report the host CPU count even when the
-            // process is constrained by thread limits. Cap the default to keep startup reliable.
-            compute_threads: available.saturating_sub(1).clamp(1, 16),
-            background_threads: available.clamp(1, 4),
-            io_threads: 2,
+            // process is constrained by thread limits. Keep defaults conservative so spawning many
+            // schedulers in tests doesn't hit OS limits; callers can override via `SchedulerConfig`.
+            compute_threads: available.saturating_sub(1).clamp(1, 8),
+            background_threads: available.clamp(1, 2),
+            io_threads: 1,
             progress_channel_capacity: 1024,
         }
     }
