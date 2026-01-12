@@ -851,11 +851,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             continue;
                         };
 
-                        let is_varargs = method
-                            .params
-                            .last()
-                            .is_some_and(|param| param.ty.trim().contains("..."));
-
                         let scope = scopes
                             .method_scopes
                             .get(&mid)
@@ -873,6 +868,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         );
                         let method_type_param_ids: Vec<TypeVarId> =
                             type_params.iter().map(|(_, id)| *id).collect();
+
+                        let is_varargs = method
+                            .params
+                            .last()
+                            .is_some_and(|param| param.ty.trim().contains("..."));
 
                         let params = method
                             .params
