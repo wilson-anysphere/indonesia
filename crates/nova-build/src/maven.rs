@@ -5,8 +5,11 @@ use crate::{
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
 };
 use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
+use std::fs::File;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use zip::ZipArchive;
 
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
@@ -321,6 +324,13 @@ impl MavenBuild {
             "maven.compiler.compilerArgument",
             "--enable-preview",
         )?;
+
+        let module_path = infer_module_path_for_compile_config(
+            &compile_classpath,
+            &main_source_roots,
+            main_output_dir.as_ref(),
+            false,
+        );
 
         // Best-effort: ensure output dirs are represented on the appropriate classpaths.
         if let Some(out_dir) = &main_output_dir {
@@ -759,6 +769,169 @@ fn absolutize_path(base_dir: &Path, path: PathBuf) -> PathBuf {
     } else {
         base_dir.join(path)
     }
+}
+
+fn infer_module_path_for_compile_config(
+    resolved_compile_classpath: &[PathBuf],
+    main_source_roots: &[PathBuf],
+    main_output_dir: Option<&PathBuf>,
+    compiler_args_looks_like_jpms: bool,
+) -> Vec<PathBuf> {
+    let should_infer_module_path =
+        compiler_args_looks_like_jpms || main_source_roots_have_module_info(main_source_roots);
+    if !should_infer_module_path {
+        return Vec::new();
+    }
+
+    let mut module_path: Vec<PathBuf> = resolved_compile_classpath
+        .iter()
+        .filter(|entry| {
+            if let Some(out) = main_output_dir {
+                if out == *entry {
+                    return false;
+                }
+            }
+            stable_module_path_entry(entry)
+        })
+        .cloned()
+        .collect();
+
+    // Dedupe while preserving order.
+    let mut seen = std::collections::HashSet::new();
+    module_path.retain(|p| seen.insert(p.clone()));
+    module_path
+}
+
+fn main_source_roots_have_module_info(main_source_roots: &[PathBuf]) -> bool {
+    main_source_roots
+        .iter()
+        .any(|root| root.join("module-info.java").is_file())
+}
+
+fn stable_module_path_entry(path: &Path) -> bool {
+    if path.is_dir() {
+        return directory_contains_module_info(path) || directory_has_automatic_module_name(path);
+    }
+    if !path.is_file() {
+        return false;
+    }
+
+    archive_is_stable_module(path)
+}
+
+fn directory_contains_module_info(dir: &Path) -> bool {
+    dir.join("module-info.class").is_file()
+        || dir.join("META-INF/versions/9/module-info.class").is_file()
+        || dir.join("classes/module-info.class").is_file()
+        || dir
+            .join("classes/META-INF/versions/9/module-info.class")
+            .is_file()
+}
+
+fn directory_has_automatic_module_name(dir: &Path) -> bool {
+    for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
+        let manifest_path = dir.join(manifest_path);
+        let Ok(bytes) = std::fs::read(&manifest_path) else {
+            continue;
+        };
+        let manifest = String::from_utf8_lossy(&bytes);
+        if manifest_main_attribute(&manifest, "Automatic-Module-Name")
+            .is_some_and(|name| !name.is_empty())
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn archive_is_stable_module(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let Ok(mut archive) = ZipArchive::new(file) else {
+        return false;
+    };
+
+    for candidate in [
+        "module-info.class",
+        "META-INF/versions/9/module-info.class",
+        "classes/module-info.class",
+        "classes/META-INF/versions/9/module-info.class",
+    ] {
+        if archive.by_name(candidate).is_ok() {
+            return true;
+        }
+    }
+
+    zip_manifest_main_attribute(&mut archive, "Automatic-Module-Name")
+        .is_some_and(|name| !name.is_empty())
+}
+
+fn zip_manifest_main_attribute<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    key: &str,
+) -> Option<String> {
+    for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
+        let mut file = match archive.by_name(manifest_path) {
+            Ok(file) => file,
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(_) => continue,
+        };
+
+        let mut bytes = Vec::with_capacity(file.size() as usize);
+        if file.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        let manifest = String::from_utf8_lossy(&bytes);
+        if let Some(value) = manifest_main_attribute(&manifest, key) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
+    let mut current_key: Option<&str> = None;
+    let mut current_value = String::new();
+
+    for line in manifest.lines() {
+        let line = line.trim_end_matches('\r');
+
+        // The first empty line terminates the main attributes section.
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some(rest) = line.strip_prefix(' ') {
+            if current_key.is_some() {
+                current_value.push_str(rest);
+            }
+            continue;
+        }
+
+        if let Some(k) = current_key.take() {
+            if k.trim().eq_ignore_ascii_case(key) {
+                return Some(current_value.trim().to_string());
+            }
+        }
+        current_value.clear();
+
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        current_key = Some(k);
+        current_value.push_str(v.trim_start());
+    }
+
+    if let Some(k) = current_key {
+        if k.trim().eq_ignore_ascii_case(key) {
+            return Some(current_value.trim().to_string());
+        }
+    }
+
+    None
 }
 
 pub fn parse_maven_effective_pom_annotation_processing(
@@ -1605,5 +1778,51 @@ mod tests {
 
         let build = MavenBuild::new(cfg.clone());
         assert_eq!(build.mvn_executable(root), cfg.mvn_path);
+    }
+
+    #[test]
+    fn infer_module_path_includes_only_stable_modules_and_excludes_output_dir() {
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let main_src_root = tmp.path().join("src/main/java");
+        std::fs::create_dir_all(&main_src_root).unwrap();
+        std::fs::write(main_src_root.join("module-info.java"), "module example.mod {}").unwrap();
+
+        // Simulate a stable module output dir; it should still be excluded because it is the
+        // module's own output directory.
+        let out_dir = tmp.path().join("target/classes");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join("module-info.class"), b"").unwrap();
+
+        let resolved_compile_classpath = vec![out_dir.clone(), named.clone(), automatic.clone(), dep];
+        let module_path = infer_module_path_for_compile_config(
+            &resolved_compile_classpath,
+            &[main_src_root],
+            Some(&out_dir),
+            false,
+        );
+
+        assert_eq!(module_path, vec![named, automatic]);
+    }
+
+    #[test]
+    fn infer_module_path_is_empty_without_module_info_or_jpms_args() {
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let main_src_root = tmp.path().join("src/main/java");
+        std::fs::create_dir_all(&main_src_root).unwrap();
+
+        let resolved_compile_classpath = vec![named, automatic];
+        let module_path =
+            infer_module_path_for_compile_config(&resolved_compile_classpath, &[main_src_root], None, false);
+
+        assert!(module_path.is_empty());
     }
 }
