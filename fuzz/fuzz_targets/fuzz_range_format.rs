@@ -23,11 +23,38 @@ fn runner() -> &'static Runner {
         let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
 
         std::thread::spawn(move || {
-            let config = nova_format::FormatConfig::default();
-
             for input in input_rx {
                 let bytes = input.as_bytes();
                 let text = input.as_str();
+
+                let mut config = nova_format::FormatConfig::default();
+                if let Some(byte) = bytes.get(16) {
+                    config.indent_width = 1 + (*byte as usize % 8);
+                }
+                if let Some(byte) = bytes.get(17) {
+                    config.indent_style = if byte & 1 == 0 {
+                        nova_format::IndentStyle::Spaces
+                    } else {
+                        nova_format::IndentStyle::Tabs
+                    };
+                }
+                if let Some(byte) = bytes.get(18) {
+                    config.max_line_length = 20 + (*byte as usize % 200);
+                }
+                if let Some(byte) = bytes.get(19) {
+                    config.insert_final_newline = match byte % 3 {
+                        0 => None,
+                        1 => Some(false),
+                        _ => Some(true),
+                    };
+                }
+                if let Some(byte) = bytes.get(20) {
+                    config.trim_final_newlines = match byte % 3 {
+                        0 => None,
+                        1 => Some(false),
+                        _ => Some(true),
+                    };
+                }
 
                 let tree = nova_syntax::parse(text);
                 let line_index = nova_core::LineIndex::new(text);
