@@ -760,21 +760,29 @@ impl WorkspaceEngine {
         let exists = self.vfs.exists(&to_vfs);
         self.query_db.set_file_exists(file_id, exists);
 
-        if exists && !open_docs.is_open(file_id) {
-            match fs::read_to_string(to) {
-                Ok(text) => self.query_db.set_file_content(file_id, Arc::new(text)),
-                Err(_) if is_new_id => {
-                    self.query_db
-                        .set_file_content(file_id, Arc::new(String::new()));
+        if exists {
+            if open_docs.is_open(file_id) {
+                // The document is open in the editor (either because it was already open at `to`,
+                // or because it was moved there from `from`). Ensure Salsa sees the overlay contents
+                // so workspace analysis doesn't accidentally use stale disk state.
+                if let Ok(text) = self.vfs.read_to_string(&to_vfs) {
+                    self.query_db.set_file_content(file_id, Arc::new(text));
                 }
-                Err(_) => {}
+            } else {
+                match fs::read_to_string(to) {
+                    Ok(text) => self.query_db.set_file_content(file_id, Arc::new(text)),
+                    Err(_) if is_new_id => {
+                        self.query_db
+                            .set_file_content(file_id, Arc::new(String::new()));
+                    }
+                    Err(_) => {}
+                }
             }
         }
 
-        // A move can have three effects on ids:
+        // A move can have two effects on ids:
         // - Typical case: preserve `id_from` at `to`.
         // - Destination already known: keep destination id and orphan `id_from`.
-        // - Open document moved onto an existing destination: preserve `id_from` and orphan `id_to`.
         //
         // Keep Salsa inputs consistent by explicitly marking orphaned ids as deleted and removing
         // them from `project_files`.
@@ -1516,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn move_open_document_to_known_destination_displaces_destination_id() {
+    fn move_open_document_to_known_destination_keeps_destination_id() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("src")).unwrap();
@@ -1538,7 +1546,8 @@ mod tests {
         let id_a = engine.vfs.get_id(&vfs_a).unwrap();
         let id_b = engine.vfs.get_id(&vfs_b).unwrap();
 
-        // Open A (overlay). The rename should preserve A's id and mark B's old id as deleted.
+        // Open A (overlay). The rename should keep B's existing `FileId` while moving the overlay
+        // contents over, so analysis remains consistent with the `FileIdRegistry` behavior.
         let opened = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
         assert_eq!(opened, id_a);
         assert!(engine.vfs.open_documents().is_open(id_a));
@@ -1554,17 +1563,21 @@ mod tests {
         }]);
 
         assert_eq!(engine.vfs.get_id(&vfs_a), None);
-        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_a));
-        assert_eq!(engine.vfs.path_for_id(id_b), None);
-        assert!(engine.vfs.open_documents().is_open(id_a));
-        assert!(!engine.vfs.open_documents().is_open(id_b));
+        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_b));
+        assert_eq!(engine.vfs.path_for_id(id_a), None);
+        assert_eq!(
+            engine.vfs.read_to_string(&vfs_b).unwrap(),
+            "class A { overlay }"
+        );
+        assert!(!engine.vfs.open_documents().is_open(id_a));
+        assert!(engine.vfs.open_documents().is_open(id_b));
 
         engine.query_db.with_snapshot(|snap| {
-            assert!(snap.file_exists(id_a));
-            assert!(!snap.file_exists(id_b));
-            assert_eq!(snap.file_rel_path(id_a).as_str(), "src/B.java");
-            assert_eq!(snap.file_content(id_a).as_str(), "class A { overlay }");
-            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_b));
+            assert!(!snap.file_exists(id_a));
+            assert!(snap.file_exists(id_b));
+            assert_eq!(snap.file_rel_path(id_b).as_str(), "src/B.java");
+            assert_eq!(snap.file_content(id_b).as_str(), "class A { overlay }");
+            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_a));
         });
     }
 
