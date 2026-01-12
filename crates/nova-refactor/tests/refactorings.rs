@@ -222,7 +222,7 @@ fn extract_variable_replaces_whole_expression_statement() {
   static class Foo {}
 
   void m() {
-    Foo result = new Foo();
+    Test.Foo result = new Foo();
   }
 }
 "#;
