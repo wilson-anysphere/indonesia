@@ -321,10 +321,17 @@ class A {
 
 #[test]
 fn quarkus_diagnostics_are_surfaced_via_ide_extensions() {
-    let java_path = PathBuf::from("/quarkus/src/main/java/com/example/ServiceA.java");
+    // Use a temp root instead of a fixed absolute path so the test does not accidentally pick up
+    // build metadata from the host filesystem (e.g. `/quarkus/pom.xml`), which would route
+    // diagnostics through analyzer-based providers instead of the source-heuristic framework cache.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let root = tmp.path().join("quarkus-fixture");
+    std::fs::create_dir_all(root.join("src")).expect("create fixture src dir");
+
+    let java_path = root.join("src/main/java/com/example/ServiceA.java");
     let java_text = r#"import io.quarkus.runtime.Startup;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
+ import jakarta.enterprise.context.ApplicationScoped;
+ import jakarta.inject.Inject;
 
 @Startup
 @ApplicationScoped
