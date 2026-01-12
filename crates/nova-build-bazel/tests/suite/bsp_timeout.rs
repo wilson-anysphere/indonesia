@@ -7,6 +7,8 @@ use tempfile::tempdir;
 #[test]
 fn bsp_connect_times_out_when_initialize_hangs() {
     let _lock = nova_build_bazel::test_support::env_lock();
+    let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+    let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
     let _timeout_guard = EnvVarGuard::set("NOVA_BSP_CONNECT_TIMEOUT_MS", Some("50"));
 
     let root = tempdir().unwrap();
@@ -36,6 +38,8 @@ fn bsp_connect_times_out_when_initialize_hangs() {
 #[test]
 fn bsp_request_times_out_when_server_hangs() {
     let _lock = nova_build_bazel::test_support::env_lock();
+    let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+    let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
     // Keep the handshake on the default timeout to avoid flakes; only shorten the request timeout
     // for the method under test.
     let _connect_guard = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", None);
@@ -78,6 +82,8 @@ fn bsp_request_times_out_when_server_hangs() {
 #[test]
 fn bsp_connect_timeout_is_handshake_only() {
     let _lock = nova_build_bazel::test_support::env_lock();
+    let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+    let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
     let _connect_timeout_guard = EnvVarGuard::set("NOVA_BSP_CONNECT_TIMEOUT_MS", Some("200"));
     let _request_timeout_guard = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", Some("1000"));
 

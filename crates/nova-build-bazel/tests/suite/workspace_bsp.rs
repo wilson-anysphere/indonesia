@@ -202,6 +202,8 @@ fn bazel_workspace_java_targets_falls_back_to_bsp_target_id_uri() {
 fn bazel_workspace_java_targets_falls_back_to_query_when_bsp_buildtargets_times_out() {
     let _lock = nova_build_bazel::test_support::env_lock();
     let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+    let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+    let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
 
     let root = tempdir().unwrap();
     // Create a minimal workspace marker to match real usage patterns.

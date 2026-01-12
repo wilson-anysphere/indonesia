@@ -818,6 +818,16 @@ impl BspWorkspace {
             root = std::env::current_dir()?.join(root);
         }
 
+        // If the caller uses the default launcher config, prefer standard `.bsp/*.json`
+        // discovery for better out-of-the-box behavior in real Bazel workspaces.
+        let mut config = config;
+        if config == BspServerConfig::default() {
+            if let Some(connection) = discover_bsp_connection(&root) {
+                config = connection.into();
+            }
+        }
+        apply_bsp_env_overrides(&mut config.program, &mut config.args);
+
         let args: Vec<&str> = config.args.iter().map(String::as_str).collect();
         let client = BspClient::spawn_in_dir(&config.program, &args, &root)?;
 
