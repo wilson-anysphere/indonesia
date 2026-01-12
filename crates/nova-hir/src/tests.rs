@@ -1,6 +1,7 @@
 use crate::token_item_tree::{TokenItem, TokenItemKind, TokenItemTree, TokenSymbolSummary};
 use bincode::Options as _;
 use nova_syntax::TextRange;
+use rkyv::Deserialize as _;
 
 fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -72,4 +73,30 @@ This is a guardrail for Nova's on-disk AST cache:\n\
 expected: {expected:#018x}\n\
 actual:   {actual:#018x}\n"
     );
+}
+
+#[test]
+fn token_item_tree_rkyv_archive_roundtrip() {
+    let item_tree = TokenItemTree {
+        items: vec![TokenItem {
+            kind: TokenItemKind::Class,
+            name: "Foo".to_string(),
+            name_range: TextRange { start: 10, end: 13 },
+        }],
+    };
+    let symbol_summary = Some(TokenSymbolSummary::from_item_tree(&item_tree));
+    let sample = (item_tree, symbol_summary);
+
+    let bytes = rkyv::to_bytes::<_, 256>(&sample).expect("rkyv serialization should succeed");
+    let archived = rkyv::check_archived_root::<(TokenItemTree, Option<TokenSymbolSummary>)>(
+        bytes.as_ref(),
+    )
+    .expect("rkyv validation should succeed");
+
+    let mut deserializer = rkyv::de::deserializers::SharedDeserializeMap::default();
+    let roundtrip: (TokenItemTree, Option<TokenSymbolSummary>) = archived
+        .deserialize(&mut deserializer)
+        .expect("rkyv deserialization should succeed");
+
+    assert_eq!(roundtrip, sample);
 }

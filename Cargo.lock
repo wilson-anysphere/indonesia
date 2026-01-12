@@ -3851,6 +3851,7 @@ dependencies = [
  "nova-syntax",
  "nova-types",
  "nova-vfs",
+ "rkyv",
  "serde",
  "serde_repr",
  "thiserror 1.0.69",

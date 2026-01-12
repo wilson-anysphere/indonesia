@@ -14,9 +14,48 @@ use nova_syntax::{ParseResult, SyntaxKind, TextRange};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
+struct RkyvTextRange;
+
+impl rkyv::with::ArchiveWith<TextRange> for RkyvTextRange {
+    type Archived = [u32; 2];
+    type Resolver = ();
+
+    unsafe fn resolve_with(
+        field: &TextRange,
+        _pos: usize,
+        _resolver: Self::Resolver,
+        out: *mut Self::Archived,
+    ) {
+        out.write([field.start, field.end]);
+    }
+}
+
+impl<S> rkyv::with::SerializeWith<TextRange, S> for RkyvTextRange
+where
+    S: rkyv::ser::Serializer + ?Sized,
+{
+    fn serialize_with(_field: &TextRange, _serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        Ok(())
+    }
+}
+
+impl<D> rkyv::with::DeserializeWith<[u32; 2], TextRange, D> for RkyvTextRange
+where
+    D: rkyv::Fallible + ?Sized,
+{
+    fn deserialize_with(field: &[u32; 2], _deserializer: &mut D) -> Result<TextRange, D::Error> {
+        Ok(TextRange {
+            start: field[0],
+            end: field[1],
+        })
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize_repr, Deserialize_repr,
+    rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
+#[archive(check_bytes)]
 #[repr(u8)]
 pub enum TokenItemKind {
     Class = 0,
@@ -25,14 +64,37 @@ pub enum TokenItemKind {
     Record = 3,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct TokenItem {
     pub kind: TokenItemKind,
     pub name: String,
+    #[with(RkyvTextRange)]
     pub name_range: TextRange,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct TokenItemTree {
     pub items: Vec<TokenItem>,
 }
@@ -45,7 +107,18 @@ impl TokenItemTree {
 }
 
 /// Optional per-file symbol summary used by indexing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct TokenSymbolSummary {
     pub names: Vec<String>,
 }

@@ -8,6 +8,7 @@ nova-core = { path = "../nova-core" }
 nova-types = { path = "../nova-types" }
 nova-syntax = { path = "../nova-syntax" }
 nova-modules = { path = "../nova-modules" }
+rkyv = { version = "0.7", features = ["validation"] }
 serde = { version = "1", features = ["derive"] }
 serde_repr = "0.1"
 nova-vfs = { path = "../nova-vfs" }
