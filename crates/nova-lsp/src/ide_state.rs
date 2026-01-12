@@ -5,14 +5,14 @@ use lsp_types::{
     Location, NumberOrString, Position, Uri,
 };
 use nova_config::NovaConfig;
-use nova_db::{Database, FileId};
+use nova_db::{Database as TextDatabase, FileId};
 use nova_ext::{
     Diagnostic, DiagnosticParams, DiagnosticProvider, ExtensionRegistry, ProjectId, Severity, Span,
 };
-use nova_ide::extensions::IdeExtensions;
+use nova_ide::extensions::{FrameworkIdeDatabase, IdeExtensions, IdeFrameworkDatabase};
 use nova_scheduler::CancellationToken;
 
-pub type DynDb = dyn Database + Send + Sync;
+pub type DynDb = dyn IdeFrameworkDatabase + Send + Sync;
 
 /// Shared LSP state for aggregating IDE features via `nova-ide::IdeExtensions`.
 ///
@@ -24,7 +24,12 @@ pub struct NovaLspIdeState {
 }
 
 impl NovaLspIdeState {
-    pub fn new(db: Arc<DynDb>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
+    pub fn new(
+        db: Arc<dyn TextDatabase + Send + Sync>,
+        config: Arc<NovaConfig>,
+        project: ProjectId,
+    ) -> Self {
+        let db: Arc<DynDb> = Arc::new(FrameworkIdeDatabase::new(db, project));
         let mut ide_extensions =
             IdeExtensions::<DynDb>::with_default_registry(Arc::clone(&db), config, project);
         register_default_providers(&mut ide_extensions);
@@ -122,7 +127,7 @@ impl NovaLspIdeState {
 
     fn file_id_for_uri(&self, uri: &Uri) -> Option<FileId> {
         let path = nova_core::file_uri_to_path(uri.as_str()).ok()?;
-        self.db.file_id(path.as_path())
+        TextDatabase::file_id(self.db.as_ref(), path.as_path())
     }
 }
 

@@ -11,20 +11,21 @@ use nova_ext::{
     CompletionItem, CompletionParams, CompletionProvider, Diagnostic, DiagnosticParams,
     DiagnosticProvider, ExtensionContext, ProjectId, Span,
 };
+use nova_ide::extensions::FrameworkIdeDatabase;
 
 struct TestCompletionProvider {
     id: &'static str,
     label: &'static str,
 }
 
-impl CompletionProvider<dyn nova_db::Database + Send + Sync> for TestCompletionProvider {
+impl CompletionProvider<nova_lsp::DynDb> for TestCompletionProvider {
     fn id(&self) -> &str {
         self.id
     }
 
     fn provide_completions(
         &self,
-        _ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        _ctx: ExtensionContext<nova_lsp::DynDb>,
         _params: CompletionParams,
     ) -> Vec<CompletionItem> {
         vec![CompletionItem::new(self.label)]
@@ -36,14 +37,14 @@ struct TestDiagnosticProvider {
     message: &'static str,
 }
 
-impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for TestDiagnosticProvider {
+impl DiagnosticProvider<nova_lsp::DynDb> for TestDiagnosticProvider {
     fn id(&self) -> &str {
         self.id
     }
 
     fn provide_diagnostics(
         &self,
-        _ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        _ctx: ExtensionContext<nova_lsp::DynDb>,
         _params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
         vec![Diagnostic::warning(
@@ -72,11 +73,12 @@ class A {
     );
 
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
-    let mut extensions = IdeExtensions::new(
+    let lsp_db: Arc<nova_lsp::DynDb> = Arc::new(FrameworkIdeDatabase::new(
         Arc::clone(&db),
-        Arc::new(NovaConfig::default()),
         ProjectId::new(0),
-    );
+    ));
+    let mut extensions =
+        IdeExtensions::new(lsp_db, Arc::new(NovaConfig::default()), ProjectId::new(0));
     extensions
         .registry_mut()
         .register_completion_provider(Arc::new(TestCompletionProvider {
@@ -133,11 +135,12 @@ class A {
     );
 
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
-    let mut extensions = IdeExtensions::new(
+    let lsp_db: Arc<nova_lsp::DynDb> = Arc::new(FrameworkIdeDatabase::new(
         Arc::clone(&db),
-        Arc::new(NovaConfig::default()),
         ProjectId::new(0),
-    );
+    ));
+    let mut extensions =
+        IdeExtensions::new(lsp_db, Arc::new(NovaConfig::default()), ProjectId::new(0));
     extensions
         .registry_mut()
         .register_diagnostic_provider(Arc::new(TestDiagnosticProvider {

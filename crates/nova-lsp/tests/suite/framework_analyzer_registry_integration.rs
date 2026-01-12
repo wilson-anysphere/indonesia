@@ -5,7 +5,7 @@ use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::ProjectId;
 use nova_framework::{CompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer};
-use nova_ide::extensions::FrameworkAnalyzerOnTextDbAdapter;
+use nova_ide::extensions::FrameworkAnalyzerAdapter;
 use nova_lsp::NovaLspIdeState;
 use nova_scheduler::CancellationToken;
 use nova_types::{CompletionItem as NovaCompletionItem, Diagnostic as NovaDiagnostic, Span};
@@ -73,7 +73,7 @@ fn framework_analyzer_registry_integration_runs_and_respects_cancellation() {
     let mut state = NovaLspIdeState::new(db, config, ProjectId::new(0));
 
     let analyzer = TestFrameworkAnalyzer;
-    let provider = FrameworkAnalyzerOnTextDbAdapter::new("test.framework.lsp", analyzer).into_arc();
+    let provider = FrameworkAnalyzerAdapter::new("test.framework.lsp", analyzer).into_arc();
     state
         .registry_mut()
         .register_diagnostic_provider(provider.clone())

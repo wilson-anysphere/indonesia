@@ -21,6 +21,15 @@ use std::sync::{Arc, Mutex};
 pub use crate::framework_db_adapter::FrameworkIdeDatabase;
 use crate::text::TextIndex;
 
+/// Combined database surface used by `nova-lsp` for extension execution.
+///
+/// Rust only allows a single non-auto trait in a `dyn ...` trait object. `nova-lsp` needs a trait
+/// object that supports both the legacy `nova-db` text queries and the newer `nova-framework`
+/// analyzer query surface, so we introduce this named shim trait.
+pub trait IdeFrameworkDatabase: nova_db::Database + FrameworkDatabase {}
+
+impl<T> IdeFrameworkDatabase for T where T: nova_db::Database + FrameworkDatabase {}
+
 trait AsDynNovaDb {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database;
 
@@ -41,6 +50,16 @@ where
 }
 
 impl AsDynNovaDb for dyn nova_db::Database + Send + Sync {
+    fn as_dyn_nova_db(&self) -> &dyn nova_db::Database {
+        self
+    }
+
+    fn into_dyn_nova_db(self: Arc<Self>) -> Arc<dyn nova_db::Database + Send + Sync> {
+        self
+    }
+}
+
+impl AsDynNovaDb for dyn IdeFrameworkDatabase + Send + Sync {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database {
         self
     }

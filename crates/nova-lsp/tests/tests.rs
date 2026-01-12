@@ -25,6 +25,8 @@ mod extensions_stdio;
 mod extract_method;
 #[path = "suite/file_operations.rs"]
 mod file_operations;
+#[path = "suite/framework_analyzer_adapter.rs"]
+mod framework_analyzer_adapter;
 #[path = "suite/framework_analyzer_registry_integration.rs"]
 mod framework_analyzer_registry_integration;
 #[path = "suite/ide_extensions_completion.rs"]

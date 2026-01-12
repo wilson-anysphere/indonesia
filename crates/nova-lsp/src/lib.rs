@@ -425,7 +425,7 @@ pub fn completion(
 /// - built-in items first
 /// - then extension items in provider-id order (see `nova_ext::ExtensionRegistry`)
 pub fn completion_with_extensions(
-    extensions: &nova_ide::extensions::IdeExtensions<dyn nova_db::Database + Send + Sync>,
+    extensions: &nova_ide::extensions::IdeExtensions<DynDb>,
     cancel: CancellationToken,
     file: nova_db::FileId,
     position: lsp_types::Position,
@@ -570,7 +570,7 @@ pub fn diagnostics(
 /// - built-in diagnostics first
 /// - then extension diagnostics in provider-id order (see `nova_ext::ExtensionRegistry`)
 pub fn diagnostics_with_extensions(
-    extensions: &nova_ide::extensions::IdeExtensions<dyn nova_db::Database + Send + Sync>,
+    extensions: &nova_ide::extensions::IdeExtensions<DynDb>,
     cancel: CancellationToken,
     file: nova_db::FileId,
 ) -> Vec<lsp_types::Diagnostic> {
