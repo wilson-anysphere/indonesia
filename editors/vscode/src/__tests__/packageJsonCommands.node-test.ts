@@ -434,6 +434,34 @@ test('package.json contributes Nova Project Explorer copy path command', async (
   assert.equal(activationCount, 1);
 });
 
+test('package.json contributes Nova Project Explorer copy path context menu entries', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    contributes?: { menus?: unknown };
+  };
+
+  const menus = pkg.contributes?.menus;
+  assert.ok(menus && typeof menus === 'object');
+
+  const viewItemContext = (menus as { 'view/item/context'?: unknown })['view/item/context'];
+  assert.ok(Array.isArray(viewItemContext));
+
+  const whenStrings = (viewItemContext as unknown[])
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown; when?: unknown }) : undefined))
+    .filter((entry): entry is { command?: unknown; when?: unknown } => Boolean(entry))
+    .filter((entry) => entry.command === 'nova.projectExplorer.copyPath')
+    .map((entry) => (typeof entry.when === 'string' ? entry.when : ''));
+
+  const expected = ['novaProjectExplorerPath', 'novaProjectExplorerWorkspace', 'novaProjectExplorerUnit'];
+  for (const ctx of expected) {
+    assert.ok(
+      whenStrings.some((when) => when.includes('view == novaProjectExplorer') && when.includes(`viewItem == ${ctx}`)),
+      `missing copyPath menu entry for ${ctx}`,
+    );
+  }
+});
+
 test('package.json contributes Nova Frameworks + Project Explorer viewsWelcome empty-state guidance', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
