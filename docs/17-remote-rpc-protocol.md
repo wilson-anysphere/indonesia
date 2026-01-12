@@ -17,8 +17,10 @@ It is intended to be implementable without reading Nova’s source code. Where w
 >   - multiplexing (multiple concurrent in-flight requests),
 >   - `PacketChunk` chunking/reassembly,
 >   - best-effort `Cancel` handling (incoming `Cancel` updates a per-RPC cancellation token; responders
->     may return a structured `cancelled` error),
->   - optional negotiated compression (feature-gated `zstd`).
+>     may return a structured `cancelled` error; note the current distributed router does not yet
+>     actively issue cancellation packets),
+>   - optional negotiated compression (feature-gated `zstd`; note the current worker advertises only
+>     `none`, so compression is typically not negotiated).
 > - The legacy lockstep protocol (`nova_remote_proto::legacy_v2`) is deprecated and not
 >   wire-compatible with v3; mixed router/worker versions fail the handshake.
 
