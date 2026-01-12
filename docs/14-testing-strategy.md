@@ -585,7 +585,7 @@ local-only clones under `test-projects/`:
 Run them with `./scripts/run-real-project-tests.sh` (see [`test-projects/README.md`](../test-projects/README.md))
 or the “Real-project validation” section of [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
-Tip: real-project tests are `#[ignore]` and are typically run with `cargo test ... -- --ignored`
+Tip: real-project tests are `#[ignore]` and are typically run with `cargo test --locked ... -- --ignored`
 (runs only ignored tests) to avoid running the rest of the suite. For details on ignored-test flags, see
 [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
