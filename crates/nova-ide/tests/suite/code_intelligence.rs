@@ -247,6 +247,56 @@ class Main2 {
 }
 
 #[test]
+fn java_new_completion_inserts_constructor_snippet_placeholders_for_workspace_type() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main2.java");
+
+    let foo_text = "package p; public class Foo { public Foo(int x, String y) {} }".to_string();
+    let main_text = r#"
+package p;
+class Main2 {
+  void m() {
+    new Fo<|>
+  }
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(foo_path, foo_text)]);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "Foo")
+        .expect("expected Foo completion item");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected Foo `new` completion to use snippet insertion; got {item:#?}"
+    );
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert!(
+        edit.new_text.contains("${1:arg0}"),
+        "expected snippet to contain first constructor arg placeholder; got {:?}",
+        edit.new_text
+    );
+    assert!(
+        edit.new_text.contains("${2:arg1}"),
+        "expected snippet to contain second constructor arg placeholder; got {:?}",
+        edit.new_text
+    );
+    assert!(
+        edit.new_text.ends_with(")$0"),
+        "expected snippet to end with `)$0`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn completion_in_incomplete_import_keyword_suggests_import() {
     let (db, file, pos) = fixture("impor<|>");
     let items = completions(&db, file, pos);

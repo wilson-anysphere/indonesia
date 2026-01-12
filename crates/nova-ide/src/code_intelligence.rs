@@ -2970,6 +2970,23 @@ fn smallest_accessible_constructor_arity(
     best
 }
 
+fn smallest_accessible_constructor_arity_in_store(
+    types: &TypeStore,
+    binary_name: &str,
+) -> Option<usize> {
+    let class_id = types.class_id(binary_name)?;
+    let class_def = types.class(class_id)?;
+
+    let mut best: Option<usize> = None;
+    for ctor in &class_def.constructors {
+        if !ctor.is_accessible {
+            continue;
+        }
+        best = Some(best.map_or(ctor.params.len(), |cur| cur.min(ctor.params.len())));
+    }
+    best
+}
+
 fn new_expression_type_completions(
     db: &dyn Database,
     file: FileId,
@@ -2979,6 +2996,7 @@ fn new_expression_type_completions(
 ) -> Vec<CompletionItem> {
     let analysis = analyze(text);
     let imports = parse_java_imports(text);
+    let completion_env = completion_cache::completion_env_for_file(db, file);
 
     let jdk = JDK_INDEX
         .as_ref()
@@ -3009,7 +3027,7 @@ fn new_expression_type_completions(
     //
     // Only include these for non-trivial prefixes: workspaces can contain thousands of types.
     if prefix.len() >= 2 {
-        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        if let Some(env) = completion_env.as_ref() {
             let mut added = 0usize;
             for ty in env.workspace_index().types_with_prefix(prefix) {
                 if added >= MAX_NEW_TYPE_WORKSPACE_CANDIDATES {
@@ -3110,8 +3128,13 @@ fn new_expression_type_completions(
         let Some(binary_name) = item.detail.as_deref() else {
             continue;
         };
-        let Some(arity) = smallest_accessible_constructor_arity(&desc_types, &jdk, binary_name)
-        else {
+        let arity = completion_env
+            .as_ref()
+            .and_then(|env| {
+                smallest_accessible_constructor_arity_in_store(env.types(), binary_name)
+            })
+            .or_else(|| smallest_accessible_constructor_arity(&desc_types, &jdk, binary_name));
+        let Some(arity) = arity else {
             continue;
         };
 
