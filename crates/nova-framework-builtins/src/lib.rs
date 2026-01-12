@@ -28,7 +28,7 @@ pub fn builtin_analyzers() -> Vec<Box<dyn FrameworkAnalyzer>> {
 
     #[cfg(feature = "jpa")]
     {
-        let _ = &nova_framework_jpa::is_jpa_applicable as *const _;
+        analyzers.push(Box::new(nova_framework_jpa::JpaAnalyzer::new()));
     }
 
     analyzers
