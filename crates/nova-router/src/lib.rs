@@ -399,7 +399,8 @@ Use TLS (`tcp+tls:`; build with `--features tls`) or explicitly opt in with `all
 /// In this MVP it is responsible for:
 /// - partitioning work by source root (shard)
 /// - delegating indexing to worker processes over a simple RPC transport
-/// - answering workspace symbol queries by merging per-shard top-k results
+/// - maintaining a router-local global symbol index (built from per-shard shard indexes) and
+///   answering workspace symbol queries locally (no per-query RPC fanout)
 pub struct QueryRouter {
     inner: RouterMode,
 }
