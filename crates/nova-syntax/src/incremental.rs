@@ -1,6 +1,6 @@
 use rowan::{NodeOrToken, TokenAtOffset};
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::parser::{
     parse_annotation_element_value_pair_list_fragment, parse_argument_list_fragment,
@@ -140,7 +140,7 @@ pub fn reparse_java(
 
     let new_green = plan.target_node.replace_with(fragment.green);
 
-    let mut preserved_errors = shift_preserved_errors(
+    let preserved_errors = shift_preserved_errors(
         old,
         &old.errors,
         plan.old_range,
@@ -148,21 +148,6 @@ pub fn reparse_java(
         edit.delta(),
     );
     let fragment_errors = offset_errors(fragment.errors, plan.new_range.start);
-
-    // Some diagnostics are anchored at a zero-length range at the end of a syntactic construct
-    // (commonly: "expected `}` ... found end of file"). When the reparsed range reaches that
-    // boundary, we can end up with identical errors in both the preserved and reparsed sets. Full
-    // parsing would only report them once, so filter preserved errors that are duplicated by the
-    // fragment parse.
-    {
-        let fragment_error_keys: HashSet<(TextRange, &str)> = fragment_errors
-            .iter()
-            .map(|e| (e.range, e.message.as_str()))
-            .collect();
-
-        preserved_errors.retain(|e| !fragment_error_keys.contains(&(e.range, e.message.as_str())));
-    }
-
     let mut errors = Vec::new();
     // Preserve the parser's natural error ordering at identical offsets: errors emitted while
     // parsing the fragment (typically inner constructs) should precede errors from preserved outer
@@ -691,11 +676,12 @@ fn shift_preserved_errors(
         }
     }
 
-    fn node_start_for_boundary_owner(
+    fn count_nodes_starting_before(
         old: &JavaParseResult,
         offset: u32,
         owner: BoundaryOwner,
-    ) -> Option<u32> {
+        before: u32,
+    ) -> u32 {
         // Prefer the token to the *left* of the offset. Boundary errors at the end of a node often
         // occur at the same byte offset as the file's `Eof` token; using the right token can land
         // us outside the construct that actually triggered the error.
@@ -714,12 +700,20 @@ fn shift_preserved_errors(
         let mut node = token
             .and_then(|tok| tok.parent())
             .unwrap_or_else(|| old.syntax());
+        let mut count = 0u32;
         loop {
             if boundary_owner_matches(owner, node.kind()) {
-                return Some(u32::from(node.text_range().start()));
+                let start = u32::from(node.text_range().start());
+                if start < before {
+                    count = count.saturating_add(1);
+                }
             }
-            node = node.parent()?;
+            node = match node.parent() {
+                Some(parent) => parent,
+                None => break,
+            };
         }
+        count
     }
 
     // Preserve errors that are *entirely* outside the reparsed region. Empty ranges anchored at the
@@ -761,68 +755,96 @@ fn shift_preserved_errors(
             || e.message.contains("member name")
     };
 
-    let preserve_boundary_error = |e: &ParseError| {
-        // Only relevant for empty errors at the end boundary.
-        if !e.range.is_empty() || e.range.start != reparsed_old_range.end {
-            return true;
-        }
-
-        // Prefer structural ownership (via ancestor kinds) when we can identify the construct.
-        if let Some(owner) = boundary_owner_from_message(&e.message) {
-            if let Some(owner_start) = node_start_for_boundary_owner(old, e.range.start, owner) {
-                return owner_start < reparsed_old_range.start;
-            }
-        }
-
-        // Fall back to preserving class-body-level EOF diagnostics unless we are reparsing the
-        // class body itself.
-        !reparsing_class_body && is_class_body_error(e)
-    };
-
-    let is_before_reparse = |e: &ParseError| {
-        e.range.end < reparsed_old_range.start
-            || (e.range.end == reparsed_old_range.start && e.range.start < reparsed_old_range.start)
-    };
-
-    let is_after_reparse = |e: &ParseError| {
-        if e.range.start > reparsed_old_range.end {
-            return true;
-        }
-        if e.range.start < reparsed_old_range.end {
-            return false;
-        }
-        // `e.range.start == reparsed_old_range.end`.
-        if e.range.end > reparsed_old_range.end {
-            return true;
-        }
-        // Empty range at the end boundary.
-        preserve_boundary_error(e)
-    };
-
-    if delta == 0 {
-        return errors
-            .iter()
-            .filter(|e| is_before_reparse(e) || is_after_reparse(e))
-            .cloned()
-            .collect();
-    }
-
     let delta_i64 = delta as i64;
-    errors
-        .iter()
-        .filter_map(|e| {
-            if is_before_reparse(e) {
-                return Some(e.clone());
+    let mut preserved = Vec::new();
+
+    // Track how many boundary errors we must skip for each `(range, message)` key so we preserve
+    // the *outer* diagnostics.
+    //
+    // The Java parser emits EOF boundary errors from inner to outer as it unwinds the parse stack.
+    // When reparsing an inner region, we want to drop stale diagnostics for constructs fully
+    // contained in the reparsed fragment, while preserving diagnostics for outer constructs that
+    // started before the reparsed range.
+    //
+    // Because those outer diagnostics appear *later* in the original error list, we preserve the
+    // last `limit` occurrences for each key (equivalently: skip the first `total - limit`).
+    let mut boundary_skip: HashMap<(TextRange, &str), u32> = {
+        let mut totals: HashMap<(TextRange, &str), (u32, u32)> = HashMap::new(); // (limit, total)
+        for e in errors {
+            if !(e.range.is_empty() && e.range.start == reparsed_old_range.end) {
+                continue;
             }
-            if is_after_reparse(e) {
+
+            let key = (e.range, e.message.as_str());
+            let entry = totals.entry(key).or_insert_with(|| {
+                let limit = if let Some(owner) = boundary_owner_from_message(&e.message) {
+                    count_nodes_starting_before(old, e.range.start, owner, reparsed_old_range.start)
+                } else if !reparsing_class_body && is_class_body_error(e) {
+                    u32::MAX
+                } else {
+                    0
+                };
+                (limit, 0)
+            });
+            entry.1 = entry.1.saturating_add(1);
+        }
+
+        totals
+            .into_iter()
+            .map(|(key, (limit, total))| (key, total.saturating_sub(limit)))
+            .collect()
+    };
+
+    for e in errors {
+        let is_before = e.range.end < reparsed_old_range.start
+            || (e.range.end == reparsed_old_range.start && e.range.start < reparsed_old_range.start);
+        if is_before {
+            preserved.push(e.clone());
+            continue;
+        }
+
+        let is_after = e.range.start > reparsed_old_range.end
+            || (e.range.start == reparsed_old_range.end && e.range.end > reparsed_old_range.end);
+        if is_after {
+            if delta == 0 {
+                preserved.push(e.clone());
+            } else {
                 let start = (e.range.start as i64 + delta_i64) as u32;
                 let end = (e.range.end as i64 + delta_i64) as u32;
-                return Some(ParseError {
+                preserved.push(ParseError {
                     message: e.message.clone(),
                     range: TextRange { start, end },
                 });
             }
-            None
-        })
-        .collect()
+            continue;
+        }
+
+        // Empty range exactly at the end boundary: preserve only when it is attributable to an
+        // outer construct that started before the reparsed region.
+        if e.range.is_empty() && e.range.start == reparsed_old_range.end {
+            let key = (e.range, e.message.as_str());
+            let skip = boundary_skip.get_mut(&key);
+            if let Some(skip) = skip {
+                if *skip > 0 {
+                    *skip = skip.saturating_sub(1);
+                    continue;
+                }
+            } else {
+                continue;
+            }
+
+            if delta == 0 {
+                preserved.push(e.clone());
+            } else {
+                let start = (e.range.start as i64 + delta_i64) as u32;
+                let end = (e.range.end as i64 + delta_i64) as u32;
+                preserved.push(ParseError {
+                    message: e.message.clone(),
+                    range: TextRange { start, end },
+                });
+            }
+        }
+    }
+
+    preserved
 }

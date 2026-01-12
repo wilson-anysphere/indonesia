@@ -4272,6 +4272,42 @@ fn incremental_edit_does_not_duplicate_errors_at_eof() {
 }
 
 #[test]
+fn incremental_edit_preserves_outer_block_errors_at_eof() {
+    // Multiple nested blocks can be unterminated at EOF. Even if we only reparse an inner region,
+    // incremental reparsing must preserve *all* outer "close block" diagnostics so they match a
+    // full parse.
+    let prefix = "class Bar {}\n";
+    let old_text = format!(
+        "{prefix}class Foo {{\n  void m() {{\n    if (true) {{\n      int x = 1;\n"
+    );
+    let old = parse_java(&old_text);
+
+    let one_offset = old_text.find("1").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: one_offset,
+            end: one_offset + 1,
+        },
+        "2",
+    );
+    let mut new_text = old_text.clone();
+    new_text.replace_range(one_offset as usize..(one_offset + 1) as usize, "2");
+
+    let new_parse = reparse_java(&old, &old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    // Ensure this exercised incremental reparsing by verifying the leading, unrelated class was
+    // reused.
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        green_ptr_eq(&old_bar, &new_bar),
+        "expected `Bar` subtree to be reused"
+    );
+}
+
+#[test]
 fn incremental_edit_removing_unclosed_block_drops_stale_eof_error() {
     let prefix = "class Bar {}\n";
     let old_text = format!("{prefix}class Foo {{\n  void m() {{\n");
