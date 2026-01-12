@@ -5,6 +5,7 @@ use nova_build_bazel::{
     BazelBuildTaskState, BspCompileOutcome,
 };
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -85,6 +86,84 @@ fn default_bsp_config() -> BazelBspConfig {
         program: "bsp4bazel".to_string(),
         args: Vec::new(),
     }
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn remove(key: &'static str) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.prev.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RecordingExecutor {
+    seen: Arc<Mutex<Option<BazelBspConfig>>>,
+}
+
+impl BazelBuildExecutor for RecordingExecutor {
+    fn compile(
+        &self,
+        config: &BazelBspConfig,
+        _workspace_root: &std::path::Path,
+        _targets: &[String],
+        _cancellation: nova_process::CancellationToken,
+    ) -> anyhow::Result<BspCompileOutcome> {
+        *self.seen.lock().unwrap() = Some(config.clone());
+        Ok(BspCompileOutcome {
+            status_code: 0,
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn orchestrator_discovers_dot_bsp_config_when_request_missing() {
+    let _lock = nova_build_bazel::test_support::ENV_LOCK.lock().unwrap();
+    let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+    let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    let bsp_dir = tmp.path().join(".bsp");
+    std::fs::create_dir_all(&bsp_dir).unwrap();
+    std::fs::write(
+        bsp_dir.join("bazel.json"),
+        r#"{"argv":["bazel-bsp","--workspace","."],"languages":["java"]}"#,
+    )
+    .unwrap();
+
+    let seen = Arc::new(Mutex::new(None));
+    let executor = Arc::new(RecordingExecutor { seen: seen.clone() });
+    let orchestrator = BazelBuildOrchestrator::with_executor(tmp.path().to_path_buf(), executor);
+
+    let id = orchestrator.enqueue(BazelBuildRequest {
+        targets: vec!["//java:lib".to_string()],
+        bsp_config: None,
+    });
+
+    wait_until(Duration::from_secs(2), || {
+        let status = orchestrator.status();
+        status.state == BazelBuildTaskState::Success && status.last_completed_id == Some(id)
+    });
+
+    let config = seen.lock().unwrap().clone().expect("missing BSP config");
+    assert_eq!(config.program, "bazel-bsp");
+    assert_eq!(config.args, vec!["--workspace".to_string(), ".".to_string()]);
 }
 
 #[test]

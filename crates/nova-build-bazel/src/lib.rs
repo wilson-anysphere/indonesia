@@ -19,7 +19,7 @@ mod workspace;
 #[cfg(any(test, feature = "bsp"))]
 pub mod bsp;
 
-#[cfg(feature = "bsp")]
+#[cfg(any(test, feature = "bsp"))]
 mod bsp_config;
 
 #[cfg(any(test, feature = "bsp"))]
@@ -57,3 +57,13 @@ pub use crate::orchestrator::{
 
 #[cfg(feature = "bsp")]
 pub use crate::bsp::target_compile_info_via_bsp;
+
+/// Test-only helpers.
+///
+/// This is `pub` so it can be used from integration tests (which compile `nova-build-bazel` as a
+/// normal dependency, without `cfg(test)`).
+#[cfg(feature = "bsp")]
+#[doc(hidden)]
+pub mod test_support {
+    pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}

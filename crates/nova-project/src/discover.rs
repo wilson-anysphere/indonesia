@@ -43,7 +43,8 @@ pub struct LoadOptions {
     /// - `NOVA_BSP_PROGRAM`: BSP launcher executable (defaults to `bsp4bazel`)
     /// - `NOVA_BSP_ARGS`: launcher args (JSON array or whitespace-separated string)
     ///
-    /// Note: `.bsp` config discovery is not currently implemented; use the env vars above.
+    /// Nova also supports standard BSP `.bsp/*.json` config discovery (when BSP support is
+    /// compiled in). Environment variables still override any discovered config.
     pub bazel: BazelLoadOptions,
 }
 

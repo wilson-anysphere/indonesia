@@ -1275,10 +1275,8 @@ fn is_bazel_build_definition_file(path: &Path) -> bool {
 mod bsp_config_tests {
     use super::*;
     use crate::command::CommandOutput;
-    use std::{ffi::OsString, sync::Mutex};
+    use std::ffi::OsString;
     use tempfile::tempdir;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Clone, Debug, Default)]
     struct NoopRunner;
@@ -1367,7 +1365,7 @@ mod bsp_config_tests {
 
     #[test]
     fn env_overrides_win_over_dot_bsp_discovery() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
 
         let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
         let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
