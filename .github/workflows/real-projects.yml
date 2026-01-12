@@ -12,6 +12,8 @@ on:
     paths:
       - ".github/workflows/real-projects.yml"
       - "crates/nova-project/tests/cases/real_projects.rs"
+      - "crates/nova-cli/tests/cli.rs"
+      - "crates/nova-cli/tests/suite/mod.rs"
       - "crates/nova-cli/tests/suite/real_projects.rs"
       - "scripts/run-real-project-tests.sh"
       - "scripts/clone-test-projects.sh"
