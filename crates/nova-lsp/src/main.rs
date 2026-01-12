@@ -746,6 +746,7 @@ struct ServerState {
     analysis: AnalysisState,
     jdk_index: Option<nova_jdk::JdkIndex>,
     ai: Option<NovaAi>,
+    semantic_search: Box<dyn nova_ai::SemanticSearch>,
     privacy: nova_ai::PrivacyMode,
     ai_config: nova_config::AiConfig,
     runtime: Option<tokio::runtime::Runtime>,
@@ -838,6 +839,8 @@ impl ServerState {
             nova_lsp::NovaCompletionService::new(engine)
         };
 
+        let semantic_search = nova_ai::semantic_search_from_config(&ai_config);
+
         Self {
             shutdown_requested: false,
             project_root: None,
@@ -847,6 +850,7 @@ impl ServerState {
             analysis: AnalysisState::default(),
             jdk_index: None,
             ai,
+            semantic_search,
             privacy,
             ai_config,
             runtime,
@@ -859,6 +863,38 @@ impl ServerState {
             last_safe_mode_enabled: false,
             last_safe_mode_reason: None,
         }
+    }
+
+    fn semantic_search_enabled(&self) -> bool {
+        self.ai_config.enabled && self.ai_config.features.semantic_search
+    }
+
+    fn semantic_search_index_open_document(&mut self, file_id: DbFileId) {
+        if !self.semantic_search_enabled() {
+            return;
+        }
+
+        let Some(path) = self.analysis.file_paths.get(&file_id).cloned() else {
+            return;
+        };
+        let Some(text) = self.analysis.file_contents.get(&file_id).cloned() else {
+            return;
+        };
+
+        self.semantic_search.index_file(path, text);
+    }
+
+    fn semantic_search_remove_uri(&mut self, uri: &LspUri) {
+        if !self.semantic_search_enabled() {
+            return;
+        }
+
+        let path = self.analysis.path_for_uri(uri);
+        let Some(local) = path.as_local_path() else {
+            return;
+        };
+
+        self.semantic_search.remove_file(local);
     }
 
     fn refresh_document_memory(&mut self) {
@@ -1546,6 +1582,7 @@ fn handle_notification(
                 state
                     .analysis
                     .open_document(uri.clone(), params.text_document.text, version);
+            state.semantic_search_index_open_document(file_id);
             let canonical_uri = state
                 .analysis
                 .vfs
@@ -1575,6 +1612,9 @@ fn handle_notification(
                 );
                 return Ok(());
             }
+            if let Ok(ChangeEvent::DocumentChanged { file_id, .. }) = &evt {
+                state.semantic_search_index_open_document(*file_id);
+            }
             let canonical_uri = VfsPath::from(&params.text_document.uri)
                 .to_uri()
                 .unwrap_or_else(|| uri_string);
@@ -1587,6 +1627,7 @@ fn handle_notification(
             else {
                 return Ok(());
             };
+            state.semantic_search_remove_uri(&params.text_document.uri);
             let canonical_uri = VfsPath::from(&params.text_document.uri)
                 .to_uri()
                 .unwrap_or_else(|| params.text_document.uri.to_string());
@@ -1630,10 +1671,15 @@ fn handle_notification(
                 ) else {
                     continue;
                 };
+                state.semantic_search_remove_uri(&old_uri);
                 state.analysis.rename_uri(&old_uri, &new_uri);
                 let to_path = VfsPath::from(&new_uri);
                 if !state.analysis.vfs.overlay().is_open(&to_path) {
                     state.analysis.refresh_from_disk(&new_uri);
+                } else {
+                    // Rename of an open document: update the semantic search path key.
+                    let file_id = state.analysis.vfs.file_id(to_path);
+                    state.semantic_search_index_open_document(file_id);
                 }
             }
         }
@@ -1651,10 +1697,14 @@ fn handle_notification(
 
             // If the source buffer is open, treat the rename as a pure path move; the in-memory
             // overlay remains the source of truth.
+            state.semantic_search_remove_uri(&params.from);
             state.analysis.rename_uri(&params.from, &params.to);
             let to_path = VfsPath::from(&params.to);
             if !state.analysis.vfs.overlay().is_open(&to_path) {
                 state.analysis.refresh_from_disk(&params.to);
+            } else {
+                let file_id = state.analysis.vfs.file_id(to_path);
+                state.semantic_search_index_open_document(file_id);
             }
         }
         _ => {}
@@ -3816,49 +3866,12 @@ fn send_progress_end(
 }
 
 fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRequest {
-    use nova_core::ProjectDatabase;
-    use std::path::{Path, PathBuf};
-
     if !(state.ai_config.enabled && state.ai_config.features.semantic_search) {
         return req;
     }
 
-    #[derive(Debug)]
-    struct OpenDocumentsDb(Vec<(PathBuf, String)>);
-
-    impl ProjectDatabase for OpenDocumentsDb {
-        fn project_files(&self) -> Vec<PathBuf> {
-            self.0.iter().map(|(path, _)| path.clone()).collect()
-        }
-
-        fn file_text(&self, path: &Path) -> Option<String> {
-            self.0
-                .iter()
-                .find(|(p, _)| p == path)
-                .map(|(_, text)| text.clone())
-        }
-    }
-
-    let db = OpenDocumentsDb(
-        state
-            .analysis
-            .vfs
-            .open_documents()
-            .snapshot()
-            .into_iter()
-            .filter_map(|file_id| {
-                let path = state.analysis.file_paths.get(&file_id)?.clone();
-                let text = state.analysis.file_contents.get(&file_id)?.clone();
-                Some((path, text))
-            })
-            .collect(),
-    );
-
-    let mut search = nova_ai::semantic_search_from_config(&state.ai_config);
-    search.index_project(&db);
-
     // Keep this conservative: extra context is useful, but should not drown the prompt.
-    req.with_related_code_from_focal(search.as_ref(), 3)
+    req.with_related_code_from_focal(state.semantic_search.as_ref(), 3)
 }
 
 fn looks_like_project_root(root: &std::path::Path) -> bool {
