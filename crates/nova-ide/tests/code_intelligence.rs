@@ -121,3 +121,56 @@ class A {
     );
 }
 
+#[test]
+fn completion_in_call_argument_filters_incompatible_values_for_int() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void takeInt(int x) {}
+  void m() {
+    String s = "";
+    int n = 0;
+    takeInt(<|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"n"),
+        "expected completion list to contain int variable `n`; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"s"),
+        "expected completion list to exclude String variable `s` for int parameter; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_call_argument_prefers_matching_string_values() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void takeString(String x) {}
+  void m() {
+    String s = "";
+    int n = 0;
+    takeString(<|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"s"),
+        "expected completion list to contain String variable `s`; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"n"),
+        "expected completion list to exclude int variable `n` for String parameter; got {labels:?}"
+    );
+}

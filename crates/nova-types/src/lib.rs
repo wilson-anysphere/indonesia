@@ -1624,6 +1624,13 @@ pub fn method_invocation_conversion(
     let from = canonicalize_named(env, from);
     let to = canonicalize_named(env, to);
 
+    // Error recovery: treat unknown/error types as compatible with anything to avoid cascading
+    // resolution failures (e.g. overload resolution during IDE completion when the active argument
+    // expression is still empty).
+    if from.is_errorish() || to.is_errorish() {
+        return Some(Conversion::new(ConversionStep::Identity));
+    }
+
     if let Some(conv) = strict_method_invocation_conversion(env, &from, &to) {
         return Some(conv);
     }

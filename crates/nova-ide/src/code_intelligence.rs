@@ -3257,6 +3257,8 @@ fn general_completions(
 ) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
+    let mut types = TypeStore::with_minimal_jdk();
+    let expected_arg_ty = expected_argument_type_for_completion(&mut types, &analysis, offset);
     let mut items = Vec::new();
 
     maybe_add_lambda_snippet_completion(
@@ -3269,9 +3271,16 @@ fn general_completions(
     );
 
     for m in &analysis.methods {
+        if let Some(expected) = expected_arg_ty.as_ref() {
+            let ret = parse_source_type(&mut types, &m.ret_ty);
+            if nova_types::assignment_conversion(&types, &ret, expected).is_none() {
+                continue;
+            }
+        }
         items.push(CompletionItem {
             label: m.name.clone(),
             kind: Some(CompletionItemKind::METHOD),
+            detail: Some(m.ret_ty.clone()),
             insert_text: Some(format!("{}()", m.name)),
             ..Default::default()
         });
@@ -3287,6 +3296,12 @@ fn general_completions(
 
         // Method params are always in scope within the body.
         for p in &method.params {
+            if let Some(expected) = expected_arg_ty.as_ref() {
+                let ty = parse_source_type(&mut types, &p.ty);
+                if nova_types::assignment_conversion(&types, &ty, expected).is_none() {
+                    continue;
+                }
+            }
             items.push(CompletionItem {
                 label: p.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
@@ -3310,6 +3325,12 @@ fn general_completions(
             if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
                 continue;
             }
+            if let Some(expected) = expected_arg_ty.as_ref() {
+                let ty = parse_source_type(&mut types, &v.ty);
+                if nova_types::assignment_conversion(&types, &ty, expected).is_none() {
+                    continue;
+                }
+            }
             items.push(CompletionItem {
                 label: v.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
@@ -3321,6 +3342,12 @@ fn general_completions(
 
     for f in &analysis.fields {
         if f.name.starts_with(prefix) {
+            if let Some(expected) = expected_arg_ty.as_ref() {
+                let ty = parse_source_type(&mut types, &f.ty);
+                if nova_types::assignment_conversion(&types, &ty, expected).is_none() {
+                    continue;
+                }
+            }
             items.push(CompletionItem {
                 label: f.name.clone(),
                 kind: Some(CompletionItemKind::FIELD),
@@ -3420,7 +3447,10 @@ fn general_completions(
     let last_used_offsets = last_used_offsets(&analysis, offset);
 
     let in_scope_types = in_scope_types(&analysis, enclosing_method, offset);
-    let expected_type = infer_expected_type(&analysis, offset, prefix_start, &in_scope_types);
+    let expected_type = expected_arg_ty
+        .as_ref()
+        .map(|ty| nova_types::format_type(&types, ty))
+        .or_else(|| infer_expected_type(&analysis, offset, prefix_start, &in_scope_types));
 
     let ctx = CompletionRankingContext {
         expected_type,
@@ -5473,6 +5503,156 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
                 .unwrap_or(Type::Unknown),
         },
     }
+}
+
+fn expected_argument_type_for_completion(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    offset: usize,
+) -> Option<Type> {
+    let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
+
+    let (receiver_ty, call_kind) = infer_call_receiver(types, analysis, call)?;
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    ensure_type_methods_loaded(types, &receiver_ty);
+
+    // Best-effort argument typing: infer known argument types, but ensure we include the active
+    // argument position even when it's currently empty (`foo(<|>)`).
+    //
+    // We use `Type::Unknown` for missing args and rely on `nova-types`'s recovery rules to keep
+    // overload resolution progressing even when the expression is incomplete.
+    let arity = call.arg_starts.len().max(active_parameter + 1);
+    let mut args = Vec::with_capacity(arity);
+    for idx in 0..arity {
+        match call.arg_starts.get(idx) {
+            Some(start) => args.push(infer_expr_type_at(types, analysis, *start)),
+            None => args.push(Type::Unknown),
+        }
+    }
+
+    let method_call = MethodCall {
+        receiver: receiver_ty,
+        call_kind,
+        name: call.name.as_str(),
+        args,
+        expected_return: None,
+        explicit_type_args: Vec::new(),
+    };
+
+    let mut ctx = TyContext::new(&*types);
+    let resolved = match nova_types::resolve_method_call(&mut ctx, &method_call) {
+        MethodResolution::Found(method) => method,
+        MethodResolution::Ambiguous(methods) => methods.candidates.into_iter().next()?,
+        MethodResolution::NotFound(_) => return None,
+    };
+
+    resolved.params.get(active_parameter).cloned()
+}
+
+fn call_expr_for_argument_list<'a>(
+    analysis: &'a Analysis,
+    offset: usize,
+) -> Option<(&'a CallExpr, usize)> {
+    // Find the innermost call whose argument list includes the cursor (best-effort).
+    let call = analysis
+        .calls
+        .iter()
+        .filter(|c| c.name_span.end <= offset && offset <= c.close_paren)
+        .min_by_key(|c| c.close_paren)?;
+
+    let active_parameter = call
+        .arg_starts
+        .iter()
+        .enumerate()
+        .filter(|(_, start)| **start <= offset)
+        .map(|(idx, _)| idx)
+        .last()
+        .unwrap_or(0);
+
+    Some((call, active_parameter))
+}
+
+fn infer_call_receiver(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    call: &CallExpr,
+) -> Option<(Type, CallKind)> {
+    if let Some(receiver) = call.receiver.as_deref() {
+        let (mut receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+        receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
+        return Some((receiver_ty, call_kind));
+    }
+
+    // Unqualified calls are treated as `this.<name>(...)`. Best-effort: use the enclosing class
+    // name as the receiver type and load local methods so we can resolve the call.
+    let class = analysis
+        .classes
+        .iter()
+        .find(|c| span_contains(c.span, call.name_span.start))?;
+    let class_id = ensure_local_class_id(types, analysis, class);
+    Some((Type::class(class_id, vec![]), CallKind::Instance))
+}
+
+fn ensure_local_class_receiver(types: &mut TypeStore, analysis: &Analysis, receiver_ty: Type) -> Type {
+    let name = match &receiver_ty {
+        Type::Named(name) => Some(name.as_str()),
+        Type::Class(nova_types::ClassType { def, .. }) => types.class(*def).map(|c| c.name.as_str()),
+        _ => None,
+    };
+
+    let Some(name) = name else {
+        return receiver_ty;
+    };
+    let Some(class) = analysis.classes.iter().find(|c| c.name == name) else {
+        return receiver_ty;
+    };
+
+    let id = ensure_local_class_id(types, analysis, class);
+    Type::class(id, vec![])
+}
+
+fn ensure_local_class_id(types: &mut TypeStore, analysis: &Analysis, class: &ClassDecl) -> ClassId {
+    let id = types.class_id(&class.name).unwrap_or_else(|| {
+        let object = Type::class(types.well_known().object, vec![]);
+        types.add_class(nova_types::ClassDef {
+            name: class.name.clone(),
+            kind: ClassKind::Class,
+            type_params: Vec::new(),
+            super_class: Some(object),
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            constructors: Vec::new(),
+            methods: Vec::new(),
+        })
+    });
+
+    let methods = analysis
+        .methods
+        .iter()
+        .filter(|m| span_within(m.name_span, class.span))
+        .map(|m| MethodDef {
+            name: m.name.clone(),
+            type_params: Vec::new(),
+            params: m
+                .params
+                .iter()
+                .map(|p| parse_source_type(types, &p.ty))
+                .collect(),
+            return_type: parse_source_type(types, &m.ret_ty),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(class_def) = types.class_mut(id) {
+        merge_method_defs(&mut class_def.methods, methods);
+    }
+
+    id
 }
 
 fn ensure_type_methods_loaded(types: &mut TypeStore, receiver: &Type) {
