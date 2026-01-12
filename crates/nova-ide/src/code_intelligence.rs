@@ -5326,14 +5326,27 @@ pub(crate) fn core_completions(
         }
         return Vec::new();
     }
-    if offset_in_java_string_or_char_literal(text, offset) {
-        return Vec::new();
-    }
 
     if cancel.is_cancelled() {
         return Vec::new();
     }
     let (prefix_start, prefix) = identifier_prefix(text, offset);
+
+    // Suppress non-framework completions inside string-like literals (strings, text blocks, and
+    // char literals). Framework-aware string completion providers run outside of `core_completions`.
+    if offset_in_java_string_or_char_literal(text, offset) {
+        // Provide minimal string-context completions for common escape sequences, while still
+        // suppressing all "normal" Java completions inside strings.
+        if let Some((replace_start, items)) =
+            java_string_escape_completions(text, offset, prefix_start, &prefix)
+        {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            return decorate_completions(&text_index, replace_start, offset, items);
+        }
+        return Vec::new();
+    }
 
     // Prefer `import static Foo.<member>` completions over generic import path completions so we
     // surface static members (e.g. `max`) instead of only offering `*`.
@@ -5644,6 +5657,71 @@ class A {
         // Sanity check: non-cancelled requests should still produce completions.
         let not_cancelled = nova_scheduler::CancellationToken::new();
         assert!(!core_completions(&db, file, position, &not_cancelled).is_empty());
+    }
+
+    #[test]
+    fn core_completions_inside_string_literal_escape_sequence_suggests_escapes() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        let source = r#"
+class A {
+  void m() {
+    String s = "\n";
+  }
+}
+"#;
+        db.set_file_text(file, source.to_string());
+
+        let offset = source
+            .find("\\n")
+            .expect("expected `\\\\n` in fixture")
+            + "\\n".len();
+        let position = crate::text::offset_to_position(source, offset);
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        let items = core_completions(&db, file, position, &cancel);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+
+        assert!(
+            labels.contains(&r#"\n"#),
+            "expected escape completions (e.g. `\\\\n`) inside string literal; got {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"if"),
+            "expected completion list to not contain Java keywords like `if`; got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn core_completions_inside_string_literal_unicode_escape_sequence_suggests_unicode_snippet() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        let source = r#"
+class A {
+  void m() {
+    String s = "\u";
+  }
+}
+"#;
+        db.set_file_text(file, source.to_string());
+
+        let offset = source
+            .find("\\u")
+            .expect("expected `\\\\u` in fixture")
+            + "\\u".len();
+        let position = crate::text::offset_to_position(source, offset);
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        let items = core_completions(&db, file, position, &cancel);
+
+        let unicode = items.iter().find(|i| i.label == r#"\u0000"#).unwrap_or_else(|| {
+            panic!(
+                "expected unicode escape completion inside string literal; got labels {:?}",
+                items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u${1:0000}"#));
+        assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
     }
 }
 
