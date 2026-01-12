@@ -2727,6 +2727,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let _ = loader.ensure_class(name);
                 }
             }
+            Type::Array(elem) => self.ensure_type_loaded(loader, elem),
+            Type::Intersection(types) => {
+                for ty in types {
+                    self.ensure_type_loaded(loader, ty);
+                }
+            }
+            Type::Wildcard(WildcardBound::Unbounded) => {}
+            Type::Wildcard(WildcardBound::Extends(ty) | WildcardBound::Super(ty)) => {
+                self.ensure_type_loaded(loader, ty);
+            }
             _ => {}
         }
     }
@@ -3124,6 +3134,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.local_types[catch.param.idx()] = catch_ty.clone();
                     self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
 
+                    self.ensure_type_loaded(loader, &catch_ty);
                     if !catch_ty.is_errorish() {
                         // Best-effort: some minimal environments may not define Throwable.
                         if let Some(throwable_id) = loader.store.lookup_class("java.lang.Throwable")
@@ -3152,6 +3163,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::Throw { expr, .. } => {
                 let expr_ty = self.infer_expr(loader, *expr).ty;
 
+                self.ensure_type_loaded(loader, &expr_ty);
                 if expr_ty.is_errorish() {
                     return;
                 }
