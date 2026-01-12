@@ -292,6 +292,43 @@ fn loads_gradle_multi_module_workspace() {
 }
 
 #[test]
+fn loads_gradle_multi_module_workspace_includes_root_project_when_it_has_sources() {
+    let root = testdata_path("gradle-multi-root-sources");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    // Root sources should be indexed, even when `settings.gradle` includes subprojects.
+    let roots: BTreeSet<_> = config
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("src/main/java"))));
+
+    // For determinism, the root module is always first.
+    assert_eq!(config.modules[0].root, config.workspace_root);
+
+    // Ensure config is deterministic.
+    let config2 =
+        load_project_with_options(&root, &options).expect("load gradle project again");
+    assert_eq!(config, config2);
+}
+
+#[test]
 fn loads_gradle_projectdir_mapping_workspace() {
     let root = testdata_path("gradle-projectdir-mapping");
     let gradle_home = tempdir().expect("tempdir");
@@ -575,6 +612,10 @@ fn loads_gradle_multi_module_workspace_model() {
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
+    // The `gradle-multi` fixture is an aggregator-only root project (no `src/main/java`), so we
+    // should not synthesize a root module.
+    assert!(model.module_by_id("gradle::").is_none());
+
     let _app = model.module_by_id("gradle::app").expect("app module");
     let lib = model.module_by_id("gradle::lib").expect("lib module");
 
@@ -617,6 +658,55 @@ fn loads_gradle_multi_module_workspace_model() {
         .expect("module for Lib.java");
     assert_eq!(match_lib.module.id, "gradle::lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
+fn loads_gradle_multi_module_workspace_model_includes_root_project_when_it_has_sources() {
+    let root = testdata_path("gradle-multi-root-sources");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    // For determinism, the root module is always first.
+    assert_eq!(model.modules[0].id, "gradle::");
+
+    let root_module = model
+        .module_by_id("gradle::")
+        .expect("root gradle module");
+    let root_source_roots: BTreeSet<_> = root_module
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.origin,
+                sr.path
+                    .strip_prefix(&model.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(root_source_roots.contains(&(
+        SourceRootKind::Main,
+        SourceRootOrigin::Source,
+        PathBuf::from("src/main/java")
+    )));
+
+    let root_file = model
+        .workspace_root
+        .join("src/main/java/com/example/root/Root.java");
+    let match_root = model
+        .module_for_path(&root_file)
+        .expect("module for Root.java");
+    assert_eq!(match_root.module.id, "gradle::");
+    assert_eq!(match_root.source_root.kind, SourceRootKind::Main);
 }
 
 #[test]

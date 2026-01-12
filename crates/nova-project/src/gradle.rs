@@ -13,6 +13,26 @@ use crate::{
     WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 
+fn root_project_has_sources(root: &Path) -> bool {
+    // Standard Gradle layout.
+    if root.join("src/main/java").is_dir() || root.join("src/test/java").is_dir() {
+        return true;
+    }
+
+    // Custom Gradle source sets (e.g. `src/integrationTest/java`).
+    let src_dir = root.join("src");
+    let Ok(entries) = std::fs::read_dir(&src_dir) else {
+        return false;
+    };
+
+    entries.filter_map(|entry| entry.ok()).any(|entry| {
+        let Ok(source_set) = entry.file_name().into_string() else {
+            return false;
+        };
+        src_dir.join(source_set).join("java").is_dir()
+    })
+}
+
 pub(crate) fn load_gradle_project(
     root: &Path,
     options: &LoadOptions,
@@ -22,7 +42,7 @@ pub(crate) fn load_gradle_project(
         .map(|name| root.join(name))
         .find(|p| p.is_file());
 
-    let module_names = if let Some(settings_path) = settings_path {
+    let mut module_names = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
             std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
@@ -32,6 +52,17 @@ pub(crate) fn load_gradle_project(
     } else {
         vec![".".to_string()]
     };
+
+    // When a Gradle workspace defines subprojects in `settings.gradle(.kts)`, we usually treat the
+    // included projects as the workspace modules (excluding the root project). However, some
+    // workspaces also keep Java sources in the root project; in that case we include the root as a
+    // module too. For determinism, we always put the root module first.
+    if settings_path.is_some()
+        && root_project_has_sources(root)
+        && !module_names.iter().any(|name| name == ".")
+    {
+        module_names.insert(0, ".".to_string());
+    }
 
     let mut modules = Vec::new();
     let mut source_roots = Vec::new();
@@ -179,7 +210,7 @@ pub(crate) fn load_gradle_workspace_model(
         .map(|name| root.join(name))
         .find(|p| p.is_file());
 
-    let module_refs = if let Some(settings_path) = settings_path {
+    let mut module_refs = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
             std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
@@ -189,6 +220,15 @@ pub(crate) fn load_gradle_workspace_model(
     } else {
         vec![GradleModuleRef::root()]
     };
+
+    // See `load_gradle_project`: include the root project as a module when it contains sources,
+    // even if subprojects exist. Keep the root first for deterministic ordering.
+    if settings_path.is_some()
+        && root_project_has_sources(root)
+        && !module_refs.iter().any(|m| m.dir_rel == ".")
+    {
+        module_refs.insert(0, GradleModuleRef::root());
+    }
 
     let (root_java, root_java_provenance) = match parse_gradle_java_config_with_path(root) {
         Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
