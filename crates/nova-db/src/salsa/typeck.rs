@@ -9270,7 +9270,7 @@ fn resolve_type_ref_text<'idx>(
     // skip type-use annotations even when `TypeRef.text` is whitespace-stripped (e.g.
     // `@A String` becomes `@AString`).
     preload_type_names(resolver, scopes, scope_id, loader, text);
-    nova_resolve::type_ref::resolve_type_ref_text(
+    let mut resolved = nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
         scopes,
         scope_id,
@@ -9278,7 +9278,47 @@ fn resolve_type_ref_text<'idx>(
         type_vars,
         text,
         base_span,
-    )
+    );
+    strip_type_use_annotation_type_diagnostics(text, base_span, &mut resolved.diagnostics);
+    resolved
+}
+
+fn strip_type_use_annotation_type_diagnostics(
+    text: &str,
+    base_span: Option<Span>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(base_span) = base_span else {
+        return;
+    };
+    if !text.as_bytes().contains(&b'@') {
+        return;
+    }
+
+    diagnostics.retain(|diag| {
+        if diag.code.as_ref() != "unresolved-type" {
+            return true;
+        }
+        let Some(span) = diag.span else {
+            return true;
+        };
+        if span.start < base_span.start {
+            return true;
+        }
+        let local_start = span.start - base_span.start;
+        if local_start == 0 || local_start > text.len() || !text.is_char_boundary(local_start) {
+            return true;
+        }
+
+        // Type-use annotations are currently syntax-only in Nova; suppress unresolved-type errors
+        // for the annotation *type* name (e.g. `List<@Missing String>`). We keep the underlying
+        // type reference diagnostics (e.g. unresolved `List` or `String`) intact.
+        let prev_non_ws = text[..local_start]
+            .chars()
+            .rev()
+            .find(|ch| !ch.is_whitespace());
+        !matches!(prev_non_ws, Some('@'))
+    });
 }
 
 #[derive(Default)]
