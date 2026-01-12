@@ -35,8 +35,8 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │  ✓ Rename (+ prepareRename)                                      │
 │  ✓ Semantic tokens (full + delta)                                │
 │  ✓ Inlay hints                                                  │
-│  ○ Hover                                                        │
-│  ○ Signature help                                               │
+│  ✓ Hover                                                        │
+│  ✓ Signature help                                               │
 │  ○ Find references                                              │
 │  ✓ Document highlight                                           │
 │  ✓ Folding range                                                │
@@ -110,6 +110,8 @@ fn main() -> std::io::Result<()> {
 fn handle_request(method: &str, params: serde_json::Value) -> serde_json::Value {
     match method {
         "textDocument/completion" => handle_completion(params),
+        "textDocument/hover" => handle_hover(params),
+        "textDocument/signatureHelp" => handle_signature_help(params),
         "completionItem/resolve" => handle_completion_resolve(params),
         "textDocument/semanticTokens/full" => handle_semantic_tokens_full(params),
         "textDocument/semanticTokens/full/delta" => handle_semantic_tokens_full_delta(params),
