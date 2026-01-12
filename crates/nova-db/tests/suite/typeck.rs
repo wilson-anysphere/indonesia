@@ -2526,6 +2526,123 @@ fn cross_file_signature_type_resolves_via_star_import() {
 }
 
 #[test]
+fn cross_file_nested_type_reference_resolves_in_same_package() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let outer_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        outer_file,
+        "src/p/Outer.java",
+        "package p; class Outer { static class Inner {} }",
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/p/Use.java",
+        "package p; class Use { Outer.Inner x; }",
+    );
+    db.set_project_files(project, Arc::new(vec![outer_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+        "expected nested workspace type to resolve via qualified name, got {diags:?}"
+    );
+}
+
+#[test]
+fn cross_file_nested_type_resolves_via_import() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let outer_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        outer_file,
+        "src/p/Outer.java",
+        "package p; class Outer { static class Inner {} }",
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/q/Use.java",
+        "package q; import p.Outer.Inner; class Use { Inner x; }",
+    );
+    db.set_project_files(project, Arc::new(vec![outer_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+        "expected nested workspace type to resolve via single-type import, got {diags:?}"
+    );
+}
+
+#[test]
+fn cross_file_nested_type_resolves_via_type_star_import() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let outer_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        outer_file,
+        "src/p/Outer.java",
+        "package p; class Outer { static class Inner {} }",
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/q/Use.java",
+        "package q; import p.Outer.*; class Use { Inner x; }",
+    );
+    db.set_project_files(project, Arc::new(vec![outer_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+        "expected nested workspace type to resolve via type-import-on-demand, got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_generic_method_call_resolves_and_infers_return_type() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
