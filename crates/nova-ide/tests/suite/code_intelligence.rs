@@ -224,6 +224,49 @@ class A {
 }
 
 #[test]
+fn completion_is_suppressed_in_string_template_interpolation_line_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  int x;
+  void m() {
+    String s = STR."x=\{
+      // comm<|>ent
+      this.x
+    }";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside string template interpolation line comment; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_is_suppressed_in_string_template_interpolation_block_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  int x;
+  void m() {
+    String s = STR."x=\{ /* comm<|>ent */ this.x }";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside string template interpolation block comment; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_this_members() {
     let (db, file, pos) = fixture(
         r#"

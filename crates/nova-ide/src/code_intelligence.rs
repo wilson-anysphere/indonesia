@@ -4567,10 +4567,11 @@ fn java_comment_at_offset(text: &str, offset: usize) -> Option<JavaCommentAtOffs
         return None;
     }
 
-    // Best-effort: use the lightweight lexer-backed parser so we don't accidentally treat `//`
-    // inside string literals as comments.
-    let parse = nova_syntax::parse(text);
-    for tok in parse.tokens() {
+    // Best-effort: use the full lexer so we don't accidentally treat comment-like sequences
+    // inside string/char literals as comments, while still handling string template
+    // interpolations (`\{ ... }`) as normal Java code.
+    let tokens = nova_syntax::lex(text);
+    for tok in &tokens {
         let start = tok.range.start as usize;
         let end = tok.range.end as usize;
 
@@ -4603,6 +4604,28 @@ fn java_comment_at_offset(text: &str, offset: usize) -> Option<JavaCommentAtOffs
                     let kind = match tok.kind {
                         nova_syntax::SyntaxKind::DocComment => JavaCommentKind::Doc,
                         _ => JavaCommentKind::Block,
+                    };
+                    return Some(JavaCommentAtOffset { kind, start, end });
+                }
+            }
+            nova_syntax::SyntaxKind::Error => {
+                // Unterminated block/doc comments are lexed as `Error`. Treat them as comment-like
+                // so completions stay suppressed while the user is still typing.
+                let raw = tok.text(text);
+                if !raw.starts_with("/*") {
+                    continue;
+                }
+
+                if offset < start.saturating_add(2) {
+                    continue;
+                }
+
+                let terminated = raw.ends_with("*/");
+                if offset < end || (!terminated && offset == end) {
+                    let kind = if raw.starts_with("/**") {
+                        JavaCommentKind::Doc
+                    } else {
+                        JavaCommentKind::Block
                     };
                     return Some(JavaCommentAtOffset { kind, start, end });
                 }
