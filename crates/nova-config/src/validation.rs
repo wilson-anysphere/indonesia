@@ -133,6 +133,14 @@ fn validate_jdk(
             }
         };
 
+        if release == 0 {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path,
+                message: "must be >= 1".to_string(),
+            });
+            continue;
+        }
+
         if let Some(prev) = seen_releases.insert(release, release_key.clone()) {
             // Note: toolchains are deserialized into an insertion-ordered map, so later entries in
             // the TOML file win.

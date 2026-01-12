@@ -1,6 +1,5 @@
 ---
 source: crates/nova-config/tests/schema_snapshot.rs
-assertion_line: 4
 expression: schema
 ---
 {
@@ -1343,7 +1342,7 @@ expression: schema
           },
           "propertyNames": {
             "type": "string",
-            "pattern": "^[0-9]+$"
+            "pattern": "^(0*[1-9][0-9]*)$"
           }
         }
       },

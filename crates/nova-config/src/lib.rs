@@ -1176,6 +1176,13 @@ impl NovaConfig {
         let mut toolchains_by_release: BTreeMap<u16, PathBuf> = BTreeMap::new();
         for (release_key, home) in &self.jdk.toolchains {
             match release_key.parse::<u16>() {
+                Ok(0) => {
+                    tracing::warn!(
+                        target: "nova.config",
+                        key = %release_key,
+                        "ignoring JDK toolchain release key 0 (must be >= 1)"
+                    );
+                }
                 Ok(release) => {
                     toolchains_by_release.insert(release, home.clone());
                 }
@@ -1196,7 +1203,7 @@ impl NovaConfig {
 
         nova_core::JdkConfig {
             home: self.jdk.home.clone(),
-            release: self.jdk.release,
+            release: self.jdk.release.filter(|release| *release >= 1),
             toolchains,
         }
     }

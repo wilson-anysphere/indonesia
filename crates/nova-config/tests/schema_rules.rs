@@ -455,7 +455,7 @@ fn json_schema_requires_numeric_jdk_toolchain_keys_and_non_empty_values() {
         value
             .pointer("/definitions/JdkConfig/properties/toolchains/propertyNames/pattern")
             .and_then(|v| v.as_str()),
-        Some("^[0-9]+$")
+        Some("^(0*[1-9][0-9]*)$")
     );
     assert_eq!(
         value

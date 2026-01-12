@@ -430,7 +430,9 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     set_min_length(schema, "JdkConfig", "jdk_home", 1);
     set_minimum(schema, "JdkConfig", "release", 1.0);
     set_minimum(schema, "JdkConfig", "target_release", 1.0);
-    set_map_property_names_pattern(schema, "JdkConfig", "toolchains", "^[0-9]+$");
+    // Toolchain keys represent Java feature releases. Accept leading zeros for parity with TOML
+    // (e.g. `"08" = "/path/to/jdk8"`), but disallow `0` / all-zero values.
+    set_map_property_names_pattern(schema, "JdkConfig", "toolchains", "^(0*[1-9][0-9]*)$");
     set_map_value_min_length(schema, "JdkConfig", "toolchains", 1);
     set_min_length(schema, "LoggingConfig", "file", 1);
     set_min_length(schema, "AuditLogConfig", "path", 1);

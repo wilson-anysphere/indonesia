@@ -987,6 +987,33 @@ toolchains = {{ "08" = "{}", "8" = "{}" }}
 }
 
 #[test]
+fn validates_jdk_toolchain_release_is_positive() {
+    let dir = tempdir().expect("tempdir");
+    let toolchain_dir = dir.path().join("jdk0");
+    std::fs::create_dir_all(&toolchain_dir).expect("create toolchain dir");
+
+    let text = format!(
+        r#"
+[jdk]
+toolchains = {{ "0" = "{}" }}
+"#,
+        toolchain_dir.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert!(diagnostics.warnings.is_empty());
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "jdk.toolchains.0".to_string(),
+            message: "must be >= 1".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_jdk_toolchain_home_exists() {
     let dir = tempdir().expect("tempdir");
     let missing = dir.path().join("missing-jdk-toolchain");
