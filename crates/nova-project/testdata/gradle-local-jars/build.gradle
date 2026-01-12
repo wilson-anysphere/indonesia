@@ -1,0 +1,14 @@
+plugins {
+    id "java"
+}
+
+sourceCompatibility = "17"
+targetCompatibility = "17"
+
+dependencies {
+    // Local jar declared explicitly.
+    implementation files("libs/local.jar")
+
+    // Common "libs/*.jar" pattern.
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+}

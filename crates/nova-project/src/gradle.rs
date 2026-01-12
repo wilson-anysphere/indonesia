@@ -105,6 +105,10 @@ pub(crate) fn load_gradle_project(
 
         // Dependency extraction is best-effort; useful for later external jar resolution.
         dependencies.extend(parse_gradle_dependencies(&module_root));
+
+        // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
+        // This intentionally does not attempt full Gradle dependency resolution.
+        dependency_entries.extend(parse_gradle_local_classpath_entries(&module_root));
     }
 
     // Sort/dedup before resolving jars so we don't scan the cache repeatedly for
@@ -265,6 +269,9 @@ pub(crate) fn load_gradle_workspace_model(
             },
         ];
 
+        // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
+        // This intentionally does not attempt full Gradle dependency resolution.
+        classpath.extend(parse_gradle_local_classpath_entries(&module_root));
         let mut dependencies = parse_gradle_dependencies(&module_root);
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
@@ -888,6 +895,123 @@ fn parse_gradle_dependencies(module_root: &Path) -> Vec<Dependency> {
 
         out.extend(parse_gradle_dependencies_from_text(&contents));
     }
+    out
+}
+
+/// Best-effort extraction of local classpath entries from Gradle build scripts.
+///
+/// This is intended to cover common patterns like:
+/// - Groovy DSL: `implementation files('libs/foo.jar')`
+/// - Groovy DSL: `implementation fileTree(dir: 'libs', include: ['*.jar'])`
+/// - Kotlin DSL: `implementation(files("libs/foo.jar"))`
+///
+/// This does **not** attempt full Gradle dependency resolution.
+fn parse_gradle_local_classpath_entries(module_root: &Path) -> Vec<ClasspathEntry> {
+    let candidates = ["build.gradle.kts", "build.gradle"]
+        .into_iter()
+        .map(|name| module_root.join(name))
+        .filter(|p| p.is_file())
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::new();
+    for path in candidates {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        out.extend(parse_gradle_local_classpath_entries_from_text(
+            module_root,
+            &contents,
+        ));
+    }
+    out
+}
+
+fn parse_gradle_local_classpath_entries_from_text(
+    module_root: &Path,
+    contents: &str,
+) -> Vec<ClasspathEntry> {
+    static FILES_RE: OnceLock<Regex> = OnceLock::new();
+    static FILE_TREE_DIR_RE: OnceLock<Regex> = OnceLock::new();
+
+    // Note: this intentionally keeps the matcher simple; Gradle scripts are not trivially
+    // parseable without a real Groovy/Kotlin parser. We rely on "exists on disk" checks to
+    // avoid false positives.
+    let files_re = FILES_RE
+        .get_or_init(|| Regex::new(r#"(?s)\bfiles\s*\((?P<args>.*?)\)"#).expect("valid regex"));
+    let file_tree_dir_re = FILE_TREE_DIR_RE.get_or_init(|| {
+        Regex::new(r#"(?s)\bfileTree\s*\(\s*[^)]*?\bdir\s*:\s*['"](?P<dir>[^'"]+)['"]"#)
+            .expect("valid regex")
+    });
+
+    let mut out = Vec::new();
+
+    for caps in files_re.captures_iter(contents) {
+        let Some(args) = caps.name("args").map(|m| m.as_str()) else {
+            continue;
+        };
+        for raw in extract_quoted_strings(args) {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+
+            let raw_path = PathBuf::from(raw);
+            let path = if raw_path.is_absolute() {
+                raw_path
+            } else {
+                module_root.join(raw_path)
+            };
+
+            if path.is_file() {
+                if path.extension().is_some_and(|ext| ext == "jar") {
+                    out.push(ClasspathEntry {
+                        kind: ClasspathEntryKind::Jar,
+                        path,
+                    });
+                }
+            } else if path.is_dir() {
+                out.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Directory,
+                    path,
+                });
+            }
+        }
+    }
+
+    for caps in file_tree_dir_re.captures_iter(contents) {
+        let Some(dir) = caps.name("dir").map(|m| m.as_str()) else {
+            continue;
+        };
+        let dir = dir.trim();
+        if dir.is_empty() {
+            continue;
+        }
+
+        let raw_dir = PathBuf::from(dir);
+        let dir_path = if raw_dir.is_absolute() {
+            raw_dir
+        } else {
+            module_root.join(raw_dir)
+        };
+
+        if !dir_path.is_dir() {
+            continue;
+        }
+
+        for entry in WalkDir::new(&dir_path).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "jar") {
+                out.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path: path.to_path_buf(),
+                });
+            }
+        }
+    }
+
     out
 }
 

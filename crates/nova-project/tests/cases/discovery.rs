@@ -395,6 +395,38 @@ fn gradle_source_compatibility_overrides_toolchain_language_version() {
 }
 
 #[test]
+fn loads_gradle_local_jar_dependencies() {
+    let root = testdata_path("gradle-local-jars");
+    let config = load_project(&root).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    assert!(
+        config.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&config.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("libs/local.jar"))
+        }),
+        "expected libs/local.jar to be present on the resolved classpath"
+    );
+
+    assert!(
+        config.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&config.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("libs/tree-only.jar"))
+        }),
+        "expected fileTree(dir: \"libs\") to contribute jars on the resolved classpath"
+    );
+}
+
+#[test]
 fn loads_maven_multi_module_workspace_model() {
     let root = testdata_path("maven-multi");
     let repo_dir = tempdir().expect("tempdir");
@@ -680,6 +712,28 @@ fn loads_gradle_custom_source_sets_workspace_model() {
     assert_eq!(match_it.module.id, "gradle::app");
     assert_eq!(match_it.source_root.kind, SourceRootKind::Test);
     assert_eq!(match_it.source_root.origin, SourceRootOrigin::Source);
+}
+
+#[test]
+fn loads_gradle_local_jar_dependencies_into_workspace_model() {
+    let root = testdata_path("gradle-local-jars");
+    let model = load_workspace_model(&root).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let root_module = model.module_by_id("gradle::").expect("root module");
+
+    assert!(
+        root_module.classpath.iter().any(|cp| {
+            cp.kind == ClasspathEntryKind::Jar
+                && cp
+                    .path
+                    .strip_prefix(&model.workspace_root)
+                    .ok()
+                    .is_some_and(|p| p == std::path::Path::new("libs/local.jar"))
+        }),
+        "expected libs/local.jar to be present on the module classpath"
+    );
 }
 
 #[test]
