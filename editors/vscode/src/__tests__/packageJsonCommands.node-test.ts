@@ -305,6 +305,13 @@ test('package.json contributes Nova Frameworks + Project Explorer viewsWelcome e
   });
   assert.ok(hasServerMissingHint);
 
+  const hasSafeModeHint = frameworksWelcome.some((entry) => {
+    const when = typeof entry.when === 'string' ? entry.when : '';
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return when.includes('nova.frameworks.safeMode') && (contents.includes('nova.bugReport') || contents.toLowerCase().includes('bug report'));
+  });
+  assert.ok(hasSafeModeHint);
+
   const hasMicronautEndpointsContext = frameworksWelcome.some((entry) => {
     const when = typeof entry.when === 'string' ? entry.when : '';
     return when.includes('nova.frameworks.micronautEndpointsSupported');
