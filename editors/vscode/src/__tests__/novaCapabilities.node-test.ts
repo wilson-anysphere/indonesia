@@ -43,20 +43,54 @@ test('parseNovaExperimentalCapabilities parses requests/notifications into sets'
 });
 
 test('isNovaRequestSupported returns unknown when no capability set is available', () => {
-  resetNovaExperimentalCapabilities();
+  resetNovaExperimentalCapabilities('workspace-a');
 
-  assert.equal(isNovaRequestSupported('nova/test/run'), 'unknown');
-  assert.equal(isNovaRequestSupported('textDocument/formatting'), 'unknown');
+  assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/run'), 'unknown');
+  assert.equal(isNovaRequestSupported('workspace-a', 'textDocument/formatting'), 'unknown');
 });
 
 test('isNovaRequestSupported returns true/false when capability list is known', () => {
-  resetNovaExperimentalCapabilities();
-  setNovaExperimentalCapabilities({
+  resetNovaExperimentalCapabilities('workspace-a');
+  setNovaExperimentalCapabilities('workspace-a', {
     capabilities: { experimental: { nova: { requests: ['nova/test/run'], notifications: [] } } },
   });
 
-  assert.equal(isNovaRequestSupported('nova/test/run'), true);
-  assert.equal(isNovaRequestSupported('nova/test/discover'), false);
+  assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/run'), true);
+  assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/discover'), false);
+});
+
+test('capability lists are tracked per workspace key', () => {
+  resetNovaExperimentalCapabilities('workspace-a');
+  resetNovaExperimentalCapabilities('workspace-b');
+
+  setNovaExperimentalCapabilities('workspace-a', {
+    capabilities: { experimental: { nova: { requests: ['nova/test/run'], notifications: [] } } },
+  });
+  setNovaExperimentalCapabilities('workspace-b', {
+    capabilities: { experimental: { nova: { requests: ['nova/test/discover'], notifications: [] } } },
+  });
+
+  assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/run'), true);
+  assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/discover'), false);
+  assert.equal(isNovaRequestSupported('workspace-b', 'nova/test/run'), false);
+  assert.equal(isNovaRequestSupported('workspace-b', 'nova/test/discover'), true);
+});
+
+test('resetNovaExperimentalCapabilities clears only the given workspace key', () => {
+  resetNovaExperimentalCapabilities('workspace-a');
+  resetNovaExperimentalCapabilities('workspace-b');
+
+  setNovaExperimentalCapabilities('workspace-a', {
+    capabilities: { experimental: { nova: { requests: ['nova/test/run'], notifications: [] } } },
+  });
+  setNovaExperimentalCapabilities('workspace-b', {
+    capabilities: { experimental: { nova: { requests: ['nova/test/discover'], notifications: [] } } },
+  });
+
+  resetNovaExperimentalCapabilities('workspace-a');
+
+  assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/run'), 'unknown');
+  assert.equal(isNovaRequestSupported('workspace-b', 'nova/test/discover'), true);
 });
 
 test('isNovaMethodNotFoundError detects nova-lsp method-not-found patterns', () => {

@@ -5,7 +5,9 @@ export type NovaExperimentalCapabilities = {
   notifications: Set<string>;
 };
 
-let currentNovaExperimentalCapabilities: NovaExperimentalCapabilities | undefined;
+const DEFAULT_NOVA_CAPABILITIES_KEY = 'default';
+
+const novaExperimentalCapabilitiesByKey = new Map<string, NovaExperimentalCapabilities>();
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object') {
@@ -60,32 +62,66 @@ export function getSupportedNovaRequests(client: LanguageClient): Set<string> | 
   return parsed?.requests;
 }
 
-export function setNovaExperimentalCapabilities(initializeResult: unknown): void {
-  currentNovaExperimentalCapabilities = parseNovaExperimentalCapabilities(initializeResult);
+export function setNovaExperimentalCapabilities(key: string, initializeResult: unknown): void;
+export function setNovaExperimentalCapabilities(initializeResult: unknown): void;
+export function setNovaExperimentalCapabilities(keyOrInitializeResult: string | unknown, initializeResult?: unknown): void {
+  if (arguments.length === 2) {
+    const key = String(keyOrInitializeResult);
+    const parsed = parseNovaExperimentalCapabilities(initializeResult);
+    if (parsed) {
+      novaExperimentalCapabilitiesByKey.set(key, parsed);
+    } else {
+      novaExperimentalCapabilitiesByKey.delete(key);
+    }
+    return;
+  }
+
+  const parsed = parseNovaExperimentalCapabilities(keyOrInitializeResult);
+  if (parsed) {
+    novaExperimentalCapabilitiesByKey.set(DEFAULT_NOVA_CAPABILITIES_KEY, parsed);
+  } else {
+    novaExperimentalCapabilitiesByKey.delete(DEFAULT_NOVA_CAPABILITIES_KEY);
+  }
 }
 
-export function resetNovaExperimentalCapabilities(): void {
-  currentNovaExperimentalCapabilities = undefined;
+export function resetNovaExperimentalCapabilities(key: string): void;
+export function resetNovaExperimentalCapabilities(): void;
+export function resetNovaExperimentalCapabilities(key?: string): void {
+  novaExperimentalCapabilitiesByKey.delete(typeof key === 'string' ? key : DEFAULT_NOVA_CAPABILITIES_KEY);
 }
 
-export function isNovaRequestSupported(method: string): boolean | 'unknown' {
+export function isNovaRequestSupported(key: string, method: string): boolean | 'unknown';
+export function isNovaRequestSupported(method: string): boolean | 'unknown';
+export function isNovaRequestSupported(keyOrMethod: string, methodArg?: string): boolean | 'unknown' {
+  const key = typeof methodArg === 'string' ? keyOrMethod : DEFAULT_NOVA_CAPABILITIES_KEY;
+  const method = typeof methodArg === 'string' ? methodArg : keyOrMethod;
   if (!method.startsWith('nova/')) {
     return 'unknown';
   }
-  if (!currentNovaExperimentalCapabilities) {
+
+  const capabilities = novaExperimentalCapabilitiesByKey.get(key);
+  if (!capabilities) {
     return 'unknown';
   }
-  return currentNovaExperimentalCapabilities.requests.has(method);
+
+  return capabilities.requests.has(method);
 }
 
-export function isNovaNotificationSupported(method: string): boolean | 'unknown' {
+export function isNovaNotificationSupported(key: string, method: string): boolean | 'unknown';
+export function isNovaNotificationSupported(method: string): boolean | 'unknown';
+export function isNovaNotificationSupported(keyOrMethod: string, methodArg?: string): boolean | 'unknown' {
+  const key = typeof methodArg === 'string' ? keyOrMethod : DEFAULT_NOVA_CAPABILITIES_KEY;
+  const method = typeof methodArg === 'string' ? methodArg : keyOrMethod;
   if (!method.startsWith('nova/')) {
     return 'unknown';
   }
-  if (!currentNovaExperimentalCapabilities) {
+
+  const capabilities = novaExperimentalCapabilitiesByKey.get(key);
+  if (!capabilities) {
     return 'unknown';
   }
-  return currentNovaExperimentalCapabilities.notifications.has(method);
+
+  return capabilities.notifications.has(method);
 }
 
 export function formatUnsupportedNovaMethodMessage(method: string): string {

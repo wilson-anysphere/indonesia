@@ -70,6 +70,10 @@ const MAX_AI_CONTEXT_IDS = 50;
 const BUG_REPORT_COMMAND = 'nova.bugReport';
 const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
 
+// Capability tracking is keyed for multi-root workspaces (one client per folder). The VS Code
+// extension currently uses a single LanguageClient instance, so route all capability state
+// through a stable default key.
+const DEFAULT_NOVA_CAPABILITIES_KEY = 'default';
 type TestKind = 'class' | 'test';
 
 interface LspPosition {
@@ -603,7 +607,7 @@ export async function activate(context: vscode.ExtensionContext) {
       client = undefined;
       clientStart = undefined;
       currentServerCommand = undefined;
-      resetNovaExperimentalCapabilities();
+      resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
       detachObservability();
       aiRefreshInProgress = false;
       clearAiCompletionCache();
@@ -613,7 +617,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function startLanguageClient(serverCommand: string): Promise<void> {
     currentServerCommand = serverCommand;
-    resetNovaExperimentalCapabilities();
+    resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
     const launchConfig = readLspLaunchConfig();
     const serverOptions: ServerOptions = {
       command: serverCommand,
@@ -627,10 +631,10 @@ export async function activate(context: vscode.ExtensionContext) {
     clientStart = started.then(() => {
       // If the client restarted while we were awaiting initialization, don't overwrite the
       // active client's capabilities.
-      if (client !== languageClient) {
-        return;
-      }
-      setNovaExperimentalCapabilities(languageClient.initializeResult);
+       if (client !== languageClient) {
+         return;
+       }
+      setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
     });
 
     attachObservability(languageClient, clientStart);
@@ -1350,7 +1354,7 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         await requireClient();
         const method = 'nova/bugReport';
-        if (isNovaRequestSupported(method) === false) {
+        if (isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, method) === false) {
           void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
           return;
         }
@@ -1972,7 +1976,7 @@ async function sendNovaRequest<R>(
 ): Promise<R | undefined> {
   const c = await requireClient();
   if (method.startsWith('nova/')) {
-    const supported = isNovaRequestSupported(method);
+    const supported = isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, method);
     if (supported === false) {
       if (opts.allowMethodFallback) {
         throw createMethodNotFoundError(method);
