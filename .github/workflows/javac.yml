@@ -42,7 +42,7 @@ jobs:
         run: cargo test --locked -p nova-syntax --test harness suite::javac_corpus
 
       - name: Run javac smoke tests
-        run: cargo test --locked -p nova-types --test harness -- --ignored
+        run: cargo test --locked -p nova-types --test javac_differential -- --ignored
 
       - name: Run javac refactor tests
         run: cargo test --locked -p nova-refactor --test javac_refactors -- --ignored

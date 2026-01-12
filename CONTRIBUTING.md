@@ -133,10 +133,10 @@ Requires a JDK (`javac` on `PATH`):
 
 ```bash
 # Local dev
-cargo test --locked -p nova-types --test harness -- --ignored
+cargo test --locked -p nova-types --test javac_differential -- --ignored
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh test --locked -p nova-types --test harness -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
 ```
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)

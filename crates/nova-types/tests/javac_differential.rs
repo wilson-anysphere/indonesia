@@ -22,7 +22,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
     }
 
     root_rs_files.sort();
-    assert_eq!(root_rs_files, vec!["harness.rs"]);
+    assert_eq!(root_rs_files, vec!["javac_differential.rs"]);
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn ignored_tests_are_restricted_to_javac_smoke() {
     for file in rs_files {
         // `-- --ignored` is used by `.github/workflows/javac.yml` to run only the javac smoke tests.
         // Keep other integration tests non-ignored so this workflow doesn't accidentally pick them up.
-        if file.file_name().and_then(|s| s.to_str()) == Some("harness.rs") {
+        if file.file_name().and_then(|s| s.to_str()) == Some("javac_differential.rs") {
             continue;
         }
 
@@ -61,7 +61,7 @@ fn ignored_tests_are_restricted_to_javac_smoke() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("#[ignore") || trimmed.starts_with("#[ ignore") {
                 panic!(
-                    "Found #[ignore] in {} at line {}. Only javac smoke tests in tests/harness.rs should be ignored.",
+                    "Found #[ignore] in {} at line {}. Only javac smoke tests in tests/javac_differential.rs should be ignored.",
                     file.display(),
                     idx + 1
                 );
