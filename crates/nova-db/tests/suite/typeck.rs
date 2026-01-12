@@ -6046,6 +6046,63 @@ class D { void m(){ new C("x"); } }
 }
 
 #[test]
+fn source_default_constructor_is_available() {
+    let src = r#"
+class C { }
+class D { void m(){ new C(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected implicit default constructor to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn private_constructor_is_not_accessible() {
+    let src = r#"
+class C { private C(int x) {} }
+class D { void m(){ new C(1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-constructor"),
+        "expected private constructor call to be rejected; got {diags:?}"
+    );
+}
+
+#[test]
+fn varargs_constructor_call_resolves() {
+    let src = r#"
+class Foo { Foo(int... xs) {} }
+class Use {
+    void m() {
+        new Foo();
+        new Foo(1);
+        new Foo(1, 2, 3);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected varargs constructor calls to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn resolve_method_call_demand_resolves_constructor_call() {
     let src = r#"
 class C { C(int x) {} }
