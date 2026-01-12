@@ -22,6 +22,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use nova_core::ProjectId;
@@ -537,15 +538,20 @@ impl AnalyzerRegistry {
         self.analyzers
             .iter()
             .map(|a| a.as_ref())
-            .filter(move |a| a.applies_to(db, project))
+            .filter(move |a| catch_unwind(AssertUnwindSafe(|| a.applies_to(db, project))).unwrap_or(false))
     }
 
     /// Aggregate `FrameworkData` across all applicable analyzers.
     pub fn framework_data(&self, db: &dyn Database, file: FileId) -> Vec<FrameworkData> {
         let project = db.project_of_file(file);
-        self.applicable_analyzers(db, project)
-            .filter_map(|a| a.analyze_file(db, file))
-            .collect()
+        let mut out = Vec::new();
+        for analyzer in self.applicable_analyzers(db, project) {
+            let data = catch_unwind(AssertUnwindSafe(|| analyzer.analyze_file(db, file))).unwrap_or(None);
+            if let Some(data) = data {
+                out.push(data);
+            }
+        }
+        out
     }
 
     /// Collect all framework diagnostics for `file`.
@@ -553,7 +559,9 @@ impl AnalyzerRegistry {
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            out.extend(analyzer.diagnostics(db, file));
+            let diags =
+                catch_unwind(AssertUnwindSafe(|| analyzer.diagnostics(db, file))).unwrap_or_default();
+            out.extend(diags);
         }
         out
     }
@@ -571,11 +579,27 @@ impl AnalyzerRegistry {
 
         let project = db.project_of_file(file);
         let mut out = Vec::new();
-        for analyzer in self.applicable_analyzers(db, project) {
+        for analyzer in &self.analyzers {
             if cancel.is_cancelled() {
                 break;
             }
-            out.extend(analyzer.diagnostics_with_cancel(db, file, cancel));
+            let analyzer = analyzer.as_ref();
+
+            let applicable =
+                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))).unwrap_or(false);
+            if !applicable {
+                continue;
+            }
+
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let diags = catch_unwind(AssertUnwindSafe(|| {
+                analyzer.diagnostics_with_cancel(db, file, cancel)
+            }))
+            .unwrap_or_default();
+            out.extend(diags);
         }
         out
     }
@@ -588,7 +612,9 @@ impl AnalyzerRegistry {
     ) -> Vec<CompletionItem> {
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, ctx.project) {
-            out.extend(analyzer.completions(db, ctx));
+            let completions = catch_unwind(AssertUnwindSafe(|| analyzer.completions(db, ctx)))
+                .unwrap_or_default();
+            out.extend(completions);
         }
         out
     }
@@ -606,11 +632,28 @@ impl AnalyzerRegistry {
         }
 
         let mut out = Vec::new();
-        for analyzer in self.applicable_analyzers(db, ctx.project) {
+        for analyzer in &self.analyzers {
             if cancel.is_cancelled() {
                 break;
             }
-            out.extend(analyzer.completions_with_cancel(db, ctx, cancel));
+            let analyzer = analyzer.as_ref();
+
+            let applicable =
+                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, ctx.project)))
+                    .unwrap_or(false);
+            if !applicable {
+                continue;
+            }
+
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let completions = catch_unwind(AssertUnwindSafe(|| {
+                analyzer.completions_with_cancel(db, ctx, cancel)
+            }))
+            .unwrap_or_default();
+            out.extend(completions);
         }
         out
     }
@@ -628,7 +671,9 @@ impl AnalyzerRegistry {
 
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            out.extend(analyzer.navigation(db, symbol));
+            let nav =
+                catch_unwind(AssertUnwindSafe(|| analyzer.navigation(db, symbol))).unwrap_or_default();
+            out.extend(nav);
         }
         out
     }
@@ -650,11 +695,27 @@ impl AnalyzerRegistry {
         };
 
         let mut out = Vec::new();
-        for analyzer in self.applicable_analyzers(db, project) {
+        for analyzer in &self.analyzers {
             if cancel.is_cancelled() {
                 break;
             }
-            out.extend(analyzer.navigation_with_cancel(db, symbol, cancel));
+            let analyzer = analyzer.as_ref();
+
+            let applicable =
+                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))).unwrap_or(false);
+            if !applicable {
+                continue;
+            }
+
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let nav = catch_unwind(AssertUnwindSafe(|| {
+                analyzer.navigation_with_cancel(db, symbol, cancel)
+            }))
+            .unwrap_or_default();
+            out.extend(nav);
         }
         out
     }
@@ -666,9 +727,13 @@ impl AnalyzerRegistry {
         class: ClassId,
     ) -> Vec<VirtualMember> {
         let project = db.project_of_class(class);
-        self.applicable_analyzers(db, project)
-            .flat_map(|a| a.virtual_members(db, class))
-            .collect()
+        let mut out = Vec::new();
+        for analyzer in self.applicable_analyzers(db, project) {
+            let members = catch_unwind(AssertUnwindSafe(|| analyzer.virtual_members(db, class)))
+                .unwrap_or_default();
+            out.extend(members);
+        }
+        out
     }
 
     /// Backwards compatible name used by `nova-resolve`.
@@ -685,7 +750,9 @@ impl AnalyzerRegistry {
         let project = db.project_of_file(file);
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
-            out.extend(analyzer.inlay_hints(db, file));
+            let hints =
+                catch_unwind(AssertUnwindSafe(|| analyzer.inlay_hints(db, file))).unwrap_or_default();
+            out.extend(hints);
         }
         out
     }
@@ -703,11 +770,27 @@ impl AnalyzerRegistry {
 
         let project = db.project_of_file(file);
         let mut out = Vec::new();
-        for analyzer in self.applicable_analyzers(db, project) {
+        for analyzer in &self.analyzers {
             if cancel.is_cancelled() {
                 break;
             }
-            out.extend(analyzer.inlay_hints_with_cancel(db, file, cancel));
+            let analyzer = analyzer.as_ref();
+
+            let applicable =
+                catch_unwind(AssertUnwindSafe(|| analyzer.applies_to(db, project))).unwrap_or(false);
+            if !applicable {
+                continue;
+            }
+
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let hints = catch_unwind(AssertUnwindSafe(|| {
+                analyzer.inlay_hints_with_cancel(db, file, cancel)
+            }))
+            .unwrap_or_default();
+            out.extend(hints);
         }
         out
     }

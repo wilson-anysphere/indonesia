@@ -292,11 +292,13 @@ fn analyzer_registry_stops_running_analyzers_when_cancelled() {
     }
 
     struct SecondAnalyzer {
+        applies_to_calls: Arc<AtomicUsize>,
         calls: Arc<AtomicUsize>,
     }
 
     impl FrameworkAnalyzer for SecondAnalyzer {
         fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            self.applies_to_calls.fetch_add(1, Ordering::SeqCst);
             true
         }
 
@@ -320,6 +322,7 @@ fn analyzer_registry_stops_running_analyzers_when_cancelled() {
     let file = db.add_file(project);
 
     let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_applies_to_calls = Arc::new(AtomicUsize::new(0));
     let second_calls = Arc::new(AtomicUsize::new(0));
 
     let mut registry = AnalyzerRegistry::new();
@@ -327,6 +330,7 @@ fn analyzer_registry_stops_running_analyzers_when_cancelled() {
         calls: Arc::clone(&first_calls),
     }));
     registry.register(Box::new(SecondAnalyzer {
+        applies_to_calls: Arc::clone(&second_applies_to_calls),
         calls: Arc::clone(&second_calls),
     }));
 
@@ -338,8 +342,117 @@ fn analyzer_registry_stops_running_analyzers_when_cancelled() {
     assert_eq!(diags[0].code, "CANCEL");
     assert_eq!(first_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
+        second_applies_to_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop before calling applies_to after cancellation"
+    );
+    assert_eq!(
         second_calls.load(Ordering::SeqCst),
         0,
         "expected registry to stop after cancellation"
     );
+}
+
+#[test]
+fn analyzer_registry_with_cancel_short_circuits_before_applies_to_when_already_cancelled() {
+    struct AppliesToCounterAnalyzer {
+        applies_to_calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for AppliesToCounterAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            self.applies_to_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<Diagnostic> {
+            vec![Diagnostic::warning("SHOULD_NOT_RUN", "should-not-run", None)]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let applies_to_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(AppliesToCounterAnalyzer {
+        applies_to_calls: Arc::clone(&applies_to_calls),
+    }));
+
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let diags = registry.framework_diagnostics_with_cancel(&db, file, &cancel);
+    assert!(diags.is_empty());
+    assert_eq!(
+        applies_to_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to return before calling applies_to when already cancelled"
+    );
+}
+
+#[test]
+fn analyzer_registry_traps_panicking_analyzers_and_continues() {
+    struct PanicsInAppliesTo;
+
+    impl FrameworkAnalyzer for PanicsInAppliesTo {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            panic!("boom in applies_to");
+        }
+    }
+
+    struct PanicsInDiagnostics;
+
+    impl FrameworkAnalyzer for PanicsInDiagnostics {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<Diagnostic> {
+            panic!("boom in diagnostics_with_cancel");
+        }
+    }
+
+    struct GoodAnalyzer;
+
+    impl FrameworkAnalyzer for GoodAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<Diagnostic> {
+            vec![Diagnostic::warning("GOOD", "ok", None)]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(PanicsInAppliesTo));
+    registry.register(Box::new(PanicsInDiagnostics));
+    registry.register(Box::new(GoodAnalyzer));
+
+    let cancel = CancellationToken::new();
+    let diags = registry.framework_diagnostics_with_cancel(&db, file, &cancel);
+
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, "GOOD");
 }
