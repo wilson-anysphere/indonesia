@@ -1114,6 +1114,187 @@ class C {
 }
 
 #[test]
+fn resolve_method_call_demand_resolves_static_import_from_other_file() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let foo_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    let src_foo = r#"
+package p;
+class Foo {
+    static int bar() { return 0; }
+}
+"#;
+    let src_use = r#"
+package p;
+import static p.Foo.bar;
+class Use {
+    int m() { return bar(); }
+}
+"#;
+
+    set_file(&mut db, project, foo_file, "src/p/Foo.java", src_foo);
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![foo_file, use_file]));
+
+    // Find the call expression inside `Use.m`.
+    let tree = db.hir_item_tree(use_file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(use_file, m_ast_id);
+    let body = db.hir_body(m_id);
+    let call_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Return {
+                expr: Some(expr), ..
+            } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return statement with expression");
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(use_file, call_site)
+        .expect("expected method call resolution");
+    assert_eq!(resolved.name, "bar");
+    assert_eq!(resolved.return_type, Type::Primitive(PrimitiveType::Int));
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn resolve_method_call_demand_does_not_load_java_types_from_classpath_stubs() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // Create a classpath index that (incorrectly) contains a `java.*` class. The resolver should
+    // ignore these (mirroring JVM restrictions), and demand-driven type checking should not be
+    // able to "rescue" the type by lazily loading it from the classpath.
+    let foo_stub = nova_classpath::ClasspathClassStub {
+        binary_name: "java.fake.Foo".to_string(),
+        internal_name: "java/fake/Foo".to_string(),
+        access_flags: 0,
+        super_binary_name: None,
+        interfaces: Vec::new(),
+        signature: None,
+        annotations: Vec::new(),
+        fields: Vec::new(),
+        methods: vec![nova_classpath::ClasspathMethodStub {
+            name: "bar".to_string(),
+            descriptor: "()V".to_string(),
+            signature: None,
+            access_flags: 0,
+            annotations: Vec::new(),
+        }],
+    };
+
+    let module_aware_index =
+        nova_classpath::ModuleAwareClasspathIndex::from_stubs(vec![(foo_stub, None)]);
+    let classpath_index = module_aware_index.types.clone();
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath_index))));
+
+    let src = r#"
+class C {
+  void m() {
+    java.fake.Foo f = null;
+    f.bar();
+  }
+}
+"#;
+
+    let file = FileId::from_raw(1);
+    set_file(&mut db, project, file, "src/Test.java", src);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    // Find the call expression inside `C.m`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+    let call_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement");
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db.resolve_method_call_demand(file, call_site);
+    assert!(
+        resolved.is_none(),
+        "expected demand call resolution to fail for java.fake.Foo.bar (should not load java.* from classpath stubs), got {resolved:?}"
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
 fn source_varargs_method_call_resolves() {
     let src = r#"
 class C {
