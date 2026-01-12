@@ -866,8 +866,8 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // unresolved names don't get silently ignored in signatures.
         //
         // Only emit diagnostics when we have a base span to anchor them. Many callers (and tests)
-        // parse detached `TypeRef.text` strings with `base_span = None` and expect annotations to be
-        // skipped without diagnostics in that mode.
+        // parse detached `TypeRef.text` strings with `base_span = None` and expect annotations to
+        // be skipped without diagnostics in that mode.
         if self.base_span.is_none() || name_range.is_empty() {
             return;
         }
@@ -966,7 +966,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             text: self.text,
             pos: name_end,
             diagnostics: Vec::new(),
-            base_span: self.base_span,
+            // This parser is only used for ranking annotation-splitting candidates; it should not
+            // attempt to resolve type-use annotations and introduce extra (unanchored) diagnostics
+            // that would skew the heuristic.
+            base_span: None,
         };
 
         look.skip_ws();

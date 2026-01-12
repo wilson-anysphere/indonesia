@@ -912,10 +912,10 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         .diagnostics
         .iter()
         .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for missing annotation type");
+        .expect("expected unresolved-type diagnostic for type-use annotation type");
     let span = diag
         .span
-        .expect("expected anchored span for unresolved-type diagnostic");
+        .expect("unresolved-type diagnostic should have a span when anchored");
     assert_eq!(
         &text[span.start..span.end],
         "Missing",
