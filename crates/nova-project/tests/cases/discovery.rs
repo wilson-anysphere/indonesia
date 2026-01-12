@@ -420,6 +420,26 @@ fn loads_maven_multi_module_workspace_model() {
         .expect("module for Lib.java");
     assert_eq!(match_lib.module.id, "maven:com.example:lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
+
+    // Non-JPMS Maven workspace model: dependency jars should remain on the classpath and
+    // `module_path` should stay empty.
+    assert!(
+        app.module_path.is_empty(),
+        "expected module_path to remain empty for non-JPMS workspaces"
+    );
+    assert!(app.classpath.iter().any(|cp| {
+        cp.kind == ClasspathEntryKind::Jar
+            && cp
+                .path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("com/google/guava/guava/33.0.0-jre")
+    }));
+
+    // Ensure model is deterministic.
+    let model2 = load_workspace_model(&root).expect("load maven workspace model again");
+    assert_eq!(model.modules, model2.modules);
+    assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
 
 #[test]
