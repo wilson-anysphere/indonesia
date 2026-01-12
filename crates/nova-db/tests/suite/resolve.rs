@@ -60,8 +60,7 @@ fn set_file(
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
     db.set_source_root(file, SourceRootId::from_raw(0));
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(text.to_string()));
+    db.set_file_text(file, text);
 }
 
 #[test]
@@ -584,13 +583,11 @@ fn body_only_edit_does_not_recompute_resolution() {
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new("src/C.java".to_string()));
     db.set_source_root(file, SourceRootId::from_raw(0));
-    db.set_file_exists(file, true);
     db.set_project_files(project, Arc::new(vec![file]));
 
-    db.set_file_content(
+    db.set_file_text(
         file,
-        Arc::new(
-            r#"
+        r#"
 import com.example.dep.Foo;
 
 class C {
@@ -599,8 +596,6 @@ class C {
     }
 }
 "#
-            .to_string(),
-        ),
     );
 
     let file_scope = db.scope_graph(file).file_scope;
@@ -616,10 +611,9 @@ class C {
     assert_eq!(executions(&db, "resolve_name"), 1);
 
     // Body-only edit: the method body changes, but the file's structural names do not.
-    db.set_file_content(
+    db.set_file_text(
         file,
-        Arc::new(
-            r#"
+        r#"
 import com.example.dep.Foo;
 
 class C {
@@ -628,8 +622,6 @@ class C {
     }
 }
 "#
-            .to_string(),
-        ),
     );
 
     let second = db.resolve_name(file, file_scope, Name::from("Foo"));
@@ -885,10 +877,7 @@ class C {
     assert_eq!(executions(&db, "import_map"), 1);
 
     // Body-only edit: the method body changes, but imports stay identical.
-    db.set_file_content(
-        c_file,
-        Arc::new(text.replace("int x = 1;", "int x = 2;")),
-    );
+    db.set_file_text(c_file, text.replace("int x = 1;", "int x = 2;"));
 
     let second = db.import_diagnostics(c_file);
     assert_eq!(second.as_ref(), diags.as_ref());

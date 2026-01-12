@@ -47,8 +47,7 @@ fn set_file(
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
     db.set_source_root(file, SourceRootId::from_raw(0));
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(text.to_string()));
+    db.set_file_text(file, text);
 }
 
 fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {

@@ -69,8 +69,6 @@ fn external_class_ids_are_stable_across_bodies() {
     db.set_file_project(file_b, project);
     db.set_file_rel_path(file_a, Arc::new("src/A.java".to_string()));
     db.set_file_rel_path(file_b, Arc::new("src/B.java".to_string()));
-    db.set_file_exists(file_a, true);
-    db.set_file_exists(file_b, true);
     db.set_all_file_ids(Arc::new(vec![file_a, file_b]));
     db.set_project_files(project, Arc::new(vec![file_a, file_b]));
 
@@ -88,8 +86,8 @@ class B {
 }
 "#;
 
-    db.set_file_content(file_a, Arc::new(src_a.to_string()));
-    db.set_file_content(file_b, Arc::new(src_b.to_string()));
+    db.set_file_text(file_a, src_a);
+    db.set_file_text(file_b, src_b);
 
     let tree_a = db.hir_item_tree(file_a);
     let tree_b = db.hir_item_tree(file_b);

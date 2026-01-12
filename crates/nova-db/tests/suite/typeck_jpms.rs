@@ -54,8 +54,7 @@ fn set_file(
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
     db.set_source_root(file, SourceRootId::from_raw(0));
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(text.to_string()));
+    db.set_file_text(file, text);
 }
 
 #[test]
@@ -76,6 +75,9 @@ fn jpms_typeck_requires_is_enforced_for_module_path_automatic_modules() {
     let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
 
     let mut cfg = base_project_config(tmp.path().to_path_buf());
+    // Gradle builds often keep some dependencies on the classpath even in JPMS mode and apply
+    // `--add-reads <module>=ALL-UNNAMED`. This test exercises that best-effort behavior.
+    cfg.build_system = BuildSystem::Gradle;
     cfg.jpms_modules = vec![JpmsModuleRoot {
         name: ModuleName::new("workspace.a"),
         root: mod_a_root.clone(),

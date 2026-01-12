@@ -41,8 +41,7 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, TempDir, FileId) {
     db.set_file_rel_path(file, Arc::new("src/C.java".to_string()));
     db.set_file_path(file, "src/C.java");
     db.set_source_root(file, SourceRootId::from_raw(0));
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(text.to_string()));
+    db.set_file_text(file, text);
     db.set_all_file_ids(Arc::new(vec![file]));
     db.set_project_files(project, Arc::new(vec![file]));
 
@@ -135,4 +134,3 @@ class C {
         "expected flow diagnostics to run for at least one method"
     );
 }
-

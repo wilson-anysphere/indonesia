@@ -1,7 +1,6 @@
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
-use nova_db::salsa::{NovaHir, NovaInputs};
+use nova_db::salsa::NovaHir;
 use nova_db::{FileId, SalsaRootDatabase};
 
 #[test]
@@ -16,8 +15,7 @@ class Foo {
 
     let mut db = SalsaRootDatabase::default();
     let file = FileId::from_raw(0);
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(source.to_string()));
+    db.set_file_text(file, source);
 
     let snap = db.snapshot();
     let parse = snap.java_parse(file);
@@ -33,4 +31,3 @@ class Foo {
     assert_eq!(unit.types.len(), 1);
     assert_eq!(unit.types[0].name(), "Foo");
 }
-

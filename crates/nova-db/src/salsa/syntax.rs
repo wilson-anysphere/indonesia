@@ -342,12 +342,8 @@ mod tests {
         let file = FileId::from_raw(1);
         db.set_file_project(file, crate::ProjectId::from_raw(0));
 
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
-        db.set_file_content(
-            file,
-            Arc::new("class Foo { void m() { var x = 1; } }".to_string()),
-        );
+        db.set_file_text(file, "class Foo { void m() { var x = 1; } }");
 
         db.set_project_config(
             crate::ProjectId::from_raw(0),
@@ -380,14 +376,10 @@ mod tests {
         let file = FileId::from_raw(2);
         db.set_file_project(file, crate::ProjectId::from_raw(0));
 
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
-        db.set_file_content(
+        db.set_file_text(
             file,
-            Arc::new(
-                "class Foo { void m(int x) { switch (x) { case 1 -> { } default -> { } } } }"
-                    .to_string(),
-            ),
+            "class Foo { void m(int x) { switch (x) { case 1 -> { } default -> { } } } }",
         );
 
         db.set_project_config(

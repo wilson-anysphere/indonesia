@@ -79,7 +79,7 @@ use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
-use nova_syntax::SyntaxTreeStore;
+use nova_syntax::{SyntaxTreeStore, TextEdit};
 use nova_vfs::OpenDocuments;
 
 use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
@@ -591,12 +591,14 @@ struct SalsaInputs {
     //
     // `ra_salsa` input queries panic when a value hasn't been set, so we must
     // ensure `all_file_ids` only includes file IDs that are safe to query via
-    // `file_content`.
+    // the per-file text inputs (`file_content`, `file_prev_content`, `file_last_edit`, `file_is_dirty`).
     file_ids: BTreeSet<FileId>,
     file_ids_dirty: bool,
     file_exists: HashMap<FileId, bool>,
     file_project: HashMap<FileId, ProjectId>,
     file_content: HashMap<FileId, Arc<String>>,
+    file_prev_content: HashMap<FileId, Arc<String>>,
+    file_last_edit: HashMap<FileId, Option<TextEdit>>,
     file_is_dirty: HashMap<FileId, bool>,
     file_rel_path: HashMap<FileId, Arc<String>>,
     source_root: HashMap<FileId, SourceRootId>,
@@ -624,6 +626,12 @@ impl SalsaInputs {
         }
         for (&file, content) in &self.file_content {
             db.set_file_content(file, content.clone());
+        }
+        for (&file, content) in &self.file_prev_content {
+            db.set_file_prev_content(file, content.clone());
+        }
+        for (&file, edit) in &self.file_last_edit {
+            db.set_file_last_edit(file, edit.clone());
         }
         for (&file, &dirty) in &self.file_is_dirty {
             db.set_file_is_dirty(file, dirty);
@@ -821,6 +829,24 @@ impl RootDatabase {
 
     pub fn set_java_parse_store(&mut self, store: Option<Arc<nova_syntax::JavaParseStore>>) {
         self.java_parse_store = store;
+    }
+
+    /// Set the full text for `file`, initializing all incremental-parse metadata inputs.
+    ///
+    /// `ra_salsa` input queries panic when unset; callers using `RootDatabase` directly should
+    /// prefer this helper over individual setters to avoid missing incremental parsing inputs
+    /// like `file_prev_content` / `file_last_edit`.
+    pub fn set_file_text_full(&mut self, file: FileId, text: Arc<String>) {
+        self.set_file_exists(file, true);
+        self.set_file_content(file, text.clone());
+        self.set_file_prev_content(file, text);
+        self.set_file_last_edit(file, None);
+        self.set_file_is_dirty(file, false);
+    }
+
+    /// Convenience wrapper around [`RootDatabase::set_file_text_full`].
+    pub fn set_file_text(&mut self, file: FileId, text: impl Into<String>) {
+        self.set_file_text_full(file, Arc::new(text.into()));
     }
 
     pub fn persistence_stats(&self) -> crate::PersistenceStats {
@@ -1479,6 +1505,8 @@ impl Database {
         let init_dirty = {
             let mut inputs = self.inputs.lock();
             inputs.file_content.insert(file, content.clone());
+            inputs.file_prev_content.insert(file, content.clone());
+            inputs.file_last_edit.insert(file, None);
             if inputs.file_ids.insert(file) {
                 inputs.file_ids_dirty = true;
             }
@@ -1495,7 +1523,9 @@ impl Database {
         if init_dirty {
             db.set_file_is_dirty(file, false);
         }
-        db.set_file_content(file, content);
+        db.set_file_content(file, content.clone());
+        db.set_file_prev_content(file, content);
+        db.set_file_last_edit(file, None);
     }
 
     pub fn set_file_text(&self, file: FileId, text: impl Into<String>) {
@@ -1519,6 +1549,8 @@ impl Database {
             let mut inputs = self.inputs.lock();
             inputs.file_exists.insert(file, true);
             inputs.file_content.insert(file, text.clone());
+            inputs.file_prev_content.insert(file, text.clone());
+            inputs.file_last_edit.insert(file, None);
             if inputs.file_ids.insert(file) {
                 inputs.file_ids_dirty = true;
             }
@@ -1619,7 +1651,9 @@ impl Database {
         if set_default_classpath_index {
             db.set_classpath_index(project, None);
         }
-        db.set_file_content(file, text);
+        db.set_file_content(file, text.clone());
+        db.set_file_prev_content(file, text);
+        db.set_file_last_edit(file, None);
         drop(db);
 
         // Keep memory tracking in sync for implicit defaults.
@@ -1643,12 +1677,16 @@ impl Database {
     {
         let edit: nova_syntax::TextEdit =
             edit.try_into().expect("failed to convert edit into nova_syntax::TextEdit");
-        use std::collections::hash_map::Entry;
-
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
 
-        let (new_text, set_default_project, set_default_root, init_dirty, project_files_update) = {
+        let (
+            old_text,
+            new_text,
+            set_default_project,
+            set_default_root,
+            project_files_update,
+        ) = {
             let mut inputs = self.inputs.lock();
 
             inputs.file_exists.insert(file, true);
@@ -1665,14 +1703,6 @@ impl Database {
             if set_default_root {
                 inputs.source_root.insert(file, default_root);
             }
-
-            let init_dirty = match inputs.file_is_dirty.entry(file) {
-                Entry::Vacant(entry) => {
-                    entry.insert(false);
-                    true
-                }
-                Entry::Occupied(_) => false,
-            };
 
             let old_text = inputs
                 .file_content
@@ -1695,8 +1725,14 @@ impl Database {
             let mut new_text = old_text.as_str().to_string();
             new_text.replace_range(start..end, &edit.replacement);
             let new_text = Arc::new(new_text);
-            inputs.file_content.insert(file, new_text.clone());
 
+            // Store incremental parsing metadata so `parse_java` can attempt `reparse_java`.
+            inputs.file_prev_content.insert(file, old_text.clone());
+            inputs.file_content.insert(file, new_text.clone());
+            inputs.file_last_edit.insert(file, Some(edit.clone()));
+            inputs.file_is_dirty.insert(file, true);
+
+            // Ensure `project_files(project)` includes the edited file.
             let project = inputs.file_project.get(&file).copied().unwrap_or(default_project);
             let mut update: Option<Arc<Vec<FileId>>> = None;
             match inputs.project_files.get(&project) {
@@ -1718,10 +1754,10 @@ impl Database {
             }
 
             (
+                old_text,
                 new_text,
                 set_default_project,
                 set_default_root,
-                init_dirty,
                 update.map(|v| (project, v)),
             )
         };
@@ -1730,9 +1766,7 @@ impl Database {
             .record_file_content_len(file, new_text.len() as u64);
 
         let mut db = self.inner.lock();
-        if init_dirty {
-            db.set_file_is_dirty(file, false);
-        }
+        db.set_file_is_dirty(file, true);
         db.set_file_exists(file, true);
         if set_default_project {
             db.set_file_project(file, default_project);
@@ -1744,6 +1778,8 @@ impl Database {
             db.set_project_files(project, files);
         }
         db.set_file_content(file, new_text);
+        db.set_file_prev_content(file, old_text);
+        db.set_file_last_edit(file, Some(edit));
     }
 
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
@@ -2489,14 +2525,13 @@ mod tests {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
 
         let first = db.parse(file);
         assert_eq!(executions(&db, "parse"), 1);
 
         // Add tokens so the parse tree changes (not just ranges).
-        db.set_file_content(file, Arc::new("class Foo { int x; }".to_string()));
+        db.set_file_text(file, "class Foo { int x; }");
         let second = db.parse(file);
 
         assert_eq!(executions(&db, "parse"), 2);
@@ -2508,8 +2543,7 @@ mod tests {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
 
         let first_count = db.symbol_count(file);
         assert_eq!(first_count, 1);
@@ -2524,7 +2558,7 @@ mod tests {
         //
         // However, `symbol_summary` is stable (it only contains names), so
         // `symbol_count` can be reused via early-cutoff.
-        db.set_file_content(file, Arc::new("  class Foo {}".to_string()));
+        db.set_file_text(file, "  class Foo {}");
         let second_count = db.symbol_count(file);
 
         assert_eq!(second_count, first_count);
@@ -2549,11 +2583,7 @@ mod tests {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(
-            file,
-            Arc::new("class Foo { int x; void bar() {} }".to_string()),
-        );
+        db.set_file_text(file, "class Foo { int x; void bar() {} }");
 
         let tree = db.hir_item_tree(file);
         assert_eq!(tree.items.len(), 1);
@@ -2592,11 +2622,7 @@ mod tests {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(
-            file,
-            Arc::new("class Foo { int x; void bar() { int y = 1; } }".to_string()),
-        );
+        db.set_file_text(file, "class Foo { int x; void bar() { int y = 1; } }");
 
         let first = db.hir_symbol_names(file);
         assert_eq!(
@@ -2629,10 +2655,7 @@ mod tests {
         assert_eq!(executions(&db, "hir_item_tree"), 1);
         assert_eq!(executions(&db, "hir_symbol_names"), 1);
 
-        db.set_file_content(
-            file,
-            Arc::new("class Foo { int x; void bar() { int y = 1; int z = 0; } }".to_string()),
-        );
+        db.set_file_text(file, "class Foo { int x; void bar() { int y = 1; int z = 0; } }");
         let second = db.hir_symbol_names(file);
 
         assert_eq!(&*second, &*first);
@@ -2668,11 +2691,7 @@ mod tests {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(
-            file,
-            Arc::new("class Foo { int x; void bar() {} }".to_string()),
-        );
+        db.set_file_text(file, "class Foo { int x; void bar() {} }");
 
         let first = db.hir_symbol_names(file);
         assert_eq!(
@@ -2707,10 +2726,7 @@ mod tests {
 
         // Leading whitespace shifts spans throughout the file but should not force
         // recomputation of downstream name-only queries.
-        db.set_file_content(
-            file,
-            Arc::new("  class Foo { int x; void bar() {} }".to_string()),
-        );
+        db.set_file_text(file, "  class Foo { int x; void bar() {} }");
         let second = db.hir_symbol_names(file);
 
         assert_eq!(&*second, &*first);
@@ -2783,8 +2799,7 @@ class Foo {
 }
 "#;
 
-        db.set_file_exists(file, true);
-        db.set_file_content(file, Arc::new(source.to_string()));
+        db.set_file_text(file, source);
 
         let tree = db.hir_item_tree(file);
         assert_eq!(
@@ -2887,8 +2902,7 @@ class Foo {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
 
         let snap1 = db.snapshot();
         let snap2 = db.snapshot();
@@ -2907,9 +2921,8 @@ class Foo {
     fn request_cancellation_unwinds_inflight_queries() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
 
         assert_query_is_cancelled(db, move |snap| snap.interruptible_work(file, 5_000_000));
     }
@@ -2932,9 +2945,8 @@ class Foo {
     fn request_cancellation_unwinds_synthetic_semantic_query() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
 
         assert_query_is_cancelled(db, move |snap| {
             snap.synthetic_semantic_work(file, 5_000_000)
@@ -2947,7 +2959,6 @@ class Foo {
 
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
 
         // Build a body large enough to exceed the HIR lowering cancellation checkpoint interval.
@@ -2956,7 +2967,7 @@ class Foo {
             let _ = write!(source, "int v{i} = {i};");
         }
         source.push_str("} }");
-        db.set_file_content(file, Arc::new(source));
+        db.set_file_text(file, source);
 
         // Prime `hir_item_tree` (and its dependencies) so the cancellation harness exercises the
         // method body lowering work in `hir_body`.
@@ -2977,7 +2988,6 @@ class Foo {
     fn request_cancellation_unwinds_flow_diagnostics_query() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
 
         // Build a body large enough that `flow_diagnostics` is still executing after the
@@ -2987,7 +2997,7 @@ class Foo {
             source.push_str("x = x;");
         }
         source.push_str("} }");
-        db.set_file_content(file, Arc::new(source));
+        db.set_file_text(file, source);
 
         // Prime `hir_item_tree` so the cancellation harness focuses on flow analysis.
         let tree = db.hir_item_tree(file);
@@ -3010,8 +3020,7 @@ class Foo {
 
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
-        db.set_file_exists(file, true);
-        db.set_file_content(file, Arc::new("class Foo { int x; }".to_string()));
+        db.set_file_text(file, "class Foo { int x; }");
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let _guard =
@@ -3029,8 +3038,7 @@ class Foo {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
-        db.set_file_exists(file, true);
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
         db.clear_query_stats();
 
         db.parse(file);
@@ -3051,7 +3059,7 @@ class Foo {
         assert_eq!(second.validated_memoized, 1);
 
         // Editing an input should invalidate and re-execute the query.
-        db.set_file_content(file, Arc::new("class Foo { int x; }".to_string()));
+        db.set_file_text(file, "class Foo { int x; }");
         db.parse(file);
         let third = stat(&db, "parse");
         assert_eq!(third.executions, 2);
@@ -3063,9 +3071,8 @@ class Foo {
 
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
-        db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
-        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.set_file_text(file, "class Foo {}");
         db.clear_query_stats();
 
         let snap1 = db.snapshot();
@@ -3955,12 +3962,10 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg.clone(),
             },
-        );
-        rw_db.set_file_exists(file, true);
-        rw_db.set_file_path(file, file_path);
-        rw_db.set_file_content(file, text.clone());
-        rw_db.set_file_is_dirty(file, false);
-
+         );
+         rw_db.set_file_path(file, file_path);
+        rw_db.set_file_text_full(file, text.clone());
+ 
         let from_rw = rw_db.item_tree(file);
         drop(rw_db);
 
@@ -3971,12 +3976,10 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg.clone(),
             },
-        );
-        rw_db2.set_file_exists(file, true);
-        rw_db2.set_file_path(file, file_path);
-        rw_db2.set_file_content(file, text.clone());
-        rw_db2.set_file_is_dirty(file, false);
-
+         );
+         rw_db2.set_file_path(file, file_path);
+        rw_db2.set_file_text_full(file, text.clone());
+ 
         let from_cache = rw_db2.item_tree(file);
         assert_eq!(&*from_cache, &*from_rw);
         assert_eq!(executions(&rw_db2, "parse"), 0);
@@ -3990,12 +3993,10 @@ class Foo {
                 mode: crate::PersistenceMode::Disabled,
                 cache: cache_cfg,
             },
-        );
-        disabled_db.set_file_exists(file, true);
-        disabled_db.set_file_path(file, file_path);
-        disabled_db.set_file_content(file, text);
-        disabled_db.set_file_is_dirty(file, false);
-
+         );
+         disabled_db.set_file_path(file, file_path);
+        disabled_db.set_file_text_full(file, text);
+ 
         let from_disabled = disabled_db.item_tree(file);
         assert_eq!(&*from_disabled, &*from_rw);
         assert_eq!(stat(&disabled_db, "item_tree").disk_hits, 0);
@@ -4029,15 +4030,13 @@ class Foo {
                 cache: cache_cfg.clone(),
             },
         );
-        db.set_file_exists(file, true);
         db.set_file_path(file, rel_path);
-        db.set_file_content(file, Arc::new(disk_text.to_string()));
-        db.set_file_is_dirty(file, false);
+        db.set_file_text(file, disk_text);
         let _ = db.item_tree(file);
 
         // Second run in the same DB: mutate in-memory only (dirty overlay) and ensure we do *not*
         // overwrite the persisted artifacts.
-        db.set_file_content(file, Arc::new("class A { int x; }".to_string()));
+        db.set_file_text(file, "class A { int x; }");
         db.set_file_is_dirty(file, true);
         let _ = db.item_tree(file);
         drop(db);
@@ -4050,10 +4049,8 @@ class Foo {
                 cache: cache_cfg,
             },
         );
-        db.set_file_exists(file, true);
         db.set_file_path(file, rel_path);
-        db.set_file_content(file, Arc::new(disk_text.to_string()));
-        db.set_file_is_dirty(file, false);
+        db.set_file_text(file, disk_text);
 
         db.clear_query_stats();
         let _ = db.item_tree(file);
@@ -4091,11 +4088,9 @@ class Foo {
                 mode: crate::PersistenceMode::ReadOnly,
                 cache: cache_cfg.clone(),
             },
-        );
-        ro_db.set_file_exists(file, true);
-        ro_db.set_file_path(file, rel_path);
-        ro_db.set_file_content(file, text.clone());
-        ro_db.set_file_is_dirty(file, false);
+         );
+         ro_db.set_file_path(file, rel_path);
+        ro_db.set_file_text_full(file, text.clone());
         let ro_tree = ro_db.item_tree(file);
         assert_eq!(stat(&ro_db, "item_tree").disk_hits, 0);
         assert_eq!(stat(&ro_db, "item_tree").disk_misses, 1);
@@ -4124,11 +4119,9 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg,
             },
-        );
-        rw_db.set_file_exists(file, true);
-        rw_db.set_file_path(file, rel_path);
-        rw_db.set_file_content(file, text);
-        rw_db.set_file_is_dirty(file, false);
+         );
+         rw_db.set_file_path(file, rel_path);
+        rw_db.set_file_text_full(file, text);
         let rw_tree = rw_db.item_tree(file);
         assert_eq!(&*rw_tree, &*ro_tree);
         assert_eq!(stat(&rw_db, "item_tree").disk_hits, 0);
@@ -4159,11 +4152,9 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg.clone(),
             },
-        );
-        db.set_file_exists(file, true);
-        db.set_file_path(file, rel_path);
-        db.set_file_content(file, text.clone());
-        db.set_file_is_dirty(file, false);
+         );
+         db.set_file_path(file, rel_path);
+        db.set_file_text_full(file, text.clone());
         let expected = db.item_tree(file);
         drop(db);
 
@@ -4187,12 +4178,10 @@ class Foo {
                     cache_root_override: Some(cache_root),
                 },
             },
-        );
-        db2.set_file_exists(file, true);
-        db2.set_file_path(file, rel_path);
-        db2.set_file_content(file, text);
-        db2.set_file_is_dirty(file, false);
-
+         );
+         db2.set_file_path(file, rel_path);
+        db2.set_file_text_full(file, text);
+ 
         let actual = db2.item_tree(file);
         assert_eq!(&*actual, &*expected);
         assert_eq!(stat(&db2, "item_tree").disk_hits, 0);
@@ -4232,9 +4221,8 @@ class Foo {
                     cache: cache_cfg.clone(),
                 },
             );
-            db.set_file_exists(file, true);
             db.set_file_path(file, file_path);
-            db.set_file_content(file, Arc::new("hello world".to_string()));
+            db.set_file_text(file, "hello world");
 
             let words = db.uppercased_file_words(file);
             assert_eq!(words, vec!["HELLO".to_string(), "WORLD".to_string()]);
@@ -4252,9 +4240,8 @@ class Foo {
                 cache: cache_cfg.clone(),
             },
         );
-        db.set_file_exists(file, true);
         db.set_file_path(file, file_path);
-        db.set_file_content(file, Arc::new("hello world".to_string()));
+        db.set_file_text(file, "hello world");
 
         let words = db.uppercased_file_words(file);
         assert_eq!(words, vec!["HELLO".to_string(), "WORLD".to_string()]);
@@ -4265,7 +4252,7 @@ class Foo {
         );
 
         // Input change: should invalidate and recompute.
-        db.set_file_content(file, Arc::new("hello nova".to_string()));
+        db.set_file_text(file, "hello nova");
         let words = db.uppercased_file_words(file);
         assert_eq!(words, vec!["HELLO".to_string(), "NOVA".to_string()]);
         assert_eq!(

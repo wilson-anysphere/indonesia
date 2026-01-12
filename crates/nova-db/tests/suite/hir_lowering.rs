@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use nova_db::salsa::{NovaFlow, NovaHir, NovaInputs};
+use nova_db::salsa::{NovaFlow, NovaHir};
 use nova_db::{FileId, SalsaRootDatabase};
 use nova_hir::hir::{Body, Expr, ExprId};
 
@@ -44,8 +42,7 @@ class Foo {
 
     let mut db = SalsaRootDatabase::default();
     let file = FileId::from_raw(0);
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(source.to_string()));
+    db.set_file_text(file, source);
 
     let snap = db.snapshot();
     let tree = snap.hir_item_tree(file);
@@ -95,8 +92,7 @@ class Foo {
 
     let mut db = SalsaRootDatabase::default();
     let file = FileId::from_raw(0);
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(source.to_string()));
+    db.set_file_text(file, source);
 
     let snap = db.snapshot();
     let tree = snap.hir_item_tree(file);
@@ -128,8 +124,7 @@ class Foo {
 fn flow_diagnostics_for_method(source: &str, method_name: &str) -> Vec<nova_types::Diagnostic> {
     let mut db = SalsaRootDatabase::default();
     let file = FileId::from_raw(0);
-    db.set_file_exists(file, true);
-    db.set_file_content(file, Arc::new(source.to_string()));
+    db.set_file_text(file, source);
 
     let snap = db.snapshot();
     let tree = snap.hir_item_tree(file);

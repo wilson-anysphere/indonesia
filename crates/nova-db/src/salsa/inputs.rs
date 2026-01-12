@@ -4,6 +4,7 @@ use nova_classpath::ClasspathIndex;
 use nova_core::ClassId;
 use nova_jdk::JdkIndex;
 use nova_project::ProjectConfig;
+use nova_syntax::TextEdit;
 
 use crate::{FileId, ProjectId, SourceRootId};
 
@@ -14,6 +15,20 @@ pub trait NovaInputs: ra_salsa::Database {
     /// File content as last provided by the host (e.g. LSP text document sync).
     #[ra_salsa::input]
     fn file_content(&self, file: FileId) -> Arc<String>;
+
+    /// Previous file content snapshot used for incremental parsing.
+    ///
+    /// When paired with [`NovaInputs::file_last_edit`], this can be used by
+    /// syntax queries to reparse incrementally.
+    #[ra_salsa::input]
+    fn file_prev_content(&self, file: FileId) -> Arc<String>;
+
+    /// The most recent edit applied to `file`, if known.
+    ///
+    /// When set, syntax queries may attempt to reparse incrementally using
+    /// [`NovaInputs::file_prev_content`] as the "before" text.
+    #[ra_salsa::input]
+    fn file_last_edit(&self, file: FileId) -> Option<TextEdit>;
 
     /// Whether the host considers the file content to be "dirty" (in-memory edits not yet saved
     /// to disk).
