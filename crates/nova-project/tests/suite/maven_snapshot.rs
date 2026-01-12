@@ -146,3 +146,83 @@ fn omits_timestamped_snapshot_jars_when_artifact_is_missing() {
         "expected snapshot jar to be omitted when missing on disk, got: {jar_entries:?}"
     );
 }
+
+#[test]
+fn falls_back_to_conventional_snapshot_jar_when_timestamped_artifact_is_missing() {
+    let repo = tempdir().expect("temp repo");
+    let repo_root = repo.path();
+
+    let version_dir = repo_root.join("com/example/dep/1.0-SNAPSHOT");
+    std::fs::create_dir_all(&version_dir).expect("mkdir dep version dir");
+
+    // Typical timestamped SNAPSHOT jar filename, but do not create it on disk.
+    let timestamped_jar_name = "dep-1.0-20260112.123456-1.jar";
+    assert!(
+        !version_dir.join(timestamped_jar_name).exists(),
+        "timestamped jar should not exist for this test"
+    );
+
+    // Create the conventional `*-SNAPSHOT.jar` artifact that some local repos use.
+    let fallback_jar_name = "dep-1.0-SNAPSHOT.jar";
+    let fallback_jar_path = version_dir.join(fallback_jar_name);
+    std::fs::write(&fallback_jar_path, b"").expect("write fallback jar placeholder");
+
+    // Maven metadata that resolves to the missing timestamped jar.
+    let metadata = r#"
+        <metadata>
+          <groupId>com.example</groupId>
+          <artifactId>dep</artifactId>
+          <version>1.0-SNAPSHOT</version>
+          <versioning>
+            <snapshotVersions>
+              <snapshotVersion>
+                <extension>jar</extension>
+                <value>1.0-20260112.123456-1</value>
+                <updated>20260112123456</updated>
+              </snapshotVersion>
+            </snapshotVersions>
+          </versioning>
+        </metadata>
+    "#;
+    std::fs::write(version_dir.join("maven-metadata-local.xml"), metadata).expect("write metadata");
+
+    let workspace = tempdir().expect("temp workspace");
+    let root = workspace.path();
+
+    let pom = r#"
+        <project>
+          <modelVersion>4.0.0</modelVersion>
+          <groupId>com.example</groupId>
+          <artifactId>app</artifactId>
+          <version>1.0</version>
+          <dependencies>
+            <dependency>
+              <groupId>com.example</groupId>
+              <artifactId>dep</artifactId>
+              <version>1.0-SNAPSHOT</version>
+            </dependency>
+          </dependencies>
+        </project>
+    "#;
+    std::fs::write(root.join("pom.xml"), pom).expect("write pom.xml");
+
+    let mut options = LoadOptions::default();
+    options.maven_repo = Some(repo_root.to_path_buf());
+
+    let config = load_project_with_options(root, &options).expect("load project");
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+
+    assert!(
+        jar_entries.iter().any(|p| p == &fallback_jar_path),
+        "expected conventional SNAPSHOT jar to be used as a fallback when timestamped artifact is missing, got: {jar_entries:?}"
+    );
+    assert!(
+        !jar_entries.iter().any(|p| p.to_string_lossy().ends_with(timestamped_jar_name)),
+        "did not expect missing timestamped SNAPSHOT jar to appear on classpath, got: {jar_entries:?}"
+    );
+}
