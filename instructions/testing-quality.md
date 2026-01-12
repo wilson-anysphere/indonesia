@@ -167,12 +167,17 @@ proptest! {
 ### Setup
 
 ```bash
-# Install cargo-fuzz
-cargo install cargo-fuzz
+# Install a nightly toolchain with LLVM tools (required by `cargo-fuzz`).
+rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 
-# Run fuzz target
-cd fuzz
-cargo +nightly fuzz run parse_java
+# Install cargo-fuzz
+cargo +nightly install cargo-fuzz --locked
+
+# List available fuzz targets in the main harness (`./fuzz/`).
+cargo +nightly fuzz list
+
+# Run a fuzz target (from the repo root).
+cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 ```
 
 ### Fuzz Targets
@@ -181,11 +186,39 @@ cargo +nightly fuzz run parse_java
 fuzz/
 ├── Cargo.toml
 ├── corpus/           # Seed inputs
-│   └── parse_java/
+│   ├── fuzz_syntax_parse/
+│   ├── fuzz_format/
+│   ├── fuzz_classfile/
+│   └── fuzz_junit_report/
 └── fuzz_targets/
+    ├── fuzz_syntax_parse.rs
+    ├── fuzz_format.rs
+    ├── fuzz_classfile.rs
+    ├── fuzz_junit_report.rs
     ├── parse_java.rs
-    ├── type_check.rs
-    └── completion.rs
+    ├── format_java.rs          # formatter idempotence
+    └── refactor_smoke.rs       # requires `--features refactor`
+```
+
+Nova also has per-crate fuzz harnesses for the remote protocol/transport surface area:
+
+- `crates/nova-remote-proto/fuzz/`:
+  - `decode_framed_message`
+  - `decode_v3_wire_frame`
+  - `decode_v3_rpc_payload`
+- `crates/nova-remote-rpc/fuzz/`:
+  - `v3_framed_transport`
+
+Run these from the crate directory:
+
+```bash
+cd crates/nova-remote-proto
+cargo +nightly fuzz list
+cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-remote-rpc
+cargo +nightly fuzz list
+cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
 ```
 
 ### Writing Fuzz Targets

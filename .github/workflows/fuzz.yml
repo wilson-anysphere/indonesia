@@ -27,6 +27,8 @@ jobs:
           workspaces: |
             . -> target
             fuzz -> target
+            crates/nova-remote-proto/fuzz -> target
+            crates/nova-remote-rpc/fuzz -> target
 
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz --locked
@@ -37,16 +39,41 @@ jobs:
       - name: fuzz_format
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_format -- -max_total_time=60 -max_len=262144
 
+      - name: format_java (idempotence)
+        run: cargo +nightly fuzz run --codegen-units 16 format_java -- -max_total_time=30 -max_len=262144
+
       - name: fuzz_classfile
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_classfile -- -max_total_time=60 -max_len=262144
 
       - name: fuzz_junit_report
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_junit_report -- -max_total_time=60 -max_len=262144
 
+      - name: refactor_smoke (best-effort; --features refactor)
+        run: cargo +nightly fuzz run --codegen-units 16 --features refactor refactor_smoke -- -max_total_time=30 -max_len=262144
+
+      - name: nova-remote-proto/decode_framed_message
+        working-directory: crates/nova-remote-proto
+        run: cargo +nightly fuzz run --codegen-units 16 decode_framed_message -- -max_total_time=30 -max_len=262144
+
+      - name: nova-remote-proto/decode_v3_wire_frame
+        working-directory: crates/nova-remote-proto
+        run: cargo +nightly fuzz run --codegen-units 16 decode_v3_wire_frame -- -max_total_time=30 -max_len=262144
+
+      - name: nova-remote-proto/decode_v3_rpc_payload
+        working-directory: crates/nova-remote-proto
+        run: cargo +nightly fuzz run --codegen-units 16 decode_v3_rpc_payload -- -max_total_time=30 -max_len=262144
+
+      - name: nova-remote-rpc/v3_framed_transport
+        working-directory: crates/nova-remote-rpc
+        run: cargo +nightly fuzz run --codegen-units 16 v3_framed_transport -- -max_total_time=30 -max_len=262144
+
       - name: Upload fuzz artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifacts
-          path: fuzz/artifacts/**
+          path: |
+            fuzz/artifacts/**
+            crates/nova-remote-proto/fuzz/artifacts/**
+            crates/nova-remote-rpc/fuzz/artifacts/**
           if-no-files-found: ignore

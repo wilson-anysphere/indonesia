@@ -346,7 +346,7 @@ NOVA_REAL_PROJECT=guava,spring-petclinic ./scripts/javac-validate.sh
 ### 5) Fuzzing (`cargo fuzz`)
 
 Nova uses `cargo-fuzz` for “never panic” hardening (parser, formatter, classfile parsing, and selected
-refactoring surfaces).
+refactoring surfaces, plus selected protocol/codec surfaces).
 
 CI runs these fuzz targets in `.github/workflows/fuzz.yml` (scheduled + manual).
 
@@ -356,9 +356,15 @@ CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled +
 
 **Where:**
 
-- Targets live under `fuzz/fuzz_targets/`
-- Seed corpora live under `fuzz/corpus/<target>/`
-- Crash artifacts (if any) are written under `fuzz/artifacts/<target>/`
+- Main fuzz targets live under `fuzz/fuzz_targets/`
+- Remote protocol fuzz targets live under:
+  - `crates/nova-remote-proto/fuzz/fuzz_targets/`
+  - `crates/nova-remote-rpc/fuzz/fuzz_targets/`
+- Seed corpora (main harness) live under `fuzz/corpus/<target>/`
+- Crash artifacts (if any) are written under:
+  - `fuzz/artifacts/<target>/` (main harness)
+  - `crates/nova-remote-proto/fuzz/artifacts/<target>/`
+  - `crates/nova-remote-rpc/fuzz/artifacts/<target>/`
 
 **Run locally (from the repo root):**
 
@@ -369,6 +375,7 @@ cargo +nightly install cargo-fuzz --locked
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 ```
 
 There are additional targets (e.g. `parse_java`, `format_java`, and `refactor_smoke` which requires
@@ -376,6 +383,18 @@ There are additional targets (e.g. `parse_java`, `format_java`, and `refactor_sm
 
 ```bash
 cargo +nightly fuzz list
+```
+
+Remote protocol fuzzers must be run from their crate directory:
+
+```bash
+cd crates/nova-remote-proto
+cargo +nightly fuzz list
+cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-remote-rpc
+cargo +nightly fuzz list
+cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
 ```
 
 ---
@@ -568,7 +587,7 @@ In practice, Nova’s CI splits into:
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths`, `cargo bench -p nova-syntax --bench parse_java`, `cargo bench -p nova-format --bench format`, `cargo bench -p nova-refactor --bench refactor`, `cargo bench -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
-| `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
+| `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144` |
 | `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.

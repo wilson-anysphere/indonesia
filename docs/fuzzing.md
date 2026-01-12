@@ -22,7 +22,7 @@ cargo +nightly install cargo-fuzz --locked
 
 ## Running fuzz targets
 
-All commands below are run from the repository root.
+Unless otherwise noted, commands below are run from the repository root.
 
 > Note: the first `cargo fuzz` run can take a while because the toolchain builds the Rust standard
 > library with the selected fuzzing settings. Subsequent runs reuse `fuzz/target/` and are much
@@ -90,7 +90,31 @@ cargo +nightly fuzz run --features refactor refactor_smoke -- -max_total_time=60
   ignored; the target only enforces that Nova never panics or hangs while attempting a small set of
   best-effort refactorings.
 
-Seed corpora live under `fuzz/corpus/<target>/`.
+### Remote protocol fuzzers (`nova-remote-*`)
+
+Nova’s remote transport/protocol crates have their **own** `cargo-fuzz` harnesses:
+
+- `crates/nova-remote-proto/fuzz/` (codec + framing):
+  - `decode_framed_message`
+  - `decode_v3_wire_frame`
+  - `decode_v3_rpc_payload`
+- `crates/nova-remote-rpc/fuzz/` (transport):
+  - `v3_framed_transport`
+
+Run these from the crate directory (not the repo root):
+
+```bash
+cd crates/nova-remote-proto
+cargo +nightly fuzz list
+cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-remote-rpc
+cargo +nightly fuzz list
+cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+```
+
+Seed corpora live under `fuzz/corpus/<target>/` (and under `crates/*/fuzz/corpus/<target>/` for
+per-crate harnesses).
 
 ## Hangs, timeouts, and input size caps
 
@@ -103,23 +127,35 @@ Each fuzz target:
 
 When a failure is found, libFuzzer writes the triggering input to:
 
-`fuzz/artifacts/<target>/`
+`fuzz/artifacts/<target>/` (relative to the harness root):
+
+- main harness: `./fuzz/artifacts/<target>/`
+- per-crate harnesses: `./crates/<crate>/fuzz/artifacts/<target>/`
 
 ### Reproducing a failure
 
 ```bash
+# Main harness (run from the repo root)
 cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<artifact>
+
+# Per-crate harness (run from that crate directory)
+(cd crates/nova-remote-proto && cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<artifact>)
 ```
 
 ### Minimizing a crash input
 
 ```bash
+# Main harness (run from the repo root)
 cargo +nightly fuzz tmin <target> fuzz/artifacts/<target>/<artifact>
+
+# Per-crate harness (run from that crate directory)
+(cd crates/nova-remote-proto && cargo +nightly fuzz tmin <target> fuzz/artifacts/<target>/<artifact>)
 ```
 
 ### Minimizing a corpus (optional)
 
-If you have a large local corpus under `fuzz/corpus/<target>/`, you can shrink it:
+If you have a large local corpus under `fuzz/corpus/<target>/` (or a per-crate `fuzz/corpus/<target>/`),
+you can shrink it by running from that harness root:
 
 ```bash
 cargo +nightly fuzz cmin <target>

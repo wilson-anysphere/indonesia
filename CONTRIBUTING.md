@@ -207,7 +207,8 @@ For capture/compare tooling and threshold configuration, see [`perf/README.md`](
 
 Nova ships [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) targets under `fuzz/` to
 continuously test core parsing and formatting surfaces against panics, hangs, and other robustness
-issues. For more details (timeouts, minimization), see [`docs/fuzzing.md`](docs/fuzzing.md).
+issues. For more details (timeouts, minimization, remote protocol fuzzers), see
+[`docs/fuzzing.md`](docs/fuzzing.md).
 
 ```bash
 rustup toolchain install nightly --component llvm-tools-preview --component rust-src
@@ -217,10 +218,33 @@ cargo +nightly install cargo-fuzz --locked
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 ```
 
-Seed corpora live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
+Seed corpora (main harness) live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
 `fuzz/artifacts/<target>/`.
+
+There are additional targets (e.g. `format_java` idempotence and `refactor_smoke` which requires
+`--features refactor`)—list them with:
+
+```bash
+cargo +nightly fuzz list
+```
+
+Remote protocol fuzzers live in separate harnesses and must be run from their crate directory:
+
+```bash
+cd crates/nova-remote-proto
+cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+
+cd ../nova-remote-rpc
+cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+```
+
+Crash artifacts for these per-crate harnesses are written under:
+
+- `crates/nova-remote-proto/fuzz/artifacts/<target>/`
+- `crates/nova-remote-rpc/fuzz/artifacts/<target>/`
 
 ## VS Code extension development
 
