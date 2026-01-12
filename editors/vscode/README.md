@@ -330,6 +330,7 @@ the language server.
 ### Build / Project
 
 - `nova.build.autoReloadOnBuildFileChange` (boolean): automatically reload Nova’s project model when build configuration files change (for example `pom.xml`, `build.gradle`, `WORKSPACE`). Set to `false` to disable.
+- `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for **Nova: Build Project** and **Nova: Reload Project**. Use `"prompt"` to choose each time.
 
 ## Packaging
 
