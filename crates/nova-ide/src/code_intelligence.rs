@@ -12,9 +12,9 @@ use std::sync::Arc;
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
     CompletionItemKind, CompletionTextEdit, DiagnosticSeverity, DocumentSymbol, Hover,
-    HoverContents, InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString,
-    Position, Range, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
-    SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem, InsertTextFormat,
+    HoverContents, InlayHint, InlayHintKind, InsertTextFormat, Location, MarkupContent, MarkupKind,
+    NumberOrString, Position, Range, SemanticToken, SemanticTokenType, SemanticTokensLegend,
+    SignatureHelp, SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
@@ -668,6 +668,20 @@ pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::D
 // Completion
 // -----------------------------------------------------------------------------
 
+#[derive(Clone, Debug)]
+struct SimpleReceiverExpr {
+    /// Receiver span including any whitespace before the dot, ending at the dot offset.
+    span_to_dot: Span,
+    /// Trimmed receiver expression text (identifier or literal).
+    expr: String,
+}
+
+#[derive(Clone, Debug)]
+struct DotCompletionContext {
+    dot_offset: usize,
+    receiver: Option<SimpleReceiverExpr>,
+}
+
 pub(crate) const STRING_MEMBER_METHODS: &[(&str, &str)] = &[
     ("length", "int length()"),
     (
@@ -886,15 +900,21 @@ pub(crate) fn core_completions(
         );
     }
 
-    let before = skip_whitespace_backwards(text, prefix_start);
-    if before > 0 && text.as_bytes()[before - 1] == b'.' {
-        let receiver = receiver_before_dot(text, before - 1);
-        return decorate_completions(
-            &text_index,
-            prefix_start,
-            offset,
-            member_completions(db, file, &receiver, &prefix),
-        );
+    if let Some(ctx) = dot_completion_context(text, prefix_start) {
+        let receiver = receiver_before_dot(text, ctx.dot_offset);
+        let mut items = member_completions(db, file, &receiver, &prefix);
+        if let Some(receiver) = ctx.receiver {
+            items.extend(postfix_completions(
+                text,
+                &text_index,
+                &receiver,
+                &prefix,
+                offset,
+            ));
+            // Re-rank once postfix templates are present so they compete fairly with member items.
+            rank_completions(&prefix, &mut items);
+        }
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     decorate_completions(
@@ -1089,15 +1109,21 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         );
     }
 
-    let before = skip_whitespace_backwards(text, prefix_start);
-    if before > 0 && text.as_bytes()[before - 1] == b'.' {
-        let receiver = receiver_before_dot(text, before - 1);
-        return decorate_completions(
-            &text_index,
-            prefix_start,
-            offset,
-            member_completions(db, file, &receiver, &prefix),
-        );
+    if let Some(ctx) = dot_completion_context(text, prefix_start) {
+        let receiver = receiver_before_dot(text, ctx.dot_offset);
+        let mut items = member_completions(db, file, &receiver, &prefix);
+        if let Some(receiver) = ctx.receiver {
+            items.extend(postfix_completions(
+                text,
+                &text_index,
+                &receiver,
+                &prefix,
+                offset,
+            ));
+            // Re-rank once postfix templates are present so they compete fairly with member items.
+            rank_completions(&prefix, &mut items);
+        }
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     decorate_completions(
@@ -1142,6 +1168,218 @@ fn decorate_completions(
     }
 
     items
+}
+
+fn dot_completion_context(text: &str, suffix_prefix_start: usize) -> Option<DotCompletionContext> {
+    let before = skip_whitespace_backwards(text, suffix_prefix_start);
+    if before == 0 {
+        return None;
+    }
+    if text.as_bytes().get(before - 1) != Some(&b'.') {
+        return None;
+    }
+    let dot_offset = before - 1;
+    Some(DotCompletionContext {
+        dot_offset,
+        receiver: simple_receiver_before_dot(text, dot_offset),
+    })
+}
+
+fn simple_receiver_before_dot(text: &str, dot_offset: usize) -> Option<SimpleReceiverExpr> {
+    if dot_offset == 0 || dot_offset > text.len() {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    if bytes.get(dot_offset) != Some(&b'.') {
+        return None;
+    }
+
+    let receiver_end = skip_whitespace_backwards(text, dot_offset);
+    if receiver_end == 0 {
+        return None;
+    }
+
+    let last = *bytes.get(receiver_end - 1)? as char;
+    let (start, expr) = if last == '"' {
+        // String literal receiver: find the opening quote.
+        let mut i = receiver_end - 1;
+        let mut start_quote = None;
+        while i > 0 {
+            i -= 1;
+            if bytes[i] == b'"' && !is_escaped_quote(bytes, i) {
+                start_quote = Some(i);
+                break;
+            }
+        }
+        let start = start_quote?;
+        (start, text.get(start..receiver_end)?.to_string())
+    } else if last.is_ascii_digit() {
+        // Number literal receiver (best-effort, digits only).
+        let mut start = receiver_end;
+        while start > 0 && (bytes[start - 1] as char).is_ascii_digit() {
+            start -= 1;
+        }
+        (start, text.get(start..receiver_end)?.to_string())
+    } else if is_ident_continue(last) {
+        // Identifier receiver (includes `true`/`false`/`null`).
+        let mut start = receiver_end;
+        while start > 0 && is_ident_continue(bytes[start - 1] as char) {
+            start -= 1;
+        }
+        if !text
+            .as_bytes()
+            .get(start)
+            .is_some_and(|b| is_ident_start(*b as char))
+        {
+            return None;
+        }
+        (start, text.get(start..receiver_end)?.to_string())
+    } else {
+        return None;
+    };
+
+    Some(SimpleReceiverExpr {
+        span_to_dot: Span::new(start, dot_offset),
+        expr: expr.trim().to_string(),
+    })
+}
+
+fn postfix_completions(
+    text: &str,
+    text_index: &TextIndex<'_>,
+    receiver: &SimpleReceiverExpr,
+    suffix_prefix: &str,
+    offset: usize,
+) -> Vec<CompletionItem> {
+    if suffix_prefix.is_empty() {
+        return Vec::new();
+    }
+
+    let analysis = analyze(text);
+    let mut types = TypeStore::with_minimal_jdk();
+    let receiver_ty = infer_simple_expr_type(&mut types, &analysis, &receiver.expr, offset);
+
+    let is_boolean = receiver_ty.is_primitive_boolean();
+    let is_reference = is_referenceish_type(&receiver_ty);
+
+    let replace_range = Range::new(
+        text_index.offset_to_position(receiver.span_to_dot.start),
+        text_index.offset_to_position(offset),
+    );
+
+    let mut items = Vec::new();
+
+    // Always available.
+    items.push(postfix_completion_item(
+        replace_range,
+        "var",
+        format!("var ${{1:name}} = {};$0", receiver.expr),
+    ));
+
+    // Boolean-only templates.
+    if is_boolean {
+        items.push(postfix_completion_item(
+            replace_range,
+            "if",
+            format!("if ({}) {{\n    $0\n}}", receiver.expr),
+        ));
+        items.push(postfix_completion_item(
+            replace_range,
+            "not",
+            format!("!{}", receiver.expr),
+        ));
+    }
+
+    // Reference-only templates.
+    if is_reference {
+        items.push(postfix_completion_item(
+            replace_range,
+            "null",
+            format!("if ({} == null) {{\n    $0\n}}", receiver.expr),
+        ));
+        items.push(postfix_completion_item(
+            replace_range,
+            "nn",
+            format!("if ({} != null) {{\n    $0\n}}", receiver.expr),
+        ));
+    }
+
+    items
+}
+
+fn postfix_completion_item(range: Range, label: &str, snippet: String) -> CompletionItem {
+    CompletionItem {
+        label: label.to_string(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+            range,
+            new_text: snippet,
+        })),
+        ..Default::default()
+    }
+}
+
+fn infer_simple_expr_type(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    expr: &str,
+    offset: usize,
+) -> Type {
+    let expr = expr.trim();
+    if expr == "true" || expr == "false" {
+        return Type::boolean();
+    }
+    if expr == "null" {
+        return Type::Null;
+    }
+
+    // Literals.
+    if expr.starts_with('"') {
+        return parse_source_type(types, "String");
+    }
+    if expr.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        return Type::int();
+    }
+
+    // Identifier (local vars / params / fields).
+    if expr.chars().next().is_some_and(|ch| is_ident_start(ch)) {
+        if let Some(var) = analysis.vars.iter().find(|v| v.name == expr) {
+            return parse_source_type(types, &var.ty);
+        }
+
+        if let Some(method) = analysis
+            .methods
+            .iter()
+            .find(|m| span_contains(m.body_span, offset))
+        {
+            if let Some(param) = method.params.iter().find(|p| p.name == expr) {
+                return parse_source_type(types, &param.ty);
+            }
+        }
+
+        if let Some(field) = analysis.fields.iter().find(|f| f.name == expr) {
+            return parse_source_type(types, &field.ty);
+        }
+    }
+
+    Type::Unknown
+}
+
+fn is_referenceish_type(ty: &Type) -> bool {
+    match ty {
+        Type::Void | Type::Primitive(_) => false,
+        Type::Class(_)
+        | Type::Array(_)
+        | Type::TypeVar(_)
+        | Type::Wildcard(_)
+        | Type::Intersection(_)
+        | Type::Null
+        | Type::Named(_)
+        | Type::VirtualInner { .. }
+        | Type::Unknown
+        | Type::Error => true,
+    }
 }
 
 /// Completion with optional AI re-ranking.
@@ -2529,20 +2767,19 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
 // Semantic helpers (JDK/classpath-aware signatures and type formatting)
 // -----------------------------------------------------------------------------
 
-static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> =
-    Lazy::new(|| {
-        // Best-effort: honor workspace JDK overrides from `nova.toml` if the process is started
-        // inside a workspace (common for `nova-lsp`/`nova-cli` usage). If config loading fails
-        // (missing config, invalid config, etc.), fall back to environment-based discovery.
-        let configured = std::env::current_dir().ok().and_then(|cwd| {
-            let workspace_root = nova_project::workspace_root(&cwd).unwrap_or(cwd);
-            let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
-            let jdk_config = config.jdk_config();
-            JdkIndex::discover(Some(&jdk_config)).ok().map(Arc::new)
-        });
-
-        configured.or_else(|| JdkIndex::discover(None).ok().map(Arc::new))
+static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> = Lazy::new(|| {
+    // Best-effort: honor workspace JDK overrides from `nova.toml` if the process is started
+    // inside a workspace (common for `nova-lsp`/`nova-cli` usage). If config loading fails
+    // (missing config, invalid config, etc.), fall back to environment-based discovery.
+    let configured = std::env::current_dir().ok().and_then(|cwd| {
+        let workspace_root = nova_project::workspace_root(&cwd).unwrap_or(cwd);
+        let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
+        let jdk_config = config.jdk_config();
+        JdkIndex::discover(Some(&jdk_config)).ok().map(Arc::new)
     });
+
+    configured.or_else(|| JdkIndex::discover(None).ok().map(Arc::new))
+});
 
 fn semantic_call_signatures(
     types: &mut TypeStore,
