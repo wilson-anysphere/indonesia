@@ -761,10 +761,27 @@ pub(crate) fn load_gradle_workspace_model(
 
         // Best-effort: record inter-module `project(":...")` dependencies for later output-dir
         // propagation into module classpaths (see post-processing after all module configs are built).
-        project_deps.insert(
-            module_ref.project_path.clone(),
-            parse_gradle_project_dependencies(&module_root),
-        );
+        let included_build_prefix = included_build_root_project_path(&module_ref.project_path);
+        let deps = parse_gradle_project_dependencies(&module_root)
+            .into_iter()
+            .map(|dep_project_path| {
+                if let Some(prefix) = included_build_prefix {
+                    // Map `project(":foo")` to `:<includedBuildPrefix>:foo` so we resolve module
+                    // outputs within the included build instead of accidentally pointing at the
+                    // outer build.
+                    if dep_project_path == ":" {
+                        prefix.to_string()
+                    } else if dep_project_path.starts_with(":__includedBuild_") {
+                        dep_project_path
+                    } else {
+                        format!("{prefix}{dep_project_path}")
+                    }
+                } else {
+                    dep_project_path
+                }
+            })
+            .collect();
+        project_deps.insert(module_ref.project_path.clone(), deps);
         for entry in &options.classpath_overrides {
             classpath.push(ClasspathEntry {
                 kind: if entry
@@ -1005,6 +1022,24 @@ fn sanitize_included_build_name(name: &str) -> String {
         "includedBuild".to_string()
     } else {
         out
+    }
+}
+
+fn included_build_root_project_path(project_path: &str) -> Option<&str> {
+    if !project_path.starts_with(":__includedBuild_") {
+        return None;
+    }
+
+    // Included build project paths are synthesized as:
+    // - `:__includedBuild_<name>` for the included build root, and
+    // - `:__includedBuild_<name>:subproject` for included build subprojects.
+    //
+    // Extract the `:__includedBuild_<name>` prefix so we can scope `project(":...")` dependencies
+    // within the included build.
+    let rest = project_path.strip_prefix(':').unwrap_or(project_path);
+    match rest.find(':') {
+        Some(idx) => Some(&project_path[..idx + 1]),
+        None => Some(project_path),
     }
 }
 

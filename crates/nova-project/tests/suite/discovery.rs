@@ -1410,6 +1410,45 @@ fn loads_gradle_includebuild_subproject_workspace_model() {
 }
 
 #[test]
+fn loads_gradle_includebuild_subproject_project_dependencies_are_scoped_to_included_build() {
+    let root = testdata_path("gradle-includebuild");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let plugins = model
+        .module_by_id("gradle::__includedBuild_build-logic:plugins")
+        .expect("plugins module");
+
+    let classpath_dirs: BTreeSet<_> = plugins
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Directory)
+        .map(|cp| {
+            cp.path
+                .strip_prefix(&model.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
+        .collect();
+
+    assert!(
+        classpath_dirs.contains(&PathBuf::from("build-logic/build/classes/java/main")),
+        "expected plugins classpath to include included build root output dir"
+    );
+    assert!(
+        !classpath_dirs.contains(&PathBuf::from("build/classes/java/main")),
+        "did not expect plugins classpath to include outer build root output dir"
+    );
+}
+
+#[test]
 fn loads_gradle_projectdir_mapping_workspace_model() {
     let root = testdata_path("gradle-projectdir-mapping");
     let gradle_home = tempdir().expect("tempdir");
