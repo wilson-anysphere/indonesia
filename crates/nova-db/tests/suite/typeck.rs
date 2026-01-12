@@ -457,7 +457,7 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-method"
+        diags.iter().any(|d| d.code.as_ref() == "static-context"
             && d.message.contains("static context")),
         "expected static context to reject implicit-this call, got {diags:?}"
     );

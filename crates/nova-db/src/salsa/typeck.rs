@@ -2625,7 +2625,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(_) | MethodResolution::Ambiguous(_) => {
                                 self.diagnostics.push(Diagnostic::error(
-                                    "unresolved-method",
+                                    "static-context",
                                     format!(
                                         "cannot call instance method `{}` from a static context",
                                         name
