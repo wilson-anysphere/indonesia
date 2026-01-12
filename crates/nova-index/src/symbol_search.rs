@@ -212,7 +212,6 @@ impl PartialOrd for CandidateKey<'_> {
     }
 }
 
-#[cfg(not(feature = "unicode"))]
 #[inline]
 fn starts_with_case_insensitive(candidate: &[u8], query: &[u8]) -> bool {
     if query.len() > candidate.len() {
@@ -789,7 +788,7 @@ impl SymbolSearchIndex {
     fn score_candidate(
         &self,
         entry: &SymbolEntry,
-        _q_bytes: &[u8],
+        q_bytes: &[u8],
         matcher: &mut FuzzyMatcher,
     ) -> Option<MatchScore> {
         // If `qualified_name` itself is a prefix match, it will always dominate
@@ -800,10 +799,40 @@ impl SymbolSearchIndex {
         #[cfg(not(feature = "unicode"))]
         {
             if entry.qualified_name_differs
-                && starts_with_case_insensitive(entry.symbol.qualified_name.as_bytes(), _q_bytes)
+                && starts_with_case_insensitive(entry.symbol.qualified_name.as_bytes(), q_bytes)
             {
                 let qn_len = entry.symbol.qualified_name.len();
-                if starts_with_case_insensitive(entry.symbol.name.as_bytes(), _q_bytes)
+                if starts_with_case_insensitive(entry.symbol.name.as_bytes(), q_bytes)
+                    && entry.symbol.name.len() < qn_len
+                {
+                    return Some(MatchScore {
+                        kind: MatchKind::Prefix,
+                        score: 1_000_000 - entry.symbol.name.len() as i32,
+                    });
+                }
+
+                return Some(MatchScore {
+                    kind: MatchKind::Prefix,
+                    score: 1_000_000 - qn_len as i32,
+                });
+            }
+        }
+
+        // Keep the ASCII fast path even when `feature = "unicode"` is enabled.
+        //
+        // When both the query and candidate strings are ASCII, `nova-fuzzy` stays on
+        // its original byte-based scoring path, so it is safe to apply the same
+        // cheap prefix checks and byte-length prefix scoring here.
+        #[cfg(feature = "unicode")]
+        {
+            if entry.qualified_name_differs
+                && matcher.query().is_ascii()
+                && entry.symbol.name.is_ascii()
+                && entry.symbol.qualified_name.is_ascii()
+                && starts_with_case_insensitive(entry.symbol.qualified_name.as_bytes(), q_bytes)
+            {
+                let qn_len = entry.symbol.qualified_name.len();
+                if starts_with_case_insensitive(entry.symbol.name.as_bytes(), q_bytes)
                     && entry.symbol.name.len() < qn_len
                 {
                     return Some(MatchScore {
@@ -838,7 +867,7 @@ impl SymbolSearchIndex {
                         // it actually starts with the query.
                         if starts_with_case_insensitive(
                             entry.symbol.qualified_name.as_bytes(),
-                            _q_bytes,
+                            q_bytes,
                         ) {
                             // Prefix scores are `1_000_000 - candidate.len()`, so a shorter
                             // candidate always outranks a longer one for the same query.
@@ -853,6 +882,30 @@ impl SymbolSearchIndex {
 
                     #[cfg(feature = "unicode")]
                     {
+                        // Fast path for ASCII-only query/candidates under `feature = "unicode"`:
+                        // prefix scoring is still byte-based so we can avoid invoking the
+                        // Unicode scorer for `qualified_name` when it cannot beat `name`.
+                        if matcher.query().is_ascii()
+                            && entry.symbol.name.is_ascii()
+                            && entry.symbol.qualified_name.is_ascii()
+                        {
+                            if entry.symbol.qualified_name.len() >= entry.symbol.name.len() {
+                                return Some(score);
+                            }
+
+                            if starts_with_case_insensitive(
+                                entry.symbol.qualified_name.as_bytes(),
+                                q_bytes,
+                            ) {
+                                return Some(MatchScore {
+                                    kind: MatchKind::Prefix,
+                                    score: 1_000_000 - entry.symbol.qualified_name.len() as i32,
+                                });
+                            }
+
+                            return Some(score);
+                        }
+
                         // In Unicode mode, prefix scores are based on the folded grapheme length,
                         // not the UTF-8 byte length. Use `matcher` to compute the correct prefix
                         // score for `qualified_name` when it could outrank `name`.
