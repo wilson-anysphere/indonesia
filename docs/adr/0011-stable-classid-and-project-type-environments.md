@@ -124,14 +124,19 @@ Notes:
 
 ### Long-term (true stable interning across incremental revisions)
 
-Move `ClassId` allocation to a **global interner** keyed by `(ProjectId, binary_name)`.
+Move `ClassId` allocation to a **global interner** keyed by a canonical *class key*.
+
+At minimum, this key must include `(ProjectId, binary_name)`. In JPMS mode (and whenever duplicate
+binary names are possible across origins), it may also need an origin component (e.g. JDK vs
+classpath vs workspace source) and/or the defining module.
 
 Two acceptable implementations:
 
 1. **Salsa intern tables** (preferred)
-    - Define an interned entity (via `ra_salsa`/Salsa macros) whose key is:
+    - Define an interned entity (via `ra_salsa`/Salsa macros) whose key includes:
       - `project: ProjectId`
       - `binary_name: String` (canonical Java binary name, dotted, with `$` for nested types)
+      - (optional) origin / module metadata if needed to disambiguate duplicates
     - The returned `ClassId` is globally unique and stable within the lifetime of the database, and
       adding new classes does not renumber existing ids.
     - **Important:** Nova still evicts Salsa memos by rebuilding `ra_salsa::Storage::default()`, but
@@ -143,8 +148,8 @@ Two acceptable implementations:
       inside queries). See `crates/nova-db/src/salsa/interned_class_key.rs`.
 
 2. **A persistent interner outside Salsa**
-   - A project-scoped interner stored as database state, updated only by the single writer thread.
-   - Must preserve the same semantics as Salsa interning: same key ⇒ same id, never reused.
+    - A project-scoped interner stored as database state, updated only by the single writer thread.
+    - Must preserve the same semantics as Salsa interning: same key ⇒ same id, never reused.
    - **Implementation note (current repo):** Nova already uses this pattern for workspace *source*
      types: `WorkspaceLoader` allocates stable ids and stores them in the input
      `NovaInputs::project_class_ids` (see ADR 0012). Extending that registry to include
