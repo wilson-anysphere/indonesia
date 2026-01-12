@@ -185,13 +185,13 @@ impl CtSymReleaseIndex {
             }
         }
 
-        fn add_field_stub(bytes: &mut u64, stub: &crate::stub::JdkFieldStub) {
+        fn add_field_stub(bytes: &mut u64, stub: &JdkFieldStub) {
             add_string(bytes, &stub.name);
             add_string(bytes, &stub.descriptor);
             add_opt_string(bytes, &stub.signature);
         }
 
-        fn add_method_stub(bytes: &mut u64, stub: &crate::stub::JdkMethodStub) {
+        fn add_method_stub(bytes: &mut u64, stub: &JdkMethodStub) {
             add_string(bytes, &stub.name);
             add_string(bytes, &stub.descriptor);
             add_opt_string(bytes, &stub.signature);
@@ -206,14 +206,14 @@ impl CtSymReleaseIndex {
             add_opt_string(&mut bytes, &stub.signature);
 
             bytes = bytes.saturating_add(
-                (stub.fields.capacity() * size_of::<crate::stub::JdkFieldStub>()) as u64,
+                (stub.fields.capacity() * size_of::<JdkFieldStub>()) as u64,
             );
             for field in &stub.fields {
                 add_field_stub(&mut bytes, field);
             }
 
             bytes = bytes.saturating_add(
-                (stub.methods.capacity() * size_of::<crate::stub::JdkMethodStub>()) as u64,
+                (stub.methods.capacity() * size_of::<JdkMethodStub>()) as u64,
             );
             for method in &stub.methods {
                 add_method_stub(&mut bytes, method);

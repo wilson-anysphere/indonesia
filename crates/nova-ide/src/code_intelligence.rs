@@ -2149,6 +2149,62 @@ fn javadoc_tag_snippet_completions(
     Some(decorate_completions(text_index, at_pos, offset, items))
 }
 
+fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
+    if offset > text.len() {
+        return false;
+    }
+
+    // Best-effort: use the lexer-backed parser so we correctly handle escapes and avoid treating
+    // quotes in comments as literals.
+    let parse = nova_syntax::parse(text);
+    for tok in parse.tokens() {
+        let start = tok.range.start as usize;
+        let end = tok.range.end as usize;
+
+        if start > offset {
+            break;
+        }
+
+        match tok.kind {
+            nova_syntax::SyntaxKind::StringLiteral | nova_syntax::SyntaxKind::CharLiteral => {
+                // Token ranges include the opening + closing quote. Treat the cursor strictly
+                // inside the token (i.e. after the opening quote, before the closing quote) as
+                // "inside the literal".
+                if offset > start && offset < end {
+                    return true;
+                }
+            }
+            nova_syntax::SyntaxKind::Error => {
+                // The lexer uses `Error` tokens for unterminated literals. We treat the end of an
+                // unterminated literal as still "inside" so we don't suggest completions while the
+                // user is still typing.
+                let raw = tok.text(text);
+
+                // Only consider error tokens that look like literals.
+                let (delim, terminated) = if raw.starts_with('"') {
+                    ('"', raw.len() >= 2 && raw.ends_with('"'))
+                } else if raw.starts_with('\'') {
+                    ('\'', raw.len() >= 2 && raw.ends_with('\''))
+                } else {
+                    continue;
+                };
+
+                // Suppress completions when:
+                // - the cursor is inside the token, or
+                // - the literal is unterminated (no closing delimiter) and the cursor is at the
+                //   end of the token (e.g. at EOF).
+                let _ = delim; // document intent: delimiter exists, but we only need `terminated`.
+                if offset > start && (offset < end || (!terminated && offset == end)) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
 /// Core (non-framework) completions for a Java source file.
 ///
 /// Framework completions are provided via the unified `nova-ext` framework providers and
@@ -2180,6 +2236,9 @@ pub(crate) fn core_completions(
                 return items;
             }
         }
+        return Vec::new();
+    }
+    if offset_in_java_string_or_char_literal(text, offset) {
         return Vec::new();
     }
 
@@ -2480,6 +2539,16 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 }
             }
         }
+    }
+
+    // Suppress non-framework completions inside plain string / char literals. Framework-aware
+    // string completion providers (Spring/Micronaut/Quarkus/JPQL) run above and may return early.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+        && offset_in_java_string_or_char_literal(text, offset)
+    {
+        return Vec::new();
     }
 
     // Java annotation element (attribute) completions inside `@Anno(...)`.
