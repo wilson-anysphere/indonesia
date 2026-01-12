@@ -2270,6 +2270,18 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             continue;
         }
 
+        // Gradle can emit per-configuration lockfiles under `gradle/dependency-locks/`.
+        // Include them in the fingerprint so classpath caching stays correct when locks change.
+        if path.extension().is_some_and(|ext| ext == "lockfile")
+            && path
+                .strip_prefix(root)
+                .ok()
+                .is_some_and(|rel| rel.starts_with(Path::new("gradle/dependency-locks")))
+        {
+            out.push(path);
+            continue;
+        }
+
         // Applied Gradle script plugins can influence dependencies and tasks
         // without being named `build.gradle*` / `settings.gradle*`.
         if name.ends_with(".gradle") || name.ends_with(".gradle.kts") {
@@ -2296,6 +2308,14 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
 
         match name {
             "gradle.properties" => out.push(path),
+            "gradle.lockfile" => {
+                // Dependency locking can affect resolved versions/classpaths without touching
+                // `build.gradle` / `libs.versions.toml`. The root-level `gradle.lockfile` is a
+                // supported Gradle lock format.
+                if path == root.join(name) {
+                    out.push(path);
+                }
+            }
             "gradlew" | "gradlew.bat" => {
                 if path == root.join(name) {
                     out.push(path);

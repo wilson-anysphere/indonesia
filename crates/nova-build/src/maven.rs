@@ -444,7 +444,22 @@ impl MavenBuild {
                     true,
                 )
             } else {
-                Vec::new()
+                // Heuristic fallback: when Maven doesn't expose module-path expressions, approximate
+                // the module-path with the compile classpath for JPMS projects (e.g. when a
+                // `module-info.java` is present). This keeps the request resilient while still
+                // allowing downstream consumers to enable module-path compilation.
+                let should_infer_module_path = compiler_args_looks_like_jpms
+                    || main_source_roots_have_module_info(&main_source_roots);
+                if should_infer_module_path {
+                    infer_module_path_for_compile_config(
+                        &compile_classpath,
+                        &main_source_roots,
+                        main_output_dir.as_ref(),
+                        compiler_args_looks_like_jpms,
+                    )
+                } else {
+                    Vec::new()
+                }
             }
         };
 
