@@ -4487,7 +4487,11 @@ fn infer_expression_return_type(
                 .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
             match tok.kind() {
                 SyntaxKind::IntLiteral | SyntaxKind::Number => Some("int".to_string()),
+                SyntaxKind::LongLiteral => Some("long".to_string()),
+                SyntaxKind::FloatLiteral => Some("float".to_string()),
+                SyntaxKind::DoubleLiteral => Some("double".to_string()),
                 SyntaxKind::StringLiteral => Some("String".to_string()),
+                SyntaxKind::TextBlock => Some("String".to_string()),
                 SyntaxKind::CharLiteral => Some("char".to_string()),
                 SyntaxKind::TrueKw | SyntaxKind::FalseKw => Some("boolean".to_string()),
                 _ => None,

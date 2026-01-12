@@ -1776,6 +1776,86 @@ class C {
 }
 
 #[test]
+fn extract_method_expression_long_literal_inside_instance_initializer_block() {
+    let fixture = r#"
+class C {
+    {
+        long x = /*start*/1L/*end*/;
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    {
+        long x = extracted();
+        System.out.println(x);
+    }
+
+    private long extracted() {
+        return 1L;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_expression_long_literal_inside_static_initializer_block() {
+    let fixture = r#"
+class C {
+    static {
+        long x = /*start*/1L/*end*/;
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    static {
+        long x = extracted();
+        System.out.println(x);
+    }
+
+    private static long extracted() {
+        return 1L;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_return_value_inside_instance_initializer_block() {
     let fixture = r#"
 class C {
