@@ -643,6 +643,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn multi_text_insert_with_duplicate_inputs_matches_single_insert() {
+        let mut repeated = TrigramIndexBuilder::new();
+        let mut multi = TrigramIndexBuilder::new();
+
+        repeated.insert(1, "foobar");
+        repeated.insert(1, "foobar");
+
+        multi.insert2(1, "foobar", "foobar");
+
+        let repeated = repeated.build();
+        let multi = multi.build();
+
+        for q in ["foo", "oob", "bar", "does_not_match"] {
+            assert_eq!(
+                repeated.candidates(q),
+                multi.candidates(q),
+                "candidates diverged for query {q:?}"
+            );
+        }
+    }
+
     fn candidates_naive(index: &TrigramIndex, query: &str) -> Vec<SymbolId> {
         let mut q_trigrams = Vec::new();
         trigrams(query, &mut q_trigrams);
