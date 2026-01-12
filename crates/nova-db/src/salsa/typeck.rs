@@ -1556,7 +1556,7 @@ fn define_source_types<'idx>(
                         &*loader.store,
                         &vars,
                         &field.ty,
-                        None,
+                        Some(field.ty_range),
                     )
                     .ty;
                     field_types.insert(*fid, ty.clone());
@@ -1591,7 +1591,7 @@ fn define_source_types<'idx>(
                                 &*loader.store,
                                 &vars,
                                 &p.ty,
-                                None,
+                                Some(p.ty_range),
                             )
                             .ty
                         })
@@ -1605,7 +1605,7 @@ fn define_source_types<'idx>(
                         &*loader.store,
                         &vars,
                         &method.return_ty,
-                        None,
+                        Some(method.return_ty_range),
                     )
                     .ty;
                     method_types.insert(*mid, (params.clone(), return_type.clone()));
