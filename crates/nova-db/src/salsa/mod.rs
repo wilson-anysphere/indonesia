@@ -1920,20 +1920,11 @@ impl MemoryEvictor for SalsaMemoEvictor {
             };
         }
 
-        // Rebuilding the Salsa database is disruptive; avoid doing it under
-        // Low/Medium pressure unless we're explicitly asked to clear everything
-        // (`target_bytes == 0`).
-        if request.target_bytes > 0
-            && matches!(
-                request.pressure,
-                MemoryPressure::Low | MemoryPressure::Medium
-            )
-        {
-            return EvictionResult {
-                before_bytes: before,
-                after_bytes: before,
-            };
-        }
+        // NOTE: `MemoryManager::enforce` uses *global* pressure (tracked total/RSS vs overall
+        // budget) to choose eviction ratios, but still enforces per-category budgets even when
+        // global pressure is `Low`. This evictor must therefore honor shrink requests under all
+        // pressure levels; otherwise the memory manager may be unable to converge when the
+        // QueryCache budget is exceeded.
 
         // Eviction must be best-effort and non-panicking.
         //
