@@ -6,7 +6,6 @@
 
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
-    <preview.flag>--enable-preview</preview.flag>
-    <maven.compiler.compilerArgs>${preview.flag}</maven.compiler.compilerArgs>
+    <maven.compiler.compilerArgs>--enable-preview</maven.compiler.compilerArgs>
   </properties>
 </project>

@@ -1309,18 +1309,18 @@ fn loads_maven_compiler_plugin_language_level() {
 #[test]
 fn loads_maven_preview_flag_from_properties() {
     let root = testdata_path("maven-java-preview-property");
-    let repo_dir = tempdir().expect("tempdir");
-    let options = LoadOptions {
-        maven_repo: Some(repo_dir.path().to_path_buf()),
-        ..LoadOptions::default()
-    };
-    let config = load_project_with_options(&root, &options).expect("load maven project");
+    let config = load_project(&root).expect("load maven project");
 
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.java.source, JavaVersion(21));
     assert_eq!(config.java.target, JavaVersion(21));
     assert!(config.java.enable_preview);
 
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
     let model =
         load_workspace_model_with_options(&root, &options).expect("load maven workspace model");
     let module = model
