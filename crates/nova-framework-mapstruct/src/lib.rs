@@ -363,7 +363,17 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             }
         }
 
-        items
+        if !items.is_empty() {
+            return items;
+        }
+
+        // Fallback path for hosts that cannot enumerate `db.all_files(project)` (the framework
+        // capture API treats that as optional). We can still offer best-effort completions by
+        // parsing the current file and resolving DTO property sets by scanning the filesystem.
+        let Some(root) = nova_project::workspace_root(path) else {
+            return items;
+        };
+        completions_for_file(&root, path, text, ctx.offset).unwrap_or_default()
     }
 }
 
