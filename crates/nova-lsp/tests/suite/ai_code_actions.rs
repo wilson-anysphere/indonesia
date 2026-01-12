@@ -165,7 +165,7 @@ local_only = false
 }
 
 #[test]
-fn stdio_server_hides_ai_code_edit_actions_for_excluded_paths() {
+fn stdio_server_hides_ai_code_actions_for_excluded_paths() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
 
@@ -284,8 +284,8 @@ excluded_paths = ["secret/**"]
     assert!(
         actions
             .iter()
-            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error")),
-        "expected explain-error action to remain available"
+            .all(|a| a.get("title").and_then(|t| t.as_str()) != Some("Explain this error")),
+        "explain-error action should be hidden for excluded paths"
     );
 
     assert!(
