@@ -146,7 +146,8 @@ pub type WatchMessage = io::Result<WatchEvent>;
 ///
 /// Consumers are expected to:
 ///
-/// 1. Register paths to watch with [`watch_path`](FileWatcher::watch_path).
+/// 1. Register paths to watch with [`watch_path`](FileWatcher::watch_path) (or the convenience
+///    [`watch_root`](FileWatcher::watch_root) helper for recursive directory roots).
 /// 2. Consume events from [`receiver`](FileWatcher::receiver).
 ///
 /// Notes:
