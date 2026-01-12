@@ -129,9 +129,10 @@ class C {
 "#;
 
     let fixture = fixture_multi(java_path, java_text, vec![(config_path, config_text)]);
-    let items = fixture
-        .ide
-        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
     let item = items
         .iter()
         .find(|item| item.label == "server.port")
@@ -147,7 +148,10 @@ class C {
         .find("server.p")
         .expect("expected placeholder prefix in fixture");
 
-    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&fixture.text, key_start)
+    );
     assert_eq!(edit.range.end, fixture.position);
 }
 
@@ -169,9 +173,10 @@ server.p<|>
         vec![(java_path, java_text.to_string())],
     );
 
-    let items = fixture
-        .ide
-        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
     let item = items
         .iter()
         .find(|item| item.label == "server.port")
@@ -186,7 +191,10 @@ server.p<|>
         .text
         .rfind("server.p")
         .expect("expected server.p key in fixture");
-    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&fixture.text, key_start)
+    );
     assert_eq!(edit.range.end, fixture.position);
 }
 
@@ -210,9 +218,10 @@ fn spring_yaml_key_completions_replace_full_segment_prefix_via_ide_extensions() 
         vec![(java_path, java_text.to_string())],
     );
 
-    let items = fixture
-        .ide
-        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
     let item = items
         .iter()
         .find(|item| item.label == "banner-mode")
@@ -227,7 +236,10 @@ fn spring_yaml_key_completions_replace_full_segment_prefix_via_ide_extensions() 
         .text
         .rfind("banner-m")
         .expect("expected banner-m key in fixture");
-    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&fixture.text, key_start)
+    );
     assert_eq!(edit.range.end, fixture.position);
 }
 
@@ -235,8 +247,7 @@ fn spring_yaml_key_completions_replace_full_segment_prefix_via_ide_extensions() 
 fn micronaut_value_completions_are_surfaced_via_ide_extensions() {
     use framework_harness::offset_to_position;
 
-    let config_path =
-        PathBuf::from("/micronaut-value/src/main/resources/application.properties");
+    let config_path = PathBuf::from("/micronaut-value/src/main/resources/application.properties");
     let java_path = PathBuf::from("/micronaut-value/src/main/java/com/example/A.java");
 
     let config_text = "greeting.message=Hello\n".to_string();
@@ -272,7 +283,10 @@ class A {
         .text
         .find("greeting.")
         .expect("expected placeholder prefix in fixture");
-    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&fixture.text, key_start)
+    );
     assert_eq!(edit.range.end, fixture.position);
 }
 

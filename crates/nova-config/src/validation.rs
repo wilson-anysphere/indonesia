@@ -426,9 +426,7 @@ fn validate_ai(
             } else if cfg.context_size > MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS {
                 out.errors.push(ConfigValidationError::InvalidValue {
                     toml_path: "ai.provider.in_process_llama.context_size".to_string(),
-                    message: format!(
-                        "must be <= {MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS}"
-                    ),
+                    message: format!("must be <= {MAX_IN_PROCESS_LLAMA_CONTEXT_SIZE_TOKENS}"),
                 });
             }
 

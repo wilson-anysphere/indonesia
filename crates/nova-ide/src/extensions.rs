@@ -171,10 +171,11 @@ where
                 };
 
                 if let Some(span) = item.replace_span {
-                    out.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                        range: crate::text::span_to_lsp_range(text, span),
-                        new_text: label,
-                    }));
+                    out.text_edit =
+                        Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                            range: crate::text::span_to_lsp_range(text, span),
+                            new_text: label,
+                        }));
                 }
 
                 out
@@ -337,10 +338,11 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
                 };
 
                 if let Some(span) = item.replace_span {
-                    out.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                        range: crate::text::span_to_lsp_range(text, span),
-                        new_text: label,
-                    }));
+                    out.text_edit =
+                        Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                            range: crate::text::span_to_lsp_range(text, span),
+                            new_text: label,
+                        }));
                 }
 
                 out

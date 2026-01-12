@@ -457,9 +457,7 @@ fn run_target_closure_batches_frontier_union_per_step() {
     let runner = QueryRunner::new([
         (
             format!("rdeps(deps({run_target}), ({file_label}), 1)"),
-            MockResponse::Ok(
-                "filegroup rule //java:fg1\nalias rule //java:alias1\n".to_string(),
-            ),
+            MockResponse::Ok("filegroup rule //java:fg1\nalias rule //java:alias1\n".to_string()),
         ),
         (
             format!("rdeps(deps({run_target}), (//java:alias1 + //java:fg1), 1)"),
