@@ -95,9 +95,10 @@ More detailed guidance (fixtures, snapshots, ignored suites, CI mapping) lives i
 Some tests compare Nova’s output against on-disk “golden” expectations (parser snapshots, refactor
 before/after fixtures). To update those expectations:
 
-Note: the parser golden corpus is the `golden_corpus` test inside the consolidated `harness`
+Note: the parser golden corpus is the `golden_corpus` test module inside the consolidated `harness`
 integration test binary (`crates/nova-syntax/tests/harness.rs`). There is no standalone
-integration test target named `golden_corpus` — run it via `--test harness` (optionally filtering by test name).
+integration test target named `golden_corpus` — run it via `--test harness` (optionally filtering by
+test name).
 
 ```bash
 # Local dev
@@ -131,10 +132,10 @@ Requires a JDK (`javac` on `PATH`):
 
 ```bash
 # Local dev
-cargo test --locked -p nova-types --test javac_differential -- --ignored
+cargo test --locked -p nova-types --test harness -- --ignored
 
 # Agent / multi-runner
-bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-types --test harness -- --ignored
 ```
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)

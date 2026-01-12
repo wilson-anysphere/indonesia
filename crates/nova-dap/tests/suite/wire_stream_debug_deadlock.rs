@@ -1,8 +1,6 @@
-mod harness;
-
 use std::time::Duration;
 
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServerConfig};
 use serde_json::json;
 
@@ -117,4 +115,3 @@ async fn stream_debug_does_not_deadlock_event_task_and_cancels_cleanly() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

@@ -32,6 +32,7 @@ jobs:
           workspaces: |
             . -> target
             fuzz -> target
+            crates/nova-dap/fuzz -> target
             crates/nova-remote-proto/fuzz -> target
             crates/nova-remote-rpc/fuzz -> target
 
@@ -79,6 +80,10 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
 
+      - name: fuzz_syntax_literals
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_syntax_literals -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: fuzz_reparse_java
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_reparse_java -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
@@ -97,6 +102,22 @@ jobs:
 
       - name: format_java (idempotence)
         run: cargo +nightly fuzz run --codegen-units 16 format_java -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
+      - name: fuzz_reparse_java_sequence
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_reparse_java_sequence -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
+      - name: fuzz_yaml_parse
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_yaml_parse -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
+      - name: fuzz_properties_parse
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_properties_parse -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
+      - name: fuzz_config_metadata
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_config_metadata -- -max_total_time=30 -max_len=262144
         timeout-minutes: 20
 
       - name: fuzz_classfile
@@ -126,6 +147,11 @@ jobs:
             exit 1
           fi
 
+      - name: nova-dap/read_dap_message
+        working-directory: crates/nova-dap
+        run: cargo +nightly fuzz run --codegen-units 16 read_dap_message -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: Upload fuzz artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -134,6 +160,7 @@ jobs:
           name: fuzz-artifacts
           path: |
             fuzz/artifacts/**
+            crates/nova-dap/fuzz/artifacts/**
             crates/nova-remote-proto/fuzz/artifacts/**
             crates/nova-remote-rpc/fuzz/artifacts/**
           if-no-files-found: ignore

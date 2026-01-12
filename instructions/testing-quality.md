@@ -242,7 +242,7 @@ fuzz/
     └── utils.rs
 ```
 
-Nova also has per-crate fuzz harnesses for the remote protocol/transport surface area:
+Nova also has per-crate fuzz harnesses for protocol/transport surface areas:
 
 - `crates/nova-remote-proto/fuzz/`:
   - `decode_framed_message`
@@ -250,6 +250,8 @@ Nova also has per-crate fuzz harnesses for the remote protocol/transport surface
   - `decode_v3_rpc_payload`
 - `crates/nova-remote-rpc/fuzz/`:
   - `v3_framed_transport`
+- `crates/nova-dap/fuzz/`:
+  - `read_dap_message`
 
 Run these from the crate directory:
 
@@ -261,6 +263,10 @@ bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_framed_message -- -ma
 cd ../nova-remote-rpc
 bash ../../scripts/cargo_agent.sh +nightly fuzz list
 bash ../../scripts/cargo_agent.sh +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+
+cd ../nova-dap
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run read_dap_message -- -max_total_time=60 -max_len=262144
 ```
 
 ### Writing Fuzz Targets

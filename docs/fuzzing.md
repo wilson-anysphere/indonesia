@@ -95,7 +95,11 @@ full reparse after each edit.
 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
 ```
 
-This target exercises `nova_format::format_java` and edit generation (`edits_for_formatting`).
+This target exercises Nova's **full-document formatting** pipeline (the same entrypoint used by the
+CLI + LSP): it generates formatting edits via
+`nova_format::edits_for_document_formatting_with_strategy`, applies them with
+`nova_core::apply_text_edits`, and checks that the edit pipeline is **idempotent** (formatting a
+formatted document yields no further changes) for the production + legacy strategies.
 
 ### Format Java (range formatting)
 
@@ -204,6 +208,21 @@ cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262
 cd ../nova-remote-rpc
 cargo +nightly fuzz list
 cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+```
+
+### Debug Adapter Protocol fuzzers (`nova-dap`)
+
+`crates/nova-dap` also has its own `cargo-fuzz` harness:
+
+- `crates/nova-dap/fuzz/`:
+  - `read_dap_message`
+
+Run this from the crate directory (not the repo root):
+
+```bash
+cd crates/nova-dap
+cargo +nightly fuzz list
+cargo +nightly fuzz run read_dap_message -- -max_total_time=60 -max_len=262144
 ```
 
 Seed corpora live under `fuzz/corpus/<target>/` (and under `crates/*/fuzz/corpus/<target>/` for

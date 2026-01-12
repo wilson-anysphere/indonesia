@@ -30,6 +30,10 @@ nova-workspace
 nova-resolve
 nova-classpath
 nova-decompile
+nova-framework-dagger
+nova-framework-jpa
+nova-framework-mapstruct
+nova-framework-micronaut
 nova-framework-quarkus
 nova-framework-spring
 nova-memory
