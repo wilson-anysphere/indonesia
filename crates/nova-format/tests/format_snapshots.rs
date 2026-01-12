@@ -961,6 +961,19 @@ fn pretty_preserves_inline_block_comment_spacing() {
 }
 
 #[test]
+fn pretty_inserts_space_after_inline_block_comment_in_body() {
+    let input = "class Foo{/* header */int x;}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(formatted, "class Foo {\n    /* header */ int x;\n}\n");
+}
+
+#[test]
 fn pretty_preserves_trailing_line_comment_after_class() {
     let input = "class Foo{} // c\n";
     let edits = edits_for_document_formatting_with_strategy(
