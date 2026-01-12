@@ -258,6 +258,49 @@ class A {
 }
 
 #[test]
+fn completion_includes_postfix_for_for_fully_qualified_array_even_when_wildcard_shadowed_and_replaces_full_expr(
+) {
+    let (db, file, pos, text) = fixture(
+        r#"
+import java.awt.List;
+import java.util.*;
+class A {
+  void m() {
+    java.util.List[] xs = null;
+    xs.for<|>
+  }
+}
+"#,
+    );
+
+    let expr_start = text.find("xs.for").expect("expected xs.for in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "for" && i.kind == Some(CompletionItemKind::SNIPPET))
+        .expect("expected postfix `for` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, expr_start));
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("for (java.util.List"),
+        "expected snippet to contain `for (java.util.List`; got {:?}",
+        edit.new_text
+    );
+    assert!(
+        edit.new_text.contains(": xs"),
+        "expected snippet to reference receiver `xs`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn completion_includes_postfix_for_for_imported_iterable_and_replaces_full_expr() {
     let (db, file, pos, text) = fixture(
         r#"

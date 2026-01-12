@@ -7667,6 +7667,10 @@ fn format_type_for_postfix_snippet(
 
     // Always use the short name for `java.lang.*` types (implicitly imported).
     let outer_binary_name = binary_name.split('$').next().unwrap_or(binary_name);
+    let outer_simple_name = outer_binary_name
+        .rsplit_once('.')
+        .map(|(_, name)| name)
+        .unwrap_or(outer_binary_name);
     let outer_package = outer_binary_name
         .rsplit_once('.')
         .map(|(pkg, _)| pkg)
@@ -7680,6 +7684,10 @@ fn format_type_for_postfix_snippet(
     }
 
     let outer_source_name = outer_binary_name.to_string();
+    let wildcard_shadowed_by_explicit = import_ctx.explicit.iter().any(|imp| {
+        let imp_simple = imp.rsplit_once('.').map(|(_, name)| name).unwrap_or(imp.as_str());
+        imp_simple == outer_simple_name && imp != &outer_source_name
+    });
     let outer_in_scope = import_ctx.package.as_deref() == Some(outer_package)
         || import_ctx
             .explicit
@@ -7688,7 +7696,7 @@ fn format_type_for_postfix_snippet(
         || import_ctx
             .wildcard_packages
             .iter()
-            .any(|pkg| pkg == outer_package);
+            .any(|pkg| pkg == outer_package && !wildcard_shadowed_by_explicit);
     if outer_in_scope {
         if outer_package.is_empty() {
             source_name
