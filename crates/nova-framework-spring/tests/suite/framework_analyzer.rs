@@ -266,3 +266,58 @@ fn di_navigation_targets_include_bean_definition_file() {
         "expected navigation span to cover bean class name"
     );
 }
+
+#[test]
+fn di_navigation_targets_include_injection_file() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "org.springframework", "spring-context");
+
+    let foo = db.add_file_with_path_and_text(
+        project,
+        "src/Foo.java",
+        r#"
+            import org.springframework.stereotype.Component;
+
+            @Component
+            class Foo {}
+        "#,
+    );
+
+    let bar = db.add_file_with_path_and_text(
+        project,
+        "src/Bar.java",
+        r#"
+            import org.springframework.stereotype.Component;
+            import org.springframework.beans.factory.annotation.Autowired;
+
+            @Component
+            class Bar {
+                @Autowired Foo foo;
+            }
+        "#,
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let targets = registry.framework_navigation_targets(&db, &Symbol::File(foo));
+    assert!(
+        targets
+            .iter()
+            .any(|t| t.file == bar && t.label == "Injected into Bar"),
+        "expected Injected into Bar navigation target into Bar.java; got {targets:?}"
+    );
+
+    let target = targets
+        .iter()
+        .find(|t| t.file == bar && t.label == "Injected into Bar")
+        .expect("Injected into Bar navigation target");
+    let span = target.span.expect("navigation target span");
+    let text = db.file_text(bar).expect("Bar.java text");
+    assert_eq!(
+        text.get(span.start..span.end).unwrap_or(""),
+        "foo",
+        "expected navigation span to cover injection field name"
+    );
+}
