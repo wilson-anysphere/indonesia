@@ -1,4 +1,3 @@
-use crate::quick_fixes::is_java_identifier;
 use lsp_types::{
     CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
     Uri, WorkspaceEdit,
