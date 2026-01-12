@@ -1,6 +1,6 @@
 use lsp_types::{
-    CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
-    Uri, WorkspaceEdit,
+    CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit, Uri,
+    WorkspaceEdit,
 };
 use nova_core::{LineIndex, Position as CorePosition};
 use nova_refactor::extract_method::{
@@ -97,6 +97,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// - `type-mismatch` → `Cast to <expected>` / `Convert to String`
 /// - `unresolved-import` → `Remove unresolved import`
 /// - `unused-import` → `Remove unused import`
+/// - `FLOW_NULL_DEREF` → `Wrap with Objects.requireNonNull`
 pub fn diagnostic_quick_fixes(
     source: &str,
     uri: Option<Uri>,
@@ -149,6 +150,9 @@ pub fn diagnostic_quick_fixes(
             actions.push(action);
         }
         actions.extend(type_mismatch_quick_fixes(source, &uri, &selection, diag));
+        if let Some(action) = flow_null_deref_quick_fix(source, &uri, &selection, diag) {
+            actions.push(action);
+        }
     }
 
     actions
@@ -750,6 +754,57 @@ fn create_field_quick_fix(
     })
 }
 
+fn flow_null_deref_quick_fix(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Option<CodeAction> {
+    if diagnostic_code(diagnostic)? != "FLOW_NULL_DEREF" {
+        return None;
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return None;
+    }
+
+    let start = crate::text::position_to_offset(source, diagnostic.range.start)?;
+    let end = crate::text::position_to_offset(source, diagnostic.range.end)?;
+    if start >= end {
+        return None;
+    }
+
+    let expr = source.get(start..end)?;
+    let (receiver, rest) = split_member_access(expr)?;
+    let receiver = receiver.trim();
+    if receiver.is_empty() {
+        return None;
+    }
+
+    let new_expr = format!("java.util.Objects.requireNonNull({receiver}){rest}");
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: diagnostic.range.clone(),
+            new_text: new_expr,
+        }],
+    );
+
+    Some(CodeAction {
+        title: "Wrap with Objects.requireNonNull".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    })
+}
+
 fn diagnostic_code(diagnostic: &Diagnostic) -> Option<&str> {
     match diagnostic.code.as_ref()? {
         NumberOrString::String(code) => Some(code.as_str()),
@@ -1054,4 +1109,34 @@ fn pos_lt(a: &Position, b: &Position) -> bool {
 
 fn pos_leq(a: &Position, b: &Position) -> bool {
     (a.line, a.character) <= (b.line, b.character)
+}
+
+/// Split `expr` into `(receiver, rest)` at the last top-level `.`.
+///
+/// `rest` includes the `.` and the member/call suffix.
+fn split_member_access(expr: &str) -> Option<(&str, &str)> {
+    let mut paren_depth = 0u32;
+    let mut bracket_depth = 0u32;
+    let mut brace_depth = 0u32;
+    let mut last_dot: Option<usize> = None;
+
+    for (idx, ch) in expr.char_indices() {
+        match ch {
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth = brace_depth.saturating_add(1),
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '.' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => last_dot = Some(idx),
+            _ => {}
+        }
+    }
+
+    let dot = last_dot?;
+    let (receiver, rest) = expr.split_at(dot);
+    if rest == "." {
+        return None;
+    }
+    Some((receiver, rest))
 }

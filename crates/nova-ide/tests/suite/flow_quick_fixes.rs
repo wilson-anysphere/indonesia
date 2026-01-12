@@ -1,4 +1,4 @@
-use lsp_types::{CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit};
+use lsp_types::{CodeActionKind, CodeActionOrCommand, NumberOrString, Position, Range, TextEdit};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
@@ -260,4 +260,68 @@ fn ide_extensions_offers_flow_unassigned_quick_fix() {
         .expect("expected at least one file edit");
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].new_text, "    x = 0;\n");
+}
+
+#[test]
+fn flow_null_deref_quick_fix_wraps_receiver_with_objects_require_nonnull() {
+    let text = r#"
+class A {
+  void m(String s) {
+    if (s == null) {}
+    s.length();
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+
+    let needle = "s.length()";
+    let start = text.find(needle).expect("expected call in fixture");
+    let end = start + needle.len();
+
+    let selection = Range::new(
+        offset_to_lsp_position(text, start),
+        offset_to_lsp_position(text, end),
+    );
+
+    let path = PathBuf::from("/test.java");
+    let abs = nova_core::AbsPathBuf::new(path).expect("absolute path");
+    let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("parse uri");
+
+    let lsp_diags = file_diagnostics_lsp(&db, file);
+    let actions = diagnostic_quick_fixes(text, Some(uri.clone()), selection, &lsp_diags);
+
+    let null_deref_diag = lsp_diags
+        .iter()
+        .find(|diag| {
+            matches!(
+                diag.code.as_ref(),
+                Some(NumberOrString::String(code)) if code == "FLOW_NULL_DEREF"
+            )
+        })
+        .expect("expected FLOW_NULL_DEREF lsp diagnostic");
+
+    let diag_start = lsp_position_to_offset(text, null_deref_diag.range.start);
+    let diag_end = lsp_position_to_offset(text, null_deref_diag.range.end);
+    assert!(
+        diag_start <= start && diag_end >= end,
+        "expected FLOW_NULL_DEREF to cover `{needle}`; got diagnostic span {diag_start}..{diag_end}"
+    );
+
+    let action = actions
+        .iter()
+        .find(|action| action.title.contains("Objects.requireNonNull"))
+        .expect("expected Objects.requireNonNull quick fix");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes map");
+    let edits = changes.get(&uri).expect("expected edit for the same document");
+    assert_eq!(edits.len(), 1, "expected a single text edit");
+
+    assert_eq!(edits[0].range, null_deref_diag.range);
+    assert_eq!(edits[0].new_text, "java.util.Objects.requireNonNull(s).length()");
 }
