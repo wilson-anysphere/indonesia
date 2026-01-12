@@ -256,8 +256,6 @@ pub fn extract_variable(
         return Err(RefactorError::ExtractNotSupported { reason });
     }
 
-    reject_multi_declarator_local_declaration_dependency(text, &expr)?;
-
     let expr_range = syntax_range(expr.syntax());
     let expr_text = text
         .get(selection.start..selection.end)
@@ -361,6 +359,41 @@ pub fn extract_variable(
     };
 
     let newline = NewlineStyle::detect(text).as_str();
+
+    // Special-case: extracting inside a multi-declarator local variable declaration needs to
+    // preserve scoping and initializer evaluation order. Naively inserting the extracted binding
+    // before the whole statement can be invalid (later declarators can reference earlier ones) and
+    // can also reorder side effects relative to earlier declarators.
+    //
+    // Example:
+    //   int a = 1, b = a + 2;
+    //
+    // Desired:
+    //   int a = 1;
+    //   var tmp = a + 2;
+    //   int b = tmp;
+    if let ast::Statement::LocalVariableDeclarationStatement(local) = &stmt {
+        if let Some(replacement) = rewrite_multi_declarator_local_variable_declaration(
+            text,
+            local,
+            stmt_range,
+            expr_range,
+            &expr_text,
+            &name,
+            &ty,
+            &indent,
+            newline,
+        ) {
+            let mut edit = WorkspaceEdit::new(vec![TextEdit::replace(
+                params.file.clone(),
+                stmt_range,
+                replacement,
+            )]);
+            edit.normalize()?;
+            return Ok(edit);
+        }
+    }
+
     let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
     let mut edit = WorkspaceEdit::new(vec![
@@ -1136,63 +1169,97 @@ fn find_expression(
     None
 }
 
-fn reject_multi_declarator_local_declaration_dependency(
+fn rewrite_multi_declarator_local_variable_declaration(
     source: &str,
-    expr: &ast::Expression,
-) -> Result<(), RefactorError> {
-    let Some(stmt) = expr
-        .syntax()
-        .ancestors()
-        .find_map(ast::LocalVariableDeclarationStatement::cast)
-    else {
-        return Ok(());
-    };
-
-    let Some(list) = stmt.declarator_list() else {
-        return Ok(());
-    };
-
-    let declarators: Vec<_> = list.declarators().collect();
-    if declarators.len() <= 1 {
-        return Ok(());
+    stmt: &ast::LocalVariableDeclarationStatement,
+    stmt_range: TextRange,
+    expr_range: TextRange,
+    expr_text: &str,
+    extracted_name: &str,
+    extracted_ty: &str,
+    indent: &str,
+    newline: &str,
+) -> Option<String> {
+    let list = stmt.declarator_list()?;
+    let decls: Vec<_> = list.declarators().collect();
+    if decls.len() <= 1 {
+        return None;
     }
 
-    let Some(containing_decl) = expr
-        .syntax()
-        .ancestors()
-        .find_map(ast::VariableDeclarator::cast)
-    else {
-        return Ok(());
-    };
-    let containing_start = syntax_range(containing_decl.syntax()).start;
-
-    let mut earlier_names: HashSet<String> = HashSet::new();
-    for decl in declarators {
-        let start = syntax_range(decl.syntax()).start;
-        if start < containing_start {
-            if let Some(token) = decl.name_token() {
-                earlier_names.insert(token.text().to_string());
-            }
+    let mut target_idx: Option<usize> = None;
+    for (idx, decl) in decls.iter().enumerate() {
+        let Some(init) = decl.initializer() else {
+            continue;
+        };
+        let init_range = syntax_range(init.syntax());
+        if init_range.start <= expr_range.start && expr_range.end <= init_range.end {
+            target_idx = Some(idx);
+            break;
         }
     }
-    if earlier_names.is_empty() {
-        return Ok(());
+    let target_idx = target_idx?;
+    if target_idx == 0 {
+        return None;
     }
 
-    for name_expr in expr.syntax().descendants().filter_map(ast::NameExpression::cast) {
-        let range = syntax_range(name_expr.syntax());
-        let ident = source
-            .get(range.start..range.end)
-            .unwrap_or_default()
-            .trim();
-        if earlier_names.contains(ident) {
-            return Err(RefactorError::ExtractNotSupported {
-                reason: "cannot extract from multi-declarator local variable declaration when expression depends on an earlier declarator",
-            });
-        }
+    let first_decl = decls.first()?;
+    let prev_decl = decls.get(target_idx - 1)?;
+    let target_decl = decls.get(target_idx)?;
+    let last_decl = decls.last()?;
+
+    let first_decl_range = syntax_range(first_decl.syntax());
+    let prev_decl_range = syntax_range(prev_decl.syntax());
+    let target_decl_range = syntax_range(target_decl.syntax());
+    let last_decl_range = syntax_range(last_decl.syntax());
+
+    // The declarator node may include separator whitespace after the comma. When we split the
+    // declaration into a new statement we want the declarator to start at the identifier/pattern.
+    let after_start = skip_leading_whitespace(source, target_decl_range.start, last_decl_range.end);
+    if expr_range.start < after_start || expr_range.end > last_decl_range.end {
+        return None;
     }
 
-    Ok(())
+    let prefix_text = source.get(stmt_range.start..first_decl_range.start)?.to_string();
+    let before_text = source.get(first_decl_range.start..prev_decl_range.end)?.to_string();
+    let after_text = source.get(after_start..last_decl_range.end)?.to_string();
+    let stmt_suffix = source.get(last_decl_range.end..stmt_range.end)?.to_string();
+
+    let rel_start = expr_range.start - after_start;
+    let rel_end = expr_range.end - after_start;
+    let after_replaced = format!(
+        "{}{}{}",
+        &after_text[..rel_start],
+        extracted_name,
+        &after_text[rel_end..]
+    );
+
+    let mut replacement = String::new();
+    replacement.push_str(&prefix_text);
+    replacement.push_str(&before_text);
+    replacement.push(';');
+    replacement.push_str(newline);
+    replacement.push_str(indent);
+    replacement.push_str(extracted_ty);
+    replacement.push(' ');
+    replacement.push_str(extracted_name);
+    replacement.push_str(" = ");
+    replacement.push_str(expr_text);
+    replacement.push(';');
+    replacement.push_str(newline);
+    replacement.push_str(indent);
+    replacement.push_str(&prefix_text);
+    replacement.push_str(&after_replaced);
+    replacement.push_str(&stmt_suffix);
+
+    Some(replacement)
+}
+
+fn skip_leading_whitespace(text: &str, mut start: usize, end: usize) -> usize {
+    let bytes = text.as_bytes();
+    while start < end && bytes.get(start).copied().is_some_and(|b| b.is_ascii_whitespace()) {
+        start += 1;
+    }
+    start
 }
 
 fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'static str> {

@@ -191,6 +191,42 @@ fn extract_variable_generates_valid_edit() {
 }
 
 #[test]
+fn extract_variable_splits_multi_declarator_local_declaration() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    int a = 1, b = /*select*/a + 2/*end*/;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 1;
+    var tmp = a + 2;
+    int b = tmp;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_instanceof_pattern_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
