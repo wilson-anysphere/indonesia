@@ -1287,6 +1287,25 @@ class C {
 }
 
 #[test]
+fn conditional_unboxes_boxed_numeric_types() {
+    let src = r#"
+class C {
+    void m(boolean cond, Integer a, Long b) {
+        var x = cond ? a : b;
+        long y = x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "long");
+}
+
+#[test]
 fn plus_unboxes_integer_operands_to_int() {
     let src = r#"
 class C {

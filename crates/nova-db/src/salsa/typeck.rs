@@ -5527,12 +5527,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 } else if matches!(else_ty, Type::Null) && then_ty.is_reference() {
                     // `cond ? null : ref` => ref
                     then_ty
-                } else if let (Type::Primitive(a), Type::Primitive(b)) = (&then_ty, &else_ty) {
-                    // Numeric conditional result uses binary numeric promotion (best-effort).
+                } else if let (Some(a), Some(b)) = {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    (primitive_like(env_ro, &then_ty), primitive_like(env_ro, &else_ty))
+                } {
+                    // Best-effort: conditional expressions participate in unboxing + numeric
+                    // promotion (JLS 15.25). We approximate this by treating boxed primitives as
+                    // "primitive-like" and applying binary numeric promotion.
                     if a.is_numeric() && b.is_numeric() {
-                        binary_numeric_promotion(*a, *b)
+                        binary_numeric_promotion(a, b)
                             .map(Type::Primitive)
                             .unwrap_or(Type::Unknown)
+                    } else if a == PrimitiveType::Boolean && b == PrimitiveType::Boolean {
+                        Type::boolean()
                     } else {
                         Type::Unknown
                     }
