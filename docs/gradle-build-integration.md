@@ -331,6 +331,12 @@ Gradle execution is time-bounded by whichever `CommandRunner` is in use:
 
 In all of these cases, Nova falls back to heuristic discovery.
 
+Quick recovery steps:
+
+- delete `.nova/queries/gradle.json` and reload (forces heuristic mode until the next successful
+  snapshot write), or
+- re-run Gradle extraction via `nova-build` to regenerate a fresh snapshot.
+
 ### Snapshot never appears on disk
 
 Snapshot writing is **best-effort**. Call sites intentionally ignore I/O errors when writing
