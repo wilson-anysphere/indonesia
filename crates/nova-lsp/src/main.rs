@@ -6891,11 +6891,17 @@ fn handle_execute_command(
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body(args, params.work_done_token, state, client, cancel.clone())
+            run_ai_generate_method_body_code_action(
+                args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests(args, params.work_done_token, state, client, cancel.clone())
+            run_ai_generate_tests_code_action(args, params.work_done_token, state, client, cancel.clone())
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
@@ -7801,6 +7807,259 @@ fn handle_ai_custom_request(
         }
         _ => Err((-32601, format!("Method not found: {method}"))),
     }
+}
+
+fn ai_workspace_root_uri_and_rel_path(
+    state: &ServerState,
+    file_path: &Path,
+) -> Result<(LspUri, String), (i32, String)> {
+    let root_path = match state.project_root.as_deref() {
+        Some(root) if file_path.starts_with(root) => root.to_path_buf(),
+        _ => file_path.parent().ok_or_else(|| {
+            (
+                -32602,
+                format!("missing parent directory for `{}`", file_path.display()),
+            )
+        })?
+        .to_path_buf(),
+    };
+
+    let file_rel = if file_path.starts_with(&root_path) {
+        file_path
+            .strip_prefix(&root_path)
+            .unwrap_or(file_path)
+            .to_path_buf()
+    } else {
+        PathBuf::from(file_path.file_name().ok_or_else(|| {
+            (-32602, format!("invalid file path `{}`", file_path.display()))
+        })?)
+    };
+    let file_rel = file_rel.to_string_lossy().replace('\\', "/");
+
+    let abs_root = nova_core::AbsPathBuf::try_from(root_path).map_err(|e| (-32603, e.to_string()))?;
+    let root_uri = nova_core::path_to_file_uri(&abs_root)
+        .map_err(|e| (-32603, e.to_string()))?
+        .parse::<LspUri>()
+        .map_err(|e| (-32603, format!("invalid uri: {e}")))?;
+
+    Ok((root_uri, file_rel))
+}
+
+fn run_ai_generate_method_body_code_action(
+    args: GenerateMethodBodyArgs,
+    _work_done_token: Option<serde_json::Value>,
+    state: &mut ServerState,
+    rpc_out: &impl RpcOut,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+    let _ai = state
+        .ai
+        .as_ref()
+        .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    let uri = args
+        .uri
+        .as_deref()
+        .ok_or_else(|| (-32602, "missing uri".to_string()))?;
+    let range = args
+        .range
+        .ok_or_else(|| (-32602, "missing range".to_string()))?;
+
+    let file_path = path_from_uri(uri)
+        .ok_or_else(|| (-32602, format!("unsupported uri for AI edits: {uri}")))?;
+    if is_excluded_by_ai_privacy(state, &file_path) {
+        return Err((
+            -32600,
+            "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+        ));
+    }
+
+    let source = load_document_text(state, uri).ok_or_else(|| {
+        (
+            -32603,
+            format!("missing document text for `{}`", uri),
+        )
+    })?;
+
+    let selection = LspTypesRange::new(
+        LspTypesPosition::new(range.start.line, range.start.character),
+        LspTypesPosition::new(range.end.line, range.end.character),
+    );
+    let start_offset = position_to_offset_utf16(&source, selection.start)
+        .ok_or_else(|| (-32602, "invalid selection range".to_string()))?;
+    let end_offset = position_to_offset_utf16(&source, selection.end)
+        .ok_or_else(|| (-32602, "invalid selection range".to_string()))?;
+    let (sel_start, sel_end) = if start_offset <= end_offset {
+        (start_offset, end_offset)
+    } else {
+        (end_offset, start_offset)
+    };
+    let selected = source
+        .get(sel_start..sel_end)
+        .ok_or_else(|| (-32602, "invalid selection range".to_string()))?;
+
+    let open_brace = selected
+        .find('{')
+        .ok_or_else(|| (-32602, "selection must include `{`".to_string()))?;
+    let close_brace = selected
+        .rfind('}')
+        .ok_or_else(|| (-32602, "selection must include `}`".to_string()))?;
+    if close_brace <= open_brace {
+        return Err((-32602, "selection must include `{ ... }`".to_string()));
+    }
+
+    let insert_start_offset = sel_start.saturating_add(open_brace).saturating_add(1);
+    let insert_end_offset = sel_start.saturating_add(close_brace);
+    if insert_end_offset > source.len() || insert_start_offset > insert_end_offset {
+        return Err((-32602, "invalid selection range".to_string()));
+    }
+
+    if !source[insert_start_offset..insert_end_offset]
+        .trim()
+        .is_empty()
+    {
+        return Err((-32602, "method body is not empty".to_string()));
+    }
+
+    let insert_range = LspTypesRange::new(
+        offset_to_position_utf16(&source, insert_start_offset),
+        offset_to_position_utf16(&source, insert_end_offset),
+    );
+
+    let (root_uri, file_rel) = ai_workspace_root_uri_and_rel_path(state, &file_path)?;
+
+    let workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source.clone())]);
+    let ai_client =
+        nova_ai::AiClient::from_config(&state.ai_config).map_err(|e| (-32603, e.to_string()))?;
+    let executor = nova_lsp::AiCodeActionExecutor::new(
+        &ai_client,
+        nova_ai_codegen::CodeGenerationConfig::default(),
+        state.ai_config.privacy.clone(),
+    );
+
+    let outcome = runtime
+        .block_on(executor.execute(
+            nova_lsp::AiCodeAction::GenerateMethodBody {
+                file: file_rel.clone(),
+                insert_range,
+            },
+            &workspace,
+            &root_uri,
+            &cancel,
+            None,
+        ))
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    let nova_lsp::CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+        return Err((-32603, "unexpected AI outcome".to_string()));
+    };
+
+    let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+        .map_err(|e| (-32603, e.to_string()))?;
+    rpc_out
+        .send_request(
+            id,
+            "workspace/applyEdit",
+            json!({
+                "label": "Generate method body with AI",
+                "edit": edit,
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
+}
+
+fn run_ai_generate_tests_code_action(
+    args: GenerateTestsArgs,
+    _work_done_token: Option<serde_json::Value>,
+    state: &mut ServerState,
+    rpc_out: &impl RpcOut,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value, (i32, String)> {
+    let _ai = state
+        .ai
+        .as_ref()
+        .ok_or_else(|| (-32600, "AI is not configured".to_string()))?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    let uri = args
+        .uri
+        .as_deref()
+        .ok_or_else(|| (-32602, "missing uri".to_string()))?;
+    let range = args
+        .range
+        .ok_or_else(|| (-32602, "missing range".to_string()))?;
+
+    let file_path = path_from_uri(uri)
+        .ok_or_else(|| (-32602, format!("unsupported uri for AI edits: {uri}")))?;
+    if is_excluded_by_ai_privacy(state, &file_path) {
+        return Err((
+            -32600,
+            "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+        ));
+    }
+
+    let source = load_document_text(state, uri).ok_or_else(|| {
+        (
+            -32603,
+            format!("missing document text for `{}`", uri),
+        )
+    })?;
+
+    let insert_range = LspTypesRange::new(
+        LspTypesPosition::new(range.start.line, range.start.character),
+        LspTypesPosition::new(range.end.line, range.end.character),
+    );
+
+    let (root_uri, file_rel) = ai_workspace_root_uri_and_rel_path(state, &file_path)?;
+    let workspace = nova_ai::workspace::VirtualWorkspace::new([(file_rel.clone(), source.clone())]);
+    let ai_client =
+        nova_ai::AiClient::from_config(&state.ai_config).map_err(|e| (-32603, e.to_string()))?;
+    let executor = nova_lsp::AiCodeActionExecutor::new(
+        &ai_client,
+        nova_ai_codegen::CodeGenerationConfig::default(),
+        state.ai_config.privacy.clone(),
+    );
+
+    let outcome = runtime
+        .block_on(executor.execute(
+            nova_lsp::AiCodeAction::GenerateTest {
+                file: file_rel.clone(),
+                insert_range,
+            },
+            &workspace,
+            &root_uri,
+            &cancel,
+            None,
+        ))
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    let nova_lsp::CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+        return Err((-32603, "unexpected AI outcome".to_string()));
+    };
+
+    let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+        .map_err(|e| (-32603, e.to_string()))?;
+    rpc_out
+        .send_request(
+            id,
+            "workspace/applyEdit",
+            json!({
+                "label": "Generate tests with AI",
+                "edit": edit,
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
 }
 
 fn run_ai_explain_error(
