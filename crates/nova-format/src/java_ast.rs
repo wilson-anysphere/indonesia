@@ -861,7 +861,8 @@ fn is_control_keyword(text: &str) -> bool {
 
 fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> bool {
     let SigToken::Token {
-        kind: last_kind, ..
+        kind: last_kind,
+        text: last_text,
     } = last
     else {
         return false;
@@ -871,6 +872,12 @@ fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> b
         return true;
     }
     if *last_kind == SyntaxKind::Dot && is_numeric_literal_kind(next_kind) {
+        return true;
+    }
+
+    // Avoid synthesizing the `non-sealed` restricted keyword from spaced `non - sealed` tokens.
+    if *last_kind == SyntaxKind::Identifier && last_text == "non" && next_kind == SyntaxKind::Minus
+    {
         return true;
     }
 

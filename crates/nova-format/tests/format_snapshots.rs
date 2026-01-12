@@ -323,7 +323,7 @@ class Foo {
 
 #[test]
 fn ast_formatting_avoids_punctuation_token_merges() {
-    let input = "class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> >>2;boolean g=1>> >2;boolean h=1> >=2;boolean i=1> =2;boolean j=1= =2;boolean k=1! =2;}}\n";
+    let input = "class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> >>2;boolean g=1>> >2;boolean h=1> >=2;boolean i=1> =2;boolean j=1= =2;boolean k=1! =2;int l=non - sealed;}}\n";
     let parse = parse_java(input);
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
@@ -371,6 +371,14 @@ fn ast_formatting_avoids_punctuation_token_merges() {
         formatted.contains("1> >=2"),
         "expected `> >=` tokens to remain separated: {formatted}"
     );
+    assert!(
+        !formatted.contains("non-sealed"),
+        "formatter should not synthesize `non-sealed`: {formatted}"
+    );
+    assert!(
+        formatted.contains("non -"),
+        "expected whitespace before `-` in `non - sealed`: {formatted}"
+    );
 
     assert_snapshot!(
         formatted,
@@ -388,6 +396,7 @@ class Foo {
         boolean i = 1> = 2;
         boolean j = 1 = = 2;
         boolean k = 1! = 2;
+        int l = non -sealed;
     }
 }
 "###
