@@ -47,8 +47,9 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
 - **ADR 0002 (Rowan syntax trees)**:
   - `crates/nova-syntax/` — parser/lexer + `rowan` integration (`syntax_kind.rs`, `parser.rs`, `ast.rs`)
 - **ADR 0003 (LSP/DAP transport)**:
-  - `crates/nova-lsp/src/main.rs` — shipped LSP stdio server (`lsp_server::Connection::stdio()` + Nova-owned dispatch/cancellation)
-  - `crates/nova-lsp/src/codec.rs` — Content-Length framing helpers (used by unit tests/harnesses)
+  - `crates/nova-lsp/src/main.rs` — shipped LSP stdio server (`lsp_server::Connection::stdio()` + `initialize_start`/`initialize_finish`) with Nova-owned dispatch/cancellation
+  - `crates/nova-lsp/src/lib.rs` — Nova-specific `nova/*` method constants + (stateless) request dispatch helpers (`handle_custom_request[_cancelable]`)
+  - `crates/nova-lsp/src/codec.rs` — Content-Length framing helpers (used by unit tests/harnesses; the shipped binary uses `lsp-server`)
   - `crates/nova-dap/src/dap/codec.rs` — DAP `Content-Length` framing
 - **ADR 0004 (Concurrency model)**:
   - `crates/nova-scheduler/` — Tokio + Rayon orchestration patterns and cancellation primitives
@@ -91,7 +92,7 @@ Notable “delta” areas to be aware of:
   - `crates/nova-syntax` provides both a token-level green tree (`parse`) and a rowan-based parser (`parse_java`).
   - Several subsystems still use non-rowan parsing approaches (e.g. `crates/nova-framework-mapstruct/` uses Tree-sitter; `crates/nova-framework-web/` and `crates/nova-workspace/` use regex/text scans).
 - **LSP transport framework (ADR 0003):**
-  - The shipped `nova-lsp` binary uses `lsp-server` for stdio framing and the `initialize` handshake (`lsp_server::Connection::stdio()` / `initialize_start` / `initialize_finish` in `crates/nova-lsp/src/main.rs`).
+  - The shipped `nova-lsp` binary uses `lsp-server` for the stdio transport (I/O threads, `Content-Length` framing, JSON-RPC parsing) and the `initialize` handshake (`lsp_server::Connection::stdio()` / `initialize_start` / `initialize_finish` in `crates/nova-lsp/src/main.rs`).
   - Request/notification handling is still Nova-owned: a custom router for `$/cancelRequest` + a manual `match` dispatch on method strings lives in `crates/nova-lsp/src/main.rs` (rather than a higher-level framework).
 - **Persistence formats (ADR 0005):**
   - `rkyv` + validation is implemented in `crates/nova-storage/` and used by some persisted artifacts (e.g. dependency bundles in `crates/nova-deps-cache/`).
@@ -104,5 +105,6 @@ Notable “delta” areas to be aware of:
 - **Distributed mode (docs/16-distributed-mode.md):**
   - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.
 - **Protocol extensions:**
-  - Custom `nova/*` methods exist (mostly implemented under `crates/nova-lsp/src/extensions/`) and are advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (see `initialize_result_json()` in `crates/nova-lsp/src/main.rs`).
+  - Custom `nova/*` methods exist (implemented across `crates/nova-lsp/src/extensions/`, `crates/nova-lsp/src/hardening.rs`, and the `nova-lsp` binary) and are advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (see `initialize_result_json()` in `crates/nova-lsp/src/main.rs`).
   - Clients should still be defensive for older servers (or non-Nova servers) that don’t advertise these capabilities: use “optimistic call + method-not-found fallback” gating (see [`protocol-extensions.md`](protocol-extensions.md)).
+  - Safe-mode is a shipped resilience feature for Nova-specific endpoints: timeouts/panics in watchdog-wrapped `nova/*` handlers can temporarily enable safe-mode, after which most `nova/*` requests return an error via `nova_lsp::hardening::guard_method` (`crates/nova-lsp/src/hardening.rs`). The binary surfaces state changes via `nova/safeModeChanged` (see `flush_safe_mode_notifications` in `crates/nova-lsp/src/main.rs`) and supports polling via `nova/safeModeStatus`.
