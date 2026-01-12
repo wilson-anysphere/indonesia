@@ -5993,8 +5993,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         match (lhs_prim, rhs_prim) {
                             (Some(a), Some(b)) => {
                                 let ok = (a.is_numeric() && b.is_numeric())
-                                    || (a == PrimitiveType::Boolean
-                                        && b == PrimitiveType::Boolean);
+                                    || (a == PrimitiveType::Boolean && b == PrimitiveType::Boolean);
                                 if ok {
                                     Type::boolean()
                                 } else {

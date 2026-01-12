@@ -9979,7 +9979,10 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
 
     // Trivial literals and keywords.
     if receiver.starts_with('"')
-        || receiver.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        || receiver
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit())
         || matches!(receiver, "true" | "false" | "null" | "this" | "super")
     {
         return true;

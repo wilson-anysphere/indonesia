@@ -80,15 +80,13 @@ fn main() {
         std::process::exit(exit_code);
     }
 
-    let mut heartbeat_file = heartbeat_file_path
-        .as_deref()
-        .and_then(|path| {
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        });
+    let mut heartbeat_file = heartbeat_file_path.as_deref().and_then(|path| {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
 
     loop {
         thread::sleep(Duration::from_millis(sleep_ms));

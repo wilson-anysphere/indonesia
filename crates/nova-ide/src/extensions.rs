@@ -1081,12 +1081,7 @@ where
                 selection.start,
             ));
 
-            actions.extend(type_mismatch_quick_fixes(
-                source,
-                &uri,
-                span,
-                &diagnostics,
-            ));
+            actions.extend(type_mismatch_quick_fixes(source, &uri, span, &diagnostics));
         }
 
         let extension_actions = self
@@ -1608,8 +1603,12 @@ fn mapstruct_diagnostics_when_build_metadata_reports_missing_dependency(
         return Vec::new();
     }
 
-    match nova_framework_mapstruct::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
-    {
+    match nova_framework_mapstruct::diagnostics_for_file(
+        &root,
+        path,
+        text,
+        has_mapstruct_dependency,
+    ) {
         Ok(diags) => diags,
         Err(_) => Vec::new(),
     }
