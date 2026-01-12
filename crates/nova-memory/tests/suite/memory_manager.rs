@@ -91,6 +91,16 @@ struct RecordingEvictor {
     tracker: OnceLock<nova_memory::MemoryTracker>,
 }
 
+struct PriorityRecordingEvictor {
+    name: &'static str,
+    category: MemoryCategory,
+    priority: u8,
+    bytes: Mutex<u64>,
+    calls: Arc<Mutex<Vec<&'static str>>>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+}
+
 impl RecordingEvictor {
     fn new(
         manager: &MemoryManager,
@@ -130,6 +140,47 @@ impl RecordingEvictor {
     }
 }
 
+impl PriorityRecordingEvictor {
+    fn new(
+        manager: &MemoryManager,
+        name: &'static str,
+        category: MemoryCategory,
+        priority: u8,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    ) -> Arc<Self> {
+        let evictor = Arc::new(Self {
+            name,
+            category,
+            priority,
+            bytes: Mutex::new(0),
+            calls,
+            registration: OnceLock::new(),
+            tracker: OnceLock::new(),
+        });
+
+        let registration = manager.register_evictor(name.to_string(), category, evictor.clone());
+        evictor
+            .tracker
+            .set(registration.tracker())
+            .unwrap_or_else(|_| panic!("tracker only set once"));
+        evictor
+            .registration
+            .set(registration)
+            .unwrap_or_else(|_| panic!("registration only set once"));
+
+        evictor
+    }
+
+    fn set_bytes(&self, bytes: u64) {
+        *self.bytes.lock().unwrap() = bytes;
+        self.tracker.get().unwrap().set_bytes(bytes);
+    }
+
+    fn bytes(&self) -> u64 {
+        *self.bytes.lock().unwrap()
+    }
+}
+
 impl MemoryEvictor for RecordingEvictor {
     fn name(&self) -> &str {
         self.name
@@ -137,6 +188,34 @@ impl MemoryEvictor for RecordingEvictor {
 
     fn category(&self) -> MemoryCategory {
         self.category
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        self.calls.lock().unwrap().push(self.name);
+
+        let mut bytes = self.bytes.lock().unwrap();
+        let before = *bytes;
+        let after = before.min(request.target_bytes);
+        *bytes = after;
+        self.tracker.get().unwrap().set_bytes(after);
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
+    }
+}
+
+impl MemoryEvictor for PriorityRecordingEvictor {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn category(&self) -> MemoryCategory {
+        self.category
+    }
+
+    fn eviction_priority(&self) -> u8 {
+        self.priority
     }
 
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
@@ -465,6 +544,58 @@ fn stops_evicting_within_category_once_under_target() {
         ["a"],
         "expected only the first evictor to be invoked"
     );
+}
+
+#[test]
+fn evicts_lower_priority_first_even_if_smaller() {
+    // Regression test:
+    // Some evictors are very expensive (or high UX impact) and should be treated
+    // as a last resort, even when they currently report the largest tracked
+    // usage (e.g. rebuilding Salsa memo tables).
+    //
+    // Ensure we consult `MemoryEvictor::eviction_priority()` before falling back
+    // to "largest first" ordering.
+    let budget = MemoryBudget::from_total(1_495); // query_cache budget = 598
+    // Keep pressure deterministically Low even if process RSS dwarfs the synthetic budget.
+    let thresholds = MemoryPressureThresholds {
+        medium: 1e12,
+        high: 1e12,
+        critical: 1e12,
+    };
+    let manager = MemoryManager::with_thresholds(budget, thresholds);
+
+    let calls: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // `expensive` is slightly larger; without priority ordering it would be evicted first.
+    let cheap = PriorityRecordingEvictor::new(
+        &manager,
+        "cheap",
+        MemoryCategory::QueryCache,
+        0,
+        calls.clone(),
+    );
+    let expensive = PriorityRecordingEvictor::new(
+        &manager,
+        "expensive",
+        MemoryCategory::QueryCache,
+        10,
+        calls.clone(),
+    );
+
+    // Exceed the category target by 1 byte: evicting `cheap` alone is enough to
+    // restore the category under budget.
+    expensive.set_bytes(300);
+    cheap.set_bytes(299);
+
+    manager.enforce();
+
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["cheap"],
+        "expected low-priority evictor to run first and satisfy the target without invoking the expensive evictor"
+    );
+    assert_eq!(expensive.bytes(), 300);
+    assert_eq!(cheap.bytes(), 298);
 }
 
 #[test]

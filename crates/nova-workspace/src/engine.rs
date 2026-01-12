@@ -210,6 +210,12 @@ impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
             .unwrap_or(MemoryCategory::Indexes)
     }
 
+    fn eviction_priority(&self) -> u8 {
+        // Dropping the full in-memory project indexes is a high-UX-impact,
+        // expensive-to-rebuild operation; prefer evicting other index caches first.
+        10
+    }
+
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
         let before = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
         if before == 0 {

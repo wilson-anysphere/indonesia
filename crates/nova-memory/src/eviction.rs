@@ -33,6 +33,17 @@ pub trait MemoryEvictor: Send + Sync {
     fn name(&self) -> &str;
     fn category(&self) -> MemoryCategory;
 
+    /// Ordering hint for eviction within a single [`MemoryCategory`].
+    ///
+    /// Lower values are evicted first.
+    ///
+    /// This is intended for cases where "largest first" is not the right
+    /// policy, such as preferring cheap-to-rebuild caches over
+    /// expensive/destructive eviction.
+    fn eviction_priority(&self) -> u8 {
+        0
+    }
+
     /// Attempt to reduce memory usage down to `target_bytes`.
     fn evict(&self, request: EvictionRequest) -> EvictionResult;
 

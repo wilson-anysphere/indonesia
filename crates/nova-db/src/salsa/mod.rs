@@ -1268,6 +1268,13 @@ impl MemoryEvictor for ClasspathIndexEvictor {
         MemoryCategory::TypeInfo
     }
 
+    fn eviction_priority(&self) -> u8 {
+        // Dropping the classpath index is extremely disruptive for IDE features
+        // that depend on third-party symbols. Prefer clearing "cheaper" caches
+        // (like JDK symbol caches) first.
+        10
+    }
+
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
         let before = self.tracker.bytes();
         if before <= request.target_bytes {
@@ -1844,6 +1851,12 @@ impl MemoryEvictor for SalsaMemoEvictor {
         MemoryCategory::QueryCache
     }
 
+    fn eviction_priority(&self) -> u8 {
+        // Rebuilding the Salsa database is an expensive, coarse-grained eviction
+        // mechanism. Prefer evicting cheaper caches (e.g. `QueryCache`) first.
+        10
+    }
+
     fn flush_to_disk(&self) -> std::io::Result<()> {
         // Persistence should be strictly best-effort under memory pressure:
         // - never panic
@@ -1901,6 +1914,18 @@ impl MemoryEvictor for SalsaMemoEvictor {
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
         let before = self.footprint.bytes();
         if before <= request.target_bytes {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        // Rebuilding the Salsa database is disruptive; avoid doing it under
+        // Low/Medium pressure unless we're explicitly asked to clear everything
+        // (`target_bytes == 0`).
+        if request.target_bytes > 0
+            && matches!(request.pressure, MemoryPressure::Low | MemoryPressure::Medium)
+        {
             return EvictionResult {
                 before_bytes: before,
                 after_bytes: before,

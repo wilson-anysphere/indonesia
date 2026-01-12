@@ -344,12 +344,18 @@ impl MemoryManager {
             let evictable_target = effective_target.saturating_sub(non_evictable);
 
             // Deterministic ordering within a category:
-            // - larger components first (more likely to bring usage under target quickly)
+            // - prefer lower eviction priority (cheap/low-impact eviction first)
+            // - within the same priority, evict larger components first (more likely to bring
+            //   usage under target quickly)
             // - stable tie-breaker by evictor name for reproducibility/debuggability
             candidates.sort_by(
                 |(a_usage, _a_counter, a_evictor), (b_usage, _b_counter, b_evictor)| {
-                    b_usage
-                        .cmp(a_usage)
+                    let a_priority = a_evictor.eviction_priority();
+                    let b_priority = b_evictor.eviction_priority();
+
+                    a_priority
+                        .cmp(&b_priority)
+                        .then_with(|| b_usage.cmp(a_usage))
                         .then_with(|| a_evictor.name().cmp(b_evictor.name()))
                 },
             );
