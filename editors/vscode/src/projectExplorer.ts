@@ -455,7 +455,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         }
 
         const snapshot = this.cache.peekProjectConfiguration(workspace);
-        const config = snapshot.value as unknown as ProjectConfigurationResponse | undefined;
+        const config = snapshot.value;
 
         if (!config) {
           if (snapshot.inFlight) {
