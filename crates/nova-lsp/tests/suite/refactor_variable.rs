@@ -691,6 +691,63 @@ class C {
 }
 
 #[test]
+fn inline_variable_does_not_touch_shadowed_identifiers() {
+    let source = r#"
+class C {
+    void m() {
+        int a = 1 + 2;
+        {
+            int a = 5;
+            System.out.println(a);
+        }
+        System.out.println(a);
+    }
+}
+"#;
+
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let outer_offset = source
+        .rfind("println(a)")
+        .expect("outer println call")
+        + "println(".len();
+    let position = offset_to_position(source, outer_offset);
+
+    let actions = inline_variable_code_actions(&uri, source, position);
+    assert_eq!(actions.len(), 2);
+
+    let all = actions
+        .into_iter()
+        .find_map(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Inline variable (all usages)" =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("inline all usages action");
+
+    let edit = all.edit.expect("edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for uri");
+    let actual = apply_lsp_edits(source, edits);
+
+    let expected = r#"
+class C {
+    void m() {
+        {
+            int a = 5;
+            System.out.println(a);
+        }
+        System.out.println((1 + 2));
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn inline_variable_code_actions_apply_expected_edits_in_switch_case_label() {
     let source = r#"
 class C {

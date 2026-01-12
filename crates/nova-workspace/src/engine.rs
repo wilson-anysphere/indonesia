@@ -24,9 +24,9 @@ use nova_project::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, LoadOptions, OutputDir,
     OutputDirKind, ProjectConfig, ProjectError, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
+use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 #[cfg(test)]
 use nova_scheduler::SchedulerConfig;
-use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{

@@ -199,6 +199,19 @@ pub trait RefactorDatabase {
         None
     }
 
+    /// Resolve the symbol for a name expression at a given byte range.
+    ///
+    /// This is primarily used by refactorings (e.g. Inline Variable) to validate that a
+    /// text range still semantically refers to the intended [`SymbolId`], even in the
+    /// presence of shadowing / identical identifier text.
+    ///
+    /// Implementations should return `Some(SymbolId)` only when `range` corresponds to an
+    /// identifier expression node (e.g. `ast::NameExpression`) and name resolution at that
+    /// location succeeds.
+    fn resolve_name_expr(&self, _file: &FileId, _range: TextRange) -> Option<SymbolId> {
+        None
+    }
+
     /// Best-effort visibility check.
     ///
     /// The default implementation assumes visibility is preserved.

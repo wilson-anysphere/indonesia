@@ -1352,10 +1352,26 @@ pub fn inline_variable(
         check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
     }
 
-    let mut edits: Vec<TextEdit> = targets
-        .into_iter()
-        .map(|usage| TextEdit::replace(usage.file, usage.range, init_replacement.clone()))
-        .collect();
+    let mut edits: Vec<TextEdit> = Vec::with_capacity(targets.len());
+    for usage in targets {
+        // Safety check: ensure the byte range is still a name expression that resolves to the
+        // target symbol. This avoids accidentally rewriting shadowed identifiers in code like:
+        //
+        //   int a = 1;
+        //   { int a = 2; System.out.println(a); }
+        //
+        // where a naive, text-based scan could touch the inner `a`.
+        match db.resolve_name_expr(&usage.file, usage.range) {
+            Some(resolved) if resolved == params.symbol => {}
+            _ => return Err(RefactorError::InlineNotSupported),
+        }
+
+        edits.push(TextEdit::replace(
+            usage.file,
+            usage.range,
+            init_replacement.clone(),
+        ));
+    }
 
     if remove_decl {
         if let Some(delete_range) = decl.declarator_delete_range {

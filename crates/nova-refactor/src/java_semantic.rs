@@ -12,7 +12,8 @@ use nova_hir::queries::HirDatabase;
 use nova_hir::{item_tree, item_tree::ItemTree};
 use nova_resolve::{
     BodyOwner, DefMap, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver,
-    ScopeBuildResult, ScopeKind, StaticMemberResolution, TypeKind, TypeResolution, WorkspaceDefMap,
+    ScopeBuildResult, ScopeId, ScopeKind, StaticMemberResolution, TypeKind, TypeResolution,
+    WorkspaceDefMap,
 };
 use nova_syntax::java as java_syntax;
 use nova_syntax::{ast, AstNode};
@@ -165,6 +166,7 @@ pub struct RefactorJavaDatabase {
     symbols: Vec<SymbolData>,
     references: Vec<Vec<Reference>>,
     spans: Vec<(FileId, TextRange, SymbolId)>,
+    name_expr_scopes: HashMap<FileId, HashMap<TextRange, ScopeId>>,
 
     resolution_to_symbol: HashMap<ResolutionKey, SymbolId>,
     top_level_types: HashMap<(Option<String>, String), SymbolId>,
@@ -493,6 +495,7 @@ impl RefactorJavaDatabase {
         let mut symbols: Vec<SymbolData> = Vec::new();
         let mut references: Vec<Vec<Reference>> = Vec::new();
         let mut spans: Vec<(FileId, TextRange, SymbolId)> = Vec::new();
+        let mut name_expr_scopes: HashMap<FileId, HashMap<TextRange, ScopeId>> = HashMap::new();
         let mut resolution_to_symbol: HashMap<ResolutionKey, SymbolId> = HashMap::new();
         let mut top_level_types: HashMap<(Option<String>, String), SymbolId> = HashMap::new();
 
@@ -627,6 +630,7 @@ impl RefactorJavaDatabase {
                     &inheritance,
                     &mut references,
                     &mut spans,
+                    &mut name_expr_scopes,
                 );
             }
 
@@ -651,6 +655,7 @@ impl RefactorJavaDatabase {
                     &inheritance,
                     &mut references,
                     &mut spans,
+                    &mut name_expr_scopes,
                 );
             }
 
@@ -675,6 +680,7 @@ impl RefactorJavaDatabase {
                     &inheritance,
                     &mut references,
                     &mut spans,
+                    &mut name_expr_scopes,
                 );
             }
 
@@ -758,6 +764,7 @@ impl RefactorJavaDatabase {
             symbols,
             references,
             spans,
+            name_expr_scopes,
             resolution_to_symbol,
             top_level_types,
         }
@@ -1276,6 +1283,45 @@ impl RefactorDatabase for RefactorJavaDatabase {
             .get(symbol.as_usize())
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn resolve_name_expr(&self, file: &FileId, range: TextRange) -> Option<SymbolId> {
+        let scope = self
+            .name_expr_scopes
+            .get(file)
+            .and_then(|m| m.get(&range))
+            .copied()?;
+
+        let db_file = *self.db_files.get(file)?;
+        let scope_result = self.scopes.get(&db_file)?;
+
+        let text = self.file_text(file)?;
+        if range.end > text.len() {
+            return None;
+        }
+        let name = text.get(range.start..range.end)?;
+        if name.is_empty() {
+            return None;
+        }
+
+        // Re-resolve the identifier in the recorded lexical scope to ensure the
+        // range still refers to the intended semantic symbol (important for
+        // shadowing-heavy code).
+        let jdk = nova_jdk::JdkIndex::new();
+        let resolver = Resolver::new(&jdk);
+        let resolved = resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name))?;
+
+        match resolved {
+            Resolution::Local(local) => self
+                .resolution_to_symbol
+                .get(&ResolutionKey::Local(local))
+                .copied(),
+            Resolution::Parameter(param) => self
+                .resolution_to_symbol
+                .get(&ResolutionKey::Param(param))
+                .copied(),
+            _ => None,
+        }
     }
 }
 
@@ -1852,6 +1898,7 @@ fn record_body_references(
     inheritance: &nova_index::InheritanceIndex,
     references: &mut [Vec<Reference>],
     spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    name_expr_scopes: &mut HashMap<FileId, HashMap<TextRange, ScopeId>>,
 ) {
     fn record(
         file: &FileId,
@@ -2163,6 +2210,13 @@ fn record_body_references(
                         return;
                     };
                     let range = TextRange::new(range.start, range.end);
+                    // Track the scope where this name expression should be resolved so refactorings
+                    // can later validate that a reference range still resolves to the expected
+                    // symbol (important for shadowing-heavy code).
+                    name_expr_scopes
+                        .entry(file.clone())
+                        .or_default()
+                        .insert(range, scope);
                     record(file, symbol, range, references, spans);
                     return;
                 }
@@ -2190,6 +2244,10 @@ fn record_body_references(
                     return;
                 };
                 let range = TextRange::new(range.start, range.end);
+                name_expr_scopes
+                    .entry(file.clone())
+                    .or_default()
+                    .insert(range, scope);
                 record(file, symbol, range, references, spans);
             }
             hir::Expr::FieldAccess {
@@ -5357,6 +5415,30 @@ fn record_lightweight_expr(
             references,
             spans,
         ),
+        Expr::Cast(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::Binary(expr) => {
             record_lightweight_expr(
                 file,
