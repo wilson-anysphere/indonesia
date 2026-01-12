@@ -6,7 +6,7 @@ use nova_core::ProjectDatabase;
 use nova_core::{LineIndex, TextSize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct ContextBuilder;
@@ -317,6 +317,18 @@ impl SemanticContextBuilder {
 
     pub fn index_project(&mut self, db: &dyn ProjectDatabase) {
         self.search.index_project(db);
+    }
+
+    pub fn clear(&mut self) {
+        self.search.clear();
+    }
+
+    pub fn index_file(&mut self, path: PathBuf, text: String) {
+        self.search.index_file(path, text);
+    }
+
+    pub fn remove_file(&mut self, path: &Path) {
+        self.search.remove_file(path);
     }
 
     pub fn build(&self, req: ContextRequest, max_related: usize) -> BuiltContext {

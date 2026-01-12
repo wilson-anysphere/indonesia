@@ -94,3 +94,38 @@ fn semantic_context_builder_skips_related_code_when_disabled() {
     assert!(!ctx.text.contains("## Related code"));
     assert!(!ctx.text.contains("helloWorld"));
 }
+
+#[test]
+fn semantic_context_builder_can_index_incrementally() {
+    let cfg = AiConfig {
+        enabled: true,
+        embeddings: AiEmbeddingsConfig {
+            enabled: true,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: AiFeaturesConfig {
+            semantic_search: true,
+            ..AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let mut builder = SemanticContextBuilder::new(&cfg);
+    builder.index_file(
+        PathBuf::from("src/Hello.java"),
+        "public class Hello { public String helloWorld() { return \"hello world\"; } }"
+            .to_string(),
+    );
+    builder.index_file(
+        PathBuf::from("src/Other.java"),
+        "public class Other { public String goodbye() { return \"goodbye\"; } }".to_string(),
+    );
+
+    let ctx = builder.build(request(), 1);
+    assert!(ctx.text.contains("## Related code"));
+    assert!(ctx.text.contains("helloWorld"));
+
+    builder.remove_file(PathBuf::from("src/Hello.java").as_path());
+    let ctx = builder.build(request(), 1);
+    assert!(!ctx.text.contains("helloWorld"));
+}
