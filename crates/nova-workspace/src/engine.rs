@@ -1254,11 +1254,10 @@ impl WorkspaceEngine {
                                                         {
                                                             // The directory is already gone, so
                                                             // `metadata` can't tell whether this was
-                                                            // a file or directory deletion. Restrict
-                                                            // this heuristic to source-tree changes
-                                                            // so build-file deletes (e.g. `BUILD`,
-                                                            // `WORKSPACE`) still flow through normal
-                                                            // build reload categorization.
+                                                            // a file or directory deletion. Use
+                                                            // categorization only to avoid treating
+                                                            // build-file deletes (e.g. `BUILD`,
+                                                            // `WORKSPACE`) as directory operations.
                                                             category =
                                                                 categorize_event(&config, &change);
                                                             // Directory deletes are often observed
@@ -1268,7 +1267,7 @@ impl WorkspaceEngine {
                                                             // ignored directories as potential
                                                             // directory-level operations and fall
                                                             // back to a rescan.
-                                                            category == Some(ChangeCategory::Source)
+                                                            category != Some(ChangeCategory::Build)
                                                                 && is_heuristic_directory_change_for_missing_path(local)
                                                         }
                                                         Err(_) => false,
@@ -1312,7 +1311,7 @@ impl WorkspaceEngine {
                                                     if from_missing && to_missing {
                                                         category =
                                                             categorize_event(&config, &change);
-                                                        category == Some(ChangeCategory::Source)
+                                                        category != Some(ChangeCategory::Build)
                                                             && from_local.is_some_and(
                                                                 is_heuristic_directory_change_for_missing_path,
                                                             )
