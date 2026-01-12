@@ -1305,10 +1305,6 @@ fn type_mismatch_quick_fixes(
         }
     }
 
-    if cancel.is_cancelled() {
-        return Vec::new();
-    }
-
     let mut actions = Vec::new();
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
