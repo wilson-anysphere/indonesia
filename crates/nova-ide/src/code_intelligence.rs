@@ -6685,6 +6685,174 @@ class A {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletionContext {
+    ModuleInfo,
+    PackageDecl,
+    ImportDecl,
+    StaticImportDecl,
+    AnnotationType,
+    AnnotationAttribute,
+    FrameworkStringContext,
+    StringLiteral,
+    Comment,
+    MemberAccess,
+    Postfix,
+    TypePosition,
+    Expression,
+}
+
+/// Detect the completion context at `offset` in `text`.
+///
+/// The returned context is the *first* matching context according to this explicit precedence
+/// order:
+///
+/// 1) module-info
+/// 2) framework string contexts
+/// 3) annotation attribute / annotation type
+/// 4) import/package/static import
+/// 5) string/comment suppression
+/// 6) postfix
+/// 7) member access
+/// 8) type-position
+/// 9) expression/general
+pub(crate) fn detect_completion_context(
+    text: &str,
+    offset: usize,
+    db: &dyn Database,
+    file: FileId,
+) -> CompletionContext {
+    let is_module_info = is_module_descriptor(db, file, text);
+    let is_java = is_module_info
+        || db
+            .file_path(file)
+            .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
+
+    if is_module_info {
+        return CompletionContext::ModuleInfo;
+    }
+
+    let (prefix_start, prefix) = identifier_prefix(text, offset);
+
+    // Framework contexts can live inside strings/text blocks, so detect them before string
+    // suppression. Guard against comment offsets so we don't match `@Value`-like patterns inside
+    // commented-out code.
+    let in_comment = is_java && java_comment_at_offset(text, offset).is_some();
+    if is_java && !in_comment && detect_framework_string_context(text, offset, db, file) {
+        return CompletionContext::FrameworkStringContext;
+    }
+
+    let in_string = is_java && !in_comment && offset_in_java_string_or_char_literal(text, offset);
+
+    if is_java && !in_comment && !in_string {
+        if is_annotation_attribute_completion_context(text, offset, prefix_start) {
+            return CompletionContext::AnnotationAttribute;
+        }
+
+        let before = skip_whitespace_backwards(text, prefix_start);
+        if before > 0 && text.as_bytes().get(before - 1) == Some(&b'@') {
+            return CompletionContext::AnnotationType;
+        }
+
+        if let Some(kind) = import_completion_context_kind(text, offset) {
+            return kind;
+        }
+
+        if package_decl_completion_context(text, offset).is_some() {
+            return CompletionContext::PackageDecl;
+        }
+    }
+
+    if in_comment {
+        return CompletionContext::Comment;
+    }
+    if in_string {
+        return CompletionContext::StringLiteral;
+    }
+
+    if is_java {
+        if let Some(ctx) = dot_completion_context(text, prefix_start) {
+            if ctx.receiver.is_some() && !prefix.is_empty() {
+                return CompletionContext::Postfix;
+            }
+            return CompletionContext::MemberAccess;
+        }
+
+        if is_new_expression_type_completion_context(text, prefix_start)
+            || is_instanceof_type_completion_context(text, offset)
+            || type_position_completion_kind(text, prefix_start, &prefix).is_some()
+            || type_position_completion_context(text, prefix_start, offset).is_some()
+        {
+            return CompletionContext::TypePosition;
+        }
+    }
+
+    CompletionContext::Expression
+}
+
+fn detect_framework_string_context(
+    text: &str,
+    offset: usize,
+    db: &dyn Database,
+    file: FileId,
+) -> bool {
+    if !db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        return false;
+    }
+
+    if spring_di::annotation_string_context(text, offset).is_some()
+        || cursor_inside_value_placeholder(text, offset)
+        || quarkus_config_property_prefix(text, offset).is_some()
+        || crate::jpa_intel::jpql_query_at_cursor(text, offset).is_some()
+    {
+        return true;
+    }
+
+    // MapStruct completion runs inside string literals for mapping attribute values.
+    offset_in_java_string_or_char_literal(text, offset)
+        && nova_framework_mapstruct::looks_like_mapstruct_source(text)
+}
+
+fn import_completion_context_kind(text: &str, offset: usize) -> Option<CompletionContext> {
+    if let Some(ctx) = import_context(text, offset) {
+        return Some(if ctx.is_static {
+            CompletionContext::StaticImportDecl
+        } else {
+            CompletionContext::ImportDecl
+        });
+    }
+
+    // Fallback: `import_path_completions` supports best-effort completions even when the cursor is
+    // positioned on whitespace inside an `import ...` statement.
+    import_completion_parent_package(text, offset).map(|_| CompletionContext::ImportDecl)
+}
+
+fn is_annotation_attribute_completion_context(
+    text: &str,
+    offset: usize,
+    prefix_start: usize,
+) -> bool {
+    let Some(ctx) = enclosing_annotation_call(text, offset) else {
+        return false;
+    };
+
+    // Ensure the cursor is inside the annotation argument list.
+    if prefix_start < ctx.open_paren + 1 {
+        return false;
+    }
+
+    // Avoid treating the cursor inside string literals as annotation attribute completions; those
+    // are reserved for framework-specific string contexts.
+    if cursor_inside_string_literal(text, offset, ctx.open_paren + 1, ctx.close_paren) {
+        return false;
+    }
+
+    cursor_in_annotation_attribute_name_position(text, ctx.open_paren, prefix_start)
+}
+
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
@@ -6716,26 +6884,6 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 }
             }
             return Vec::new();
-        }
-    }
-
-    if is_java {
-        // Prefer `import static Foo.<member>` completions over generic import completions so we
-        // don't hide member suggestions when the cursor is positioned after the final `.`.
-        if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
-            return decorate_completions(&text_index, prefix_start, offset, items);
-        }
-
-        if let Some(ctx) = import_context(text, offset) {
-            let items = import_completions(db, file, &text_index, offset, &ctx);
-            return decorate_completions(&text_index, ctx.replace_start, offset, items);
-        }
-
-        if let Some(ctx) = package_decl_completion_context(text, offset) {
-            let items = package_decl_completions(db, file, &ctx);
-            if !items.is_empty() {
-                return decorate_completions(&text_index, ctx.segment_start, offset, items);
-            }
         }
     }
 
@@ -6783,335 +6931,429 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
-    // JPMS `module-info.java` completions (keywords/directives/modules/packages).
-    if is_module_descriptor(db, file, text) {
-        let items = module_info_completion_items(db, file, text, offset, prefix_start, &prefix);
-        return decorate_completions(&text_index, prefix_start, offset, items);
-    }
+    let ctx = detect_completion_context(text, offset, db, file);
+    match ctx {
+        CompletionContext::ModuleInfo => {
+            let items = module_info_completion_items(db, file, text, offset, prefix_start, &prefix);
+            decorate_completions(&text_index, prefix_start, offset, items)
+        }
+        CompletionContext::StaticImportDecl => {
+            // Prefer `import static Foo.<member>` completions over generic import completions so we
+            // don't hide member suggestions when the cursor is positioned after the final `.`.
+            if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
 
-    // Spring DI completions inside Java source.
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        if let Some(ctx) = spring_di::annotation_string_context(text, offset) {
-            match ctx {
-                spring_di::AnnotationStringContext::Qualifier => {
-                    let items = spring_di::qualifier_completion_items(db, file);
-                    if !items.is_empty() {
-                        return spring_completions_to_lsp(items);
+            if let Some(ctx) = import_context(text, offset) {
+                let items = import_completions(db, file, &text_index, offset, &ctx);
+                return decorate_completions(&text_index, ctx.replace_start, offset, items);
+            }
+
+            if let Some(items) = import_path_completions(db, file, text, offset, &prefix) {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
+
+            decorate_completions(
+                &text_index,
+                prefix_start,
+                offset,
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
+        }
+        CompletionContext::ImportDecl => {
+            if let Some(ctx) = import_context(text, offset) {
+                let items = import_completions(db, file, &text_index, offset, &ctx);
+                return decorate_completions(&text_index, ctx.replace_start, offset, items);
+            }
+
+            if let Some(items) = import_path_completions(db, file, text, offset, &prefix) {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
+
+            decorate_completions(
+                &text_index,
+                prefix_start,
+                offset,
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
+        }
+        CompletionContext::PackageDecl => {
+            if let Some(ctx) = package_decl_completion_context(text, offset) {
+                let items = package_decl_completions(db, file, &ctx);
+                if !items.is_empty() {
+                    return decorate_completions(&text_index, ctx.segment_start, offset, items);
+                }
+            }
+
+            decorate_completions(
+                &text_index,
+                prefix_start,
+                offset,
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
+        }
+        CompletionContext::FrameworkStringContext => {
+            // Spring DI completions inside Java source.
+            if let Some(ctx) = spring_di::annotation_string_context(text, offset) {
+                match ctx {
+                    spring_di::AnnotationStringContext::Qualifier => {
+                        let items = spring_di::qualifier_completion_items(db, file);
+                        if !items.is_empty() {
+                            return spring_completions_to_lsp(items);
+                        }
+                    }
+                    spring_di::AnnotationStringContext::Profile => {
+                        let items = spring_di::profile_completion_items(db, file);
+                        if !items.is_empty() {
+                            return spring_completions_to_lsp(items);
+                        }
                     }
                 }
-                spring_di::AnnotationStringContext::Profile => {
-                    let items = spring_di::profile_completion_items(db, file);
+            }
+
+            // Spring / Micronaut `@Value("${...}")` completions inside Java source.
+            if cursor_inside_value_placeholder(text, offset) {
+                // Only attempt Spring `@Value` completions when the project is likely a
+                // Spring workspace. Micronaut also has `@Value`, so this guard ensures
+                // Micronaut projects don't get Spring-key completions.
+                if spring_value_completion_applicable(db, file, text) {
+                    let Some(index) = spring_config::workspace_index(db, file) else {
+                        return Vec::new();
+                    };
+                    let items = nova_framework_spring::completions_for_value_placeholder(
+                        text,
+                        offset,
+                        index.as_ref(),
+                    );
                     if !items.is_empty() {
-                        return spring_completions_to_lsp(items);
+                        let replace_start =
+                            nova_framework_spring::completion_span_for_value_placeholder(text, offset)
+                                .map(|span| span.start)
+                                .unwrap_or(prefix_start);
+                        return decorate_completions(
+                            &text_index,
+                            replace_start,
+                            offset,
+                            spring_completions_to_lsp(items),
+                        );
                     }
                 }
-            }
-        }
-    }
 
-    // Spring / Micronaut `@Value("${...}")` completions inside Java source.
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        if cursor_inside_value_placeholder(text, offset) {
-            // Only attempt Spring `@Value` completions when the project is likely a
-            // Spring workspace. Micronaut also has `@Value`, so this guard ensures
-            // Micronaut projects don't get Spring-key completions.
-            if spring_value_completion_applicable(db, file, text) {
-                let Some(index) = spring_config::workspace_index(db, file) else {
-                    return Vec::new();
-                };
-                let items = nova_framework_spring::completions_for_value_placeholder(
-                    text,
-                    offset,
-                    index.as_ref(),
-                );
-                if !items.is_empty() {
-                    let replace_start =
-                        nova_framework_spring::completion_span_for_value_placeholder(text, offset)
-                            .map(|span| span.start)
-                            .unwrap_or(prefix_start);
-                    return decorate_completions(
-                        &text_index,
-                        replace_start,
+                // Micronaut `@Value("${...}")` completions as a fallback.
+                if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
+                    let items = nova_framework_micronaut::completions_for_value_placeholder(
+                        text,
                         offset,
-                        spring_completions_to_lsp(items),
+                        &analysis.config_keys,
                     );
-                }
-            }
-
-            // Micronaut `@Value("${...}")` completions as a fallback.
-            if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
-                let items = nova_framework_micronaut::completions_for_value_placeholder(
-                    text,
-                    offset,
-                    &analysis.config_keys,
-                );
-                if !items.is_empty() {
-                    return decorate_completions(
-                        &text_index,
-                        prefix_start,
-                        offset,
-                        spring_completions_to_lsp(items),
-                    );
-                }
-            }
-        }
-    }
-
-    // Quarkus `@ConfigProperty(name="...")` completions inside Java source.
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        if let Some(prefix) = quarkus_config_property_prefix(text, offset) {
-            let (_java_files, java_sources) = workspace_java_sources(db);
-            let property_files = workspace_application_property_files(db);
-            if is_quarkus_project(db, file, &java_sources) {
-                let items = nova_framework_quarkus::config_property_completions(
-                    &prefix,
-                    &java_sources,
-                    &property_files,
-                );
-                if !items.is_empty() {
-                    return decorate_completions(
-                        &text_index,
-                        prefix_start,
-                        offset,
-                        spring_completions_to_lsp(items),
-                    );
-                }
-            }
-        }
-    }
-
-    // JPQL completions inside JPA `@Query(...)` / `@NamedQuery(query=...)` strings.
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        if let Some((query, query_cursor)) = crate::jpa_intel::jpql_query_at_cursor(text, offset) {
-            if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
-                if let Some(analysis) = project.analysis.as_ref() {
-                    let items =
-                        nova_framework_jpa::jpql_completions(&query, query_cursor, &analysis.model);
                     if !items.is_empty() {
                         return decorate_completions(
                             &text_index,
                             prefix_start,
                             offset,
-                            jpa_completions_to_lsp(items),
+                            spring_completions_to_lsp(items),
                         );
                     }
                 }
             }
-        }
-    }
 
-    // MapStruct `@Mapping(source="...")` / `@Mapping(target="...")` completions inside Java source.
-    if is_java && nova_framework_mapstruct::looks_like_mapstruct_source(text) {
-        if let Some(path) = db.file_path(file) {
-            let root = crate::framework_cache::project_root_for_path(path);
-            if let Ok(items) =
-                nova_framework_mapstruct::completions_for_file(&root, path, text, offset)
-            {
-                if !items.is_empty() {
-                    let items = items
-                        .into_iter()
-                        .map(|item| {
-                            let label = item.label;
-                            let mut out = CompletionItem {
-                                label: label.clone(),
-                                kind: Some(CompletionItemKind::FIELD),
-                                detail: item.detail,
-                                ..Default::default()
-                            };
-
-                            if let Some(span) = item.replace_span {
-                                out.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
-                                    range: Range::new(
-                                        text_index.offset_to_position(span.start),
-                                        text_index.offset_to_position(span.end),
-                                    ),
-                                    new_text: label.clone(),
-                                }));
-                            }
-
-                            out
-                        })
-                        .collect::<Vec<_>>();
-
-                    return decorate_completions(&text_index, prefix_start, offset, items);
+            // Quarkus `@ConfigProperty(name="...")` completions inside Java source.
+            if let Some(prefix) = quarkus_config_property_prefix(text, offset) {
+                let (_java_files, java_sources) = workspace_java_sources(db);
+                let property_files = workspace_application_property_files(db);
+                if is_quarkus_project(db, file, &java_sources) {
+                    let items = nova_framework_quarkus::config_property_completions(
+                        &prefix,
+                        &java_sources,
+                        &property_files,
+                    );
+                    if !items.is_empty() {
+                        return decorate_completions(
+                            &text_index,
+                            prefix_start,
+                            offset,
+                            spring_completions_to_lsp(items),
+                        );
+                    }
                 }
             }
+
+            // JPQL completions inside JPA `@Query(...)` / `@NamedQuery(query=...)` strings.
+            if let Some((query, query_cursor)) = crate::jpa_intel::jpql_query_at_cursor(text, offset) {
+                if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+                    if let Some(analysis) = project.analysis.as_ref() {
+                        let items =
+                            nova_framework_jpa::jpql_completions(&query, query_cursor, &analysis.model);
+                        if !items.is_empty() {
+                            return decorate_completions(
+                                &text_index,
+                                prefix_start,
+                                offset,
+                                jpa_completions_to_lsp(items),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // MapStruct `@Mapping(source="...")` / `@Mapping(target="...")` completions inside Java source.
+            if is_java && nova_framework_mapstruct::looks_like_mapstruct_source(text) {
+                if let Some(path) = db.file_path(file) {
+                    let root = crate::framework_cache::project_root_for_path(path);
+                    if let Ok(items) =
+                        nova_framework_mapstruct::completions_for_file(&root, path, text, offset)
+                    {
+                        if !items.is_empty() {
+                            let items = items
+                                .into_iter()
+                                .map(|item| {
+                                    let label = item.label;
+                                    let mut out = CompletionItem {
+                                        label: label.clone(),
+                                        kind: Some(CompletionItemKind::FIELD),
+                                        detail: item.detail,
+                                        ..Default::default()
+                                    };
+
+                                    if let Some(span) = item.replace_span {
+                                        out.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
+                                            range: Range::new(
+                                                text_index.offset_to_position(span.start),
+                                                text_index.offset_to_position(span.end),
+                                            ),
+                                            new_text: label.clone(),
+                                        }));
+                                    }
+
+                                    out
+                                })
+                                .collect::<Vec<_>>();
+
+                            return decorate_completions(&text_index, prefix_start, offset, items);
+                        }
+                    }
+                }
+            }
+
+            // Framework string contexts are inside string-like literals; fall back to the same
+            // suppression logic as regular strings.
+            if let Some((replace_start, items)) =
+                java_string_escape_completions(text, offset, prefix_start, &prefix)
+            {
+                return decorate_completions(&text_index, replace_start, offset, items);
+            }
+            Vec::new()
         }
-    }
-
-    // Suppress non-framework completions inside string-like literals (strings, text blocks, and
-    // char literals). Framework-aware string completion providers
-    // (Spring/Micronaut/Quarkus/JPQL) run above and may return early.
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-        && offset_in_java_string_or_char_literal(text, offset)
-    {
-        // Optional: provide minimal string-context completions for common escape sequences, while
-        // still suppressing all "normal" Java completions inside strings.
-        if let Some((replace_start, items)) =
-            java_string_escape_completions(text, offset, prefix_start, &prefix)
-        {
-            return decorate_completions(&text_index, replace_start, offset, items);
+        CompletionContext::StringLiteral => {
+            if let Some((replace_start, items)) =
+                java_string_escape_completions(text, offset, prefix_start, &prefix)
+            {
+                return decorate_completions(&text_index, replace_start, offset, items);
+            }
+            Vec::new()
         }
-        return Vec::new();
-    }
+        CompletionContext::AnnotationAttribute => {
+            if let Some(items) =
+                annotation_attribute_completions(db, file, text, offset, prefix_start, &prefix)
+            {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
 
-    // Java annotation element (attribute) completions inside `@Anno(...)`.
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        if let Some(items) =
-            annotation_attribute_completions(db, file, text, offset, prefix_start, &prefix)
-        {
-            return decorate_completions(&text_index, prefix_start, offset, items);
+            decorate_completions(
+                &text_index,
+                prefix_start,
+                offset,
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
         }
-    }
-
-    if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
-        return decorate_completions(
-            &text_index,
-            prefix_start,
-            offset,
-            method_reference_completions(db, file, offset, double_colon_offset, &prefix),
-        );
-    }
-    if is_new_expression_type_completion_context(text, prefix_start) {
-        return decorate_completions(
-            &text_index,
-            prefix_start,
-            offset,
-            new_expression_type_completions(db, file, text, &text_index, &prefix),
-        );
-    }
-
-    if let Some(items) = import_path_completions(db, file, text, offset, &prefix) {
-        return decorate_completions(&text_index, prefix_start, offset, items);
-    }
-
-    if is_instanceof_type_completion_context(text, offset) {
-        return decorate_completions(
-            &text_index,
-            prefix_start,
-            offset,
-            instanceof_type_completions(db, file, text, &text_index, &prefix, prefix_start),
-        );
-    }
-
-    let before = skip_whitespace_backwards(text, prefix_start);
-    if before > 0 && text.as_bytes()[before - 1] == b'@' {
-        return decorate_completions(
+        CompletionContext::AnnotationType => decorate_completions(
             &text_index,
             prefix_start,
             offset,
             annotation_type_completions(db, file, text, &prefix),
-        );
-    }
+        ),
+        CompletionContext::TypePosition => {
+            if is_new_expression_type_completion_context(text, prefix_start) {
+                return decorate_completions(
+                    &text_index,
+                    prefix_start,
+                    offset,
+                    new_expression_type_completions(db, file, text, &text_index, &prefix),
+                );
+            }
 
-    if let Some(ctx) = dot_completion_context(text, prefix_start) {
-        // Avoid misclassifying fully-qualified type names in code (e.g. `java.util.Arr xs;`) as
-        // member-access completions just because they contain a `.`.
-        if is_type_completion_context(text, prefix_start, offset) {
-            let query = type_completion_query(text, prefix_start, &prefix);
-            if !query.qualifier_prefix.is_empty() {
-                let items = type_completions(db, file, &prefix, query);
+            if is_instanceof_type_completion_context(text, offset) {
+                return decorate_completions(
+                    &text_index,
+                    prefix_start,
+                    offset,
+                    instanceof_type_completions(db, file, text, &text_index, &prefix, prefix_start),
+                );
+            }
+
+            if let Some(items) =
+                enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
+            {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
+
+            let type_position_kind = type_position_completion_kind(text, prefix_start, &prefix);
+            if let Some(kind) = type_position_kind {
+                let items = type_name_completions(db, file, text, &text_index, &prefix, kind);
                 if !items.is_empty() {
                     return decorate_completions(&text_index, prefix_start, offset, items);
                 }
             }
-        }
 
-        let receiver = ctx
-            .receiver
-            .as_ref()
-            .map(|r| r.expr.clone())
-            .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
-        let mut items = Vec::new();
-        if !receiver.is_empty() {
-            let analysis = analyze(text);
-            if !receiver_is_value_receiver(&analysis, &receiver, ctx.dot_offset) {
-                items.extend(qualified_type_name_completions(
-                    db,
-                    file,
-                    text,
+            // `type_position_completion_context` is a fallback for ambiguous type positions (e.g. local
+            // variable declarations). If `type_position_completion_kind` already triggered (even though it
+            // produced no matches), prefer falling back to general completions rather than offering
+            // primitive/`var` suggestions in contexts like `catch (...)` / `instanceof ...`.
+            if type_position_kind.is_none() {
+                if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
+                    let items = type_position_completions(
+                        db,
+                        file,
+                        text,
+                        prefix_start,
+                        offset,
+                        &prefix,
+                        ctx,
+                    );
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+
+            decorate_completions(
+                &text_index,
+                prefix_start,
+                offset,
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
+        }
+        CompletionContext::Postfix | CompletionContext::MemberAccess => {
+            if let Some(ctx) = dot_completion_context(text, prefix_start) {
+                // Avoid misclassifying fully-qualified type names in code (e.g. `java.util.Arr xs;`) as
+                // member-access completions just because they contain a `.`.
+                if is_type_completion_context(text, prefix_start, offset) {
+                    let query = type_completion_query(text, prefix_start, &prefix);
+                    if !query.qualifier_prefix.is_empty() {
+                        let items = type_completions(db, file, &prefix, query);
+                        if !items.is_empty() {
+                            return decorate_completions(&text_index, prefix_start, offset, items);
+                        }
+                    }
+                }
+
+                let receiver = ctx
+                    .receiver
+                    .as_ref()
+                    .map(|r| r.expr.clone())
+                    .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
+                let mut items = Vec::new();
+                if !receiver.is_empty() {
+                    let analysis = analyze(text);
+                    if !receiver_is_value_receiver(&analysis, &receiver, ctx.dot_offset) {
+                        items.extend(qualified_type_name_completions(
+                            db,
+                            file,
+                            text,
+                            prefix_start,
+                            offset,
+                            &prefix,
+                        ));
+                    }
+                }
+                items.extend(if receiver.is_empty() {
+                    infer_receiver_type_before_dot(db, file, ctx.dot_offset)
+                        .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
+                        .unwrap_or_default()
+                } else {
+                    member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
+                });
+                if items.len() > 1 {
+                    deduplicate_completion_items(&mut items);
+                    let ranking_ctx = CompletionRankingContext::default();
+                    rank_completions(&prefix, &mut items, &ranking_ctx);
+                }
+                if let Some(receiver) = ctx.receiver.as_ref() {
+                    items.extend(postfix_completions(
+                        text,
+                        &text_index,
+                        receiver,
+                        &prefix,
+                        offset,
+                    ));
+                    deduplicate_completion_items(&mut items);
+                    // Re-rank once postfix templates are present so they compete fairly with member items.
+                    let ranking_ctx = CompletionRankingContext::default();
+                    rank_completions(&prefix, &mut items, &ranking_ctx);
+                }
+                // Best-effort error recovery: if we can't produce any member/postfix completions, fall back
+                // to other contexts rather than returning an empty list.
+                if !items.is_empty() {
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+
+            if let Some(items) =
+                enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
+            {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
+
+            let type_position_kind = type_position_completion_kind(text, prefix_start, &prefix);
+            if let Some(kind) = type_position_kind {
+                let items = type_name_completions(db, file, text, &text_index, &prefix, kind);
+                if !items.is_empty() {
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+
+            if type_position_kind.is_none() {
+                if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
+                    let items =
+                        type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
+                    return decorate_completions(&text_index, prefix_start, offset, items);
+                }
+            }
+
+            decorate_completions(
+                &text_index,
+                prefix_start,
+                offset,
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
+        }
+        CompletionContext::Expression => {
+            if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
+                return decorate_completions(
+                    &text_index,
                     prefix_start,
                     offset,
-                    &prefix,
-                ));
+                    method_reference_completions(db, file, offset, double_colon_offset, &prefix),
+                );
             }
-        }
-        items.extend(if receiver.is_empty() {
-            infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
-                .unwrap_or_default()
-        } else {
-            member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
-        });
-        if items.len() > 1 {
-            deduplicate_completion_items(&mut items);
-            let ranking_ctx = CompletionRankingContext::default();
-            rank_completions(&prefix, &mut items, &ranking_ctx);
-        }
-        if let Some(receiver) = ctx.receiver.as_ref() {
-            items.extend(postfix_completions(
-                text,
+
+            if let Some(items) = import_path_completions(db, file, text, offset, &prefix) {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
+
+            if let Some(items) =
+                enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
+            {
+                return decorate_completions(&text_index, prefix_start, offset, items);
+            }
+
+            decorate_completions(
                 &text_index,
-                receiver,
-                &prefix,
+                prefix_start,
                 offset,
-            ));
-            deduplicate_completion_items(&mut items);
-            // Re-rank once postfix templates are present so they compete fairly with member items.
-            let ranking_ctx = CompletionRankingContext::default();
-            rank_completions(&prefix, &mut items, &ranking_ctx);
+                general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
+            )
         }
-        // Best-effort error recovery: if we can't produce any member/postfix completions, fall back
-        // to general completion rather than returning an empty list.
-        if !items.is_empty() {
-            return decorate_completions(&text_index, prefix_start, offset, items);
-        }
+        CompletionContext::Comment => Vec::new(),
     }
-
-    if let Some(items) = enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
-    {
-        return decorate_completions(&text_index, prefix_start, offset, items);
-    }
-
-    let type_position_kind = type_position_completion_kind(text, prefix_start, &prefix);
-    if let Some(kind) = type_position_kind {
-        let items = type_name_completions(db, file, text, &text_index, &prefix, kind);
-        if !items.is_empty() {
-            return decorate_completions(&text_index, prefix_start, offset, items);
-        }
-    }
-
-    if type_position_kind.is_none() {
-        if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
-            let items =
-                type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
-            return decorate_completions(&text_index, prefix_start, offset, items);
-        }
-    }
-
-    decorate_completions(
-        &text_index,
-        prefix_start,
-        offset,
-        general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
-    )
 }
 
 fn static_import_completions(
@@ -19769,8 +20011,7 @@ mod tests {
         let text = "import com.\nclass Test {}".to_string();
         db.set_file_text(test_file, text.clone());
         let offset = text.find("com.").expect("expected `com.` in fixture") + "com.".len();
-        let items =
-            import_path_completions(&db, test_file, &text, offset, "").expect("completions");
+        let items = import_path_completions(&db, test_file, &text, offset, "").expect("completions");
 
         let foo = items
             .iter()

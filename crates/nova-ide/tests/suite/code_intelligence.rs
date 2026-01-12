@@ -379,6 +379,37 @@ fn completion_in_incomplete_import_is_non_empty() {
 }
 
 #[test]
+fn completion_in_incomplete_import_prefers_import_completions_over_member_completions() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.<|>
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.kind == Some(lsp_types::CompletionItemKind::MODULE))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected import completion to include a package segment; got {:?}",
+                items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+            )
+        });
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert!(
+        edit.new_text.ends_with('.'),
+        "expected package segment completion to insert a trailing '.'; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn java_import_completion_includes_workspace_types() {
     let foo_path = PathBuf::from("/workspace/src/main/java/p/Foo.java");
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
@@ -6165,6 +6196,24 @@ class C {
     assert!(
         labels.contains(&"server.port"),
         "expected Spring config completion; got {labels:?}"
+    );
+
+    // Regression: Spring `@Value("${...}")` completions should take precedence over general
+    // string-literal suppression.
+    let (db, file, pos) = fixture(
+        r#"
+class C {
+  void m() {
+    String s = "${ser<|>}";
+  }
+}
+"#,
+    );
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside plain string literal; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );
 }
 
