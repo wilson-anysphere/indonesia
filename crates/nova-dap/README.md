@@ -150,9 +150,9 @@ Notes:
 
 The arguments are:
 
-```json
+```jsonc
 {
-  "host": "127.0.0.1",
+  "host": "localhost",
   "port": 5005,
   // Optional (recommended): used to infer source roots so stack frames
   // contain real absolute `source.path` values.
@@ -188,6 +188,7 @@ Schema (DAP `launch` arguments):
   "env": { "KEY": "VALUE" },
 
   // Optional (defaults shown)
+  // Note: `host` may be an IP address *or* a hostname (for example `localhost`).
   "host": "127.0.0.1",
   "port": 5005,
   "attachTimeoutMs": 30000,
