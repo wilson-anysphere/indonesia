@@ -2246,6 +2246,7 @@ fn reference_castability(env: &dyn TypeEnv, from: &Type, to: &Type) -> Castabili
 
 fn is_reifiable(_env: &dyn TypeEnv, ty: &Type) -> bool {
     match ty {
+        Type::Primitive(_) => true,
         Type::Array(elem) => is_reifiable(_env, elem),
         Type::Class(ClassType { def: _, args }) => {
             if args.is_empty() {
@@ -3437,6 +3438,17 @@ fn try_method_invocation(
         })?;
         warnings.extend(conv.warnings.iter().cloned());
         conversions.push(conv);
+    }
+
+    // Best-effort unchecked varargs warning: when a variable-arity invocation triggers
+    // array creation for a non-reifiable varargs parameter type, surface `-Xlint:unchecked`
+    // style diagnostics (JLS 15.12.2.4).
+    if used_varargs {
+        if let Some(varargs_param) = base_params.last() {
+            if !is_reifiable(env, varargs_param) {
+                warnings.push(TypeWarning::Unchecked(UncheckedReason::UncheckedVarargs));
+            }
+        }
     }
 
     if call.call_kind == CallKind::Instance && method.is_static {
