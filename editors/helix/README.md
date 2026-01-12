@@ -38,6 +38,22 @@ roots = [
 ]
 ```
 
+## AI multi-token completions (server-side overrides)
+
+Nova’s **multi-token completions** are computed asynchronously by the server and surfaced via
+`nova/completion/more` (see [`docs/protocol-extensions.md`](../../docs/protocol-extensions.md)).
+
+If you want to control or disable these completions without changing `nova.toml`, set the server
+startup environment variable `NOVA_AI_COMPLETIONS_MAX_ITEMS` when launching Helix (or otherwise
+ensure it is present in Helix’s environment). This is read at server startup, so you must restart
+the language server for changes to take effect.
+
+Example (disable multi-token completions entirely):
+
+```bash
+NOVA_AI_COMPLETIONS_MAX_ITEMS=0 helix
+```
+
 ## Nova custom requests (optional)
 
 Nova defines custom LSP methods under the `nova/*` namespace. For the stable spec, see

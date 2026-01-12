@@ -20,6 +20,21 @@ The repo includes a copy/paste-ready config file at [`editors/emacs/nova.el`](./
 (require 'nova) ;; or (load-file "/path/to/editors/emacs/nova.el")
 ```
 
+## AI multi-token completions (server-side overrides)
+
+Nova’s **multi-token completions** are computed asynchronously by the server and surfaced via
+`nova/completion/more` (see [`docs/protocol-extensions.md`](../../docs/protocol-extensions.md)).
+
+If you want to control or disable these completions without changing `nova.toml`, set the server
+startup environment variable `NOVA_AI_COMPLETIONS_MAX_ITEMS` before starting the language server.
+This is read at server startup, so you must restart the server for changes to take effect.
+
+For example, to disable multi-token completions entirely:
+
+```elisp
+(setenv "NOVA_AI_COMPLETIONS_MAX_ITEMS" "0")
+```
+
 ## Project root detection (optional, recommended for non-git workspaces)
 
 Emacs' built-in project system (`project.el`) is often VCS-based. If you open a Maven/Gradle/Bazel
