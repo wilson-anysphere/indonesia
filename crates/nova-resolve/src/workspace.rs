@@ -63,6 +63,21 @@ impl WorkspaceDefMap {
         self.file_modules.get(&item.file())
     }
 
+    /// Iterate all unique workspace type binary names in deterministic order.
+    ///
+    /// The returned iterator yields binary names (`java.lang.String`,
+    /// `com.example.Outer$Inner`, etc) sorted lexicographically by
+    /// [`TypeName::as_str`].
+    ///
+    /// This is intended for callers that want to deterministically pre-intern all
+    /// workspace types into a project-level type environment without re-parsing
+    /// every file.
+    pub fn iter_type_names(&self) -> impl Iterator<Item = &TypeName> + '_ {
+        let mut names: Vec<&TypeName> = self.items_by_type_name.keys().collect();
+        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        names.into_iter()
+    }
+
     /// Insert definitions from a single-file [`DefMap`].
     pub fn extend_from_def_map(&mut self, def_map: &DefMap) {
         self.extend_from_def_map_with_module(def_map, ModuleName::unnamed());
