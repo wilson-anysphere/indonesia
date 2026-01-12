@@ -1943,6 +1943,86 @@ fn extract_variable_rejects_name_conflict_with_lambda_parameter() {
 }
 
 #[test]
+fn extract_variable_rejects_name_conflict_with_lambda_parameter_in_later_statement() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    System.out.println(/*start*/1 + 2/*end*/);
+    java.util.function.IntConsumer c = (sum) -> {
+      System.out.println(sum);
+    };
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "sum")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_lambda_parameter_name_after_lambda_scope() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    java.util.function.IntConsumer c = (sum) -> {
+      System.out.println(sum);
+    };
+    System.out.println(/*start*/1 + 2/*end*/);
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    java.util.function.IntConsumer c = (sum) -> {
+      System.out.println(sum);
+    };
+    var sum = 1 + 2;
+    System.out.println(sum);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_allows_lambda_parameter_when_name_does_not_conflict() {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
@@ -2018,6 +2098,89 @@ fn extract_variable_rejects_name_conflict_with_catch_parameter() {
             .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "e")),
         "expected NameCollision conflict: {conflicts:?}"
     );
+}
+
+#[test]
+fn extract_variable_rejects_name_conflict_with_catch_parameter_in_later_statement() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    System.out.println(/*start*/1 + 2/*end*/);
+    try {
+    } catch (Exception e) {
+      System.out.println(e);
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "e".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "e")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_catch_parameter_name_after_catch_scope() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    try {
+    } catch (Exception e) {
+      System.out.println(e);
+    }
+    System.out.println(/*start*/1 + 2/*end*/);
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "e".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    try {
+    } catch (Exception e) {
+      System.out.println(e);
+    }
+    var e = 1 + 2;
+    System.out.println(e);
+  }
+}
+"#;
+    assert_eq!(after, expected);
 }
 
 #[test]
