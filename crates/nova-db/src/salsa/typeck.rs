@@ -2844,13 +2844,30 @@ fn type_at_offset_display(db: &dyn NovaTypeck, file: FileId, offset: u32) -> Opt
     let mut best: Option<(DefWithBodyId, HirExprId, usize)> = None;
     for (idx, owner) in owners.iter().enumerate() {
         cancel::checkpoint_cancelled_every(db, idx as u32, 32);
+
+        // Fast path: avoid loading HIR bodies for owners that cannot possibly contain the offset.
+        //
+        // The owner ranges come from the item tree and are cheap to access compared to lowering
+        // bodies. Keep this best-effort by only pruning when spans are non-empty (parse recovery can
+        // yield degenerate ranges).
+        let owner_range = match *owner {
+            DefWithBodyId::Method(m) => tree.method(m).range,
+            DefWithBodyId::Constructor(c) => tree.constructor(c).range,
+            DefWithBodyId::Initializer(i) => tree.initializer(i).range,
+        };
+        let offset_usize = offset as usize;
+        if !owner_range.is_empty()
+            && !(owner_range.start <= offset_usize && offset_usize < owner_range.end)
+        {
+            continue;
+        }
+
         let body = match *owner {
             DefWithBodyId::Method(m) => db.hir_body(m),
             DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
             DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
         };
 
-        let offset_usize = offset as usize;
         find_best_expr_in_stmt(&body, body.root, offset_usize, *owner, &mut best);
     }
 
