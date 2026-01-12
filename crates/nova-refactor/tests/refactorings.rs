@@ -4899,6 +4899,36 @@ fn inline_variable_rejects_assert_when_initializer_is_order_sensitive() {
 }
 
 #[test]
+fn inline_variable_rejects_switch_expression_rule_expression_body_when_initializer_is_order_sensitive() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int m(int x) {
+    int a = foo();
+    return switch (x) {
+      case 1 -> a;
+      default -> 0;
+    };
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
 fn inline_variable_array_initializer_is_not_supported() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

@@ -1754,6 +1754,38 @@ fn inline_variable_usage_is_conditionally_or_repeatedly_evaluated(
                 }
             }
         }
+
+        // Optional: switch *expression* rule bodies that are expressions (not blocks). These are
+        // conditionally evaluated based on the selector, so moving an order-sensitive initializer
+        // into them changes evaluation timing.
+        if let Some(rule) = ast::SwitchRule::cast(ancestor.clone()) {
+            let Some(body) = rule.body() else {
+                continue;
+            };
+            if !matches!(body, ast::SwitchRuleBody::Expression(_)) {
+                continue;
+            }
+
+            // Only guard when the name expression is inside the rule body (not in the labels/guard).
+            let body_range = syntax_range(body.syntax());
+            if !contains_range(body_range, expr_range) {
+                continue;
+            }
+
+            // Distinguish switch expression vs switch statement.
+            let container = rule.syntax().ancestors().skip(1).find_map(|node| {
+                if ast::SwitchExpression::cast(node.clone()).is_some() {
+                    Some(true)
+                } else if ast::SwitchStatement::cast(node).is_some() {
+                    Some(false)
+                } else {
+                    None
+                }
+            });
+            if container == Some(true) {
+                return true;
+            }
+        }
     }
 
     false

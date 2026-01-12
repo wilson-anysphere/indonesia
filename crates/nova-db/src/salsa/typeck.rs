@@ -8876,6 +8876,9 @@ fn find_enclosing_call_with_arg_in_expr(
         HirExpr::Unary { expr, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
         }
+        HirExpr::Cast { expr, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
         HirExpr::Binary { lhs, rhs, .. } | HirExpr::Assign { lhs, rhs, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *lhs, target, target_range, best);
             find_enclosing_call_with_arg_in_expr(body, *rhs, target, target_range, best);
