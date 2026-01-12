@@ -285,13 +285,13 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 - Snapshot files: `crates/nova-format/tests/snapshots/*.snap`
 - Tests:
   - `crates/nova-format/tests/format_fixtures.rs` (file-based `.snap` snapshots)
-  - `crates/nova-format/tests/suite/format_snapshots.rs` (inline snapshots in Rust source; included by `format_fixtures.rs`)
+  - `crates/nova-format/tests/format_snapshots.rs` (inline snapshots in Rust source; includes `tests/suite/format_snapshots.rs`)
 
 **Run locally:**
 
 ```bash
 bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 There is also an ignored large-file regression/stress test:
@@ -388,7 +388,7 @@ can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 **Run locally (requires `javac` on `PATH`):**
 
 ```bash
- cargo test -p nova-types --test javac_differential -- --ignored
+cargo test -p nova-types --test javac_differential -- --ignored
 ```
 
 If `javac` is not available, the tests print a message and return early (Rust’s test harness has no
@@ -643,13 +643,13 @@ Always inspect `git diff` after blessing.
 Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
 
 - `format_fixtures.rs` → updates `.snap` files under `crates/nova-format/tests/snapshots/`
-- `suite/format_snapshots.rs` → updates inline snapshots in the Rust source file (included by `format_fixtures.rs`)
+- `format_snapshots.rs` → updates inline snapshots in the Rust source file
 
 To update inline snapshots:
 
 ```bash
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 Always inspect `git diff` after updating snapshots.

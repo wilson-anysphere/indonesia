@@ -175,12 +175,12 @@ bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpu
 
 # Formatter tests (`insta` snapshots)
 bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 
 # Update / bless expectations:
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 ---

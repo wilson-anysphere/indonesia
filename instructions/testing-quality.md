@@ -127,7 +127,7 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings mo
 #
 # Formatter snapshots (`nova-format`): writes `crates/nova-format/tests/snapshots/*.snap`
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 For the canonical “where do fixtures live / how do I bless them” workflow, see
@@ -395,7 +395,7 @@ bash scripts/cargo_agent.sh test -p nova-syntax --lib -- --nocapture
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings move_static_method_updates_call_sites
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 **NEVER run:**
