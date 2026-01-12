@@ -496,8 +496,9 @@ sent to an LLM provider (local or cloud).
 - Patterns are intended to be **workspace-relative**. Prefer `src/**`-style globs (or more specific
   ones like `src/secrets/**`) over absolute filesystem paths.
 - The LSP layer typically works with **absolute** on-disk paths (decoded from `file://` URIs). Nova
-  normalizes those into workspace-relative paths for matching, so a pattern like `src/**` will match
-  an absolute LSP path like `/home/alice/project/src/Main.java`.
+  still allows workspace-relative globs to match those absolute paths (by also attempting to match
+  each suffix of the absolute path), so a pattern like `src/**` will match an absolute LSP path like
+  `/home/alice/project/src/Main.java`.
 
 **Behavior:**
 
@@ -644,12 +645,12 @@ impl CodeAnonymizer {
 
 Nova's AI subsystems are intentionally heuristic-heavy (privacy sanitization, patch safety checks, and multi-token completion validation). To prevent regressions **without** requiring live model calls, we keep a deterministic evaluation suite that exercises these behaviors end-to-end using synthetic Java snippets and golden expectations.
 
-- Tests live in `crates/nova-ai/tests/ai_eval.rs`
+- Tests live in `crates/nova-ai/tests/suite/ai_eval.rs` (wired up via `crates/nova-ai/tests/tests.rs`)
 - They must not make any network calls (no providers, no HTTP)
 - Run them directly with:
 
 ```bash
-cargo test -p nova-ai --test ai_eval
+cargo test -p nova-ai --test tests suite::ai_eval
 ```
 
 The suite covers:
