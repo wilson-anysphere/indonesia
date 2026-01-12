@@ -421,7 +421,7 @@ class A {
         .collect();
 
     assert!(
-        titles.iter().any(|t| *t == "Import 'java.util.List'"),
+        titles.iter().any(|t| *t == "Import java.util.List"),
         "expected Import quick fix; got {titles:?}"
     );
     assert!(

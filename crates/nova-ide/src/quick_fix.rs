@@ -282,7 +282,7 @@ fn import_and_qualify_type_actions(
     for fqn in candidates {
         if let Some(edit) = java_import_workspace_edit(uri, source, &fqn) {
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: format!("Import '{fqn}'"),
+                title: format!("Import {fqn}"),
                 kind: Some(CodeActionKind::QUICKFIX),
                 edit: Some(edit),
                 ..CodeAction::default()
