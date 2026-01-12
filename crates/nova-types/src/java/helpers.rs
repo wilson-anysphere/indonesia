@@ -306,6 +306,12 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
 }
 
 fn merge_return_types(env: &dyn TypeEnv, a: Type, b: Type) -> Option<Type> {
+    // Canonicalize unresolved `Named` spellings when possible. This avoids order-dependent
+    // results when equivalent types are represented differently (e.g. `Named("java.lang.String")`
+    // vs `Class(String)`).
+    let a = crate::canonicalize_named(env, &a);
+    let b = crate::canonicalize_named(env, &b);
+
     if a == b {
         return Some(a);
     }
@@ -322,16 +328,12 @@ fn merge_return_types(env: &dyn TypeEnv, a: Type, b: Type) -> Option<Type> {
     let b_sub_a = crate::is_subtype(env, &b, &a);
 
     match (a_sub_b, b_sub_a) {
-        (true, false) => Some(a),
-        (false, true) => Some(b),
+        (true, false) => Some(crate::make_intersection(env, vec![a])),
+        (false, true) => Some(crate::make_intersection(env, vec![b])),
         (true, true) => {
-            // Mutual subtyping can happen for equal types, but also for `Unknown`/`Error` which are
-            // treated as compatible with everything. Prefer the more informative option.
-            match (&a, &b) {
-                (Type::Unknown, _) => Some(b),
-                (_, Type::Unknown) => Some(a),
-                _ => Some(a),
-            }
+            // Mutual subtyping can happen for equivalent types (e.g. `Named` vs resolved `Class`,
+            // or intersection permutations). Choose a deterministic representative.
+            Some(crate::make_intersection(env, vec![a, b]))
         }
         (false, false) => None,
     }
@@ -482,6 +484,83 @@ mod tests {
         let sig = sam_signature(&store, &iface_string).expect("should still be functional");
         assert_eq!(sig.params, vec![string.clone()]);
         assert_eq!(sig.return_type, string);
+    }
+
+    #[test]
+    fn sam_signature_is_order_independent_for_equivalent_return_types() {
+        let mut store = TypeStore::with_minimal_jdk();
+        let object = store.well_known().object;
+
+        let string = Type::class(store.well_known().string, vec![]);
+
+        let i1 = store.add_class(ClassDef {
+            name: "com.example.RetNamed".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "apply".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::Named("java.lang.String".to_string()),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        let i2 = store.add_class(ClassDef {
+            name: "com.example.RetClass".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "apply".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: string.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        let root1 = store.add_class(ClassDef {
+            name: "com.example.Root1".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![Type::class(i1, vec![]), Type::class(i2, vec![])],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![],
+        });
+
+        let root2 = store.add_class(ClassDef {
+            name: "com.example.Root2".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![Type::class(i2, vec![]), Type::class(i1, vec![])],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![],
+        });
+
+        let sig1 = sam_signature(&store, &Type::class(root1, vec![]))
+            .expect("interface with a single effective abstract method should be functional");
+        let sig2 = sam_signature(&store, &Type::class(root2, vec![]))
+            .expect("interface with a single effective abstract method should be functional");
+
+        assert_eq!(sig1, sig2);
+        assert_eq!(sig1.params, Vec::<Type>::new());
+        assert_eq!(sig1.return_type, string);
     }
 
     #[test]
