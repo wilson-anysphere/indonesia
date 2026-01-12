@@ -1083,7 +1083,6 @@ where
             actions.extend(type_mismatch_quick_fixes(
                 &cancel,
                 source,
-                &cancel,
                 &uri,
                 span,
                 &diagnostics,
@@ -1269,7 +1268,6 @@ where
 fn type_mismatch_quick_fixes(
     cancel: &CancellationToken,
     source: &str,
-    cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     selection: Span,
     diagnostics: &[nova_types::Diagnostic],
