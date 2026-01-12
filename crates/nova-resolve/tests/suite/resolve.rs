@@ -843,6 +843,65 @@ class C { Entry e; }
 }
 
 #[test]
+fn static_type_import_on_demand_prefers_type_over_package_with_same_name() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import static p.B.*;
+class Use {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("p", "B");
+    let inner = index.add_type("p", "B$Inner");
+    // `p.B` also exists as a package containing `p.B.C`.
+    index.add_type("p.B", "C");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("Inner")),
+        Some(TypeResolution::External(inner))
+    );
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("C")),
+        None
+    );
+}
+
+#[test]
+fn static_type_import_does_not_accept_subpackage_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import static p.B.C;
+class Use {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("p", "B");
+    // `p.B.C` exists, but as a type in package `p.B`, not a member type `B$C`.
+    index.add_type("p.B", "C");
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+    let resolver = Resolver::new(&index);
+    let diags = resolver.diagnose_imports(&imports);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
+            && d.message.contains("static p.B.C")),
+        "expected unresolved-import for `static p.B.C`, got {diags:#?}"
+    );
+}
+
+#[test]
 fn qualified_name_resolves_nested_types() {
     let jdk = JdkIndex::new();
     let mut index = TestIndex::default();
