@@ -867,11 +867,39 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
     }
 
-    fn resolve_annotation_name(&mut self, _name_range: Range<usize>) {
-        // Type-use annotation types (e.g. `List<@Missing String>`) are currently ignored.
+    fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
+        // Type-use annotation types (e.g. `List<@Missing String>`) are not represented in
+        // `nova_types::Type` yet, but we still want to surface unresolved-type diagnostics in
+        // *source* contexts.
         //
-        // Nova does not model type-use annotations in `nova_types::Type` yet, and treating
-        // annotation names as types causes noisy `unresolved-type` diagnostics in signatures.
+        // When `base_span` is `None` the parser is being used in a context where we cannot
+        // reliably anchor diagnostics back into the original source (e.g. heuristic parsing of
+        // whitespace-stripped type refs, ranking annotation split candidates). In that mode we
+        // intentionally suppress diagnostics to avoid noise and to keep the heuristic stable.
+        //
+        // We also require the span length to match the text length; `TypeRef.text` is often
+        // whitespace-stripped, and anchoring diagnostics into a span derived from the original
+        // source would produce misaligned ranges.
+        let Some(base_span) = self.base_span else {
+            return;
+        };
+        if base_span.len() != self.text.len() {
+            return;
+        }
+
+        let name = self.text.get(name_range.clone()).unwrap_or_default();
+        if name.is_empty() {
+            return;
+        }
+
+        // Reuse normal type-name resolution so JPMS/module access rules are respected and the
+        // resulting diagnostic shape matches other unresolved-type errors.
+        let segments = name.split('.').map(|s| s.to_string()).collect::<Vec<_>>();
+        if segments.is_empty() {
+            return;
+        }
+        let per_segment_args = vec![Vec::new(); segments.len()];
+        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(
