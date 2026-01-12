@@ -3198,6 +3198,47 @@ class C {
 }
 
 #[test]
+fn super_invocation_in_switch_expression_is_error() {
+    let src = r#"
+class C {
+    C() {
+        int x = switch (0) {
+            case 0 -> {
+                super();
+                yield 1;
+            }
+            default -> 2;
+        };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "constructor-invocation-not-first"),
+        "expected constructor-invocation-not-first diagnostic, got {diags:?}"
+    );
+
+    let bad = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "constructor-invocation-not-first")
+        .expect("expected constructor-invocation-not-first diagnostic");
+    let span = bad
+        .span
+        .expect("constructor-invocation-not-first diagnostic should have a span");
+    let super_kw = src
+        .find("super()")
+        .expect("snippet should contain super() call");
+    assert!(
+        span.start <= super_kw && super_kw < span.end,
+        "expected diagnostic span to cover super() invocation, got {span:?}"
+    );
+}
+
+#[test]
 fn explicit_super_invocation_resolves_object_ctor() {
     let src = r#"
 class C {
