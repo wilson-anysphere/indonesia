@@ -1125,12 +1125,6 @@ pub fn extract_variable(
         return Err(RefactorError::VarNotAllowedForInitializer);
     }
 
-    // Extracting a side-effectful expression into a new statement can change evaluation order or
-    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    if has_side_effects(expr.syntax()) {
-        return Err(RefactorError::ExtractSideEffects);
-    }
-
     let stmt = expr
         .syntax()
         .ancestors()
@@ -1332,6 +1326,15 @@ pub fn extract_variable(
                 return Ok(edit);
             }
         }
+    }
+
+    // Extracting a side-effectful expression into a new statement can change evaluation order or
+    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
+    //
+    // Note: the expression-statement special-case above rewrites the statement in place, so it
+    // preserves statement-level evaluation order and is therefore allowed.
+    if has_side_effects(expr.syntax()) {
+        return Err(RefactorError::ExtractSideEffects);
     }
 
     let file_newline = NewlineStyle::detect(text).as_str();
@@ -3617,16 +3620,6 @@ fn check_extract_variable_name_conflicts(
 
 fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
     a.start < b.end && b.start < a.end
-}
-
-fn expr_might_be_void(expr: &ast::Expression) -> bool {
-    match expr {
-        ast::Expression::MethodCallExpression(_) => true,
-        ast::Expression::ParenthesizedExpression(p) => {
-            p.expression().is_some_and(|e| expr_might_be_void(&e))
-        }
-        _ => false,
-    }
 }
 
 fn pattern_binding_scope_range(pat: &ast::TypePattern) -> Option<TextRange> {
