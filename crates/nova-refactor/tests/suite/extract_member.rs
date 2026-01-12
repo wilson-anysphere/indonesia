@@ -118,6 +118,17 @@ class A {
 }
 
 #[test]
+fn extract_constant_rejects_selection_with_start_past_eof_without_panicking() {
+    let code = "class A { void m() { int x = 1 + 2; } }\n";
+    // This range is invalid (start > end) and start is out of bounds. We should return a clean
+    // `InvalidSelection` error rather than panicking.
+    let range = TextRange::new(code.len() + 5, code.len());
+
+    let err = extract_constant("A.java", code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::InvalidSelection);
+}
+
+#[test]
 fn extract_constant_infers_double_for_double_literal() {
     let (code, range) = fixture_range(
         r#"

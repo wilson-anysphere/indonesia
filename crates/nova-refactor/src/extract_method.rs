@@ -3100,6 +3100,9 @@ fn insertion_offset_end_of_type_body(
 }
 
 fn trim_range(source: &str, mut range: TextRange) -> TextRange {
+    if range.start >= range.end || range.end > source.len() {
+        return range;
+    }
     let bytes = source.as_bytes();
     while range.start < range.end && bytes[range.start].is_ascii_whitespace() {
         range.start += 1;

@@ -1,7 +1,7 @@
 use nova_refactor::extract_method::{
     ExtractMethod, ExtractMethodIssue, InsertionStrategy, Visibility,
 };
-use nova_refactor::{apply_workspace_edit, FileId, WorkspaceEdit};
+use nova_refactor::{apply_workspace_edit, FileId, TextRange, WorkspaceEdit};
 use nova_test_utils::extract_range;
 use std::collections::BTreeMap;
 
@@ -78,6 +78,48 @@ class C {
 "#;
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_analyze_rejects_selection_start_past_eof_without_panicking() {
+    let source = "class C { void m() { int x = 1; } }\n";
+    let selection = TextRange::new(source.len() + 5, source.len());
+
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let analysis = refactoring.analyze(source).expect("analyze should not error");
+    assert!(
+        analysis.issues.contains(&ExtractMethodIssue::InvalidSelection),
+        "expected InvalidSelection issue; got {:?}",
+        analysis.issues
+    );
+}
+
+#[test]
+fn extract_method_analyze_rejects_selection_end_past_eof_without_panicking() {
+    let source = "class C { void m() { int x = 1; } }\n";
+    let selection = TextRange::new(0, source.len() + 5);
+
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let analysis = refactoring.analyze(source).expect("analyze should not error");
+    assert!(
+        analysis.issues.contains(&ExtractMethodIssue::InvalidSelection),
+        "expected InvalidSelection issue; got {:?}",
+        analysis.issues
+    );
 }
 
 #[test]
