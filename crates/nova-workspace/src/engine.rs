@@ -388,8 +388,13 @@ impl WorkspaceEngine {
         }
 
         // Apply moves first to keep FileId mapping stable before we touch destination files.
+        // We order moves so that if a destination path is also a source path, we move it out
+        // first. This avoids `Vfs::rename_path` treating a move as "modify destination" and
+        // dropping the source `FileId` (common during rename chains like `B -> C` and `A -> B`).
         move_events.sort();
-        for (from, to) in move_events {
+        move_events.dedup();
+        let ordered_moves = order_move_events(move_events);
+        for (from, to) in ordered_moves {
             other_paths.remove(&from);
             other_paths.remove(&to);
 
@@ -823,6 +828,40 @@ fn publish_to_subscribers(
     subs.retain(|tx| tx.try_send(event.clone()).is_ok());
 }
 
+fn order_move_events(mut moves: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
+    if moves.len() <= 1 {
+        return moves;
+    }
+
+    let mut from_set: HashSet<PathBuf> = moves.iter().map(|(from, _)| from.clone()).collect();
+    let mut ordered = Vec::with_capacity(moves.len());
+
+    while !moves.is_empty() {
+        // Prefer moves whose destination is not a remaining source path. Because `moves` is sorted,
+        // the first eligible move yields deterministic output.
+        let mut idx = None;
+        for (i, (_, to)) in moves.iter().enumerate() {
+            if !from_set.contains(to) {
+                idx = Some(i);
+                break;
+            }
+        }
+
+        let (from, to) = match idx {
+            Some(i) => moves.remove(i),
+            None => {
+                // Cycle: fall back to a deterministic order. This can still lose `FileId`s if the
+                // filesystem performed an in-place overwrite, but we prefer a stable result.
+                moves.remove(0)
+            }
+        };
+        from_set.remove(&from);
+        ordered.push((from, to));
+    }
+
+    ordered
+}
+
 fn rel_path_for_workspace(workspace_root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(workspace_root).ok()?;
     let rel = rel.to_string_lossy();
@@ -1167,6 +1206,57 @@ mod tests {
         engine.query_db.with_snapshot(|snap| {
             assert!(!snap.file_exists(file_id));
             assert!(!snap.project_files(project).contains(&file_id));
+        });
+    }
+
+    #[test]
+    fn move_event_ordering_preserves_file_ids_for_rename_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let a = root.join("src/A.java");
+        let b = root.join("src/B.java");
+        fs::write(&a, "class A {}".as_bytes()).unwrap();
+        fs::write(&b, "class B {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        engine.apply_filesystem_events(vec![
+            NormalizedEvent::Created(a.clone()),
+            NormalizedEvent::Created(b.clone()),
+        ]);
+
+        let id_a = engine.vfs.get_id(&VfsPath::local(a.clone())).unwrap();
+        let id_b = engine.vfs.get_id(&VfsPath::local(b.clone())).unwrap();
+
+        // Perform a rename chain on disk: B -> C, then A -> B.
+        let c = root.join("src/C.java");
+        fs::rename(&b, &c).unwrap();
+        fs::rename(&a, &b).unwrap();
+
+        // Feed watcher events in an order that would break stable ids if we naively processed moves
+        // in sorted order (A -> B before B -> C).
+        engine.apply_filesystem_events(vec![
+            NormalizedEvent::Moved {
+                from: a.clone(),
+                to: b.clone(),
+            },
+            NormalizedEvent::Moved {
+                from: b.clone(),
+                to: c.clone(),
+            },
+        ]);
+
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(b.clone())), Some(id_a));
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(c.clone())), Some(id_b));
+
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_rel_path(id_a).as_str(), "src/B.java");
+            assert_eq!(snap.file_rel_path(id_b).as_str(), "src/C.java");
+            assert_eq!(snap.file_content(id_a).as_str(), "class A {}");
+            assert_eq!(snap.file_content(id_b).as_str(), "class B {}");
         });
     }
 
