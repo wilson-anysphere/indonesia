@@ -2,6 +2,7 @@ use lsp_types::{
     CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit,
     Uri, WorkspaceEdit,
 };
+use crate::quick_fixes::is_java_identifier;
 use nova_core::{LineIndex, Name, PackageName, Position as CorePosition, TypeIndex};
 use nova_jdk::JdkIndex;
 use nova_refactor::extract_method::{

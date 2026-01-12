@@ -2427,6 +2427,29 @@ fn annotation_attribute_completion_resolves_annotation_via_fully_qualified_name(
 }
 
 #[test]
+fn annotation_attribute_completion_does_not_fall_back_to_jdk_when_workspace_annotation_is_resolved() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/q/SuppressWarnings.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    // Shadows `java.lang.SuppressWarnings`.
+    let anno_text = "package q; public @interface SuppressWarnings { int foo(); }";
+    let java_text = "package q; @SuppressWarnings(foo = 1, <|>) class Main {}";
+
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"value"),
+        "did not expect attribute completion to fall back to java.lang.SuppressWarnings.value; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_instance_members_exclude_static() {
     let (db, file, pos) = fixture(
         r#"

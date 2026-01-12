@@ -487,10 +487,12 @@ fn annotation_attribute_completions(
         }
 
         // 1) Workspace (completion env) types: use the cached `TypeStore` read-only.
+        let mut resolved_in_env = false;
         for binary in &candidates {
             let Some(class_id) = env.types().class_id(binary) else {
                 continue;
             };
+            resolved_in_env = true;
             let class_def = env.types().class(class_id)?;
             for method in &class_def.methods {
                 if !method.params.is_empty() {
@@ -514,8 +516,9 @@ fn annotation_attribute_completions(
             break;
         }
 
-        // 2) JDK types: fall back to on-demand stub loading.
-        if items.is_empty() {
+        // 2) JDK types: fall back to on-demand stub loading only when the annotation is not present
+        // in the cached completion env.
+        if !resolved_in_env {
             let mut types = TypeStore::with_minimal_jdk();
             for binary in &candidates {
                 let Some(class_id) = ensure_class_id(&mut types, binary) else {
