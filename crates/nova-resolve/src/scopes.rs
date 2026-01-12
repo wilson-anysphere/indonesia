@@ -530,6 +530,16 @@ impl<'a> ScopeBuilder<'a> {
                 self.record_expr_scopes(parent, owner, body, *expr);
                 parent
             }
+            hir::Stmt::Assert {
+                condition, message, ..
+            } => {
+                self.stmt_scopes.insert((owner, stmt_id), parent);
+                self.record_expr_scopes(parent, owner, body, *condition);
+                if let Some(expr) = message {
+                    self.record_expr_scopes(parent, owner, body, *expr);
+                }
+                parent
+            }
             hir::Stmt::Return { expr, .. } => {
                 self.stmt_scopes.insert((owner, stmt_id), parent);
                 if let Some(expr) = expr {

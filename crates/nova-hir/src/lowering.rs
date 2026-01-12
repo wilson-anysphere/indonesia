@@ -1182,6 +1182,18 @@ impl<'a> BodyLower<'a> {
                     range: try_stmt.range,
                 }))
             }
+            syntax::Stmt::Assert(assert_stmt) => {
+                let condition = self.lower_expr(&assert_stmt.condition);
+                let message = assert_stmt
+                    .message
+                    .as_ref()
+                    .map(|expr| self.lower_expr(expr));
+                Some(self.alloc_stmt(Stmt::Assert {
+                    condition,
+                    message,
+                    range: assert_stmt.range,
+                }))
+            }
             syntax::Stmt::Throw(throw_stmt) => {
                 let expr = self.lower_expr(&throw_stmt.expr);
                 Some(self.alloc_stmt(Stmt::Throw {

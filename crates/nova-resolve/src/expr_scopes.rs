@@ -222,6 +222,16 @@ impl Builder {
                 self.visit_expr(body, *expr, scope);
                 scope
             }
+            Stmt::Assert {
+                condition, message, ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *condition, scope);
+                if let Some(expr) = message {
+                    self.visit_expr(body, *expr, scope);
+                }
+                scope
+            }
             Stmt::Return { expr, .. } => {
                 self.stmt_scopes.insert(stmt_id, scope);
                 if let Some(expr) = expr {

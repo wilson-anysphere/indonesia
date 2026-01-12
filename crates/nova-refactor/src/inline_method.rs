@@ -268,6 +268,13 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                 .as_ref()
                 .is_some_and(|e| walk_expr(source, method_name, e)),
             jast::Stmt::Expr(expr) => walk_expr(source, method_name, &expr.expr),
+            jast::Stmt::Assert(stmt) => {
+                walk_expr(source, method_name, &stmt.condition)
+                    || stmt
+                        .message
+                        .as_ref()
+                        .is_some_and(|e| walk_expr(source, method_name, e))
+            }
             jast::Stmt::Return(ret) => ret
                 .expr
                 .as_ref()
@@ -618,6 +625,7 @@ fn collect_local_names(block: &jast::Block) -> HashSet<String> {
                 }
             }
             jast::Stmt::Expr(_)
+            | jast::Stmt::Assert(_)
             | jast::Stmt::Return(_)
             | jast::Stmt::Throw(_)
             | jast::Stmt::Break(_)

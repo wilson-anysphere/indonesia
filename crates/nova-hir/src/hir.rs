@@ -211,6 +211,11 @@ pub enum Stmt {
         finally: Option<StmtId>,
         range: Span,
     },
+    Assert {
+        condition: ExprId,
+        message: Option<ExprId>,
+        range: Span,
+    },
     Throw {
         expr: ExprId,
         range: Span,

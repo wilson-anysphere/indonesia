@@ -1032,6 +1032,40 @@ class C {
 }
 
 #[test]
+fn assert_condition_must_be_boolean() {
+    let src = r#"
+class C { void m(){ assert 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "assert-condition-not-boolean"),
+        "expected assert-condition-not-boolean diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn assert_with_message_typechecks_message_expr() {
+    let src = r#"
+class C { void m(){ String s = "x"; assert s.isEmpty() : s.length(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .all(|d| d.code.as_ref() != "invalid-statement-expression"),
+        "expected no invalid-statement-expression diagnostics; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected String methods in assert to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn boxed_boolean_conditions_are_allowed() {
     let src = r#"
 class C {

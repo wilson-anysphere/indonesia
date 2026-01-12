@@ -4085,6 +4085,14 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 }
             }
             hir::Stmt::Expr { expr, .. } => walk_expr(body, *expr, f),
+            hir::Stmt::Assert {
+                condition, message, ..
+            } => {
+                walk_expr(body, *condition, f);
+                if let Some(expr) = message {
+                    walk_expr(body, *expr, f);
+                }
+            }
             hir::Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     walk_expr(body, *expr, f);

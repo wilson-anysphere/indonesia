@@ -285,6 +285,7 @@ pub mod ast {
     pub enum Stmt {
         LocalVar(LocalVarStmt),
         Expr(ExprStmt),
+        Assert(AssertStmt),
         Return(ReturnStmt),
         Block(Block),
         If(IfStmt),
@@ -314,6 +315,13 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ExprStmt {
         pub expr: Expr,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AssertStmt {
+        pub condition: Expr,
+        pub message: Option<Expr>,
         pub range: Span,
     }
 
@@ -1472,9 +1480,8 @@ impl Lowerer {
             //
             // The Java grammar restricts explicit constructor invocations to constructors, but
             // semantic layers need to handle (and diagnose) misplaced invocations too.
-            SyntaxKind::ExplicitConstructorInvocation => {
-                Some(ast::Stmt::Expr(self.lower_expr_stmt(node)))
-            }
+            SyntaxKind::ExplicitConstructorInvocation => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
+            SyntaxKind::AssertStatement => Some(ast::Stmt::Assert(self.lower_assert_stmt(node))),
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
             SyntaxKind::IfStatement => Some(ast::Stmt::If(self.lower_if_stmt(node))),
@@ -1596,6 +1603,26 @@ impl Lowerer {
         }
 
         out
+    }
+
+    fn lower_assert_stmt(&self, node: &SyntaxNode) -> ast::AssertStmt {
+        let range = self.spans.map_node(node);
+        let mut exprs = node
+            .children()
+            .filter(|child| is_expression_kind(child.kind()));
+
+        let condition = exprs
+            .next()
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let message = exprs.next().map(|expr| self.lower_expr(&expr));
+
+        ast::AssertStmt {
+            condition,
+            message,
+            range,
+        }
     }
 
     fn lower_local_var_stmt(&self, node: &SyntaxNode) -> ast::LocalVarStmt {
@@ -3136,6 +3163,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
         SyntaxKind::LocalVariableDeclarationStatement
             | SyntaxKind::ExpressionStatement
             | SyntaxKind::ExplicitConstructorInvocation
+            | SyntaxKind::AssertStatement
             | SyntaxKind::ReturnStatement
             | SyntaxKind::LabeledStatement
             | SyntaxKind::Block
@@ -3517,6 +3545,21 @@ mod tests {
         assert!(
             matches!(expr_stmt.expr, ast::Expr::ArrayCreation(_)),
             "expected array creation expression"
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_assert_statement() {
+        let block = parse_block("{ assert x; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::Assert(stmt) = &block.statements[0] else {
+            panic!("expected assert statement");
+        };
+
+        assert!(
+            !matches!(stmt.condition, ast::Expr::Missing(_)),
+            "expected non-missing assert condition"
         );
     }
 }

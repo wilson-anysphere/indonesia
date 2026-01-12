@@ -831,7 +831,8 @@ fn type_of_expr_demand_result(
                         seed_lambda_params_from_target(&mut checker, &mut loader, *rhs, &lhs_ty);
                     }
                 }
-                HirStmt::Throw { .. }
+                HirStmt::Assert { .. }
+                | HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
                 | HirStmt::Empty { .. } => {}
@@ -1386,6 +1387,14 @@ fn resolve_method_call_demand(
                     }
                 }
                 HirStmt::Expr { expr, .. } => visit_expr(body, *expr, parent_expr, visited_expr),
+                HirStmt::Assert {
+                    condition, message, ..
+                } => {
+                    visit_expr(body, *condition, parent_expr, visited_expr);
+                    if let Some(expr) = message {
+                        visit_expr(body, *expr, parent_expr, visited_expr);
+                    }
+                }
                 HirStmt::Return { expr, .. } => {
                     if let Some(expr) = expr {
                         visit_expr(body, *expr, parent_expr, visited_expr);
@@ -1574,6 +1583,7 @@ fn resolve_method_call_demand(
                 HirStmt::Return { expr: None, .. }
                 | HirStmt::Let { .. }
                 | HirStmt::Expr { .. }
+                | HirStmt::Assert { .. }
                 | HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
@@ -3212,6 +3222,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::Block { range, .. }
             | HirStmt::Let { range, .. }
             | HirStmt::Expr { range, .. }
+            | HirStmt::Assert { range, .. }
             | HirStmt::Return { range, .. }
             | HirStmt::If { range, .. }
             | HirStmt::While { range, .. }
@@ -3966,6 +3977,25 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::Expr { expr, .. } => {
                 let _ = self.infer_expr(loader, *expr);
                 self.validate_statement_expression(*expr);
+            }
+            HirStmt::Assert {
+                condition, message, ..
+            } => {
+                let condition_ty = self.infer_expr(loader, *condition).ty;
+                if !condition_ty.is_errorish() {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "assert-condition-not-boolean",
+                        "assert condition must be boolean",
+                        Some(self.body.exprs[*condition].range()),
+                    ));
+                }
+                }
+
+                if let Some(expr) = message {
+                    let _ = self.infer_expr(loader, *expr);
+                }
             }
             HirStmt::Return { expr, range } => {
                 if matches!(self.owner, DefWithBodyId::Initializer(_)) {
@@ -8306,6 +8336,14 @@ fn find_best_expr_in_stmt(
             }
         }
         HirStmt::Expr { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            if let Some(expr) = message {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
         HirStmt::Return { expr, .. } => {
             if let Some(expr) = expr {
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
@@ -8405,6 +8443,14 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
         HirStmt::Return { expr, .. } => expr
             .as_ref()
             .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
+            contains_expr_in_expr(body, *condition, target)
+                || message
+                    .as_ref()
+                    .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
+        }
         HirStmt::If {
             condition,
             then_branch,
@@ -8558,6 +8604,7 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         HirStmt::Block { range, .. }
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
+        | HirStmt::Assert { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -8589,6 +8636,14 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         }
         HirStmt::Expr { expr, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *condition, target, target_range, best);
+            if let Some(expr) = message {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
         }
         HirStmt::Return { expr, .. } => {
             if let Some(expr) = expr {
