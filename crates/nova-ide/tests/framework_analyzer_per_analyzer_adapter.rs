@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
@@ -115,3 +118,96 @@ fn framework_analyzer_adapter_runs_on_host_db_as_per_analyzer_providers() {
     assert_eq!(nav[0].span, Some(Span::new(0, 1)));
 }
 
+#[test]
+fn framework_analyzer_adapter_propagates_cancellation_to_analyzer_on_host_db() {
+    struct CancellationAwareAnalyzer {
+        started: mpsc::Sender<()>,
+        finished: mpsc::Sender<()>,
+        saw_cancel: Arc<AtomicBool>,
+    }
+
+    impl FrameworkAnalyzer for CancellationAwareAnalyzer {
+        fn applies_to(&self, _db: &dyn FrameworkDatabase, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn FrameworkDatabase,
+            _file: nova_ext::FileId,
+            cancel: &CancellationToken,
+        ) -> Vec<nova_ext::Diagnostic> {
+            let _ = self.started.send(());
+
+            // Simulate some work that periodically checks for cancellation.
+            for _ in 0..250 {
+                if cancel.is_cancelled() {
+                    self.saw_cancel.store(true, Ordering::SeqCst);
+                    let _ = self.finished.send(());
+                    return Vec::new();
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            // If we never see cancellation, surface a diagnostic so the test fails.
+            let _ = self.finished.send(());
+            vec![nova_ext::Diagnostic::warning(
+                "FW_ADAPTER",
+                "should-have-been-cancelled",
+                Some(Span::new(0, 1)),
+            )]
+        }
+    }
+
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/workspace/src/main/java/A.java"));
+    db.set_file_text(file, "class A {}".to_string());
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let saw_cancel = Arc::new(AtomicBool::new(false));
+
+    let analyzer = FrameworkAnalyzerOnTextDbAdapter::new(
+        "framework.cancel_adapter",
+        CancellationAwareAnalyzer {
+            started: started_tx,
+            finished: finished_tx,
+            saw_cancel: Arc::clone(&saw_cancel),
+        },
+    )
+    .into_arc();
+
+    let mut registry: ExtensionRegistry<dyn nova_db::Database + Send + Sync> =
+        ExtensionRegistry::default();
+    registry.options_mut().diagnostic_timeout = Duration::from_secs(1);
+    registry
+        .register_diagnostic_provider(analyzer)
+        .expect("register diagnostic provider");
+
+    let ide = IdeExtensions::with_registry(
+        db,
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+        registry,
+    );
+
+    let cancel = CancellationToken::new();
+    let cancel_for_thread = cancel.clone();
+
+    let cancel_thread = std::thread::spawn(move || {
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("analyzer should start");
+        cancel_for_thread.cancel();
+    });
+
+    let diags = ide.diagnostics(cancel, file);
+    assert!(diags.is_empty());
+
+    cancel_thread.join().unwrap();
+    finished_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("analyzer should finish after cancellation");
+    assert!(saw_cancel.load(Ordering::SeqCst));
+}

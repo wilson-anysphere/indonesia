@@ -311,7 +311,8 @@ where
             return Vec::new();
         }
 
-        self.analyzer.diagnostics(fw_db.as_ref(), params.file)
+        self.analyzer
+            .diagnostics_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
     }
 }
 
@@ -345,7 +346,7 @@ where
             offset: params.offset,
         };
         self.analyzer
-            .completions(fw_db.as_ref(), &completion_ctx)
+            .completions_with_cancel(fw_db.as_ref(), &completion_ctx, &ctx.cancel)
     }
 }
 
@@ -388,7 +389,7 @@ where
         };
 
         self.analyzer
-            .navigation(fw_db.as_ref(), &symbol)
+            .navigation_with_cancel(fw_db.as_ref(), &symbol, &ctx.cancel)
             .into_iter()
             .map(|target| NavigationTarget {
                 file: target.file,
@@ -424,7 +425,7 @@ where
         }
 
         self.analyzer
-            .inlay_hints(fw_db.as_ref(), params.file)
+            .inlay_hints_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
             .into_iter()
             .map(|hint| InlayHint {
                 span: hint.span,
