@@ -83,6 +83,67 @@ public class CarMapperImpl implements CarMapper {}
 }
 
 #[test]
+fn unmapped_target_properties_diagnostic_via_framework_analyzer() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "org.mapstruct", "mapstruct");
+
+    let src_dir = root.join("src/main/java/com/example");
+    write_file(
+        &src_dir.join("Source.java"),
+        r#"package com.example;
+
+public class Source {
+  private String a;
+}
+"#,
+    );
+
+    write_file(
+        &src_dir.join("Target.java"),
+        r#"package com.example;
+
+public class Target {
+  private String a;
+  private String b;
+}
+"#,
+    );
+
+    let mapper = r#"
+package com.example;
+
+import org.mapstruct.Mapper;
+
+@Mapper
+public interface TestMapper {
+  Target map(Source source);
+}
+"#;
+
+    let mapper_path = src_dir.join("TestMapper.java");
+    write_file(&mapper_path, mapper);
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper);
+
+    let analyzer = MapStructAnalyzer::new();
+    let diags = analyzer.diagnostics(&db, mapper_file);
+
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES")
+        .expect("expected MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES diagnostic");
+
+    assert!(
+        diag.message.contains("b"),
+        "expected message to mention unmapped property `b`, got: {}",
+        diag.message
+    );
+}
+
+#[test]
 fn completion_in_mapping_target_suggests_target_properties() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
@@ -559,6 +620,9 @@ public class Car {
 
 #[test]
 fn nested_mapping_does_not_trigger_unmapped_target_properties_diagnostic() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
 
@@ -578,15 +642,12 @@ public interface CarMapper {
 }
 "#;
 
-    let mapper_file = db.add_file_with_path_and_text(
-        project,
-        "src/main/java/com/example/CarMapper.java",
-        mapper,
-    );
+    let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
+    write_file(&mapper_path, mapper);
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper);
 
-    db.add_file_with_path_and_text(
-        project,
-        "src/main/java/com/example/EngineDto.java",
+    write_file(
+        &root.join("src/main/java/com/example/EngineDto.java"),
         r#"
 package com.example;
 
@@ -596,9 +657,8 @@ public class EngineDto {
 "#,
     );
 
-    db.add_file_with_path_and_text(
-        project,
-        "src/main/java/com/example/CarDto.java",
+    write_file(
+        &root.join("src/main/java/com/example/CarDto.java"),
         r#"
 package com.example;
 
@@ -608,9 +668,8 @@ public class CarDto {
 "#,
     );
 
-    db.add_file_with_path_and_text(
-        project,
-        "src/main/java/com/example/Car.java",
+    write_file(
+        &root.join("src/main/java/com/example/Car.java"),
         r#"
 package com.example;
 
