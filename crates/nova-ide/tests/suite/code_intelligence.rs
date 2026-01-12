@@ -183,9 +183,9 @@ class Main {
 
 #[test]
 fn completion_deduplicates_items_by_label_and_kind() {
-    // `Stream` member completions come from two sources:
-    // - hardcoded `STREAM_MEMBER_METHODS`
-    // - workspace type extraction via the Lombok completion provider
+    // Member completions come from two sources:
+    // - semantic member enumeration via `TypeStore` (source types/JDK)
+    // - workspace member enumeration via the Lombok completion provider
     //
     // When both provide the same label/kind, the final list should contain only
     // one item.

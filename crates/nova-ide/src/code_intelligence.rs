@@ -1431,28 +1431,6 @@ struct DotCompletionContext {
     receiver: Option<SimpleReceiverExpr>,
 }
 
-pub(crate) const STRING_MEMBER_METHODS: &[(&str, &str)] = &[
-    ("length", "int length()"),
-    (
-        "substring",
-        "String substring(int beginIndex, int endIndex)",
-    ),
-    ("charAt", "char charAt(int index)"),
-    ("isEmpty", "boolean isEmpty()"),
-];
-
-pub(crate) const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
-    ("filter", "Stream<T> filter(Predicate<? super T> predicate)"),
-    (
-        "map",
-        "<R> Stream<R> map(Function<? super T, ? extends R> mapper)",
-    ),
-    (
-        "collect",
-        "<R, A> R collect(Collector<? super T, A, R> collector)",
-    ),
-];
-
 const MAX_NEW_TYPE_COMPLETIONS: usize = 100;
 const MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE: usize = 200;
 

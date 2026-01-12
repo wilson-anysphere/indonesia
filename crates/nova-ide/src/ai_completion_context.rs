@@ -7,9 +7,30 @@ use nova_db::{Database, FileId};
 
 use crate::code_intelligence::{
     analyze_for_completion_context, identifier_prefix, receiver_before_dot,
-    skip_whitespace_backwards, CompletionContextAnalysis, STREAM_MEMBER_METHODS,
-    STRING_MEMBER_METHODS,
+    skip_whitespace_backwards, CompletionContextAnalysis,
 };
+
+const STRING_MEMBER_METHODS: &[(&str, &str)] = &[
+    ("length", "int length()"),
+    (
+        "substring",
+        "String substring(int beginIndex, int endIndex)",
+    ),
+    ("charAt", "char charAt(int index)"),
+    ("isEmpty", "boolean isEmpty()"),
+];
+
+const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
+    ("filter", "Stream<T> filter(Predicate<? super T> predicate)"),
+    (
+        "map",
+        "<R> Stream<R> map(Function<? super T, ? extends R> mapper)",
+    ),
+    (
+        "collect",
+        "<R, A> R collect(Collector<? super T, A, R> collector)",
+    ),
+];
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
 ///
