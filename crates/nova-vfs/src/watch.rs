@@ -959,6 +959,41 @@ mod notify_impl {
         }
 
         #[test]
+        fn rename_to_after_rename_from_expires_yields_deleted_then_created() {
+            let mut normalizer = EventNormalizer::new();
+            let t0 = Instant::now();
+
+            let from = PathBuf::from("/tmp/A.java");
+            let to = PathBuf::from("/tmp/B.java");
+
+            let ev_from = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                paths: vec![from.clone()],
+                attrs: Default::default(),
+            };
+            let ev_to = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                paths: vec![to.clone()],
+                attrs: Default::default(),
+            };
+
+            assert_eq!(normalizer.push(ev_from, t0), Vec::new());
+
+            let t1 = t0 + EventNormalizer::MAX_AGE + Duration::from_millis(1);
+            assert_eq!(
+                normalizer.push(ev_to, t1),
+                vec![
+                    FileChange::Deleted {
+                        path: VfsPath::local(from),
+                    },
+                    FileChange::Created {
+                        path: VfsPath::local(to),
+                    },
+                ]
+            );
+        }
+
+        #[test]
         fn normalize_rename_from_to_into_move_without_extra_deleted() {
             let mut normalizer = EventNormalizer::new();
             let t0 = Instant::now();
@@ -1206,9 +1241,7 @@ mod tests {
     fn manual_watcher_delivers_errors() {
         let watcher = ManualFileWatcher::new();
 
-        watcher
-            .push_error(io::Error::new(io::ErrorKind::Other, "boom"))
-            .unwrap();
+        watcher.push_error(io::Error::other("boom")).unwrap();
 
         let err = watcher
             .receiver()
