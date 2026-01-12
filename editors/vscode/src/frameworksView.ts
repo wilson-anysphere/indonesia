@@ -305,8 +305,10 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
 
 async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<void> {
   const parsedLine = typeof oneBasedLine === 'number' ? oneBasedLine : Number(oneBasedLine);
-  const line = Math.max(0, (Number.isFinite(parsedLine) ? parsedLine : 1) - 1);
   const doc = await vscode.workspace.openTextDocument(uri);
+  const requestedLine = (Number.isFinite(parsedLine) ? parsedLine : 1) - 1;
+  const maxLine = Math.max(0, doc.lineCount - 1);
+  const line = Math.max(0, Math.min(requestedLine, maxLine));
   const range = new vscode.Range(line, 0, line, 0);
   await vscode.window.showTextDocument(doc, { selection: range, preview: true });
 }
