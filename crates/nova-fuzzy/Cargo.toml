@@ -17,6 +17,9 @@ criterion = "0.5"
 # - NFKC normalization
 # - Unicode case folding (including expansions like ß -> ss)
 # - grapheme-cluster aware scoring (for non-ASCII inputs)
+# NOTE: `unicode-normalization` does not currently expose an `nfkc_casefold()` helper (UAX#15
+# NFKC_Casefold) nor a streaming case-folding iterator. Keep `unicode-casefold` to ensure correct
+# full case folding (including expansions like ß -> ss).
 unicode = ["dep:unicode-normalization", "dep:unicode-casefold", "dep:unicode-segmentation"]
 
 [[bench]]

@@ -236,11 +236,10 @@ mod unicode_impl {
     pub type GraphemeRange = (usize, usize);
 
     pub fn fold_nfkc_casefold(input: &str, out: &mut String) {
-        // Normalize (NFKC) and then apply Unicode case folding.
+        // Normalize (NFKC) and then apply Unicode case folding (including expansions).
         //
-        // `unicode-casefold` implements `case_fold()` as an iterator adaptor, so we can
-        // stream the normalized characters directly into the output buffer without
-        // allocating an intermediate `String`.
+        // `unicode-normalization` does not currently expose an `nfkc_casefold()` helper
+        // or a case-folding iterator, so we compose `nfkc()` with `unicode-casefold`.
         out.clear();
         out.extend(input.nfkc().case_fold());
     }
