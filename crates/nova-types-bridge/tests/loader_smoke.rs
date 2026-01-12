@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use nova_types::{
-    ClassDef, ClassKind, ConstructorDef, FieldStub, MethodDef, MethodStub, Type, TypeDefStub,
-    TypeEnv, TypeProvider, WildcardBound,
+    ClassDef, ClassKind, ConstructorDef, FieldStub, MethodDef, MethodStub, PrimitiveType, Type,
+    TypeDefStub, TypeEnv, TypeProvider, TypeStore, WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -15,6 +15,111 @@ impl TypeProvider for MapProvider {
     fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub> {
         self.stubs.get(binary_name).cloned()
     }
+}
+
+#[test]
+fn does_not_overwrite_non_placeholder_minimal_jdk_types() {
+    // Regression test: `ExternalTypeLoader::ensure_class` should *not* overwrite the in-memory
+    // minimal JDK type model (which is more precise than Nova's built-in `nova-jdk` stubs).
+    //
+    // Previously, callers could accidentally clobber definitions like `java.lang.Math` (losing
+    // overloads) and `java.util.Collections.emptyList` (losing generics), which then broke target
+    // typing and overload resolution in downstream type checking.
+    let mut store = TypeStore::with_minimal_jdk();
+
+    let math_stub = TypeDefStub {
+        binary_name: "java.lang.Math".to_string(),
+        access_flags: 0x0001, // ACC_PUBLIC
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![MethodStub {
+            name: "max".to_string(),
+            descriptor: "(II)I".to_string(),
+            signature: None,
+            access_flags: 0x0001 | 0x0008, // ACC_PUBLIC | ACC_STATIC
+        }],
+    };
+
+    let collections_stub = TypeDefStub {
+        binary_name: "java.util.Collections".to_string(),
+        access_flags: 0x0001, // ACC_PUBLIC
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![MethodStub {
+            name: "emptyList".to_string(),
+            descriptor: "()Ljava/util/List;".to_string(),
+            signature: None,
+            access_flags: 0x0001 | 0x0008, // ACC_PUBLIC | ACC_STATIC
+        }],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("java.lang.Math".to_string(), math_stub);
+    provider
+        .stubs
+        .insert("java.util.Collections".to_string(), collections_stub);
+
+    let math_id = store
+        .lookup_class("java.lang.Math")
+        .expect("minimal JDK should define java.lang.Math");
+    let collections_id = store
+        .lookup_class("java.util.Collections")
+        .expect("minimal JDK should define java.util.Collections");
+    let list_id = store
+        .lookup_class("java.util.List")
+        .expect("minimal JDK should define java.util.List");
+
+    {
+        let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+        loader
+            .ensure_class("java.lang.Math")
+            .expect("math should still be present");
+        loader
+            .ensure_class("java.util.Collections")
+            .expect("collections should still be present");
+    }
+
+    // Ensure `Math.max(float, float)` survived (built-in stub only provides int overload).
+    let math_def = store.class(math_id).expect("math def should exist");
+    assert!(
+        math_def.methods.iter().any(|m| {
+            m.name == "max"
+                && m.params
+                    == vec![
+                        Type::Primitive(PrimitiveType::Float),
+                        Type::Primitive(PrimitiveType::Float),
+                    ]
+                && m.return_type == Type::Primitive(PrimitiveType::Float)
+        }),
+        "expected minimal JDK overload Math.max(float,float) to remain after ensure_class; got {:?}",
+        math_def.methods
+    );
+
+    // Ensure `Collections.emptyList` stayed generic (built-in stub erases signature).
+    let collections_def = store
+        .class(collections_id)
+        .expect("collections def should exist");
+    let empty = collections_def
+        .methods
+        .iter()
+        .find(|m| m.name == "emptyList")
+        .expect("minimal JDK should define Collections.emptyList");
+    assert_eq!(
+        empty.type_params.len(),
+        1,
+        "expected Collections.emptyList to remain generic"
+    );
+    let t = empty.type_params[0];
+    assert_eq!(
+        empty.return_type,
+        Type::class(list_id, vec![Type::TypeVar(t)])
+    );
 }
 
 #[test]
