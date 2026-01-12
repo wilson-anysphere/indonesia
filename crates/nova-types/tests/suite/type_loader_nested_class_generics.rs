@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use nova_types::{
-    FieldStub, Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore, TypeStoreLoader,
-};
+use nova_types::{FieldStub, Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore};
+use nova_types_bridge::ExternalTypeLoader;
 
 use pretty_assertions::assert_eq;
 
@@ -67,15 +66,17 @@ fn type_store_loader_flattens_inner_class_args_across_segments() {
     });
 
     let mut store = TypeStore::default();
-    let mut loader = TypeStoreLoader::new(&mut store, &provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
-    let ref_id = loader.ensure_class("com.example.Ref").unwrap();
+    let ref_id = loader
+        .ensure_class("com.example.Ref")
+        .expect("Ref should load");
     let inner_id = loader
-        .store()
+        .store
         .lookup_class("com.example.Outer$Inner")
         .expect("Outer$Inner should have been loaded");
 
-    let ref_def = loader.store().class(ref_id).unwrap();
+    let ref_def = loader.store.class(ref_id).unwrap();
     let (t, u) = (ref_def.type_params[0], ref_def.type_params[1]);
 
     let field = ref_def
@@ -136,15 +137,17 @@ fn type_store_loader_reconciles_inner_class_arg_mismatches_by_dropping_leading_a
     });
 
     let mut store = TypeStore::default();
-    let mut loader = TypeStoreLoader::new(&mut store, &provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
-    let ref_id = loader.ensure_class("com.example.Ref3").unwrap();
+    let ref_id = loader
+        .ensure_class("com.example.Ref3")
+        .expect("Ref3 should load");
     let inner_id = loader
-        .store()
+        .store
         .lookup_class("com.example.Outer$Inner")
         .expect("Outer$Inner should have been loaded");
 
-    let ref_def = loader.store().class(ref_id).unwrap();
+    let ref_def = loader.store.class(ref_id).unwrap();
     let (t, u, v) = (
         ref_def.type_params[0],
         ref_def.type_params[1],

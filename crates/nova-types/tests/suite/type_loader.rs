@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_types::{
     is_subtype, resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall,
-    MethodResolution, PrimitiveType, TyContext, Type, TypeEnv, TypeStore, TypeStoreLoader,
+    MethodResolution, PrimitiveType, TyContext, Type, TypeEnv, TypeStore,
 };
+use nova_types_bridge::ExternalTypeLoader;
 
 use pretty_assertions::assert_eq;
 
@@ -23,32 +24,39 @@ fn type_store_loader_bridge_from_classpath_index() {
 
     let provider = ChainTypeProvider::new(vec![&dep_index, &jdk_index]);
 
-    let mut store = TypeStore::default();
-    let mut loader = TypeStoreLoader::new(&mut store, &provider);
-    loader.bootstrap_well_known().unwrap();
+    // Use the canonical loader implementation from `nova-types-bridge`.
+    //
+    // NOTE: `TypeStore::with_minimal_jdk` provides the well-known types required by
+    // type system algorithms (boxing, implicit Object supertypes, etc).
+    let mut store = TypeStore::with_minimal_jdk();
+    // Ensure we're actually exercising the loader (not the built-in minimal List).
+    store.remove_class("java.util.List");
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     let (object_id, string_id, integer_id) = {
-        let wk = loader.store().well_known();
+        let wk = loader.store.well_known();
         (wk.object, wk.string, wk.integer)
     };
 
     // --- Load java.util.List --------------------------------------------------
-    let list_id = loader.ensure_class("java.util.List").unwrap();
+    let list_id = loader
+        .ensure_class("java.util.List")
+        .expect("expected java.util.List to load from provider");
     let list_type_param = {
-        let list_def = loader.store().class(list_id).unwrap();
+        let list_def = loader.store.class(list_id).unwrap();
         assert_eq!(list_def.kind, ClassKind::Interface);
         assert_eq!(list_def.type_params.len(), 1);
         list_def.type_params[0]
     };
 
     {
-        let e_def = loader.store().type_param(list_type_param).unwrap();
+        let e_def = loader.store.type_param(list_type_param).unwrap();
         assert_eq!(e_def.name, "E");
         assert_eq!(e_def.upper_bounds, vec![Type::class(object_id, vec![])]);
     }
 
     {
-        let list_def = loader.store().class(list_id).unwrap();
+        let list_def = loader.store.class(list_id).unwrap();
         let get = list_def
             .methods
             .iter()
@@ -69,7 +77,7 @@ fn type_store_loader_bridge_from_classpath_index() {
         explicit_type_args: vec![],
     };
     {
-        let mut ctx = TyContext::new(loader.store());
+        let mut ctx = TyContext::new(&*loader.store);
         let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx, &call) else {
             panic!("expected method resolution success for List<String>.get(int)");
         };
@@ -77,9 +85,11 @@ fn type_store_loader_bridge_from_classpath_index() {
     }
 
     // --- Load com.example.dep.Foo --------------------------------------------
-    let foo_id = loader.ensure_class("com.example.dep.Foo").unwrap();
+    let foo_id = loader
+        .ensure_class("com.example.dep.Foo")
+        .expect("expected com.example.dep.Foo to load from provider");
     {
-        let foo_def = loader.store().class(foo_id).unwrap();
+        let foo_def = loader.store.class(foo_id).unwrap();
         assert!(
             foo_def.methods.iter().all(|m| !m.name.starts_with('<')),
             "constructors/static initializers should not appear in ClassDef.methods"
@@ -125,9 +135,11 @@ fn type_store_loader_bridge_from_classpath_index() {
     }
 
     // --- Load nested class Foo$Inner -----------------------------------------
-    let inner_id = loader.ensure_class("com.example.dep.Foo$Inner").unwrap();
+    let inner_id = loader
+        .ensure_class("com.example.dep.Foo$Inner")
+        .expect("expected com.example.dep.Foo$Inner to load from provider");
     {
-        let inner_def = loader.store().class(inner_id).unwrap();
+        let inner_def = loader.store.class(inner_id).unwrap();
         let value = inner_def
             .methods
             .iter()
@@ -137,9 +149,11 @@ fn type_store_loader_bridge_from_classpath_index() {
     }
 
     // --- Load subclass Bar extends Foo ---------------------------------------
-    let bar_id = loader.ensure_class("com.example.dep.Bar").unwrap();
+    let bar_id = loader
+        .ensure_class("com.example.dep.Bar")
+        .expect("expected com.example.dep.Bar to load from provider");
     assert!(is_subtype(
-        loader.store(),
+        &*loader.store,
         &Type::class(bar_id, vec![]),
         &Type::class(foo_id, vec![])
     ));
@@ -154,7 +168,7 @@ fn type_store_loader_bridge_from_classpath_index() {
         explicit_type_args: vec![],
     };
     {
-        let mut ctx = TyContext::new(loader.store());
+        let mut ctx = TyContext::new(&*loader.store);
         let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx, &call) else {
             panic!("expected method resolution success for Foo.id(String)");
         };

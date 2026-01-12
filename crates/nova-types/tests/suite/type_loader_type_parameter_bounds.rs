@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use nova_types::{MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore, TypeStoreLoader};
+use nova_types::{MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore};
+use nova_types_bridge::ExternalTypeLoader;
 
 use pretty_assertions::assert_eq;
 
@@ -39,22 +40,22 @@ fn interface_only_class_type_parameter_bound_does_not_add_implicit_object() {
     });
 
     let mut store = TypeStore::default();
-    let mut loader = TypeStoreLoader::new(&mut store, &provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     let class_id = loader
         .ensure_class("com.example.InterfaceBound")
         .expect("InterfaceBound should load");
 
-    let serializable = loader.store().well_known().serializable;
+    let serializable = loader.store.well_known().serializable;
     let class_def = loader
-        .store()
+        .store
         .class(class_id)
         .expect("InterfaceBound should be defined");
     assert_eq!(class_def.type_params.len(), 1);
 
     let tp_id = class_def.type_params[0];
     let tp_def = loader
-        .store()
+        .store
         .type_param(tp_id)
         .expect("type parameter should exist");
 
@@ -83,15 +84,15 @@ fn interface_only_method_type_parameter_bound_does_not_add_implicit_object() {
     });
 
     let mut store = TypeStore::default();
-    let mut loader = TypeStoreLoader::new(&mut store, &provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     let class_id = loader
         .ensure_class("com.example.MethodBound")
         .expect("MethodBound should load");
 
-    let serializable = loader.store().well_known().serializable;
+    let serializable = loader.store.well_known().serializable;
     let class_def = loader
-        .store()
+        .store
         .class(class_id)
         .expect("MethodBound should be defined");
 
@@ -104,10 +105,9 @@ fn interface_only_method_type_parameter_bound_does_not_add_implicit_object() {
 
     let tp_id = id_method.type_params[0];
     let tp_def = loader
-        .store()
+        .store
         .type_param(tp_id)
         .expect("method type parameter should exist");
 
     assert_eq!(tp_def.upper_bounds, vec![Type::class(serializable, vec![])]);
 }
-

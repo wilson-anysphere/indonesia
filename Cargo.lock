@@ -4290,6 +4290,7 @@ dependencies = [
  "nova-classpath",
  "nova-ids",
  "nova-test-utils",
+ "nova-types-bridge",
  "pretty_assertions",
  "schemars",
  "serde",
