@@ -21,6 +21,7 @@ use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
 use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
+use nova_syntax::SyntaxTreeStore;
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
     ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, LocalFs,
@@ -179,9 +180,12 @@ impl WorkspaceEngine {
         let vfs = Vfs::new(LocalFs::new());
         let open_docs = vfs.open_documents();
 
+        let syntax_trees = SyntaxTreeStore::new(&memory, open_docs.clone());
+
         let query_db = salsa::Database::new_with_persistence(&workspace_root, persistence);
         query_db.register_salsa_memo_evictor(&memory);
         query_db.attach_item_tree_store(&memory, open_docs);
+        query_db.set_syntax_tree_store(syntax_trees);
         let default_project = ProjectId::from_raw(0);
         // Ensure fundamental project inputs are always initialized so callers can safely
         // start with an empty/in-memory workspace.
@@ -672,6 +676,9 @@ impl WorkspaceEngine {
                 }
             }
             self.update_project_files_membership(path, file_id, exists);
+            // The document is no longer open; unpin its syntax tree so memory
+            // accounting attributes it back to Salsa memoization.
+            self.query_db.unpin_syntax_tree(file_id);
         }
     }
 

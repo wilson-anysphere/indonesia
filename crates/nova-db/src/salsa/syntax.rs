@@ -13,14 +13,14 @@ use super::cancellation as cancel;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
 use super::HasFilePaths;
-use super::{HasSalsaMemoStats, TrackedSalsaMemo};
+use super::{HasSalsaMemoStats, HasSyntaxTreeStore, TrackedSalsaMemo};
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
 pub trait NovaSyntax:
-    NovaInputs + HasQueryStats + HasPersistence + HasFilePaths + HasSalsaMemoStats
+    NovaInputs + HasQueryStats + HasPersistence + HasFilePaths + HasSalsaMemoStats + HasSyntaxTreeStore
 {
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
@@ -63,6 +63,21 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
     };
     let approx_bytes = text.len() as u64;
 
+    // If a syntax tree store is configured, prefer reusing the pinned tree for
+    // open documents. This allows warm reuse across Salsa memo eviction.
+    let store = db.syntax_tree_store();
+    if let Some(store) = store.as_ref() {
+        if store.is_open(file) {
+            if let Some(parse) = store.get_if_current(file, &text) {
+                // Avoid double-counting: the parse allocation is tracked by the
+                // syntax tree store under `MemoryCategory::SyntaxTrees`.
+                db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, 0);
+                db.record_query_stat("parse", start.elapsed());
+                return parse;
+            }
+        }
+    }
+
     if db.persistence().mode().allows_read() {
         if let Some(file_path) = db.file_path(file).filter(|p| !p.is_empty()) {
             let fingerprint = Fingerprint::from_bytes(text.as_bytes());
@@ -73,7 +88,13 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
                 Some(artifacts) => {
                     db.record_disk_cache_hit("parse");
                     let result = Arc::new(artifacts.parse);
-                    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, approx_bytes);
+                    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
+                        store.insert(file, text.clone(), result.clone());
+                        // Avoid double-counting with `SyntaxTreeStore`.
+                        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, 0);
+                    } else {
+                        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, approx_bytes);
+                    }
                     db.record_query_stat("parse", start.elapsed());
                     return result;
                 }
@@ -86,7 +107,13 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
 
     let parsed = nova_syntax::parse(text.as_str());
     let result = Arc::new(parsed);
-    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, approx_bytes);
+    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
+        store.insert(file, text.clone(), result.clone());
+        // Avoid double-counting with `SyntaxTreeStore`.
+        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, 0);
+    } else {
+        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, approx_bytes);
+    }
     db.record_query_stat("parse", start.elapsed());
     result
 }

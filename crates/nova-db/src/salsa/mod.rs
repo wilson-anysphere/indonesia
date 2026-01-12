@@ -200,12 +200,27 @@ pub trait HasItemTreeStore {
     fn item_tree_store(&self) -> Option<Arc<ItemTreeStore>>;
 }
 
+/// Accessor for Nova's (optional) shared [`nova_syntax::SyntaxTreeStore`].
+///
+/// When present, Salsa query implementations may use the store to *pin* syntax
+/// trees for open documents and/or reuse trees across memo eviction.
+pub trait HasSyntaxTreeStore {
+    fn syntax_tree_store(&self) -> Option<Arc<nova_syntax::SyntaxTreeStore>>;
+}
+
 /// File-keyed memoized query results tracked for memory accounting.
 ///
 /// This is intentionally coarse: it is used to approximate the footprint of
 /// Salsa memo tables which can otherwise grow without bound in large workspaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrackedSalsaMemo {
+    /// Green-tree parse results for [`NovaSyntax::parse`].
+    ///
+    /// When a parse result is pinned in [`nova_syntax::SyntaxTreeStore`] (e.g.
+    /// for an open document), the `Arc<ParseResult>` allocation is shared
+    /// between Salsa memo tables and the syntax tree store. In that case we
+    /// record `0` bytes here to avoid double-counting; the bytes are instead
+    /// accounted under [`MemoryCategory::SyntaxTrees`].
     Parse,
     ParseJava,
     ItemTree,
@@ -593,6 +608,7 @@ pub struct RootDatabase {
     file_paths: Arc<RwLock<HashMap<FileId, Arc<String>>>>,
     item_tree_store: Option<Arc<ItemTreeStore>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
+    syntax_tree_store: Option<Arc<nova_syntax::SyntaxTreeStore>>,
 }
 
 impl Default for RootDatabase {
@@ -615,6 +631,7 @@ impl RootDatabase {
             file_paths: Arc::new(RwLock::new(HashMap::new())),
             item_tree_store: None,
             memo_footprint: Arc::new(SalsaMemoFootprint::default()),
+            syntax_tree_store: None,
         };
 
         // Provide a sensible default `ProjectConfig` so callers can start
@@ -724,6 +741,12 @@ impl HasItemTreeStore for RootDatabase {
     }
 }
 
+impl HasSyntaxTreeStore for RootDatabase {
+    fn syntax_tree_store(&self) -> Option<Arc<nova_syntax::SyntaxTreeStore>> {
+        self.syntax_tree_store.clone()
+    }
+}
+
 impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
         match event.kind {
@@ -787,6 +810,7 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             file_paths: self.file_paths.clone(),
             item_tree_store: self.item_tree_store.clone(),
             memo_footprint: self.memo_footprint.clone(),
+            syntax_tree_store: self.syntax_tree_store.clone(),
         })
     }
 }
@@ -905,6 +929,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
             let item_tree_store = db.item_tree_store.clone();
+            let syntax_tree_store = db.syntax_tree_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
@@ -912,6 +937,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
                 file_paths,
                 item_tree_store,
                 memo_footprint: self.footprint.clone(),
+                syntax_tree_store,
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -978,6 +1004,39 @@ impl Database {
         let db = Self::new();
         db.register_salsa_memo_evictor(manager);
         db
+    }
+
+    /// Attach a shared [`nova_syntax::SyntaxTreeStore`] used to pin syntax trees
+    /// for open documents.
+    ///
+    /// This is intentionally not a Salsa-tracked input: the presence/absence of
+    /// the store must not change query results (only caching/pinning behavior).
+    pub fn set_syntax_tree_store(&self, store: Arc<nova_syntax::SyntaxTreeStore>) {
+        self.inner.lock().syntax_tree_store = Some(store);
+    }
+
+    /// Remove any pinned parse tree for `file` from the shared syntax tree store
+    /// (if configured) and restore the parse entry in the Salsa memo footprint.
+    ///
+    /// This is intended to be called when an editor document is closed: the
+    /// parse tree is no longer pinned and should once again be attributed to
+    /// Salsa memoization for accounting purposes.
+    pub fn unpin_syntax_tree(&self, file: FileId) {
+        let store = self.inner.lock().syntax_tree_store.clone();
+        if let Some(store) = store.as_ref() {
+            store.remove(file);
+        }
+
+        // Best-effort: restore the parse memo approximation based on the most
+        // recent input text snapshot.
+        let bytes = self
+            .inputs
+            .lock()
+            .file_content
+            .get(&file)
+            .map(|text| text.len() as u64)
+            .unwrap_or(0);
+        self.memo_footprint.record(file, TrackedSalsaMemo::Parse, bytes);
     }
 
     pub fn new_with_persistence(
@@ -1410,6 +1469,7 @@ impl Database {
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
             let item_tree_store = db.item_tree_store.clone();
+            let syntax_tree_store = db.syntax_tree_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
@@ -1417,6 +1477,7 @@ impl Database {
                 file_paths,
                 item_tree_store,
                 memo_footprint: self.memo_footprint.clone(),
+                syntax_tree_store,
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -2719,6 +2780,54 @@ class Foo {
         assert!(
             expected_shard_artifact.exists(),
             "expected salsa memo evictor flush_to_disk to persist project index shards"
+        );
+    }
+
+    #[test]
+    fn open_doc_parse_is_not_double_counted_between_query_cache_and_syntax_trees() {
+        use nova_syntax::SyntaxTreeStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = SyntaxTreeStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store);
+
+        let file = FileId::from_raw(42);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+
+        db.with_snapshot(|snap| {
+            let parse = snap.parse(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let report = manager.report();
+        assert!(
+            report.usage.syntax_trees > 0,
+            "expected syntax tree store to report usage for open document"
+        );
+
+        // We expect the parse allocation to be accounted once across `query_cache`
+        // and `syntax_trees` (not twice). Other categories (like tracked Salsa
+        // input text) may legitimately contribute additional bytes.
+        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        assert!(
+            syntax_and_cache <= text_len.saturating_mul(3) / 2,
+            "expected (query_cache+syntax_trees) to be ~text_len once (<= 1.5x), got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
+            syntax_and_cache,
+            report.usage.query_cache,
+            report.usage.syntax_trees
+        );
+        assert!(
+            report.usage.query_cache < text_len / 2,
+            "expected query cache usage to not include the pinned parse allocation (query_cache={}, text_len={text_len})",
+            report.usage.query_cache
         );
     }
 
