@@ -159,8 +159,10 @@ pub fn generate_stream_eval_helper_java_source(
     static_fields: &[(String, String)],
     stages: &[String],
     terminal: Option<&str>,
+    max_sample_size: usize,
 ) -> String {
     const THIS_IDENT: &str = "__this";
+    const MAX_STREAM_SAMPLE_SIZE: usize = 25;
     const DEFAULT_IMPORTS: [&str; 4] = [
         "java.util.*",
         "java.util.stream.*",
@@ -183,6 +185,8 @@ pub fn generate_stream_eval_helper_java_source(
         out.push_str(package_name);
         out.push_str(";\n\n");
     }
+
+    let max_sample_size = max_sample_size.min(MAX_STREAM_SAMPLE_SIZE);
 
     // Emit imports, preserving first-seen order while deduping.
     //
@@ -227,6 +231,47 @@ pub fn generate_stream_eval_helper_java_source(
     out.push_str("  private ");
     out.push_str(class_name);
     out.push_str("() {}\n\n");
+
+    // Stream-sampling helper: works for both reference and primitive streams.
+    //
+    // Important: clamp to our inspector element expansion limit so we avoid wasted work even if
+    // the caller requests a larger sample.
+    out.push_str("  public static java.util.List<?> sampleStream(Object stream, int max) {\n");
+    out.push_str("    if (stream == null) {\n");
+    out.push_str("      return java.util.Collections.emptyList();\n");
+    out.push_str("    }\n\n");
+    out.push_str("    int n = max;\n");
+    out.push_str("    if (n < 0) {\n");
+    out.push_str("      n = 0;\n");
+    out.push_str("    } else if (n > ");
+    out.push_str(&MAX_STREAM_SAMPLE_SIZE.to_string());
+    out.push_str(") {\n");
+    out.push_str("      n = ");
+    out.push_str(&MAX_STREAM_SAMPLE_SIZE.to_string());
+    out.push_str(";\n");
+    out.push_str("    }\n\n");
+    out.push_str("    if (stream instanceof java.util.stream.Stream) {\n");
+    out.push_str("      return ((java.util.stream.Stream<?>) stream)\n");
+    out.push_str("          .limit(n)\n");
+    out.push_str("          .collect(java.util.stream.Collectors.toList());\n");
+    out.push_str("    } else if (stream instanceof java.util.stream.IntStream) {\n");
+    out.push_str("      return ((java.util.stream.IntStream) stream)\n");
+    out.push_str("          .limit(n)\n");
+    out.push_str("          .boxed()\n");
+    out.push_str("          .collect(java.util.stream.Collectors.toList());\n");
+    out.push_str("    } else if (stream instanceof java.util.stream.LongStream) {\n");
+    out.push_str("      return ((java.util.stream.LongStream) stream)\n");
+    out.push_str("          .limit(n)\n");
+    out.push_str("          .boxed()\n");
+    out.push_str("          .collect(java.util.stream.Collectors.toList());\n");
+    out.push_str("    } else if (stream instanceof java.util.stream.DoubleStream) {\n");
+    out.push_str("      return ((java.util.stream.DoubleStream) stream)\n");
+    out.push_str("          .limit(n)\n");
+    out.push_str("          .boxed()\n");
+    out.push_str("          .collect(java.util.stream.Collectors.toList());\n");
+    out.push_str("    }\n\n");
+    out.push_str("    return java.util.Collections.emptyList();\n");
+    out.push_str("  }\n\n");
 
     // Determine the most specific type we can for `this` based on locals.
     let this_ty = locals
@@ -355,7 +400,11 @@ pub fn generate_stream_eval_helper_java_source(
             out.push_str(";\n  }\n");
         } else {
             out.push_str("    return ");
+            out.push_str("sampleStream(");
             out.push_str(&stage);
+            out.push_str(", ");
+            out.push_str(&max_sample_size.to_string());
+            out.push_str(")");
             out.push_str(";\n  }\n");
         }
 
@@ -713,6 +762,7 @@ mod tests {
             &[],
             &["this.foo()".to_string(), "this.bar()".to_string()],
             None,
+            5,
         );
 
         assert!(src.contains("package com.example;"));
@@ -729,6 +779,11 @@ mod tests {
         assert_eq!(src.matches("import java.util.*;").count(), 1);
         assert!(src.contains("public final class __NovaStreamEvalHelper"));
 
+        assert!(
+            src.contains("public static java.util.List<?> sampleStream("),
+            "expected sampleStream helper method:\n{src}"
+        );
+
         // Ensure locals are exposed via valid parameter names.
         assert!(src.contains("com.example.Foo __this"));
         assert!(src.contains("int foo_bar"));
@@ -736,8 +791,14 @@ mod tests {
         // Ensure stages are generated and `this` is rewritten.
         assert!(src.contains("public static Object stage0"));
         assert!(src.contains("public static Object stage1"));
-        assert!(src.contains("return __this.foo();"));
-        assert!(src.contains("return __this.bar();"));
+        assert!(
+            src.contains("return sampleStream(__this.foo(), 5);"),
+            "expected stage0 to sample stream via helper:\n{src}"
+        );
+        assert!(
+            src.contains("return sampleStream(__this.bar(), 5);"),
+            "expected stage1 to sample stream via helper:\n{src}"
+        );
 
         // Imports are emitted deterministically: defaults first, then file imports.
         let idx_default = src.find("import java.util.*;").unwrap();
@@ -772,6 +833,7 @@ mod tests {
             &[],
             &["s.forEach(System.out::println)".to_string()],
             None,
+            10,
         );
 
         assert!(
@@ -802,6 +864,7 @@ mod tests {
             &[],
             &["s.forEachOrdered(System.out::println)".to_string()],
             None,
+            10,
         );
 
         assert!(
@@ -826,6 +889,7 @@ mod tests {
             &[],
             &["java.util.stream.IntStream.range(0, 3).forEach(System.out::println)".to_string()],
             None,
+            10,
         );
 
         assert!(
@@ -856,15 +920,16 @@ mod tests {
                 "MY_LIST".to_string(),
                 "java.util.List<java.lang.Integer>".to_string(),
             )],
-            &["nums.stream().count()".to_string()],
+            &["nums.stream()".to_string()],
             None,
+            100,
         );
 
         // `__this` always comes first.
         assert!(
             src.contains("public static Object stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums, java.util.List<java.lang.Integer> MY_LIST)")
         );
-        assert!(src.contains("return nums.stream().count();"));
+        assert!(src.contains("return sampleStream(nums.stream(), 25);"));
     }
 
     #[test]
@@ -890,6 +955,7 @@ mod tests {
                     .to_string(),
             ],
             None,
+            10,
         );
 
         assert!(
@@ -921,6 +987,7 @@ mod tests {
             &[],
             &["this.toString();".to_string()],
             None,
+            3,
         );
 
         assert!(
@@ -928,7 +995,10 @@ mod tests {
             "{src}"
         );
         // Ensure trailing semicolons are stripped before wrapping in `return ...;`.
-        assert!(src.contains("return __this.toString();"), "{src}");
+        assert!(
+            src.contains("return sampleStream(__this.toString(), 3);"),
+            "{src}"
+        );
     }
 
     #[test]
@@ -946,6 +1016,7 @@ mod tests {
             &[],
             &["this".to_string()],
             None,
+            1,
         );
 
         assert_eq!(src.matches("import java.util.List;").count(), 1, "{src}");
@@ -968,6 +1039,7 @@ mod tests {
             &[],
             &[],
             Some("s.forEach(System.out::println)"),
+            10,
         );
 
         assert!(

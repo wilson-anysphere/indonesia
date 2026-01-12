@@ -5307,6 +5307,32 @@ fn record_lightweight_expr(
                 );
             }
         }
+        Expr::ArrayCreation(array) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(array.elem_ty.range.start, array.elem_ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for dim in &array.dim_exprs {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    dim,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
         Expr::Call(call) => {
             record_lightweight_expr(
                 file,

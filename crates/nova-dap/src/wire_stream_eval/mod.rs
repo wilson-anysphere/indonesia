@@ -105,6 +105,7 @@ pub(crate) async fn compile_and_inject_helper(
     imports: &[String],
     stages: &[String],
     terminal: Option<&str>,
+    max_sample_size: usize,
 ) -> Result<StreamEvalHelper, StreamEvalError> {
     // --- Bindings -----------------------------------------------------------
     let bindings = bindings::build_frame_bindings(jdwp, thread, frame_id, location).await?;
@@ -139,6 +140,7 @@ pub(crate) async fn compile_and_inject_helper(
         &static_fields_for_java_gen,
         stages,
         terminal,
+        max_sample_size,
     );
 
     let temp_dir = crate::javac::hot_swap_temp_dir().map_err(StreamEvalError::Io)?;
