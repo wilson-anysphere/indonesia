@@ -770,6 +770,59 @@ mod notify_impl {
         }
 
         #[test]
+        fn emits_rescan_when_events_queue_overflows() {
+            use notify::EventKind;
+
+            // Use a tiny downstream queue so we can deterministically force an overflow without any
+            // OS timing assumptions.
+            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(16);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(1);
+            let (stop_tx, stop_rx) = channel::bounded::<()>(0);
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
+
+            let make_event = |path: &str| notify::Event {
+                kind: EventKind::Modify(ModifyKind::Any),
+                paths: vec![PathBuf::from(path)],
+                attrs: Default::default(),
+            };
+
+            // Fill the downstream queue with one Changes event.
+            raw_tx.send(Ok(make_event("/tmp/A.java"))).unwrap();
+            // The next change should overflow the downstream queue, triggering a Rescan.
+            raw_tx.send(Ok(make_event("/tmp/B.java"))).unwrap();
+
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert!(matches!(msg, WatchEvent::Changes { .. }));
+
+            // Wake the drain loop without generating additional Changes so it can retry emitting a
+            // Rescan immediately (without waiting for the retry tick).
+            raw_tx
+                .send(Ok(notify::Event {
+                    kind: EventKind::Modify(ModifyKind::Any),
+                    paths: Vec::new(),
+                    attrs: Default::default(),
+                }))
+                .unwrap();
+
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert_eq!(msg, WatchEvent::Rescan);
+
+            let _ = stop_tx.send(());
+            let _ = thread.join();
+        }
+
+        #[test]
         fn emits_deleted_when_rename_from_expires() {
             let mut normalizer = EventNormalizer::new();
             let t0 = Instant::now();
