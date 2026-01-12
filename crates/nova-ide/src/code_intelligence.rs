@@ -3258,7 +3258,7 @@ fn general_completions(
     let text = db.file_content(file);
     let analysis = analyze(text);
     let mut types = TypeStore::with_minimal_jdk();
-    let expected_arg_ty = expected_argument_type_for_completion(&mut types, &analysis, offset);
+    let expected_arg_ty = expected_argument_type_for_completion(&mut types, &analysis, text, offset);
     let mut items = Vec::new();
 
     maybe_add_lambda_snippet_completion(
@@ -5508,6 +5508,7 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
 fn expected_argument_type_for_completion(
     types: &mut TypeStore,
     analysis: &Analysis,
+    text: &str,
     offset: usize,
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
