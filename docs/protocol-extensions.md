@@ -2075,3 +2075,27 @@ under `src/test/java/`).
 ##### Errors
 
 Same as `nova.ai.generateMethodBody`.
+
+---
+
+## Internal (debug/test-only)
+
+### `nova/internal/interruptibleWork`
+
+- **Kind:** request
+- **Stability:** experimental
+
+Debug-only request used by integration tests to validate JSON-RPC `$/cancelRequest` behavior and
+Salsa cancellation propagation.
+
+### `nova/internal/interruptibleWorkStarted`
+
+- **Kind:** notification
+- **Stability:** experimental
+
+Debug-only notification sent by the server once it has entered the `interruptibleWork` request
+handler (after initial request setup). Payload:
+
+```json
+{ "id": 2 }
+```
