@@ -47,3 +47,36 @@ fn property_keys_from_configs_is_case_insensitive() {
     assert!(!keys.contains("logging.level.root"));
     assert_eq!(keys.len(), 2);
 }
+
+#[test]
+fn property_keys_from_configs_extracts_yaml_keys() {
+    let path = "src/main/resources/application.yml";
+    let text = r#"
+server:
+  port: 8080
+spring:
+  main:
+    banner-mode: off
+"#;
+
+    let keys = property_keys_from_configs(&[(path, text)]);
+
+    assert!(keys.contains("server.port"), "expected server.port; got {keys:?}");
+    assert!(
+        keys.contains("spring.main.banner-mode"),
+        "expected spring.main.banner-mode; got {keys:?}"
+    );
+    assert!(!keys.contains("spring.application.name"));
+    assert!(!keys.contains("logging.level.root"));
+}
+
+#[test]
+fn property_keys_from_configs_extracts_yaml_keys_with_uppercase_extension() {
+    let path = "src/main/resources/application.YML";
+    let text = "server:\n  port: 8080\n";
+
+    let keys = property_keys_from_configs(&[(path, text)]);
+
+    assert!(keys.contains("server.port"), "expected server.port; got {keys:?}");
+    assert!(!keys.contains("spring.application.name"));
+}
