@@ -390,10 +390,16 @@ impl RefactorJavaDatabase {
                         let local_id = param.local;
                         let local = &body.locals[local_id];
                         candidates.push(SymbolCandidate {
-                            key: ResolutionKey::Local(LocalRef { owner, local: local_id }),
+                            key: ResolutionKey::Local(LocalRef {
+                                owner,
+                                local: local_id,
+                            }),
                             file: file.clone(),
                             name: local.name.clone(),
-                            name_range: TextRange::new(local.name_range.start, local.name_range.end),
+                            name_range: TextRange::new(
+                                local.name_range.start,
+                                local.name_range.end,
+                            ),
                             scope,
                             kind: JavaSymbolKind::Local,
                         });

@@ -53,9 +53,10 @@ fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, work
 
     // Avoid collisions/duplicates if the workspace already contains a project with the same
     // synthetic path or an explicit `buildSrc` module mapping.
-    if module_refs.iter().any(|m| {
-        m.project_path == GRADLE_BUILDSRC_PROJECT_PATH || m.dir_rel == "buildSrc"
-    }) {
+    if module_refs
+        .iter()
+        .any(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH || m.dir_rel == "buildSrc")
+    {
         return;
     }
 

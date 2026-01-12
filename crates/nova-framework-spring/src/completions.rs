@@ -52,10 +52,7 @@ pub fn property_keys_from_configs(files: &[(&str, &str)]) -> BTreeSet<String> {
     for (path, text) in files {
         // Extract the file name in a way that works regardless of whether `path` uses
         // POSIX (`/`) or Windows (`\`) separators (or a mix).
-        let file_name = path
-            .rsplit(&['/', '\\'][..])
-            .next()
-            .unwrap_or(path);
+        let file_name = path.rsplit(&['/', '\\'][..]).next().unwrap_or(path);
         if !starts_with_ignore_ascii_case(file_name, "application") {
             continue;
         }

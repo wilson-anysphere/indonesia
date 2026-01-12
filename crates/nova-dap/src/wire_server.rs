@@ -1502,160 +1502,48 @@ async fn handle_request_inner(
             let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
             let (attach_hosts, attach_port, attach_target_label, process_name, process_pid) =
                 match mode {
-                LaunchMode::Command => {
-                    let Some(cwd) = args.cwd.as_deref() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("launch.cwd is required".to_string()),
-                        );
-                        return;
-                    };
-                    let Some(command) = args.command.as_deref() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("launch.command is required".to_string()),
-                        );
-                        return;
-                    };
-
-                    let port = args.port.unwrap_or(5005);
-                    let host = args.host.as_deref().unwrap_or("127.0.0.1");
-                    let host_label = host.to_string();
-                    let resolved_hosts = match resolve_host_candidates(host, port).await {
-                        Ok(hosts) if !hosts.is_empty() => hosts,
-                        Ok(_) => {
+                    LaunchMode::Command => {
+                        let Some(cwd) = args.cwd.as_deref() else {
                             send_response(
                                 out_tx,
                                 seq,
                                 request,
                                 false,
                                 None,
-                                Some(format!(
-                                    "failed to resolve host {host_label:?}: no addresses found"
-                                )),
+                                Some("launch.cwd is required".to_string()),
                             );
                             return;
-                        }
-                        Err(err) => {
+                        };
+                        let Some(command) = args.command.as_deref() else {
                             send_response(
                                 out_tx,
                                 seq,
                                 request,
                                 false,
                                 None,
-                                Some(format!("invalid host {host_label:?}: {err}")),
+                                Some("launch.command is required".to_string()),
                             );
                             return;
-                        }
-                    };
-                    let attach_target_label = format!("{host_label}:{port}");
+                        };
 
-                    let mut cmd = Command::new(command);
-                    cmd.args(&args.args);
-                    cmd.current_dir(cwd);
-                    cmd.stdin(Stdio::null());
-                    cmd.stdout(Stdio::piped());
-                    cmd.stderr(Stdio::piped());
-                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
-                    // killing the launched process.
-                    cmd.kill_on_drop(false);
-                    for (k, v) in &args.env {
-                        cmd.env(k, v);
-                    }
-
-                    let mut child = match cmd.spawn() {
-                        Ok(child) => child,
-                        Err(err) => {
-                            send_response(
-                                out_tx,
-                                seq,
-                                request,
-                                false,
-                                None,
-                                Some(format!("failed to spawn {command:?}: {err}")),
-                            );
-                            return;
-                        }
-                    };
-                    let Some(pid) = child.id() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("failed to determine launched process pid".to_string()),
-                        );
-                        return;
-                    };
-
-                    if let Some(stdout) = child.stdout.take() {
-                        spawn_output_task(
-                            stdout,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stdout",
-                            server_shutdown.clone(),
-                        );
-                    }
-                    if let Some(stderr) = child.stderr.take() {
-                        spawn_output_task(
-                            stderr,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stderr",
-                            server_shutdown.clone(),
-                        );
-                    }
-
-                    {
-                        let mut guard = launched_process.lock().await;
-                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
-                            child,
-                            out_tx.clone(),
-                            seq.clone(),
-                            Arc::clone(exited_sent),
-                            Arc::clone(terminated_sent),
-                            server_shutdown.clone(),
-                        );
-                        launch_outcome_tx = Some(outcome_tx);
-                        *guard = Some(proc);
-                    }
-
-                    (
-                        resolved_hosts,
-                        port,
-                        attach_target_label,
-                        command.to_string(),
-                        pid,
-                    )
-                }
-                LaunchMode::Java => {
-                    let main_class = args.main_class.as_deref().unwrap_or_default();
-                    let Some(classpath) = args.classpath.clone() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("launch.classpath is required for Java launch".to_string()),
-                        );
-                        return;
-                    };
-
-                    let port = match args.port {
-                        Some(port) => port,
-                        None => match pick_free_port().await {
-                            Ok(port) => port,
+                        let port = args.port.unwrap_or(5005);
+                        let host = args.host.as_deref().unwrap_or("127.0.0.1");
+                        let host_label = host.to_string();
+                        let resolved_hosts = match resolve_host_candidates(host, port).await {
+                            Ok(hosts) if !hosts.is_empty() => hosts,
+                            Ok(_) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!(
+                                        "failed to resolve host {host_label:?}: no addresses found"
+                                    )),
+                                );
+                                return;
+                            }
                             Err(err) => {
                                 send_response(
                                     out_tx,
@@ -1663,130 +1551,242 @@ async fn handle_request_inner(
                                     request,
                                     false,
                                     None,
-                                    Some(format!("failed to select debug port: {err}")),
+                                    Some(format!("invalid host {host_label:?}: {err}")),
                                 );
                                 return;
                             }
-                        },
-                    };
-                    args.port = Some(port);
-                    let host: IpAddr = "127.0.0.1".parse().unwrap();
-                    let attach_target_label = format!("{host}:{port}");
+                        };
+                        let attach_target_label = format!("{host_label}:{port}");
 
-                    let java = args.java.clone().unwrap_or_else(|| "java".to_string());
-
-                    let cp_joined = match join_classpath(&classpath) {
-                        Ok(cp) => cp,
-                        Err(err) => {
-                            send_response(out_tx, seq, request, false, None, Some(err));
-                            return;
-                        }
-                    };
-
-                    let suspend = if args.stop_on_entry { "y" } else { "n" };
-                    let debug_arg = format!(
-                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
-                    );
-
-                    let mut cmd = Command::new(java);
-                    cmd.stdin(Stdio::null());
-                    cmd.stdout(Stdio::piped());
-                    cmd.stderr(Stdio::piped());
-                    // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
-                    // killing the launched JVM.
-                    cmd.kill_on_drop(false);
-                    if let Some(cwd) = args.cwd.as_deref() {
+                        let mut cmd = Command::new(command);
+                        cmd.args(&args.args);
                         cmd.current_dir(cwd);
-                    }
-                    for (k, v) in &args.env {
-                        cmd.env(k, v);
-                    }
-                    cmd.args(&args.vm_args);
-                    cmd.arg(debug_arg);
-                    if let Some(module_name) = args.module_name.as_deref() {
-                        cmd.arg("--module-path");
-                        cmd.arg(cp_joined.clone());
-                        cmd.arg("-m");
-                        cmd.arg(format!("{module_name}/{main_class}"));
-                    } else {
-                        cmd.arg("-classpath");
-                        cmd.arg(cp_joined);
-                        cmd.arg(main_class);
-                    }
-                    cmd.args(&args.args);
+                        cmd.stdin(Stdio::null());
+                        cmd.stdout(Stdio::piped());
+                        cmd.stderr(Stdio::piped());
+                        // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                        // killing the launched process.
+                        cmd.kill_on_drop(false);
+                        for (k, v) in &args.env {
+                            cmd.env(k, v);
+                        }
 
-                    let mut child = match cmd.spawn() {
-                        Ok(child) => child,
-                        Err(err) => {
+                        let mut child = match cmd.spawn() {
+                            Ok(child) => child,
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to spawn {command:?}: {err}")),
+                                );
+                                return;
+                            }
+                        };
+                        let Some(pid) = child.id() else {
                             send_response(
                                 out_tx,
                                 seq,
                                 request,
                                 false,
                                 None,
-                                Some(format!("failed to spawn java: {err}")),
+                                Some("failed to determine launched process pid".to_string()),
                             );
                             return;
+                        };
+
+                        if let Some(stdout) = child.stdout.take() {
+                            spawn_output_task(
+                                stdout,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stdout",
+                                server_shutdown.clone(),
+                            );
                         }
-                    };
-                    let Some(pid) = child.id() else {
-                        send_response(
-                            out_tx,
-                            seq,
-                            request,
-                            false,
-                            None,
-                            Some("failed to determine launched process pid".to_string()),
-                        );
-                        return;
-                    };
+                        if let Some(stderr) = child.stderr.take() {
+                            spawn_output_task(
+                                stderr,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stderr",
+                                server_shutdown.clone(),
+                            );
+                        }
 
-                    if let Some(stdout) = child.stdout.take() {
-                        spawn_output_task(
-                            stdout,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stdout",
-                            server_shutdown.clone(),
-                        );
+                        {
+                            let mut guard = launched_process.lock().await;
+                            let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                                child,
+                                out_tx.clone(),
+                                seq.clone(),
+                                Arc::clone(exited_sent),
+                                Arc::clone(terminated_sent),
+                                server_shutdown.clone(),
+                            );
+                            launch_outcome_tx = Some(outcome_tx);
+                            *guard = Some(proc);
+                        }
+
+                        (
+                            resolved_hosts,
+                            port,
+                            attach_target_label,
+                            command.to_string(),
+                            pid,
+                        )
                     }
-                    if let Some(stderr) = child.stderr.take() {
-                        spawn_output_task(
-                            stderr,
-                            out_tx.clone(),
-                            seq.clone(),
-                            "stderr",
-                            server_shutdown.clone(),
-                        );
+                    LaunchMode::Java => {
+                        let main_class = args.main_class.as_deref().unwrap_or_default();
+                        let Some(classpath) = args.classpath.clone() else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some("launch.classpath is required for Java launch".to_string()),
+                            );
+                            return;
+                        };
+
+                        let port = match args.port {
+                            Some(port) => port,
+                            None => match pick_free_port().await {
+                                Ok(port) => port,
+                                Err(err) => {
+                                    send_response(
+                                        out_tx,
+                                        seq,
+                                        request,
+                                        false,
+                                        None,
+                                        Some(format!("failed to select debug port: {err}")),
+                                    );
+                                    return;
+                                }
+                            },
+                        };
+                        args.port = Some(port);
+                        let host: IpAddr = "127.0.0.1".parse().unwrap();
+                        let attach_target_label = format!("{host}:{port}");
+
+                        let java = args.java.clone().unwrap_or_else(|| "java".to_string());
+
+                        let cp_joined = match join_classpath(&classpath) {
+                            Ok(cp) => cp,
+                            Err(err) => {
+                                send_response(out_tx, seq, request, false, None, Some(err));
+                                return;
+                            }
+                        };
+
+                        let suspend = if args.stop_on_entry { "y" } else { "n" };
+                        let debug_arg = format!(
+                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
+                    );
+
+                        let mut cmd = Command::new(java);
+                        cmd.stdin(Stdio::null());
+                        cmd.stdout(Stdio::piped());
+                        cmd.stderr(Stdio::piped());
+                        // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
+                        // killing the launched JVM.
+                        cmd.kill_on_drop(false);
+                        if let Some(cwd) = args.cwd.as_deref() {
+                            cmd.current_dir(cwd);
+                        }
+                        for (k, v) in &args.env {
+                            cmd.env(k, v);
+                        }
+                        cmd.args(&args.vm_args);
+                        cmd.arg(debug_arg);
+                        if let Some(module_name) = args.module_name.as_deref() {
+                            cmd.arg("--module-path");
+                            cmd.arg(cp_joined.clone());
+                            cmd.arg("-m");
+                            cmd.arg(format!("{module_name}/{main_class}"));
+                        } else {
+                            cmd.arg("-classpath");
+                            cmd.arg(cp_joined);
+                            cmd.arg(main_class);
+                        }
+                        cmd.args(&args.args);
+
+                        let mut child = match cmd.spawn() {
+                            Ok(child) => child,
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to spawn java: {err}")),
+                                );
+                                return;
+                            }
+                        };
+                        let Some(pid) = child.id() else {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some("failed to determine launched process pid".to_string()),
+                            );
+                            return;
+                        };
+
+                        if let Some(stdout) = child.stdout.take() {
+                            spawn_output_task(
+                                stdout,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stdout",
+                                server_shutdown.clone(),
+                            );
+                        }
+                        if let Some(stderr) = child.stderr.take() {
+                            spawn_output_task(
+                                stderr,
+                                out_tx.clone(),
+                                seq.clone(),
+                                "stderr",
+                                server_shutdown.clone(),
+                            );
+                        }
+
+                        {
+                            let mut guard = launched_process.lock().await;
+                            let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                                child,
+                                out_tx.clone(),
+                                seq.clone(),
+                                Arc::clone(exited_sent),
+                                Arc::clone(terminated_sent),
+                                server_shutdown.clone(),
+                            );
+                            launch_outcome_tx = Some(outcome_tx);
+                            *guard = Some(proc);
+                        }
+
+                        let name = match args.module_name.as_deref() {
+                            Some(module_name) => format!("{module_name}/{main_class}"),
+                            None => main_class.to_string(),
+                        };
+                        let name = if name.is_empty() {
+                            "java".to_string()
+                        } else {
+                            name
+                        };
+
+                        (vec![host], port, attach_target_label, name, pid)
                     }
-
-                    {
-                        let mut guard = launched_process.lock().await;
-                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
-                            child,
-                            out_tx.clone(),
-                            seq.clone(),
-                            Arc::clone(exited_sent),
-                            Arc::clone(terminated_sent),
-                            server_shutdown.clone(),
-                        );
-                        launch_outcome_tx = Some(outcome_tx);
-                        *guard = Some(proc);
-                    }
-
-                    let name = match args.module_name.as_deref() {
-                        Some(module_name) => format!("{module_name}/{main_class}"),
-                        None => main_class.to_string(),
-                    };
-                    let name = if name.is_empty() {
-                        "java".to_string()
-                    } else {
-                        name
-                    };
-
-                    (vec![host], port, attach_target_label, name, pid)
-                }
-            };
+                };
 
             let process_event_body =
                 make_process_event_body(&process_name, Some(process_pid), true, "launch");

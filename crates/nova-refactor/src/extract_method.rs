@@ -1244,7 +1244,11 @@ fn collect_thrown_exceptions_in_statements(
     let mut seen = HashSet::new();
 
     for stmt in selection_statements {
-        for throw_stmt in stmt.syntax().descendants().filter_map(ast::ThrowStatement::cast) {
+        for throw_stmt in stmt
+            .syntax()
+            .descendants()
+            .filter_map(ast::ThrowStatement::cast)
+        {
             let Some(ty) = infer_thrown_exception_type(source, &throw_stmt, declared_types_by_name)
             else {
                 continue;

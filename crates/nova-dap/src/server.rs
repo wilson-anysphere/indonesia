@@ -472,7 +472,11 @@ impl<C: JdwpClient> DapServer<C> {
 
         let total_frames = frames.len();
         let mut dap_frames = Vec::new();
-        for frame in frames.into_iter().skip(start).take(levels.unwrap_or(usize::MAX)) {
+        for frame in frames
+            .into_iter()
+            .skip(start)
+            .take(levels.unwrap_or(usize::MAX))
+        {
             let dap_frame_id = self.alloc_frame_id(frame.id);
             let source = frame
                 .source_path
