@@ -135,7 +135,13 @@ class Foo {
     assert!(tree.initializers.values().any(|init| init.is_static));
 
     assert_eq!(tree.fields.len(), 1);
-    assert_eq!(tree.fields.values().next().expect("field").name, "field");
+    let field = tree.fields.values().next().expect("field");
+    assert_eq!(field.name, "field");
+    assert_eq!(field.ty, "int");
+    assert_eq!(
+        &source[field.ty_range.start..field.ty_range.end],
+        field.ty
+    );
     assert!(tree.methods.values().any(|method| method.name == "value"));
     assert!(tree
         .methods
@@ -350,6 +356,11 @@ class Foo {
     assert_eq!(tree.methods.len(), 1);
     let (&method_ast_id, method) = tree.methods.iter().next().expect("method");
     assert_eq!(method.name, "id");
+    assert_eq!(method.return_ty, "T");
+    assert_eq!(
+        &source[method.return_ty_range.start..method.return_ty_range.end],
+        method.return_ty
+    );
     assert!(method.body.is_some());
 
     let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
@@ -474,6 +485,10 @@ class Foo {
     assert_eq!(method.name, "m");
     assert_eq!(method.params.len(), 1);
     assert_eq!(method.params[0].ty, "String...");
+    assert_eq!(
+        &source[method.params[0].ty_range.start..method.params[0].ty_range.end],
+        method.params[0].ty
+    );
     assert_eq!(method.params[0].name, "args");
 
     let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
