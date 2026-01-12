@@ -421,6 +421,22 @@ impl FrameworkAnalyzer for SpringAnalyzer {
                                     }),
                             );
                         }
+                    } else {
+                        // Best-effort fallback: only consider profiles declared in the current file.
+                        let analysis = analyze_java_sources(&[text]);
+                        items.extend(
+                            analysis
+                                .model
+                                .beans
+                                .iter()
+                                .flat_map(|b| b.profiles.iter())
+                                .filter(|p| !p.trim().is_empty())
+                                .map(|profile| CompletionItem {
+                                    label: profile.clone(),
+                                    detail: None,
+                                    replace_span: None,
+                                }),
+                        );
                     }
 
                     items.sort_by(|a, b| a.label.cmp(&b.label));

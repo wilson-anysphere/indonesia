@@ -331,3 +331,41 @@ fn profile_completions_include_application_profile_configs() {
         "expected profile completion for 'qa'; got {items:?}"
     );
 }
+
+#[test]
+fn profile_completions_fallback_to_current_file_when_all_files_is_unavailable() {
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_classpath_class(project, "org.springframework.context.ApplicationContext");
+
+    let java = r#"
+        import org.springframework.context.annotation.Profile;
+        import org.springframework.stereotype.Component;
+
+        @Component
+        @Profile("qa")
+        class Foo {}
+
+        @Profile("q")
+        class C {}
+    "#;
+    let file = inner.add_file_with_path_and_text(project, "src/C.java", java);
+
+    let offset = java.find("@Profile(\"q\")").unwrap() + "@Profile(\"".len() + 1;
+    let db = NoAllFilesDb { inner };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let ctx = CompletionContext {
+        project,
+        file,
+        offset,
+    };
+    let items = registry.framework_completions(&db, &ctx);
+
+    assert!(
+        items.iter().any(|i| i.label == "qa"),
+        "expected profile completion for 'qa'; got {items:?}"
+    );
+}
