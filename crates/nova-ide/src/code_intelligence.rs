@@ -4186,14 +4186,6 @@ fn looks_like_reference_type_prefix(prefix: &str) -> bool {
         .is_some_and(|c| c.is_ascii_uppercase())
 }
 
-fn token_index_at_offset(tokens: &[Token], offset: usize) -> Option<usize> {
-    tokens
-        .iter()
-        .enumerate()
-        .find(|(_, t)| t.span.start <= offset && offset < t.span.end)
-        .map(|(idx, _)| idx)
-}
-
 fn type_position_trigger(tokens: &[Token], cur_idx: usize) -> Option<TypePositionTrigger> {
     if cur_idx == 0 {
         return Some(TypePositionTrigger::Ambiguous);
@@ -4732,6 +4724,11 @@ fn general_completions(
             let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
             if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
                 continue;
+            }
+            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start) {
+                if offset >= scope_end {
+                    continue;
+                }
             }
             if let Some(expected) = expected_arg_ty.as_ref() {
                 let ty = parse_source_type(&mut types, &v.ty);
@@ -5455,6 +5452,11 @@ fn in_scope_types(
             if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
                 continue;
             }
+            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start) {
+                if offset >= scope_end {
+                    continue;
+                }
+            }
             out.insert(v.name.clone(), v.ty.clone());
         }
     }
@@ -5637,6 +5639,133 @@ fn brace_stack_at_offset(tokens: &[Token], offset: usize) -> Vec<usize> {
 
 fn brace_stack_is_prefix(prefix: &[usize], full: &[usize]) -> bool {
     prefix.len() <= full.len() && prefix.iter().zip(full.iter()).all(|(a, b)| a == b)
+}
+
+fn token_index_at_offset(tokens: &[Token], offset: usize) -> Option<usize> {
+    // Prefer an exact start match. Many call-sites pass known token starts (e.g. variable names),
+    // and Span ends are byte offsets (exclusive), so inclusive comparisons can accidentally select
+    // the preceding token at a boundary.
+    tokens
+        .iter()
+        .position(|t| t.span.start == offset)
+        .or_else(|| tokens.iter().position(|t| t.span.start <= offset && offset < t.span.end))
+}
+
+fn enclosing_paren_open_index(tokens: &[Token], idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for i in (0..=idx).rev() {
+        match tokens[i].kind {
+            TokenKind::Symbol(')') => depth += 1,
+            TokenKind::Symbol('(') => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn var_decl_scope_end_offset(tokens: &[Token], var_name_offset: usize) -> Option<usize> {
+    let idx = token_index_at_offset(tokens, var_name_offset)?;
+    let open_paren = enclosing_paren_open_index(tokens, idx)?;
+    let keyword = tokens.get(open_paren.checked_sub(1)?)?;
+    if keyword.kind != TokenKind::Ident {
+        return None;
+    }
+    match keyword.text.as_str() {
+        "for" => for_statement_end_offset(tokens, open_paren - 1),
+        "try" => try_statement_end_offset(tokens, open_paren - 1),
+        _ => None,
+    }
+}
+
+fn for_statement_end_offset(tokens: &[Token], for_idx: usize) -> Option<usize> {
+    let mut open_paren_idx = None;
+    for i in (for_idx + 1)..tokens.len() {
+        if tokens[i].kind == TokenKind::Symbol('(') {
+            open_paren_idx = Some(i);
+            break;
+        }
+    }
+    let open_paren_idx = open_paren_idx?;
+    let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+    let body_idx = close_paren_idx + 1;
+    let body_tok = tokens.get(body_idx)?;
+    if body_tok.kind != TokenKind::Symbol('{') {
+        // Best-effort: only handle braced `for (...) { ... }` bodies today.
+        return None;
+    }
+    let (_, body_span) = find_matching_brace(tokens, body_idx)?;
+    Some(body_span.end)
+}
+
+fn try_statement_end_offset(tokens: &[Token], try_idx: usize) -> Option<usize> {
+    let mut idx = try_idx + 1;
+    if tokens.get(idx).is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+        let (close_paren_idx, _) = find_matching_paren(tokens, idx)?;
+        idx = close_paren_idx + 1;
+    }
+
+    if tokens.get(idx).map_or(true, |t| t.kind != TokenKind::Symbol('{')) {
+        return None;
+    }
+    let (mut end_idx, mut span) = find_matching_brace(tokens, idx)?;
+    let mut end_offset = span.end;
+
+    let mut next = end_idx + 1;
+    while let Some(tok) = tokens.get(next) {
+        if tok.kind != TokenKind::Ident {
+            break;
+        }
+        match tok.text.as_str() {
+            "catch" => {
+                let catch_idx = next;
+                // catch header: `catch ( ... )`
+                let mut open_paren_idx = None;
+                for i in (catch_idx + 1)..tokens.len() {
+                    if tokens[i].kind == TokenKind::Symbol('(') {
+                        open_paren_idx = Some(i);
+                        break;
+                    }
+                }
+                let open_paren_idx = open_paren_idx?;
+                let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+                let body_idx = close_paren_idx + 1;
+                if tokens
+                    .get(body_idx)
+                    .map_or(true, |t| t.kind != TokenKind::Symbol('{'))
+                {
+                    return None;
+                }
+                let (body_end_idx, body_span) = find_matching_brace(tokens, body_idx)?;
+                end_idx = body_end_idx;
+                span = body_span;
+                end_offset = end_offset.max(span.end);
+                next = end_idx + 1;
+            }
+            "finally" => {
+                let finally_idx = next;
+                let body_idx = finally_idx + 1;
+                if tokens
+                    .get(body_idx)
+                    .map_or(true, |t| t.kind != TokenKind::Symbol('{'))
+                {
+                    return None;
+                }
+                let (body_end_idx, body_span) = find_matching_brace(tokens, body_idx)?;
+                end_idx = body_end_idx;
+                span = body_span;
+                end_offset = end_offset.max(span.end);
+                next = end_idx + 1;
+            }
+            _ => break,
+        }
+    }
+
+    Some(end_offset)
 }
 
 // -----------------------------------------------------------------------------
@@ -7196,7 +7325,7 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
 fn expected_argument_type_for_completion(
     types: &mut TypeStore,
     analysis: &Analysis,
-    text: &str,
+    _text: &str,
     offset: usize,
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
