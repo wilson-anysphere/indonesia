@@ -228,24 +228,24 @@ mod notify_impl {
             use notify::event::{ModifyKind, RenameMode};
 
             match event.kind {
-                EventKind::Create(_) => out.extend(event.paths.into_iter().map(|path| {
-                    FileChange::Created {
+                EventKind::Create(_) => {
+                    out.extend(event.paths.into_iter().map(|path| FileChange::Created {
                         path: VfsPath::local(path),
-                    }
-                })),
-                EventKind::Remove(_) => out.extend(event.paths.into_iter().map(|path| {
-                    FileChange::Deleted {
+                    }))
+                }
+                EventKind::Remove(_) => {
+                    out.extend(event.paths.into_iter().map(|path| FileChange::Deleted {
                         path: VfsPath::local(path),
-                    }
-                })),
+                    }))
+                }
                 EventKind::Modify(ModifyKind::Data(_))
                 | EventKind::Modify(ModifyKind::Metadata(_))
                 | EventKind::Modify(ModifyKind::Other)
-                | EventKind::Modify(ModifyKind::Any) => out.extend(event.paths.into_iter().map(|path| {
-                    FileChange::Modified {
+                | EventKind::Modify(ModifyKind::Any) => {
+                    out.extend(event.paths.into_iter().map(|path| FileChange::Modified {
                         path: VfsPath::local(path),
-                    }
-                })),
+                    }))
+                }
                 EventKind::Modify(ModifyKind::Name(rename_mode)) => match rename_mode {
                     RenameMode::Both => out.extend(paths_to_moves(event.paths)),
                     RenameMode::From => {
@@ -266,11 +266,11 @@ mod notify_impl {
                         }
                     }
                     // Unknown rename variants: treat as modified.
-                    RenameMode::Any | RenameMode::Other => out.extend(event.paths.into_iter().map(|path| {
-                        FileChange::Modified {
+                    RenameMode::Any | RenameMode::Other => {
+                        out.extend(event.paths.into_iter().map(|path| FileChange::Modified {
                             path: VfsPath::local(path),
-                        }
-                    })),
+                        }))
+                    }
                 },
                 // Some backends report a rename as a "modify" without further detail.
                 _ => out.extend(event.paths.into_iter().map(|path| FileChange::Modified {

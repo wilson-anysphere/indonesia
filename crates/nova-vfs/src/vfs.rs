@@ -431,7 +431,9 @@ mod tests {
         let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
 
         vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
-        let err = vfs.read_to_string(&path).expect_err("expected budget=0 to store nothing");
+        let err = vfs
+            .read_to_string(&path)
+            .expect_err("expected budget=0 to store nothing");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
@@ -440,7 +442,10 @@ mod tests {
         let vfs = Vfs::new(LocalFs::new());
         let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
 
-        assert!(!vfs.exists(&path), "virtual doc should be absent by default");
+        assert!(
+            !vfs.exists(&path),
+            "virtual doc should be absent by default"
+        );
 
         vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
         assert!(vfs.exists(&path), "virtual doc should exist after storing");
@@ -463,7 +468,9 @@ mod tests {
 
         vfs.store_virtual_document(path.clone(), "class Meta {}".to_string());
 
-        let err = vfs.metadata(&path).expect_err("expected metadata to be unsupported");
+        let err = vfs
+            .metadata(&path)
+            .expect_err("expected metadata to be unsupported");
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 

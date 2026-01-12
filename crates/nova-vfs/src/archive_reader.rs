@@ -91,8 +91,8 @@ mod tests {
 
     use zip::write::FileOptions;
 
-    use crate::{FileSystem, LocalFs, VfsPath};
     use crate::{ArchiveKind, ArchivePath};
+    use crate::{FileSystem, LocalFs, VfsPath};
 
     fn write_zip_file(path: &std::path::Path, name: &str, contents: &str) {
         let mut jar = zip::ZipWriter::new(std::fs::File::create(path).unwrap());

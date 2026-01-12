@@ -548,11 +548,7 @@ mod tests {
     fn jmod_uri_parsing_normalizes_archive_path() {
         let dir = tempfile::tempdir().unwrap();
         let normalized = dir.path().join("java.base.jmod");
-        let with_dotdot = dir
-            .path()
-            .join("x")
-            .join("..")
-            .join("java.base.jmod");
+        let with_dotdot = dir.path().join("x").join("..").join("java.base.jmod");
 
         let abs = AbsPathBuf::new(with_dotdot).unwrap();
         let archive_uri = path_to_file_uri(&abs).unwrap();
@@ -809,11 +805,7 @@ mod tests {
     fn jmod_constructor_normalizes_archive_path() {
         let dir = tempfile::tempdir().unwrap();
         let normalized = dir.path().join("java.base.jmod");
-        let with_dotdot = dir
-            .path()
-            .join("x")
-            .join("..")
-            .join("java.base.jmod");
+        let with_dotdot = dir.path().join("x").join("..").join("java.base.jmod");
 
         let a = VfsPath::jmod(with_dotdot, "classes/java/lang/String.class");
         let b = VfsPath::jmod(normalized, "classes/java/lang/String.class");
@@ -840,11 +832,7 @@ mod tests {
     fn jmod_constructor_fallback_uri_normalizes_archive_path() {
         let dir = tempfile::tempdir().unwrap();
         let normalized = dir.path().join("java.base.jmod");
-        let with_dotdot = dir
-            .path()
-            .join("x")
-            .join("..")
-            .join("java.base.jmod");
+        let with_dotdot = dir.path().join("x").join("..").join("java.base.jmod");
 
         let abs = AbsPathBuf::new(normalized).unwrap();
         let archive_uri = path_to_file_uri(&abs).unwrap();
