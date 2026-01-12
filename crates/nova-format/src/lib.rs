@@ -1046,6 +1046,12 @@ fn indent_level_at(tree: &SyntaxTree, source: &str, offset: TextSize) -> usize {
                         }
                         pending_minus = false;
                     }
+                    "->" => {
+                        // Arrow switch labels (`case 1 ->`) terminate the label without entering
+                        // the colon-style case body indentation.
+                        pending_minus = false;
+                        pending_case_label = false;
+                    }
                     "}" => {
                         // If we're closing a switch block, drop its context before decrementing.
                         if switch_stack

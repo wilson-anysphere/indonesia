@@ -1544,6 +1544,45 @@ fn on_type_formatting_preserves_crlf_line_endings() {
 }
 
 #[test]
+fn on_type_formatting_does_not_treat_ternary_in_arrow_case_as_colon_case_body() {
+    let input = concat!(
+        "class Foo {\n",
+        "    int m(int x) {\n",
+        "        return switch (x) {\n",
+        "            case 1 -> x > 0 ? 1 :\n",
+        "2;\n",
+        "            default -> 0;\n",
+        "        };\n",
+        "    }\n",
+        "}\n",
+    );
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Format the `2;` line (line 4), which comes after the ternary `:` in the arrow case.
+    let line_end = index.line_end(4).unwrap();
+    let position = index.position(input, line_end);
+    let edits = edits_for_on_type_formatting(&tree, input, position, ';', &FormatConfig::default())
+        .unwrap();
+    let out = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(
+        out,
+        concat!(
+            "class Foo {\n",
+            "    int m(int x) {\n",
+            "        return switch (x) {\n",
+            "            case 1 -> x > 0 ? 1 :\n",
+            "            2;\n",
+            "            default -> 0;\n",
+            "        };\n",
+            "    }\n",
+            "}\n",
+        )
+    );
+}
+
+#[test]
 fn member_insertion_preserves_requested_newline_style() {
     let out = format_member_insertion_with_newline(
         "    ",
