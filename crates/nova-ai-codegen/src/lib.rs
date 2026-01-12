@@ -7,7 +7,7 @@ use nova_ai::safety::{
 };
 use nova_ai::workspace::{AppliedPatch, PatchApplyConfig, PatchApplyError, VirtualWorkspace};
 use nova_ai::CancellationToken;
-use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError};
+use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError, ExcludedPathMatcher};
 use nova_config::AiPrivacyConfig;
 use nova_core::{LineIndex, TextRange, TextSize};
 use nova_db::Database;
@@ -210,6 +210,13 @@ pub enum CodeGenerationError {
     Cancelled,
     #[error(transparent)]
     Policy(#[from] CodeEditPolicyError),
+    #[error("invalid ai privacy configuration: {0}")]
+    InvalidPrivacyConfig(String),
+    #[error(
+        "AI code edits are blocked because the workspace contains files matching ai.privacy.excluded_paths: {paths:?}. \
+Those files must never be sent to an LLM. Remove them from the workspace snapshot or update ai.privacy.excluded_paths."
+    )]
+    WorkspaceContainsExcludedPaths { paths: Vec<String> },
     #[error(transparent)]
     Provider(#[from] PromptCompletionError),
     #[error(transparent)]
@@ -232,6 +239,7 @@ pub async fn generate_patch(
     progress: Option<&dyn CodegenProgressReporter>,
 ) -> Result<CodeGenerationResult, CodeGenerationError> {
     enforce_code_edit_policy(privacy)?;
+    enforce_no_privacy_excluded_paths_in_workspace(workspace, privacy)?;
 
     let mut attempt = 0usize;
     let mut feedback: Option<ErrorFeedback> = None;
@@ -374,6 +382,32 @@ pub async fn generate_patch(
             }
         }
     }
+}
+
+fn enforce_no_privacy_excluded_paths_in_workspace(
+    workspace: &VirtualWorkspace,
+    privacy: &AiPrivacyConfig,
+) -> Result<(), CodeGenerationError> {
+    if privacy.excluded_paths.is_empty() {
+        return Ok(());
+    }
+
+    let matcher = ExcludedPathMatcher::from_config(privacy)
+        .map_err(|err| CodeGenerationError::InvalidPrivacyConfig(err.to_string()))?;
+
+    let mut excluded = Vec::new();
+    for (path, _contents) in workspace.files() {
+        if matcher.is_match(std::path::Path::new(path)) {
+            excluded.push(path.clone());
+        }
+    }
+
+    if excluded.is_empty() {
+        return Ok(());
+    }
+
+    excluded.sort();
+    Err(CodeGenerationError::WorkspaceContainsExcludedPaths { paths: excluded })
 }
 
 fn build_prompt(
@@ -1037,5 +1071,68 @@ mod tests {
             "expected JUnit Assertions import, got: {generated}"
         );
         assert!(generated.contains("@Test"), "expected @Test, got: {generated}");
+    }
+
+    struct CountingProvider {
+        calls: AtomicUsize,
+    }
+
+    impl CountingProvider {
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl PromptCompletionProvider for CountingProvider {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, PromptCompletionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(r#"{"edits":[]}"#.to_string())
+        }
+    }
+
+    #[test]
+    fn fails_fast_when_workspace_contains_privacy_excluded_paths() {
+        let provider = CountingProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let workspace = VirtualWorkspace::new([
+            (
+                "src/secrets/Secret.java".to_string(),
+                "public class Secret {}".to_string(),
+            ),
+            (
+                "Example.java".to_string(),
+                "public class Example {}".to_string(),
+            ),
+        ]);
+
+        let config = CodeGenerationConfig::default();
+        let cancel = CancellationToken::new();
+        let privacy = AiPrivacyConfig {
+            excluded_paths: vec!["src/secrets/**".to_string()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Generate a patch.",
+            &config,
+            &privacy,
+            &cancel,
+            None,
+        ))
+        .expect_err("expected excluded path failure");
+
+        let CodeGenerationError::WorkspaceContainsExcludedPaths { paths } = err else {
+            panic!("expected WorkspaceContainsExcludedPaths, got {err:?}");
+        };
+        assert!(paths.iter().any(|p| p == "src/secrets/Secret.java"), "{paths:?}");
+        assert_eq!(provider.calls(), 0);
     }
 }
