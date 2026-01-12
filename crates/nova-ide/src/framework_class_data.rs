@@ -28,9 +28,30 @@ pub fn extract_classes_from_source(source: &str) -> Vec<ClassData> {
             continue;
         }
 
-        if let Some(interface) = syntax_ast::InterfaceDeclaration::cast(node) {
-            if let Some(class) = parse_interface_declaration(interface, source) {
-                classes.push(class);
+        if let Some(interface) = syntax_ast::InterfaceDeclaration::cast(node.clone()) {
+            if let Some(interface) = parse_interface_declaration(interface, source) {
+                classes.push(interface);
+            }
+            continue;
+        }
+
+        if let Some(enum_decl) = syntax_ast::EnumDeclaration::cast(node.clone()) {
+            if let Some(enum_decl) = parse_enum_declaration(enum_decl, source) {
+                classes.push(enum_decl);
+            }
+            continue;
+        }
+
+        if let Some(record) = syntax_ast::RecordDeclaration::cast(node.clone()) {
+            if let Some(record) = parse_record_declaration(record, source) {
+                classes.push(record);
+            }
+            continue;
+        }
+
+        if let Some(ann) = syntax_ast::AnnotationTypeDeclaration::cast(node) {
+            if let Some(ann) = parse_annotation_type_declaration(ann, source) {
+                classes.push(ann);
             }
         }
     }
@@ -48,29 +69,7 @@ fn parse_class_declaration(node: syntax_ast::ClassDeclaration, source: &str) -> 
     let class_name = node.name_token()?.text().to_string();
 
     let body = node.body()?;
-    let mut fields = Vec::new();
-    let mut methods = Vec::new();
-    let mut constructors = Vec::new();
-
-    for member in body.members() {
-        match member {
-            syntax_ast::ClassMember::FieldDeclaration(field) => {
-                let mut parsed = parse_field_declaration(field, source);
-                fields.append(&mut parsed);
-            }
-            syntax_ast::ClassMember::MethodDeclaration(method) => {
-                if let Some(method) = parse_method_declaration(method, source) {
-                    methods.push(method);
-                }
-            }
-            syntax_ast::ClassMember::ConstructorDeclaration(ctor) => {
-                if let Some(ctor) = parse_constructor_declaration(ctor, source) {
-                    constructors.push(ctor);
-                }
-            }
-            _ => {}
-        }
-    }
+    let (fields, methods, constructors) = parse_class_members(body.members(), source);
 
     Some(ClassData {
         name: class_name,
@@ -91,13 +90,91 @@ fn parse_interface_declaration(
         .map(collect_annotations)
         .unwrap_or_default();
 
-    let interface_name = node.name_token()?.text().to_string();
+    let name = node.name_token()?.text().to_string();
     let body = node.body()?;
+    let (fields, methods, constructors) = parse_class_members(body.members(), source);
+
+    Some(ClassData {
+        name,
+        annotations,
+        fields,
+        methods,
+        constructors,
+    })
+}
+
+fn parse_enum_declaration(node: syntax_ast::EnumDeclaration, source: &str) -> Option<ClassData> {
+    let modifiers = node.modifiers();
+    let annotations = modifiers
+        .as_ref()
+        .map(collect_annotations)
+        .unwrap_or_default();
+
+    let name = node.name_token()?.text().to_string();
+    let body = node.body()?;
+    let (fields, methods, constructors) = parse_class_members(body.members(), source);
+
+    Some(ClassData {
+        name,
+        annotations,
+        fields,
+        methods,
+        constructors,
+    })
+}
+
+fn parse_record_declaration(node: syntax_ast::RecordDeclaration, source: &str) -> Option<ClassData> {
+    let modifiers = node.modifiers();
+    let annotations = modifiers
+        .as_ref()
+        .map(collect_annotations)
+        .unwrap_or_default();
+
+    let name = node.name_token()?.text().to_string();
+    let body = node.body()?;
+    let (fields, methods, constructors) = parse_class_members(body.members(), source);
+
+    Some(ClassData {
+        name,
+        annotations,
+        fields,
+        methods,
+        constructors,
+    })
+}
+
+fn parse_annotation_type_declaration(
+    node: syntax_ast::AnnotationTypeDeclaration,
+    source: &str,
+) -> Option<ClassData> {
+    let modifiers = node.modifiers();
+    let annotations = modifiers
+        .as_ref()
+        .map(collect_annotations)
+        .unwrap_or_default();
+
+    let name = node.name_token()?.text().to_string();
+    let body = node.body()?;
+    let (fields, methods, constructors) = parse_class_members(body.members(), source);
+
+    Some(ClassData {
+        name,
+        annotations,
+        fields,
+        methods,
+        constructors,
+    })
+}
+
+fn parse_class_members(
+    members: impl Iterator<Item = syntax_ast::ClassMember>,
+    source: &str,
+) -> (Vec<FieldData>, Vec<MethodData>, Vec<ConstructorData>) {
     let mut fields = Vec::new();
     let mut methods = Vec::new();
-    let constructors = Vec::new();
+    let mut constructors = Vec::new();
 
-    for member in body.members() {
+    for member in members {
         match member {
             syntax_ast::ClassMember::FieldDeclaration(field) => {
                 let mut parsed = parse_field_declaration(field, source);
@@ -108,17 +185,16 @@ fn parse_interface_declaration(
                     methods.push(method);
                 }
             }
+            syntax_ast::ClassMember::ConstructorDeclaration(ctor) => {
+                if let Some(ctor) = parse_constructor_declaration(ctor, source) {
+                    constructors.push(ctor);
+                }
+            }
             _ => {}
         }
     }
 
-    Some(ClassData {
-        name: interface_name,
-        annotations,
-        fields,
-        methods,
-        constructors,
-    })
+    (fields, methods, constructors)
 }
 
 fn parse_field_declaration(node: syntax_ast::FieldDeclaration, source: &str) -> Vec<FieldData> {

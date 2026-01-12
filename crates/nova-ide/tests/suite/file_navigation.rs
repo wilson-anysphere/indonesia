@@ -347,6 +347,31 @@ class Main { void test(Map<String, Foo> map, Foo foo){ map.$0put(); } }
 }
 
 #[test]
+fn go_to_implementation_on_dollar_receiver_call_resolves_receiver_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class Foo { void $1bar() {} }
+//- /Main.java
+class Main {
+    void test() {
+        Foo foo$bar = new Foo();
+        foo$bar.$0bar();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_on_static_receiver_call_returns_static_method_definition() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -446,6 +471,28 @@ fn go_to_declaration_on_second_field_in_comma_separated_decl() {
         r#"
 //- /Main.java
 class Main { Foo a, $1b; void test(){ $0b.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_declaration_on_dollar_local_returns_declaration() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Main.java
+class Main {
+    void test() {
+        Foo $1foo$bar = new Foo();
+        foo$bar$0.toString();
+    }
+}
 "#,
     );
 
