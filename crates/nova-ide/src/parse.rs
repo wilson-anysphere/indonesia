@@ -216,6 +216,42 @@ fn is_receiverless_call_keyword(name: &str) -> bool {
     )
 }
 
+fn is_generic_member_call(tokens: &[Token], method_idx: usize) -> bool {
+    // Detect `recv.<T>method(` (generic invocation with an explicit receiver).
+    //
+    // We need this to avoid misclassifying the `method(` token sequence as a
+    // receiverless call (`this.method(...)`).
+    let Some('>') = tokens.get(method_idx.wrapping_sub(1)).and_then(|t| t.symbol()) else {
+        return false;
+    };
+
+    let mut depth = 0usize;
+    let mut j = method_idx.wrapping_sub(1);
+    loop {
+        match tokens.get(j).and_then(|t| t.symbol()) {
+            Some('>') => depth += 1,
+            Some('<') => {
+                // Unbalanced generics, treat as not-a-member-call.
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return tokens.get(j.wrapping_sub(1)).and_then(|t| t.symbol()) == Some('.');
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    false
+}
+
 fn parse_method_body(
     tokens: &[Token],
     body_start: usize,
@@ -226,6 +262,29 @@ fn parse_method_body(
 
     let mut i = body_start + 1;
     while i < body_end {
+        // Call site: recv . < ... > method (
+        //
+        // Best-effort support for generic method calls like `obj.<T>method(...)`.
+        if let (Some(receiver), Some('.'), Some('<')) = (
+            tokens.get(i).and_then(|t| t.ident()),
+            tokens.get(i + 1).and_then(|t| t.symbol()),
+            tokens.get(i + 2).and_then(|t| t.symbol()),
+        ) {
+            if let Some(close) = find_matching(tokens, i + 2, '<', '>') {
+                if let (Some(method), Some('(')) = (
+                    tokens.get(close + 1).and_then(|t| t.ident()),
+                    tokens.get(close + 2).and_then(|t| t.symbol()),
+                ) {
+                    calls.push(CallSite {
+                        receiver: receiver.to_string(),
+                        receiver_span: tokens[i].span,
+                        method: method.to_string(),
+                        method_span: tokens[close + 1].span,
+                    });
+                }
+            }
+        }
+
         // Call site: recv . method (
         if let (Some(receiver), Some('.'), Some(method), Some('(')) = (
             tokens.get(i).and_then(|t| t.ident()),
@@ -254,9 +313,11 @@ fn parse_method_body(
 
             // Avoid obvious false positives:
             // - `recv.method(` is handled above, so skip `.method(`.
+            // - `recv.<T>method(` is handled above, so skip it here.
             // - `new Foo(` is a constructor call.
             // - Filter out common control-flow keywords/constructs.
             if prev_symbol != Some('.')
+                && !is_generic_member_call(tokens, i)
                 && prev_ident != Some("new")
                 && !is_receiverless_call_keyword(method)
             {
@@ -621,5 +682,28 @@ class C {
 
         let parsed = parse_file(uri, text);
         assert!(!parsed.calls.iter().any(|call| call.method == "if"));
+    }
+
+    #[test]
+    fn generic_member_calls_are_not_treated_as_receiverless() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  D d;
+  void bar() {}
+  void test() { d.<String>bar(); }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(parsed
+            .calls
+            .iter()
+            .any(|call| call.receiver == "d" && call.method == "bar"));
+        assert!(!parsed
+            .calls
+            .iter()
+            .any(|call| call.receiver == "this" && call.method == "bar"));
     }
 }
