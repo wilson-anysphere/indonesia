@@ -39,6 +39,14 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
     let text = "class Main { java.util.List l; }";
     std::fs::write(&main_path, text).expect("write Main.java");
 
+    // Add a workspace type with the same simple name as the JDK type to ensure the server does not
+    // incorrectly resolve `java.util.List` to the workspace type.
+    let list_path = root.join("p/List.java");
+    std::fs::create_dir_all(list_path.parent().expect("parent dir")).expect("create p/");
+    let list_uri = uri_for_path(&list_path);
+    let list_text = "package p; public class List {}";
+    std::fs::write(&list_path, list_text).expect("write p/List.java");
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("JAVA_HOME", &fake_jdk_root)
@@ -64,6 +72,22 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": list_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": list_text,
+                }
+            }
+        }),
     );
 
     write_jsonrpc_message(

@@ -708,6 +708,13 @@ impl Resolver {
         // value/type we can resolve via local context. In this context we only attempt to resolve
         // the simple type name against the workspace index.
         if is_import_statement_line(&parsed.text, ident_span.start) {
+            // Avoid shadowing JDK type navigation. The LSP layer has a dedicated JDK fallback that
+            // uses the full import path (`java.util.List`), so if this import is clearly targeting
+            // a JDK package, return `None` and let that fallback run.
+            if import_statement_targets_jdk(&parsed.text, ident_span.start) {
+                return None;
+            }
+
             if let Some(def) = self.index.resolve_type_definition(&ident) {
                 return Some(ResolvedSymbol {
                     name: ident,
@@ -810,6 +817,9 @@ impl Resolver {
                     // Best-effort fallback for qualified type references like `p.Foo`:
                     // if the "receiver" doesn't resolve to a value/type (common for package
                     // segments), try resolving the identifier as a type name.
+                    if looks_like_jdk_qualified_name(&receiver) {
+                        return None;
+                    }
                     self.index
                         .resolve_type_definition(&ident)
                         .map(|def| ResolvedSymbol {
@@ -1121,6 +1131,52 @@ fn is_import_statement_line(text: &str, offset: usize) -> bool {
     }
 
     true
+}
+
+fn import_statement_targets_jdk(text: &str, offset: usize) -> bool {
+    let bytes = text.as_bytes();
+    let offset = offset.min(bytes.len());
+
+    let mut line_start = offset;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    let mut line_end = offset;
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+
+    let line = &text[line_start..line_end];
+    let trimmed = line.trim_start_matches(|c: char| c.is_ascii_whitespace());
+
+    let Some(rest) = trimmed.strip_prefix("import") else {
+        return false;
+    };
+    let rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+
+    // Ignore the `static` keyword for the purposes of checking whether the import targets a JDK
+    // package; `import static java.lang.Math.max;` should also be treated as a JDK import.
+    let rest = if let Some(after_static) = rest.strip_prefix("static") {
+        if after_static
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_whitespace())
+        {
+            after_static.trim_start_matches(|c: char| c.is_ascii_whitespace())
+        } else {
+            rest
+        }
+    } else {
+        rest
+    };
+
+    // Best-effort: treat `java.*`, `javax.*`, and `jdk.*` as JDK packages.
+    rest.starts_with("java.") || rest.starts_with("javax.") || rest.starts_with("jdk.")
+}
+
+fn looks_like_jdk_qualified_name(receiver: &str) -> bool {
+    receiver.starts_with("java.") || receiver.starts_with("javax.") || receiver.starts_with("jdk.")
 }
 
 fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<String> {

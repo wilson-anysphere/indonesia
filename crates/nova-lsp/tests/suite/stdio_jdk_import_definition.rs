@@ -211,3 +211,139 @@ fn stdio_definition_into_jdk_resolves_explicit_and_wildcard_imported_type_name()
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn stdio_definition_into_jdk_on_import_line_is_not_shadowed_by_workspace_type() {
+    let _lock = support::stdio_server_lock();
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base_fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");
+    assert!(
+        base_fake_jdk_root.is_dir(),
+        "expected fake JDK at {}",
+        base_fake_jdk_root.display()
+    );
+
+    // Use the patched fake JDK from the other test so suffix-search fallback cannot pick a unique
+    // `*.List` without honoring the explicit import.
+    let fake_jdk = fake_jdk_with_duplicate_list(&base_fake_jdk_root);
+
+    let jdk = nova_jdk::JdkIndex::from_jdk_root(fake_jdk.path()).expect("index fake JDK");
+    let stub = jdk
+        .lookup_type("java.util.List")
+        .expect("lookup java.util.List")
+        .expect("java.util.List stub");
+    let bytes = jdk
+        .read_class_bytes(&stub.internal_name)
+        .expect("read class bytes")
+        .expect("java.util.List bytes");
+    let expected_uri = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    // Add a workspace type named `List` to ensure the core resolver does not accidentally pick it
+    // when the cursor is on `List` in the import statement.
+    let ws_list_path = root.join("p/List.java");
+    std::fs::create_dir_all(ws_list_path.parent().expect("parent dir")).expect("create p/");
+    let ws_list_text = "package p; public class List {}".to_string();
+    std::fs::write(&ws_list_path, &ws_list_text).expect("write p/List.java");
+
+    let main_path = root.join("Main.java");
+    let main_uri = uri_for_path(&main_path);
+    let main_text = "import java.util.List;\nclass Main { }\n";
+    std::fs::write(&main_path, main_text).expect("write Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("JAVA_HOME", fake_jdk.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let ws_list_uri = uri_for_path(&ws_list_path);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": ws_list_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": ws_list_text,
+                }
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": main_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": main_text,
+                }
+            }
+        }),
+    );
+
+    let offset = main_text.find("List").expect("List token exists");
+    let position = utf16_position(main_text, offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/definition",
+            "params": {
+                "textDocument": { "uri": main_uri.as_str() },
+                "position": { "line": position.line, "character": position.character }
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let location = resp.get("result").expect("definition result");
+    let Some(uri) = location.get("uri").and_then(|v| v.as_str()) else {
+        panic!("expected definition uri, got: {resp:?}");
+    };
+    assert_eq!(uri, expected_uri);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
