@@ -6170,14 +6170,14 @@ class Foo {
         // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
         // `SyntaxTreeStore` intact so open documents can reuse pinned parse results.
         //
-        // We force eviction by setting an intentionally tiny query-cache budget, while keeping
-        // the overall total (and syntax tree) budgets very large so pressure stays low and the
-        // syntax tree store is not itself evicted.
+        // We force eviction by setting the query-cache budget to `0`, while keeping the overall
+        // total (and syntax tree) budgets very large so pressure stays low and the syntax tree
+        // store is not itself evicted.
         let total = 1_000_000_000_000_u64;
         let manager = MemoryManager::new(MemoryBudget {
             total,
             categories: nova_memory::MemoryBreakdown {
-                query_cache: 1,
+                query_cache: 0,
                 syntax_trees: total / 2,
                 indexes: 0,
                 type_info: 0,
@@ -6229,7 +6229,7 @@ class Foo {
         let manager = MemoryManager::new(MemoryBudget {
             total,
             categories: nova_memory::MemoryBreakdown {
-                query_cache: 1,
+                query_cache: 0,
                 syntax_trees: total / 2,
                 indexes: 0,
                 type_info: 0,
@@ -6280,7 +6280,7 @@ class Foo {
         let manager = MemoryManager::new(MemoryBudget {
             total,
             categories: nova_memory::MemoryBreakdown {
-                query_cache: 1,
+                query_cache: 0,
                 syntax_trees: total / 2,
                 indexes: 0,
                 type_info: 0,

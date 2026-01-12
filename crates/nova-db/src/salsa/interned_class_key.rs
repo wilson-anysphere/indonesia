@@ -314,11 +314,16 @@ mod tests {
     fn interned_ids_survive_memory_manager_driven_memo_eviction() {
         // Use a tiny query-cache budget to force the memory manager to evict Salsa memo tables via
         // `SalsaMemoEvictor::evict`, while keeping overall pressure low.
+        //
+        // Note: `SalsaMemoEvictor` avoids rebuilding the entire Salsa database under
+        // Low/Medium pressure unless eviction is targeting `0` bytes. Setting the query-cache
+        // budget to `0` makes `MemoryManager::enforce()` request a full eviction even when the
+        // overall memory pressure is low.
         let total = 1_000_000_000_000_u64;
         let manager = MemoryManager::new(MemoryBudget {
             total,
             categories: nova_memory::MemoryBreakdown {
-                query_cache: 1,
+                query_cache: 0,
                 syntax_trees: total / 2,
                 indexes: 0,
                 type_info: 0,
