@@ -942,7 +942,10 @@ mod java_text {
             return false;
         }
 
-        let mut lexer = Lexer::new(&source[offset..]);
+        // Do not slice `source` at `offset`: callers may provide arbitrary byte offsets that are
+        // not UTF-8 boundaries.
+        let mut lexer = Lexer::new(source);
+        lexer.offset = offset;
         while let Some(token) = lexer.next_token() {
             match token.kind {
                 TokenKind::Ident(name) if name == ident => return true,
@@ -1157,6 +1160,20 @@ public class C { A a; }
         let moved = &applied[Path::new("src/main/java/com/bar/A.java")];
         assert!(moved.contains("/* 😀 */"));
         assert!(moved.contains("package com.bar;"));
+    }
+
+    #[test]
+    fn contains_identifier_after_offset_is_utf8_safe() {
+        let source = "/* 😀 */\npackage com.foo;\n\npublic class A {}\n";
+        let emoji_start = source.find('😀').expect("emoji present");
+        // Choose a byte index inside the 4-byte UTF-8 sequence.
+        let inside_emoji = emoji_start + 1;
+
+        assert!(java_text::contains_identifier_after_offset(
+            source,
+            inside_emoji,
+            "package"
+        ));
     }
 
     #[test]
