@@ -67,7 +67,7 @@ fn maven_project_synthesizes_missing_dependency_jars_on_classpath() {
             .module_path
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "missing jar should not be added to module-path"
+        "missing jar should not be added to module-path for non-JPMS projects"
     );
 }
 
@@ -129,7 +129,7 @@ fn maven_workspace_model_synthesizes_missing_dependency_jars_for_modules() {
                 .module_path
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "missing jar should not be added to module module-path ({})",
+            "missing jar should not be added to module-path for non-JPMS modules ({})",
             module.id
         );
     }

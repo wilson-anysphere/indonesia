@@ -207,6 +207,7 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
 </project>
 "#,
     );
+    write_file(&repo_jar_path(&repo, "com.dep", "dep-parent", "9.9.9"), "");
     write_file(
         &repo_pom_path(&repo, "com.dep", "dep-profile", "3.0.0"),
         r#"
@@ -218,6 +219,7 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
 </project>
 "#,
     );
+    write_file(&repo_jar_path(&repo, "com.dep", "dep-profile", "3.0.0"), "");
 
     let options = LoadOptions {
         maven_repo: Some(repo.clone()),
