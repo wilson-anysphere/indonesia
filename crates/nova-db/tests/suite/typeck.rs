@@ -5112,6 +5112,21 @@ class B extends A { int m(){ return foo(); } }
 }
 
 #[test]
+fn extends_allows_inherited_field_access() {
+    let src = r#"
+class A { int x = 1; }
+class B extends A { int m(){ return x; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected inherited field access to resolve via extends; got {diags:?}"
+    );
+}
+
+#[test]
 fn extends_makes_super_type_precise() {
     let src = r#"
 class A { int foo(){ return 1; } }
@@ -5553,6 +5568,131 @@ fn cross_file_extends_allows_inherited_method_call() {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
         "expected cross-file inherited method call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn cross_file_extends_allows_inherited_field_access() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/A.java",
+        "package p; class A { int x = 1; }",
+    );
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/p/B.java",
+        "package p; class B extends A { int m(){ return x; } }",
+    );
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected cross-file inherited field access to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn cross_file_implements_allows_interface_method_lookup() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let i_file = FileId::from_raw(1);
+    let c_file = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        i_file,
+        "src/p/I.java",
+        "package p; interface I { int foo(); }",
+    );
+    set_file(
+        &mut db,
+        project,
+        c_file,
+        "src/p/C.java",
+        "package p; class C implements I { int m(){ return foo(); } }",
+    );
+    db.set_project_files(project, Arc::new(vec![i_file, c_file]));
+
+    let diags = db.type_diagnostics(c_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected cross-file interface method lookup to resolve via implements; got {diags:?}"
+    );
+}
+
+#[test]
+fn cross_file_interface_extends_allows_inherited_method_lookup() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let i_file = FileId::from_raw(1);
+    let j_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        i_file,
+        "src/p/I.java",
+        "package p; interface I { int foo(); }",
+    );
+    set_file(
+        &mut db,
+        project,
+        j_file,
+        "src/p/J.java",
+        "package p; interface J extends I {}",
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/p/Use.java",
+        "package p; class Use { int m(J j){ return j.foo(); } }",
+    );
+    db.set_project_files(project, Arc::new(vec![i_file, j_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected cross-file inherited interface method lookup to resolve; got {diags:?}"
     );
 }
 
