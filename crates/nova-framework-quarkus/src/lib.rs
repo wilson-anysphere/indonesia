@@ -173,14 +173,25 @@ impl QuarkusAnalyzer {
         }
 
         let mut file_to_source_idx = HashMap::with_capacity(java_files.len());
-        let mut source_refs: Vec<&str> = Vec::with_capacity(java_files.len());
+        let mut sources: Vec<Cow<'_, str>> = Vec::with_capacity(java_files.len());
         for file in java_files.iter().copied() {
-            let Some(text) = db.file_text(file) else {
+            let text = db
+                .file_text(file)
+                .map(Cow::Borrowed)
+                .or_else(|| {
+                    let path = db.file_path(file)?;
+                    std::fs::read_to_string(path).ok().map(Cow::Owned)
+                });
+            let Some(text) = text else {
                 continue;
             };
-            file_to_source_idx.insert(file, source_refs.len());
-            source_refs.push(text);
+            file_to_source_idx.insert(file, sources.len());
+            sources.push(text);
         }
+        if sources.is_empty() {
+            return None;
+        }
+        let source_refs: Vec<&str> = sources.iter().map(|s| s.as_ref()).collect();
         let analysis = analyze_java_sources_with_spans(&source_refs);
 
         let entry = Arc::new(CachedProjectAnalysis {
@@ -408,10 +419,6 @@ fn collect_project_java_files(
                     continue;
                 }
 
-                if db.file_text(file).is_none() {
-                    continue;
-                }
-
                 java_files_with_paths.push((path.to_string_lossy().to_string(), file));
             }
             None => {
@@ -452,25 +459,35 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
     files.len().hash(&mut hasher);
     for file in files {
         file.to_raw().hash(&mut hasher);
-        let Some(src) = db.file_text(*file) else {
-            continue;
-        };
-        src.len().hash(&mut hasher);
+        if let Some(src) = db.file_text(*file) {
+            src.len().hash(&mut hasher);
 
-        // Hash a few small slices for best-effort change detection without scanning
-        // entire sources. This intentionally trades perfect invalidation for speed.
-        let bytes = src.as_bytes();
-        let len = bytes.len();
+            // Hash a few small slices for best-effort change detection without scanning
+            // entire sources. This intentionally trades perfect invalidation for speed.
+            let bytes = src.as_bytes();
+            let len = bytes.len();
 
-        let prefix_len = len.min(64);
-        bytes[..prefix_len].hash(&mut hasher);
+            let prefix_len = len.min(64);
+            bytes[..prefix_len].hash(&mut hasher);
 
-        let mid_start = len / 2;
-        let mid_end = (mid_start + 64).min(len);
-        bytes[mid_start..mid_end].hash(&mut hasher);
+            let mid_start = len / 2;
+            let mid_end = (mid_start + 64).min(len);
+            bytes[mid_start..mid_end].hash(&mut hasher);
 
-        let suffix_start = len.saturating_sub(64);
-        bytes[suffix_start..].hash(&mut hasher);
+            let suffix_start = len.saturating_sub(64);
+            bytes[suffix_start..].hash(&mut hasher);
+        } else if let Some(path) = db.file_path(*file) {
+            match std::fs::metadata(path) {
+                Ok(meta) => {
+                    meta.len().hash(&mut hasher);
+                    hash_mtime(&mut hasher, meta.modified().ok());
+                }
+                Err(_) => {
+                    0u64.hash(&mut hasher);
+                    0u32.hash(&mut hasher);
+                }
+            }
+        }
     }
     hasher.finish()
 }

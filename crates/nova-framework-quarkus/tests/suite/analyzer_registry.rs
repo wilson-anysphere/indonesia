@@ -971,3 +971,104 @@ fn registry_completes_config_property_names_when_some_config_file_text_is_unavai
         "expected completion for server.ssl.enabled from application-dev.properties, got: {items:#?}",
     );
 }
+
+#[test]
+fn registry_cdi_diagnostics_use_disk_sources_when_java_file_text_is_unavailable() {
+    struct MissingJavaTextDb {
+        inner: MemoryDatabase,
+        missing: nova_core::FileId,
+    }
+
+    impl nova_framework::Database for MissingJavaTextDb {
+        fn class(&self, class: nova_types::ClassId) -> &nova_hir::framework::ClassData {
+            nova_framework::Database::class(&self.inner, class)
+        }
+
+        fn project_of_class(&self, class: nova_types::ClassId) -> nova_core::ProjectId {
+            nova_framework::Database::project_of_class(&self.inner, class)
+        }
+
+        fn project_of_file(&self, file: nova_core::FileId) -> nova_core::ProjectId {
+            nova_framework::Database::project_of_file(&self.inner, file)
+        }
+
+        fn file_text(&self, file: nova_core::FileId) -> Option<&str> {
+            if file == self.missing {
+                return None;
+            }
+            nova_framework::Database::file_text(&self.inner, file)
+        }
+
+        fn file_path(&self, file: nova_core::FileId) -> Option<&std::path::Path> {
+            nova_framework::Database::file_path(&self.inner, file)
+        }
+
+        fn file_id(&self, path: &std::path::Path) -> Option<nova_core::FileId> {
+            nova_framework::Database::file_id(&self.inner, path)
+        }
+
+        fn all_files(&self, project: nova_core::ProjectId) -> Vec<nova_core::FileId> {
+            nova_framework::Database::all_files(&self.inner, project)
+        }
+
+        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+            nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
+        }
+
+        fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+            nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
+        }
+
+        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+            nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+
+    std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
+
+    let service_a = r#"
+        import jakarta.enterprise.context.ApplicationScoped;
+        import jakarta.inject.Inject;
+
+        @ApplicationScoped
+        class ServiceA {
+            @Inject ServiceB b;
+        }
+    "#;
+
+    let service_b = r#"
+        import jakarta.enterprise.context.ApplicationScoped;
+
+        @ApplicationScoped
+        class ServiceB {}
+    "#;
+
+    let a_path = root.join("src/main/java/com/example/ServiceA.java");
+    let b_path = root.join("src/main/java/com/example/ServiceB.java");
+    write_file(&a_path, service_a);
+    write_file(&b_path, service_b);
+
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_dependency(project, "io.quarkus", "quarkus-arc");
+
+    let a_file = inner.add_file_with_path_and_text(project, a_path, service_a);
+    let b_file = inner.add_file_with_path_and_text(project, b_path, service_b);
+
+    let db = MissingJavaTextDb {
+        inner,
+        missing: b_file,
+    };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let diags = registry.framework_diagnostics(&db, a_file);
+    assert!(
+        diags.iter().all(|d| d.code != CDI_UNSATISFIED_CODE),
+        "expected no {CDI_UNSATISFIED_CODE} diagnostic when ServiceB is available on disk; got {diags:#?}"
+    );
+}
