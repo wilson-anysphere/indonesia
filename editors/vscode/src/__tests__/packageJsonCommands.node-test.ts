@@ -238,7 +238,7 @@ test('package.json contributes Nova Project Explorer reveal path command', async
   assert.equal(activationCount, 1);
 });
 
-test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance', async () => {
+test('package.json contributes Nova Frameworks + Project Explorer viewsWelcome empty-state guidance', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
   const pkg = JSON.parse(raw) as {
@@ -248,12 +248,14 @@ test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance
 
   const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
   assert.ok(activationEvents.includes('onView:novaFrameworks'));
+  assert.ok(activationEvents.includes('onView:novaProjectExplorer'));
 
   const contributesViews = pkg.contributes?.views;
   assert.ok(contributesViews && typeof contributesViews === 'object');
   const explorerViews = (contributesViews as { explorer?: unknown }).explorer;
   assert.ok(Array.isArray(explorerViews));
   assert.ok((explorerViews as unknown[]).some((entry) => (entry as { id?: unknown })?.id === 'novaFrameworks'));
+  assert.ok((explorerViews as unknown[]).some((entry) => (entry as { id?: unknown })?.id === 'novaProjectExplorer'));
 
   const viewsWelcome = Array.isArray(pkg.contributes?.viewsWelcome) ? pkg.contributes.viewsWelcome : [];
   const frameworksWelcome = viewsWelcome.filter(
@@ -293,6 +295,32 @@ test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance
     return contents.toLowerCase().includes('upgrade') || contents.includes('nova.showServerVersion');
   });
   assert.ok(hasUnsupportedHint);
+
+  const projectExplorerWelcome = viewsWelcome.filter(
+    (entry): entry is { view?: unknown; contents?: unknown; when?: unknown } =>
+      entry && typeof entry === 'object' && (entry as { view?: unknown }).view === 'novaProjectExplorer',
+  );
+
+  assert.ok(projectExplorerWelcome.length >= 3);
+
+  const hasProjectNoWorkspaceHint = projectExplorerWelcome.some((entry) => {
+    const when = typeof entry.when === 'string' ? entry.when : '';
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return when.includes('workspaceFolderCount') && when.includes('0') && contents.toLowerCase().includes('open folder');
+  });
+  assert.ok(hasProjectNoWorkspaceHint);
+
+  const hasProjectServerMissingHint = projectExplorerWelcome.some((entry) => {
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return contents.includes('nova.installOrUpdateServer');
+  });
+  assert.ok(hasProjectServerMissingHint);
+
+  const hasProjectUnsupportedHint = projectExplorerWelcome.some((entry) => {
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return contents.toLowerCase().includes('upgrade') || contents.includes('nova.showServerVersion');
+  });
+  assert.ok(hasProjectUnsupportedHint);
 });
 
 test('package.json contributes Nova Project Explorer view + commands', async () => {

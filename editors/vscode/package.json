@@ -239,6 +239,21 @@
         "view": "novaFrameworks",
         "contents": "This version of Nova does not support Micronaut bean discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
         "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautBeansSupported"
+      },
+      {
+        "view": "novaProjectExplorer",
+        "contents": "Open a folder to view the Nova project model.\n\n[Open Folder](command:workbench.action.files.openFolder)",
+        "when": "workspaceFolderCount == 0"
+      },
+      {
+        "view": "novaProjectExplorer",
+        "contents": "Nova's language server is not running.\n\n[Install/Update Server](command:nova.installOrUpdateServer)",
+        "when": "workspaceFolderCount > 0 && !nova.frameworks.serverRunning"
+      },
+      {
+        "view": "novaProjectExplorer",
+        "contents": "This version of Nova does not support the project model.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.projectExplorer.projectModelSupported"
       }
     ],
     "menus": {

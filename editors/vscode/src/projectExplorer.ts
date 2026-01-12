@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
-import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError } from './novaCapabilities';
+import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { formatError } from './safeMode';
 import { ProjectModelCache } from './projectModelCache';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaProjectExplorerController = { refresh(): void };
 
 type BuildSystemKind = 'maven' | 'gradle' | 'bazel' | 'simple';
 
@@ -106,9 +107,10 @@ export function registerNovaProjectExplorer(
   context: vscode.ExtensionContext,
   request: NovaRequest,
   cache?: ProjectModelCache,
-): void {
+  opts?: { isServerRunning?: () => boolean },
+): NovaProjectExplorerController {
   const projectModelCache = cache ?? new ProjectModelCache(request);
-  const provider = new NovaProjectExplorerProvider(projectModelCache);
+  const provider = new NovaProjectExplorerProvider(projectModelCache, opts);
 
   const view = vscode.window.createTreeView(VIEW_ID, {
     treeDataProvider: provider,
@@ -146,11 +148,25 @@ export function registerNovaProjectExplorer(
       provider.refresh({ clearCache: true });
     }),
   );
+
+  return provider;
 }
 
 class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProjectExplorerNode> {
   private readonly emitter = new vscode.EventEmitter<NovaProjectExplorerNode | undefined | null>();
-  constructor(private readonly cache: ProjectModelCache) {}
+  private lastContextServerRunning: boolean | undefined;
+  private lastContextProjectModelSupported: boolean | undefined;
+
+  private readonly isServerRunning: () => boolean;
+
+  private didTriggerUnsupportedWelcome = false;
+
+  constructor(
+    private readonly cache: ProjectModelCache,
+    opts?: { isServerRunning?: () => boolean },
+  ) {
+    this.isServerRunning = opts?.isServerRunning ?? (() => true);
+  }
 
   get onDidChangeTreeData(): vscode.Event<NovaProjectExplorerNode | undefined | null> {
     return this.emitter.event;
@@ -159,6 +175,9 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
   refresh(opts?: { clearCache?: boolean; forceRefresh?: boolean; workspace?: vscode.WorkspaceFolder }): void {
     if (opts?.clearCache) {
       this.cache.clear(opts.workspace);
+      if (!opts.workspace) {
+        this.didTriggerUnsupportedWelcome = false;
+      }
     }
 
     const folders = opts?.workspace ? [opts.workspace] : (vscode.workspace.workspaceFolders ?? []);
@@ -181,14 +200,22 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
     if (!element) {
       const workspaces = vscode.workspace.workspaceFolders ?? [];
       if (workspaces.length === 0) {
-        return [
-          {
-            type: 'message',
-            id: 'no-workspace',
-            label: 'Open a workspace folder to view the Nova project model.',
-          },
-        ];
+        await this.setContexts({ serverRunning: false, projectModelSupported: true });
+        return [];
       }
+
+      const serverRunning = this.isServerRunning();
+      if (!serverRunning) {
+        await this.setContexts({ serverRunning: false, projectModelSupported: true });
+        return [];
+      }
+
+      const projectModelSupported = this.isProjectModelSupported();
+      await this.setContexts({ serverRunning: true, projectModelSupported });
+      if (!projectModelSupported) {
+        return [];
+      }
+
       return workspaces.map((workspace) => ({
         type: 'workspace',
         id: `workspace:${workspace.uri.toString()}`,
@@ -200,15 +227,8 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
       case 'workspace': {
         const workspace = element.workspace;
         if (this.cache.isProjectModelUnsupported()) {
-          return [
-            {
-              type: 'message',
-              id: `${element.id}:unsupported`,
-              label: 'Project model not supported by this server.',
-              description: 'Update nova-lsp to a build that supports nova/projectModel.',
-              icon: new vscode.ThemeIcon('info'),
-            },
-          ];
+          await this.triggerUnsupportedWelcome();
+          return [];
         }
 
         const snapshot = this.cache.peekProjectModel(workspace);
@@ -519,6 +539,45 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         }
         return item;
       }
+    }
+  }
+
+  private isProjectModelSupported(): boolean {
+    if (this.cache.isProjectModelUnsupported()) {
+      return false;
+    }
+
+    const supported = isNovaRequestSupported('nova/projectModel');
+    // Default to optimistic behaviour when capability lists are unavailable.
+    return supported !== false;
+  }
+
+  private async triggerUnsupportedWelcome(): Promise<void> {
+    if (this.didTriggerUnsupportedWelcome) {
+      return;
+    }
+    this.didTriggerUnsupportedWelcome = true;
+
+    const serverRunning = this.isServerRunning();
+    await this.setContexts({ serverRunning, projectModelSupported: serverRunning ? false : true });
+
+    // Re-render the root so VS Code can show the viewsWelcome unsupported-state guidance.
+    this.emitter.fire(undefined);
+  }
+
+  private async setContexts(opts: { serverRunning: boolean; projectModelSupported: boolean }): Promise<void> {
+    if (this.lastContextServerRunning !== opts.serverRunning) {
+      this.lastContextServerRunning = opts.serverRunning;
+      await vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', opts.serverRunning);
+    }
+
+    if (this.lastContextProjectModelSupported !== opts.projectModelSupported) {
+      this.lastContextProjectModelSupported = opts.projectModelSupported;
+      await vscode.commands.executeCommand(
+        'setContext',
+        'nova.projectExplorer.projectModelSupported',
+        opts.projectModelSupported,
+      );
     }
   }
 }

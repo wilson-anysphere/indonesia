@@ -283,7 +283,9 @@ export async function activate(context: vscode.ExtensionContext) {
       frameworksView.refresh();
     }),
   );
-  registerNovaProjectExplorer(context, requestWithFallback, projectModelCache);
+  const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
+    isServerRunning: () => Boolean(client),
+  });
 
   // Keep capability entries for workspace-folder keys in sync as folders are added/removed.
   // This is mainly transitional until Nova runs one LanguageClient per workspace folder.
@@ -763,7 +765,9 @@ export async function activate(context: vscode.ExtensionContext) {
       detachObservability();
       aiRefreshInProgress = false;
       clearAiCompletionCache();
+      projectModelCache.clear();
       frameworksView.refresh();
+      projectExplorerView.refresh();
     }
   }
 
@@ -783,6 +787,7 @@ export async function activate(context: vscode.ExtensionContext) {
     };
     const languageClient = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
     client = languageClient;
+    projectModelCache.clear();
     // vscode-languageclient v9+ starts asynchronously.
     const started = languageClient.start();
     clientStart = started.then(() => {
@@ -803,6 +808,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     attachObservability(languageClient, clientStart);
     frameworksView.refresh();
+    projectExplorerView.refresh();
     clientStart.catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);

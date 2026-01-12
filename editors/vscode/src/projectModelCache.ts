@@ -104,6 +104,8 @@ export class ProjectModelCache {
     if (!workspaceFolder) {
       this.projectModelByWorkspace.clear();
       this.projectConfigurationByWorkspace.clear();
+      this.projectModelUnsupported = false;
+      this.projectConfigurationUnsupported = false;
       return;
     }
     const key = this.key(workspaceFolder);
