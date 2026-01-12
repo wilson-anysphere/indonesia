@@ -12,6 +12,7 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/mvnw',
   '**/mvnw.cmd',
   '**/.mvn/wrapper/maven-wrapper.properties',
+  '**/.mvn/wrapper/maven-wrapper.jar',
   '**/.mvn/extensions.xml',
   '**/.mvn/maven.config',
   '**/.mvn/jvm.config',
@@ -29,6 +30,7 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/gradlew',
   '**/gradlew.bat',
   '**/gradle/wrapper/gradle-wrapper.properties',
+  '**/gradle/wrapper/gradle-wrapper.jar',
   '**/libs.versions.toml',
 
   // Bazel build configuration.
