@@ -5,8 +5,6 @@ use nova_index::{
 };
 use std::path::PathBuf;
 
-mod suite;
-
 #[test]
 fn indexes_roundtrip_and_invalidation() {
     let temp = tempfile::tempdir().unwrap();
