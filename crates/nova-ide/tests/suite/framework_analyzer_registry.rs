@@ -97,6 +97,12 @@ fn default_registry_registers_analyzer_registry_provider() {
     assert!(stats_generic
         .completion
         .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
+    assert!(stats_generic
+        .navigation
+        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
+    assert!(stats_generic
+        .inlay_hint
+        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
 
     let ide_dyn = IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry(
         db_dyn,
@@ -110,9 +116,14 @@ fn default_registry_registers_analyzer_registry_provider() {
     assert!(stats_dyn
         .completion
         .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
+    assert!(stats_dyn
+        .navigation
+        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
+    assert!(stats_dyn
+        .inlay_hint
+        .contains_key(FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID));
 
     // Sanity check: the file id is still usable in the concrete store (guards against accidental
     // test flakiness due to unused fixture).
     assert_eq!(ide_dyn.db().file_content(file), "class Main {}");
 }
-

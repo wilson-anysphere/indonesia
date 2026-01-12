@@ -746,7 +746,9 @@ where
 
         let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider);
+        let _ = registry.register_completion_provider(provider.clone());
+        let _ = registry.register_navigation_provider(provider.clone());
+        let _ = registry.register_inlay_hint_provider(provider);
         this
     }
 }
