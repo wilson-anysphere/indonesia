@@ -398,35 +398,40 @@ impl RefactorJavaDatabase {
                         return;
                     };
 
-                    let start_scope = match lambda_body {
+                    // Pick a scope for rename conflict detection.
+                    //
+                    // Lambda parameters are declared in the lambda scope itself, but locals
+                    // declared in a block-bodied lambda live in nested block scopes. If we use the
+                    // lambda scope directly, conflict checking won't see those locals. Prefer a
+                    // scope *within* the lambda body so both parameters (via parent scopes) and
+                    // locals declared in the body are visible.
+                    let scope_id = match lambda_body {
                         hir::LambdaBody::Expr(expr) => {
+                            // Expression-bodied lambdas can't declare statement locals.
                             scope_result.expr_scopes.get(&(owner, *expr)).copied()
                         }
                         hir::LambdaBody::Block(stmt) => {
-                            scope_result.stmt_scopes.get(&(owner, *stmt)).copied()
+                            // Use the scope of the last statement in the lambda body block so
+                            // order-sensitive locals are in scope for conflict checks.
+                            let body_scope = scope_result.stmt_scopes.get(&(owner, *stmt)).copied();
+                            let Some(body_scope) = body_scope else {
+                                return;
+                            };
+
+                            match &body.stmts[*stmt] {
+                                hir::Stmt::Block { statements, .. } => statements
+                                    .last()
+                                    .and_then(|last| scope_result.stmt_scopes.get(&(owner, *last)))
+                                    .copied()
+                                    .or(Some(body_scope)),
+                                _ => Some(body_scope),
+                            }
                         }
                     };
-                    let Some(mut current) = start_scope else {
+                    let Some(scope_id) = scope_id else {
                         return;
                     };
-
-                    // Find the exact lambda scope for this expression by walking up the scope
-                    // chain. This is the scope that contains the parameter locals.
-                    let lambda_scope = loop {
-                        match scope_result.scopes.scope(current).kind() {
-                            ScopeKind::Lambda {
-                                owner: scope_owner,
-                                expr,
-                            } if *scope_owner == owner && *expr == expr_id => break current,
-                            _ => {}
-                        }
-                        let Some(parent) = scope_result.scopes.scope(current).parent() else {
-                            return;
-                        };
-                        current = parent;
-                    };
-
-                    let scope = scope_interner.intern(*file_id, lambda_scope);
+                    let scope = scope_interner.intern(*file_id, scope_id);
 
                     for param in params {
                         let local_id = param.local;
