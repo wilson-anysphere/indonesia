@@ -131,6 +131,8 @@ cargo bench --locked -p nova-format --bench format
 cargo bench --locked -p nova-refactor --bench refactor
 cargo bench --locked -p nova-classpath --bench index
 cargo bench --locked -p nova-ide --bench completion
+cargo bench --locked -p nova-fuzzy --bench fuzzy
+cargo bench --locked -p nova-index --bench symbol_search
 ```
 
 ---
@@ -574,8 +576,10 @@ from `main`, otherwise benching the base commit in a git worktree). For full ope
   - `crates/nova-syntax/benches/parse_java.rs`
   - `crates/nova-format/benches/format.rs`
   - `crates/nova-refactor/benches/refactor.rs`
-  - `crates/nova-ide/benches/completion.rs`
   - `crates/nova-classpath/benches/index.rs`
+  - `crates/nova-ide/benches/completion.rs`
+  - `crates/nova-fuzzy/benches/fuzzy.rs`
+  - `crates/nova-index/benches/symbol_search.rs`
 - Threshold configs:
   - `perf/thresholds.toml` (bench comparisons; enforced by CI)
   - `perf/runtime-thresholds.toml` (runtime snapshot comparisons via `nova perf compare-runtime`; not currently a CI gate)
@@ -589,8 +593,10 @@ cargo bench --locked -p nova-core --bench critical_paths
 cargo bench --locked -p nova-syntax --bench parse_java
 cargo bench --locked -p nova-format --bench format
 cargo bench --locked -p nova-refactor --bench refactor
-cargo bench --locked -p nova-ide --bench completion
 cargo bench --locked -p nova-classpath --bench index
+cargo bench --locked -p nova-ide --bench completion
+cargo bench --locked -p nova-fuzzy --bench fuzzy
+cargo bench --locked -p nova-index --bench symbol_search
 ```
 
 **Capture + compare locally (same tooling CI uses):**
@@ -686,7 +692,7 @@ In practice, Nova’s CI splits into:
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
 | `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, PR-only test-binary drift guard (`scripts/check-test-binary-drift.sh`), `cargo clippy`, `cargo nextest run --locked --workspace --profile ci` (linux/macos/windows), `cargo test --locked --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
-| `.github/workflows/perf.yml` | in repo | `cargo bench --locked -p nova-core --bench critical_paths`, `cargo bench --locked -p nova-syntax --bench parse_java`, `cargo bench --locked -p nova-format --bench format`, `cargo bench --locked -p nova-refactor --bench refactor`, `cargo bench --locked -p nova-classpath --bench index`, `cargo bench --locked -p nova-ide --bench completion`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
+| `.github/workflows/perf.yml` | in repo | `cargo bench --locked -p nova-core --bench critical_paths`, `cargo bench --locked -p nova-syntax --bench parse_java`, `cargo bench --locked -p nova-format --bench format`, `cargo bench --locked -p nova-refactor --bench refactor`, `cargo bench --locked -p nova-classpath --bench index`, `cargo bench --locked -p nova-ide --bench completion`, `cargo bench --locked -p nova-fuzzy --bench fuzzy`, `cargo bench --locked -p nova-index --bench symbol_search`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `javac`-backed corpus/differential suites in an environment with a JDK | `cargo test --locked -p nova-syntax --test harness suite::javac_corpus` + `cargo test --locked -p nova-types --test javac_differential -- --ignored` + `cargo test --locked -p nova-refactor --test javac_refactors -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144` |

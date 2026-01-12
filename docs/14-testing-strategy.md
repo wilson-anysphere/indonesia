@@ -453,6 +453,8 @@ bench suites:
 - `crates/nova-refactor/benches/refactor.rs` (`cargo bench --locked -p nova-refactor --bench refactor`)
 - `crates/nova-classpath/benches/index.rs` (`cargo bench --locked -p nova-classpath --bench index`)
 - `crates/nova-ide/benches/completion.rs` (`cargo bench --locked -p nova-ide --bench completion`)
+- `crates/nova-fuzzy/benches/fuzzy.rs` (`cargo bench --locked -p nova-fuzzy --bench fuzzy`)
+- `crates/nova-index/benches/symbol_search.rs` (`cargo bench --locked -p nova-index --bench symbol_search`)
 
 Benchmark thresholds live in `perf/thresholds.toml`. Runtime snapshot thresholds live in
 `perf/runtime-thresholds.toml` (used by `nova perf compare-runtime`; not currently a CI gate). For operational
