@@ -10,8 +10,9 @@ use std::ops::Range;
 
 use nova_core::{Name, QualifiedName};
 use nova_types::{lub, Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
+use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::{Resolution, Resolver, ScopeGraph, ScopeId, TypeNameResolution, TypeResolution};
+use crate::{Resolver, ScopeGraph, ScopeId, TypeNameResolution};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedType {
@@ -237,22 +238,24 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return Type::Void;
         }
 
-        // Qualified name (dot-separated) with optional type arguments on each segment:
+        // `ClassOrInterfaceType` (JLS 4.3.2):
+        //   Ident [TypeArgs] ('.' Ident [TypeArgs])*
         //
-        //   Ident [TypeArgs]? ('.' Ident [TypeArgs]? )*
-        //
-        // Java allows type arguments on qualifying types (e.g. `Outer<String>.Inner`),
-        // but our `Type` model can only attach args to the final resolved type.
-        // We still *parse* (consume) qualifier args so we can continue past `.`.
+        // Java allows type arguments on qualifying types (e.g. `Outer<String>.Inner`).
+        // Nova's `Type` model does not represent owner types directly, so we parse
+        // per-segment args and then flatten them in outer-to-inner order during
+        // resolution (matching `nova-types-signature`).
         let mut segments = vec![ident];
+        let mut per_segment_args: Vec<Vec<Type>> = Vec::new();
         let mut name_range = ident_range;
 
-        // Type args are only applied to the last segment; earlier args are discarded.
-        let mut last_segment_args = if self.consume_char('<') {
+        // Parse type arguments for the first segment.
+        let first_args = if self.consume_char('<') {
             self.parse_type_args()
         } else {
             Vec::new()
         };
+        per_segment_args.push(first_args);
 
         loop {
             self.skip_ws();
@@ -262,13 +265,6 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             }
             if !self.consume_char('.') {
                 break;
-            }
-
-            // There is another segment, so any type args we parsed belong to a
-            // qualifying type (`Outer<String>.Inner`) and cannot be represented.
-            // Discard them (best effort).
-            if !last_segment_args.is_empty() {
-                last_segment_args.clear();
             }
 
             self.skip_ws();
@@ -283,27 +279,28 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             name_range.end = seg_range.end;
             segments.push(seg);
 
-            // Parse optional type args for this segment.
-            last_segment_args = if self.consume_char('<') {
+            let seg_args = if self.consume_char('<') {
                 self.parse_type_args()
             } else {
                 Vec::new()
             };
+            per_segment_args.push(seg_args);
         }
 
-        self.resolve_named_type(segments, last_segment_args, name_range)
+        self.resolve_named_type(segments, per_segment_args, name_range)
     }
 
     fn resolve_named_type(
         &mut self,
         segments: Vec<String>,
-        args: Vec<Type>,
+        per_segment_args: Vec<Vec<Type>>,
         name_range: Range<usize>,
     ) -> Type {
         // In-scope type variables take precedence over types (JLS 6.5).
         if segments.len() == 1 {
             if let Some(tv) = self.type_vars.get(&segments[0]) {
-                if !args.is_empty() {
+                let has_args = per_segment_args.iter().any(|a| !a.is_empty());
+                if has_args {
                     self.push_error(
                         "invalid-type-ref",
                         "type variables cannot have type arguments",
@@ -315,6 +312,25 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
 
         let dotted = segments.join(".");
+        let flattened_args: Vec<Type> = per_segment_args.iter().flatten().cloned().collect();
+        let args_for_class = |class_id| {
+            // Avoid turning raw types / diamond (`List` / `List<>`) into
+            // `List<Unknown>`. Source type refs commonly omit type args, and we
+            // intentionally model that as "raw" (`args = []`).
+            if flattened_args.is_empty() {
+                return Vec::new();
+            }
+            match self.env.class(class_id) {
+                Some(class_def) => reconcile_class_args(
+                    class_def.type_params.len(),
+                    &per_segment_args,
+                    flattened_args.clone(),
+                ),
+                None => flattened_args.clone(),
+            }
+        };
+
+        // Resolve simple names in the type namespace and preserve ambiguity for diagnostics.
         if segments.len() == 1 {
             let ident = Name::from(segments[0].as_str());
             match self
@@ -328,8 +344,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
                     {
                         let resolved_name = type_name.as_str();
                         if let Some(class_id) = self.env.lookup_class(resolved_name) {
-                            return Type::class(class_id, args);
+                            return Type::class(class_id, args_for_class(class_id));
                         }
+
                         // No class definition in the env; drop args (best effort).
                         return Type::Named(resolved_name.to_string());
                     }
@@ -368,7 +385,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
                     if let Some(best) = best {
                         if let Some(class_id) = self.env.lookup_class(&best) {
-                            return Type::class(class_id, args);
+                            return Type::class(class_id, args_for_class(class_id));
                         }
                         return Type::Named(best);
                     }
@@ -378,58 +395,53 @@ impl<'a, 'idx> Parser<'a, 'idx> {
                     // know the reference is ambiguous).
                     let java_lang = format!("java.lang.{}", segments[0]);
                     if let Some(class_id) = self.env.lookup_class(&java_lang) {
-                        return Type::class(class_id, args);
+                        return Type::class(class_id, args_for_class(class_id));
                     }
-                    return Type::Named(dotted.clone());
+                    return Type::Named(dotted);
                 }
                 TypeNameResolution::Unresolved => {}
             }
-        } else {
-            let qname = QualifiedName::from_dotted(&dotted);
-            if let Some(type_name) =
-                self.resolver
-                    .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
-            {
-                let resolved_name = type_name.as_str();
-                if let Some(class_id) = self.env.lookup_class(resolved_name) {
-                    return Type::class(class_id, args);
-                }
-
-                // No class definition in the env; drop args (best effort).
-                return Type::Named(resolved_name.to_string());
-            }
         }
 
-        // If the resolver can't map the name (usually because the external index
-        // is incomplete), fall back to the `TypeEnv` for a couple of common cases:
+        // Qualified name resolution (and simple-name fallback).
+        let qname = QualifiedName::from_dotted(&dotted);
+        if let Some(type_name) =
+            self.resolver
+                .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
+        {
+            let resolved_name = type_name.as_str();
+            if let Some(class_id) = self.env.lookup_class(resolved_name) {
+                return Type::class(class_id, args_for_class(class_id));
+            }
+
+            // No class definition in the env; drop args (best effort).
+            return Type::Named(resolved_name.to_string());
+        }
+
+        // If the resolver can't map the name (usually because the external index is incomplete),
+        // fall back to the `TypeEnv` for a couple of common cases:
         // - fully-qualified names (`java.io.Serializable`)
         // - implicit `java.lang.*` for simple names (`Cloneable`)
         if segments.len() == 1 {
             let java_lang = format!("java.lang.{}", segments[0]);
             if let Some(class_id) = self.env.lookup_class(&java_lang) {
-                return Type::class(class_id, args);
+                return Type::class(class_id, args_for_class(class_id));
             }
         } else if let Some(class_id) = self.env.lookup_class(&dotted) {
-            return Type::class(class_id, args);
+            return Type::class(class_id, args_for_class(class_id));
         }
-        let mut best_guess = dotted.clone();
+
         // Best-effort: if the first segment resolves to a type in the current
         // scope, treat remaining segments as nested class qualifiers and build a
         // binary-style name (`Outer$Inner`).
+        let mut best_guess = dotted.clone();
         if segments.len() > 1 {
             let first = Name::from(segments[0].as_str());
-            if let Some(Resolution::Type(owner)) =
-                self.resolver.resolve_name(self.scopes, self.scope, &first)
-            {
-                let owner_name = match &owner {
-                    TypeResolution::External(ty) => Some(ty.as_str()),
-                    TypeResolution::Source(item) => {
-                        self.scopes.type_name(*item).map(|t| t.as_str())
-                    }
-                };
-
-                if let Some(owner_name) = owner_name {
-                    let mut candidate = owner_name.to_string();
+            if let Some(owner) = self.resolver.resolve_type_name(self.scopes, self.scope, &first) {
+                if let Some(owner_name) =
+                    self.resolver.type_name_for_resolution(self.scopes, &owner)
+                {
+                    let mut candidate = owner_name.as_str().to_string();
                     for seg in &segments[1..] {
                         candidate.push('$');
                         candidate.push_str(seg);
@@ -439,10 +451,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             }
         }
 
-        // If we successfully guessed a binary nested name, try resolving it in
-        // the environment before reporting an unresolved-type diagnostic.
+        // If we successfully guessed a binary nested name, try resolving it in the environment
+        // before reporting an unresolved-type diagnostic.
         if let Some(class_id) = self.env.lookup_class(&best_guess) {
-            return Type::class(class_id, args);
+            return Type::class(class_id, args_for_class(class_id));
         }
 
         self.diagnostics.push(Diagnostic::error(
@@ -460,13 +472,8 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         loop {
             self.skip_ws();
             if self.consume_char('>') {
-                if args.is_empty() {
-                    self.push_error(
-                        "invalid-type-ref",
-                        "expected at least one type argument",
-                        self.pos.saturating_sub(1)..self.pos,
-                    );
-                }
+                // Accept empty `<>` (diamond) syntax with no diagnostics. This
+                // can appear in `TypeRef.text` for `new Foo<>()`.
                 break;
             }
 
@@ -742,9 +749,44 @@ fn primitive_from_str(s: &str) -> Option<PrimitiveType> {
 }
 
 fn is_ident_start(ch: char) -> bool {
-    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+    ch == '_' || ch == '$' || is_xid_start(ch)
 }
 
 fn is_ident_part(ch: char) -> bool {
-    is_ident_start(ch) || ch.is_ascii_digit()
+    ch == '_' || ch == '$' || is_xid_continue(ch)
+}
+
+fn reconcile_class_args(
+    expected_len: usize,
+    per_segment_args: &[Vec<Type>],
+    flattened: Vec<Type>,
+) -> Vec<Type> {
+    // Keep behavior consistent with `nova-types-signature` for nested generics
+    // while staying resilient to partial / broken inputs.
+    //
+    // Note: Callers should generally avoid this for raw types (`args.is_empty()`),
+    // since `nova_types::Type` uses `args = []` to represent raw references.
+    if expected_len == 0 {
+        return flattened;
+    }
+    if flattened.len() == expected_len {
+        return flattened;
+    }
+
+    if let Some(last) = per_segment_args.last() {
+        if last.len() == expected_len {
+            return last.clone();
+        }
+    }
+
+    if flattened.len() > expected_len {
+        let start = flattened.len().saturating_sub(expected_len);
+        return flattened[start..].to_vec();
+    }
+
+    let missing = expected_len.saturating_sub(flattened.len());
+    let mut out = Vec::with_capacity(expected_len);
+    out.extend(std::iter::repeat(Type::Unknown).take(missing));
+    out.extend(flattened);
+    out
 }

@@ -4174,6 +4174,7 @@ dependencies = [
  "nova-types",
  "tempfile",
  "thiserror 1.0.69",
+ "unicode-ident",
  "walkdir",
  "zip 0.6.6",
 ]

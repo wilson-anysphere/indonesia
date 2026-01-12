@@ -84,6 +84,8 @@ fn setup(
     // we want to exercise nested type resolution (`Map.Entry` -> `Map$Entry`).
     index.add_type("java.util", "Map");
     index.add_type("java.util", "Map$Entry");
+    index.add_type("com.example", "Outer");
+    index.add_type("com.example", "Outer$Inner");
 
     let file = FileId::from_raw(0);
     let mut db = TestDb::default();
@@ -376,8 +378,11 @@ fn resolves_parameterized_qualifying_nested_type() {
     // Ensure we don't hit the old parser bug where `.Inner<Integer>` becomes a trailing token.
     assert_eq!(ty.diagnostics, Vec::new());
 
+    // Nested type arguments are flattened outer→inner to match Nova's `Type::Class`
+    // representation (and `nova-types-signature` behavior).
+    let string = Type::class(env.lookup_class("java.lang.String").unwrap(), vec![]);
     let integer = Type::class(env.lookup_class("java.lang.Integer").unwrap(), vec![]);
-    assert_eq!(ty.ty, Type::class(inner_id, vec![integer]));
+    assert_eq!(ty.ty, Type::class(inner_id, vec![string, integer]));
 }
 
 #[test]
@@ -593,4 +598,35 @@ fn resolves_catch_union_types_via_lub() {
     let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "A|B", None);
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(ty.ty, Type::class(base_id, vec![]));
+}
+
+#[test]
+fn resolves_unicode_identifier_type_variable() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let mut env = TypeStore::with_minimal_jdk();
+
+    let object = Type::class(env.well_known().object, vec![]);
+    let delta = env.add_type_param("Δ", vec![object]);
+    let mut type_vars = HashMap::new();
+    type_vars.insert("Δ".to_string(), delta);
+
+    let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "Δ", None);
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::TypeVar(delta));
+}
+
+#[test]
+fn parses_diamond_as_raw_type() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+
+    let diamond = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<>", None);
+    assert_eq!(diamond.diagnostics, Vec::new());
+    assert_eq!(diamond.ty, plain.ty);
 }
