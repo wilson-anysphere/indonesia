@@ -231,19 +231,13 @@ fn subsequence_score_alloc(query: &[u8], candidate: &[u8]) -> Option<i32> {
 ///   the query or candidate contains non-ASCII.
 mod unicode_impl {
     use super::MIN_SCORE;
-    use unicode_casefold::UnicodeCaseFold;
-    use unicode_normalization::UnicodeNormalization;
+    use crate::unicode_folding;
     use unicode_segmentation::UnicodeSegmentation;
 
     pub type GraphemeRange = (usize, usize);
 
     pub fn fold_nfkc_casefold(input: &str, out: &mut String) {
-        // Normalize (NFKC) and then apply Unicode case folding (including expansions).
-        //
-        // `unicode-normalization` does not currently expose an `nfkc_casefold()` helper
-        // or a case-folding iterator, so we compose `nfkc()` with `unicode-casefold`.
-        out.clear();
-        out.extend(input.nfkc().case_fold());
+        unicode_folding::fold_nfkc_casefold(input, out);
     }
 
     pub fn grapheme_ranges(s: &str, out: &mut Vec<GraphemeRange>) {
@@ -1032,6 +1026,14 @@ mod tests {
         fn case_folding_expansion_matches_capital_sharp_s() {
             // U+1E9E (LATIN CAPITAL LETTER SHARP S) should also fold/expand to `ss`.
             assert!(fuzzy_match("strasse", "STRAẞE").is_some());
+        }
+
+        #[test]
+        fn georgian_uppercase_lowercase_match() {
+            // Georgian has distinct uppercase (Mtavruli) and lowercase (Mkhedruli) codepoints.
+            // Unicode case folding should treat them as equivalent.
+            assert!(fuzzy_match("ჭ", "Ჭ").is_some());
+            assert!(fuzzy_match("Ჭ", "ჭ").is_some());
         }
 
         #[test]
