@@ -3267,6 +3267,62 @@ class Foo {
     }
 
     #[test]
+    fn open_document_reuses_parse_after_memory_manager_enforce() {
+        // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
+        // `SyntaxTreeStore` intact so open documents can reuse pinned parse results.
+        //
+        // We force eviction by setting an intentionally tiny query-cache budget, while keeping
+        // the overall total (and syntax tree) budgets very large so pressure stays low and the
+        // syntax tree store is not itself evicted.
+        let total = 1_000_000_000_000_u64;
+        let manager = MemoryManager::new(MemoryBudget {
+            total,
+            categories: nova_memory::MemoryBreakdown {
+                query_cache: 1,
+                syntax_trees: total / 2,
+                indexes: 0,
+                type_info: 0,
+                other: total - (total / 2) - 1,
+            },
+        });
+
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = SyntaxTreeStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store);
+
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+
+        db.set_file_text(file, "class Foo { int x; }");
+
+        let before = db.with_snapshot(|snap| {
+            let parse = snap.parse(file);
+            // Force non-zero query-cache usage so enforcement triggers Salsa memo eviction.
+            let _ = snap.parse_java(file);
+            parse
+        });
+        assert!(
+            db.salsa_memo_bytes() > 0,
+            "expected memo tracker to be non-zero prior to enforcement"
+        );
+
+        manager.enforce();
+        assert_eq!(
+            db.salsa_memo_bytes(),
+            0,
+            "expected memo tracker to clear after enforcement-driven eviction"
+        );
+
+        let after = db.snapshot().parse(file);
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "expected open document parse to be reused after enforcement-driven memo eviction"
+        );
+    }
+
+    #[test]
     fn closed_document_does_not_reuse_parse_after_salsa_memo_eviction() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
         let open_docs = Arc::new(OpenDocuments::default());
