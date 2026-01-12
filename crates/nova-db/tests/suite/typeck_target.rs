@@ -162,6 +162,42 @@ class C { String m(){ return """x"""; } }
 }
 
 #[test]
+fn array_initializer_in_var_decl_typechecks() {
+    let src = r#"
+class C { void m(){ int[] a = {1,2}; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "array-initializer-type-mismatch"
+        }),
+        "expected array initializer to type-check; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_creation_with_initializer_has_array_type() {
+    let src = r#"
+class C { void m(){ int[] a = new int[] {1,2}; } }
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let offset = src
+        .find("new int[] {1,2}")
+        .expect("snippet should contain array creation")
+        + "new ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[]");
+}
+
+#[test]
 fn throw_requires_throwable() {
     let src = r#"
 class C {
