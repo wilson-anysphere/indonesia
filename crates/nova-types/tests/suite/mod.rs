@@ -3,7 +3,6 @@ mod default_well_known;
 mod glb;
 mod interface_object_supertype;
 mod java_format;
-mod javac_differential;
 mod jls_conversions;
 mod jls_generics;
 mod jls_inference;

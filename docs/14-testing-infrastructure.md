@@ -112,7 +112,7 @@ git diff --exit-code
 
  # javac.yml (requires `javac` on PATH; JDK 17+ recommended)
  cargo test -p nova-syntax --test javac_corpus
- cargo test -p nova-types --test integration javac_differential -- --ignored
+ cargo test -p nova-types --test javac_differential -- --ignored
 
 # Note: the differential harness runs `javac` with `-XDrawDiagnostics` so tests can
 # assert stable diagnostic *keys* instead of brittle human-readable strings.
@@ -375,12 +375,12 @@ can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 **Where:**
 
 - Harness: `crates/nova-test-utils/src/javac.rs`
-- Tests: `crates/nova-types/tests/suite/javac_differential.rs` (run via `crates/nova-types/tests/integration.rs`)
+- Tests: `crates/nova-types/tests/javac_differential.rs`
 
 **Run locally (requires `javac` on `PATH`):**
 
 ```bash
- cargo test -p nova-types --test integration javac_differential -- --ignored
+ cargo test -p nova-types --test javac_differential -- --ignored
 ```
 
 If `javac` is not available, the tests print a message and return early (Rust’s test harness has no
@@ -661,7 +661,7 @@ In practice, Nova’s CI splits into:
 |---|---|---|---|
 | `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo nextest run --workspace --profile ci` (linux/macos/windows), `cargo test --workspace --doc` (ubuntu), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths`, `cargo bench -p nova-syntax --bench parse_java`, `cargo bench -p nova-format --bench format`, `cargo bench -p nova-refactor --bench refactor`, `cargo bench -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
-| `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test integration javac_differential -- --ignored` |
+| `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144` |
 | `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html` |
