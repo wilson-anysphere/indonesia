@@ -34,6 +34,8 @@
 
 mod scoring;
 mod trigram;
+#[cfg(feature = "unicode")]
+mod unicode_folding;
 
 pub use scoring::{fuzzy_match, FuzzyMatcher, MatchKind, MatchScore, RankKey};
 pub use trigram::{Trigram, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
