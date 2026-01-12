@@ -201,6 +201,7 @@ fn main() -> std::io::Result<()> {
     });
     drop(incoming_tx);
 
+    let mut exit_code: Option<i32> = None;
     for msg in incoming_rx {
         match msg {
             IncomingMessage::Request {
@@ -261,8 +262,8 @@ fn main() -> std::io::Result<()> {
                 let start = Instant::now();
                 if method == "exit" {
                     metrics.record_request(&method, start.elapsed());
-                    let exit_code = if state.shutdown_requested { 0 } else { 1 };
-                    std::process::exit(exit_code);
+                    exit_code = Some(if state.shutdown_requested { 0 } else { 1 });
+                    break;
                 }
 
                 let mut did_panic = false;
@@ -301,8 +302,40 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    if let Some(exit_code) = exit_code {
+        // Best-effort: shut down `lsp-server` I/O threads (especially the stdout writer) before
+        // terminating the process. Some clients send `exit` and keep the pipes open briefly, so
+        // this is intentionally bounded and will fall back to `process::exit`.
+        drop(client);
+        if state.shutdown_requested {
+            join_io_threads_with_timeout(io_threads, Duration::from_millis(250));
+        }
+        std::process::exit(exit_code);
+    }
+
     io_threads.join()?;
     Ok(())
+}
+
+fn join_io_threads_with_timeout(io_threads: lsp_server::IoThreads, timeout: Duration) {
+    use std::sync::mpsc;
+
+    let (done_tx, done_rx) = mpsc::channel::<std::io::Result<()>>();
+    std::thread::spawn(move || {
+        let res = io_threads.join();
+        let _ = done_tx.send(res);
+    });
+
+    match done_rx.recv_timeout(timeout) {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            // Preserve process-exit semantics: we are already shutting down; don't fail the exit
+            // path on an I/O join error.
+        }
+        Err(_) => {
+            // Timeout or disconnect: fall back to `process::exit` below.
+        }
+    }
 }
 
 fn initialize_result_json() -> serde_json::Value {
