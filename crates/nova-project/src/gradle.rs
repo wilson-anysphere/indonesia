@@ -3097,7 +3097,7 @@ junit = { module = "junit:junit", version = { ref = "junit" } }
 dependencies {
     implementation(libs["foo-bar"].get())
     testImplementation(libs.bundles["test"].get())
-}
+ }
 "#;
 
         let deps =
