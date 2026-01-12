@@ -98,6 +98,16 @@ function extractRoutingHintFromValue(params: unknown): RoutingHint {
     return { kind: 'projectRoot', projectRoot };
   }
 
+  const rootUri = normalizeString(record.rootUri) ?? normalizeString(record.root_uri);
+  if (rootUri) {
+    return { kind: 'uri', uri: rootUri };
+  }
+
+  const rootPath = normalizeString(record.rootPath) ?? normalizeString(record.root_path);
+  if (rootPath) {
+    return { kind: 'projectRoot', projectRoot: rootPath };
+  }
+
   const workspaceFolder = record.workspaceFolder ?? record.workspace_folder;
   if (typeof workspaceFolder === 'string') {
     const trimmed = workspaceFolder.trim();

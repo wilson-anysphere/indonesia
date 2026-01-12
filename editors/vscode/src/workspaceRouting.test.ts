@@ -85,6 +85,58 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBe(folders[1].uri);
   });
 
+  it('routes by params.rootUri', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'initialize',
+        params: { rootUri: folders[1].uri },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes by params.root_uri (snake_case)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'initialize',
+        params: { root_uri: folders[0].uri },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
+  it('routes by params.rootPath', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'initialize',
+        params: { rootPath: folders[1].fsPath },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes by params.root_path (snake_case)', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'initialize',
+        params: { root_path: folders[0].fsPath },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
   it('routes by params.workspaceFolder.uri', () => {
     const { folders } = makeWorkspaceFolders();
 
