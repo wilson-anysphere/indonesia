@@ -334,6 +334,97 @@ fn lexer_reports_unterminated_literals_and_comments() {
 }
 
 #[test]
+fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
+    fn assert_lossless(input: &str, tokens: &[crate::Token]) {
+        let reconstructed: String = tokens
+            .iter()
+            .filter(|t| t.kind != SyntaxKind::Eof)
+            .map(|t| t.text(input))
+            .collect();
+        assert_eq!(reconstructed, input, "lexer output was not lossless");
+    }
+
+    // Unterminated string template (no closing `"`).
+    let input = r#"STR."unterminated"#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        "expected an unterminated error, got: {errors:?}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateStart),
+        "expected string template tokens, got: {tokens:?}"
+    );
+    let template_text = tokens
+        .iter()
+        .find(|t| t.kind == SyntaxKind::StringTemplateText)
+        .expect("expected string template text token");
+    assert_eq!(template_text.range.end as usize, input.len());
+    // EOF while in template mode should surface a sentinel error token at EOF so the parser sees a
+    // lossless token stream + diagnostic.
+    let last_non_eof = tokens
+        .iter()
+        .rev()
+        .find(|t| t.kind != SyntaxKind::Eof)
+        .expect("expected a non-EOF token");
+    assert_eq!(last_non_eof.kind, SyntaxKind::Error);
+    assert_eq!(last_non_eof.range.start as usize, input.len());
+    assert_eq!(last_non_eof.range.end as usize, input.len());
+
+    // EOF while inside a template interpolation (`\{ ...`).
+    let input = r#"STR."hello \{x"#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        "expected an unterminated error, got: {errors:?}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateExprStart),
+        "expected a `StringTemplateExprStart` token, got: {tokens:?}"
+    );
+    assert!(
+        !tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateExprEnd),
+        "did not expect a `StringTemplateExprEnd` token for unterminated interpolation"
+    );
+
+    // Unterminated text-block template (no closing `"""`).
+    let input = r#"STR."""unterminated"#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        "expected an unterminated error, got: {errors:?}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateStart),
+        "expected string template tokens, got: {tokens:?}"
+    );
+    let template_text = tokens
+        .iter()
+        .find(|t| t.kind == SyntaxKind::StringTemplateText)
+        .expect("expected string template text token");
+    assert_eq!(template_text.range.end as usize, input.len());
+    let last_non_eof = tokens
+        .iter()
+        .rev()
+        .find(|t| t.kind != SyntaxKind::Eof)
+        .expect("expected a non-EOF token");
+    assert_eq!(last_non_eof.kind, SyntaxKind::Error);
+    assert_eq!(last_non_eof.range.start as usize, input.len());
+    assert_eq!(last_non_eof.range.end as usize, input.len());
+}
+
+#[test]
 fn lexer_text_blocks_allow_escaped_triple_quotes() {
     let input = "\"\"\"\nhello \\\"\"\" world\n\"\"\"";
     let (tokens, errors) = lex_with_errors(input);
