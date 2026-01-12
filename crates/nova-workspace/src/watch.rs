@@ -69,9 +69,13 @@ pub fn categorize_event(config: &WatchConfig, change: &FileChange) -> Option<Cha
         .map(|path| normalize_watch_path(path.to_path_buf()))
         .collect();
 
+    let nova_config_path = config
+        .nova_config_path
+        .as_ref()
+        .map(|path| normalize_watch_path(path.clone()));
+
     for path in &paths {
-        if config
-            .nova_config_path
+        if nova_config_path
             .as_ref()
             .is_some_and(|config_path| config_path == path)
         {
@@ -897,5 +901,29 @@ mod tests {
                 Some(ChangeCategory::Build)
             );
         }
+    }
+
+    #[test]
+    fn custom_nova_config_path_with_dotdot_segments_is_categorized_as_build() {
+        let workspace_root = PathBuf::from("/tmp/workspace");
+        let config_path = workspace_root.join("dir/../custom-config.toml");
+        let event_path = workspace_root.join("custom-config.toml");
+
+        assert!(
+            !is_build_file(&event_path),
+            "test precondition: config path should not match standard build file names"
+        );
+
+        let mut config = WatchConfig::new(workspace_root);
+        // Intentionally use a non-normalized config path.
+        config.nova_config_path = Some(config_path);
+
+        let event = FileChange::Modified {
+            path: VfsPath::local(event_path),
+        };
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Build)
+        );
     }
 }

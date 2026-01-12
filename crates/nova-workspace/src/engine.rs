@@ -41,12 +41,22 @@ use crate::snapshot::WorkspaceDbView;
 use crate::watch::{categorize_event, ChangeCategory, WatchConfig};
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
+fn normalize_vfs_local_path(path: PathBuf) -> PathBuf {
+    match VfsPath::local(path) {
+        VfsPath::Local(path) => path,
+        // `VfsPath::local` always returns the local variant.
+        _ => unreachable!("VfsPath::local produced a non-local path"),
+    }
+}
+
 fn compute_watch_roots(
     workspace_root: &Path,
     watch_config: &WatchConfig,
 ) -> Vec<(PathBuf, WatchMode)> {
+    let workspace_root = normalize_vfs_local_path(workspace_root.to_path_buf());
+
     let mut roots: Vec<(PathBuf, WatchMode)> = Vec::new();
-    roots.push((workspace_root.to_path_buf(), WatchMode::Recursive));
+    roots.push((workspace_root.clone(), WatchMode::Recursive));
 
     // Explicit external roots are watched recursively. Roots under the workspace root are already
     // covered by the workspace recursive watch.
@@ -56,17 +66,19 @@ fn compute_watch_roots(
         .chain(watch_config.generated_source_roots.iter())
         .chain(watch_config.module_roots.iter())
     {
-        if root.starts_with(workspace_root) {
+        let root = normalize_vfs_local_path(root.clone());
+        if root.starts_with(&workspace_root) {
             continue;
         }
-        roots.push((root.clone(), WatchMode::Recursive));
+        roots.push((root, WatchMode::Recursive));
     }
 
     // Watch the discovered config file when it lives outside the workspace root. Use a
     // non-recursive watch so we don't accidentally watch huge trees like `$HOME`.
     if let Some(config_path) = watch_config.nova_config_path.as_ref() {
-        if !config_path.starts_with(workspace_root) {
-            roots.push((config_path.clone(), WatchMode::NonRecursive));
+        let config_path = normalize_vfs_local_path(config_path.clone());
+        if !config_path.starts_with(&workspace_root) {
+            roots.push((config_path, WatchMode::NonRecursive));
         }
     }
 
@@ -1344,13 +1356,6 @@ impl WorkspaceEngine {
         // - dot segments (`a/../b`) don't prevent directory-event expansion
         //
         // This is purely lexical normalization via `VfsPath::local` (does not resolve symlinks).
-        let normalize_local_path = |path: PathBuf| -> PathBuf {
-            match VfsPath::local(path) {
-                VfsPath::Local(path) => path,
-                // `VfsPath::local` always returns the local variant.
-                _ => unreachable!("VfsPath::local produced a non-local path"),
-            }
-        };
 
         // Coalesce noisy watcher streams by processing each path at most once per batch.
         //
@@ -1365,7 +1370,7 @@ impl WorkspaceEngine {
         // Helper: return the set of *known* local file paths that are under `dir`.
         // This must not allocate new `FileId`s.
         let known_files_under_dir = |dir: &Path| -> Vec<PathBuf> {
-            let dir = normalize_local_path(dir.to_path_buf());
+            let dir = normalize_vfs_local_path(dir.to_path_buf());
             let mut files = Vec::new();
             for file_id in self.vfs.all_file_ids() {
                 let Some(vfs_path) = self.vfs.path_for_id(file_id) else {
@@ -1393,8 +1398,8 @@ impl WorkspaceEngine {
                     let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
                         continue;
                     };
-                    let from = normalize_local_path(from.to_path_buf());
-                    let to = normalize_local_path(to.to_path_buf());
+                    let from = normalize_vfs_local_path(from.to_path_buf());
+                    let to = normalize_vfs_local_path(to.to_path_buf());
                     if is_module_info_java(&from) {
                         module_info_changes.insert(from.clone());
                     }
@@ -1451,7 +1456,7 @@ impl WorkspaceEngine {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_local_path(path.to_path_buf());
+                    let path = normalize_vfs_local_path(path.to_path_buf());
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -1474,7 +1479,7 @@ impl WorkspaceEngine {
                     let Some(path) = path.as_local_path() else {
                         continue;
                     };
-                    let path = normalize_local_path(path.to_path_buf());
+                    let path = normalize_vfs_local_path(path.to_path_buf());
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -3381,8 +3386,12 @@ fn reload_project_and_sync(
             watch_source_roots.clone(),
             watch_generated_roots.clone(),
         );
-        cfg.module_roots = watch_module_roots.clone();
-        cfg.nova_config_path = nova_config_path.clone();
+        cfg.module_roots = watch_module_roots
+            .iter()
+            .cloned()
+            .map(normalize_vfs_local_path)
+            .collect();
+        cfg.nova_config_path = nova_config_path.clone().map(normalize_vfs_local_path);
     }
 
     // If the watcher is running, schedule a refresh so it reconciles watched paths/roots with the
@@ -4355,6 +4364,23 @@ mod tests {
             compute_watch_roots(&workspace_root, &config_a),
             compute_watch_roots(&workspace_root, &config_b)
         );
+    }
+
+    #[test]
+    fn watch_roots_deduplicate_equivalent_paths_after_normalization() {
+        let workspace_root = PathBuf::from("/ws");
+        let mut config = WatchConfig::new(workspace_root.clone());
+
+        // Intentionally use two distinct paths that normalize to the same directory.
+        config.module_roots = vec![PathBuf::from("/ext/src"), PathBuf::from("/ext/dir/../src")];
+
+        let roots = compute_watch_roots(&workspace_root, &config);
+        assert_eq!(
+            roots.len(),
+            2,
+            "expected watch roots to deduplicate normalized external paths; roots={roots:?}"
+        );
+        assert!(roots.contains(&(PathBuf::from("/ext/src"), WatchMode::Recursive)));
     }
 
     #[test]
