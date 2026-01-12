@@ -388,3 +388,130 @@ class C {
         "did not expect invalid-synchronized-expression diagnostic, got {diags:?}"
     );
 }
+
+#[test]
+fn while_condition_must_be_boolean() {
+    let src = r#"
+class C { void m(){ while (1) {} } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "condition-not-boolean"),
+        "expected condition-not-boolean diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn for_condition_must_be_boolean() {
+    let src = r#"
+class C { void m(){ for (; 1; ) {} } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "condition-not-boolean"),
+        "expected condition-not-boolean diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn return_without_value_in_nonvoid_is_error() {
+    let src = r#"
+class C {
+    String m() { return; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn byte_initializer_allows_int_constant_narrowing() {
+    let src = r#"
+class C { void m(){ byte b = 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected constant narrowing to avoid type-mismatch; got {diags:?}"
+    );
+}
+
+#[test]
+fn byte_initializer_allows_shift_constant_narrowing() {
+    let src = r#"
+class C { void m(){ byte b = 1 << 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected shift constant to narrow to byte; got {diags:?}"
+    );
+}
+
+#[test]
+fn byte_initializer_rejects_out_of_range_shift_constant() {
+    let src = r#"
+class C { void m(){ byte b = 1 << 10; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected out-of-range shift constant to produce type-mismatch; got {diags:?}"
+    );
+}
+
+#[test]
+fn comparison_expression_types_as_boolean() {
+    let src = r#"
+class C { void m(){ boolean b = 1 < 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find('<').expect("snippet should contain <");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn this_and_super_in_static_context_emit_diagnostics() {
+    let src = r#"
+class C {
+    static void m() {
+        this.toString();
+        super.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "this-in-static-context"),
+        "expected this-in-static-context diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "super-in-static-context"),
+        "expected super-in-static-context diagnostic; got {diags:?}"
+    );
+}
