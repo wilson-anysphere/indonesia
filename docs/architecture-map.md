@@ -99,11 +99,12 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
     path is still `query`/`aquery`.
 
 ### `nova-build-model`
-- **Purpose:** shared “build model” types used across crates (e.g. classpath entry descriptors) to avoid coupling consumers to `nova-project` implementation details.
-- **Key entry points:** `crates/nova-build-model/src/lib.rs` (`ClasspathEntry`, `ClasspathEntryKind`).
-- **Maturity:** scaffolding
+- **Purpose:** build-system-agnostic “project model” types shared across build integrations (`nova-project`, `nova-build`, Bazel tooling), plus the object-safe build-system backend trait used for detection/loading.
+- **Key entry points:** `crates/nova-build-model/src/lib.rs` (`ProjectModel`, `ProjectConfig`, `Classpath`, `BuildSystemBackend`, `BuildSystemError`), `crates/nova-build-model/src/model.rs` (core model definitions, `WorkspaceProjectModel`, module/source root metadata).
+- **Maturity:** productionizing
 - **Known gaps vs intended docs:**
-  - Currently only contains classpath entry types; additional build/discovery model types may move here over time.
+  - The model is still evolving and some consumers still use the older aggregated `ProjectConfig` surface rather than the normalized `ProjectModel` / per-module metadata.
+  - Not yet integrated as the authoritative source-of-truth for Nova’s long-lived workspace/Salsa DB layer.
 
 ### `nova-cache`
 - **Purpose:** per-project persistent cache directory management + cache packaging (`tar.zst`).
@@ -419,7 +420,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-project`
 - **Purpose:** workspace discovery and project configuration (source roots, classpath, Java levels), used by `nova-lsp` project metadata endpoints including `nova/projectConfiguration` and the normalized `nova/projectModel`.
-- **Key entry points:** `crates/nova-project/src/lib.rs` (`load_project`, `ProjectConfig`, `LoadOptions`).
+- **Key entry points:** `crates/nova-project/src/discover.rs` (`load_project`, `load_workspace_model`, `LoadOptions`), `crates/nova-project/src/build_systems.rs` (`default_build_systems`, build backend implementations), plus the shared model types in `crates/nova-build-model/` (re-exported by `nova-project`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Module graph construction is still limited; JPMS support is partial and evolving.
