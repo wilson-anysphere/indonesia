@@ -414,6 +414,60 @@ class A {
 }
 
 #[test]
+fn completion_includes_enum_constants_in_switch_case_labels_for_this_field_selector() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+enum Color { RED, GREEN }
+
+class A {
+  Color color;
+
+  void m() {
+    switch (this.color) {
+      case R<|>:
+        break;
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|item| item.label == "RED"),
+        "expected enum constant completion to include `RED`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_includes_enum_constants_in_switch_case_labels_for_qualified_field_selector() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+enum Color { RED, GREEN }
+
+class Holder {
+  Color color;
+}
+
+class A {
+  void m(Holder h) {
+    switch (h.color) {
+      case R<|>:
+        break;
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|item| item.label == "RED"),
+        "expected enum constant completion to include `RED`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_suggests_boolean_literals_for_boolean_initializer() {
     let (db, file, pos, _text) = fixture(
         r#"

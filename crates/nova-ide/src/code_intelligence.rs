@@ -4011,7 +4011,13 @@ fn completion_in_switch_case_label(text: &str, offset: usize, prefix_start: usiz
     false
 }
 
-fn switch_selector_ident(tokens: &[Token], offset: usize) -> Option<String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SwitchSelectorExpr {
+    Ident(String),
+    FieldAccess { qualifier: String, field: String },
+}
+
+fn switch_selector_expr(tokens: &[Token], offset: usize) -> Option<SwitchSelectorExpr> {
     let idx = tokens.iter().rposition(|t| t.span.start <= offset)?;
 
     for i in (0..=idx).rev() {
@@ -4030,9 +4036,20 @@ fn switch_selector_ident(tokens: &[Token], offset: usize) -> Option<String> {
         let (close_idx, _close_offset) = find_matching_paren(tokens, open_idx)?;
 
         let inner = tokens.get(open_idx + 1..close_idx)?;
-        if inner.len() != 1 || inner[0].kind != TokenKind::Ident {
-            continue;
-        }
+        let selector = if inner.len() == 1 && inner[0].kind == TokenKind::Ident {
+            Some(SwitchSelectorExpr::Ident(inner[0].text.clone()))
+        } else if inner.len() == 3
+            && inner[0].kind == TokenKind::Ident
+            && inner[1].kind == TokenKind::Symbol('.')
+            && inner[2].kind == TokenKind::Ident
+        {
+            Some(SwitchSelectorExpr::FieldAccess {
+                qualifier: inner[0].text.clone(),
+                field: inner[2].text.clone(),
+            })
+        } else {
+            None
+        };
 
         // Best-effort containment check: ensure the cursor is inside the switch body braces so we
         // don't accidentally grab an unrelated earlier switch.
@@ -4044,23 +4061,27 @@ fn switch_selector_ident(tokens: &[Token], offset: usize) -> Option<String> {
             brace_open_idx += 1;
         }
         if brace_open_idx >= tokens.len() {
-            return Some(inner[0].text.clone());
+            return selector;
         }
 
         if let Some((_brace_close_idx, body_span)) = find_matching_brace(tokens, brace_open_idx) {
             if span_contains(body_span, offset) {
-                return Some(inner[0].text.clone());
+                return selector;
             }
             continue;
         }
 
-        return Some(inner[0].text.clone());
+        return selector;
     }
 
     None
 }
 
-fn infer_receiver_type_name(analysis: &Analysis, ident: &str, offset: usize) -> Option<String> {
+fn infer_ident_type_name(analysis: &Analysis, ident: &str, offset: usize) -> Option<String> {
+    if ident == "this" {
+        return enclosing_class(analysis, offset).map(|c| c.name.clone());
+    }
+
     // Best-effort scope inference for a plain identifier receiver:
     // 1) Local variables in the enclosing method (closest preceding declaration).
     // 2) Parameters of the enclosing method.
@@ -4070,6 +4091,7 @@ fn infer_receiver_type_name(analysis: &Analysis, ident: &str, offset: usize) -> 
         .iter()
         .find(|m| span_contains(m.body_span, offset))
     {
+        let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
         if let Some(var) = analysis
             .vars
             .iter()
@@ -4077,6 +4099,10 @@ fn infer_receiver_type_name(analysis: &Analysis, ident: &str, offset: usize) -> 
                 v.name == ident
                     && v.name_span.start <= offset
                     && span_contains(method.body_span, v.name_span.start)
+            })
+            .filter(|v| {
+                let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
+                brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack)
             })
             .max_by_key(|v| v.name_span.start)
         {
@@ -4106,11 +4132,17 @@ fn infer_receiver_type_name(analysis: &Analysis, ident: &str, offset: usize) -> 
         }
     }
 
-    analysis
-        .fields
-        .iter()
-        .find(|f| f.name == ident)
-        .map(|f| f.ty.clone())
+    if let Some(class) = enclosing_class(analysis, offset) {
+        if let Some(field) = analysis
+            .fields
+            .iter()
+            .find(|f| f.name == ident && span_within(f.name_span, class.span))
+        {
+            return Some(field.ty.clone());
+        }
+    }
+
+    analysis.fields.iter().find(|f| f.name == ident).map(|f| f.ty.clone())
 }
 
 fn resolve_type_name_in_completion_env(
@@ -4197,6 +4229,97 @@ fn field_ty_is_class(types: &TypeStore, class_id: ClassId, ty: &Type) -> bool {
     }
 }
 
+fn type_class_id(types: &TypeStore, ty: &Type) -> Option<ClassId> {
+    match ty {
+        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+        Type::Named(name) => types.class_id(name.as_str()),
+        _ => None,
+    }
+}
+
+fn infer_switch_selector_type_id(
+    analysis: &Analysis,
+    selector: &SwitchSelectorExpr,
+    offset: usize,
+    types: &TypeStore,
+    workspace_index: &completion_cache::WorkspaceTypeIndex,
+    package: &str,
+    imports: &JavaImportInfo,
+) -> Option<ClassId> {
+    match selector {
+        SwitchSelectorExpr::Ident(ident) => {
+            let ty_name = infer_ident_type_name(analysis, ident, offset)?;
+            resolve_type_name_in_completion_env(types, workspace_index, package, imports, &ty_name)
+        }
+        SwitchSelectorExpr::FieldAccess { qualifier, field } => {
+            if qualifier == "this" {
+                let Some(class) = enclosing_class(analysis, offset) else {
+                    return None;
+                };
+                let ty_name = analysis
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *field && span_within(f.name_span, class.span))
+                    .or_else(|| analysis.fields.iter().find(|f| f.name == *field))
+                    .map(|f| f.ty.clone())?;
+                return resolve_type_name_in_completion_env(
+                    types,
+                    workspace_index,
+                    package,
+                    imports,
+                    &ty_name,
+                );
+            }
+
+            let qualifier_id = if qualifier == "super" {
+                let class = enclosing_class(analysis, offset)?;
+                let extends = class.extends.as_deref()?;
+                resolve_type_name_in_completion_env(types, workspace_index, package, imports, extends)
+            } else {
+                infer_ident_type_name(analysis, qualifier, offset)
+                    .and_then(|ty_name| {
+                        resolve_type_name_in_completion_env(
+                            types,
+                            workspace_index,
+                            package,
+                            imports,
+                            &ty_name,
+                        )
+                    })
+                    // Allow `switch(EnumType.CONST)` by treating the qualifier as a type name when it
+                    // isn't a known value in scope.
+                    .or_else(|| {
+                        resolve_type_name_in_completion_env(
+                            types,
+                            workspace_index,
+                            package,
+                            imports,
+                            qualifier,
+                        )
+                    })
+            }?;
+
+            let class_def = types.class(qualifier_id)?;
+            let field_def = class_def.fields.iter().find(|f| f.name == *field)?;
+            type_class_id(types, &field_def.ty).or_else(|| {
+                // Fallback: if the field type is an unresolved `Type::Named`, try resolving it
+                // against the current file context (best-effort).
+                if let Type::Named(name) = &field_def.ty {
+                    resolve_type_name_in_completion_env(
+                        types,
+                        workspace_index,
+                        package,
+                        imports,
+                        name,
+                    )
+                } else {
+                    None
+                }
+            })
+        }
+    }
+}
+
 fn enum_case_label_completions(
     db: &dyn Database,
     file: FileId,
@@ -4210,18 +4333,19 @@ fn enum_case_label_completions(
     }
 
     let analysis = analyze(text);
-    let selector = switch_selector_ident(&analysis.tokens, prefix_start)?;
-    let selector_ty = infer_receiver_type_name(&analysis, &selector, prefix_start)?;
-
     let env = completion_cache::completion_env_for_file(db, file)?;
     let package = parse_java_package_name(text).unwrap_or_default();
     let imports = parse_java_imports(text);
-    let enum_id = resolve_type_name_in_completion_env(
+
+    let selector = switch_selector_expr(&analysis.tokens, prefix_start)?;
+    let enum_id = infer_switch_selector_type_id(
+        &analysis,
+        &selector,
+        prefix_start,
         env.types(),
         env.workspace_index(),
         &package,
         &imports,
-        &selector_ty,
     )?;
 
     let enum_def = env.types().class(enum_id)?;
