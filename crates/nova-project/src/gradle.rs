@@ -397,6 +397,8 @@ pub(crate) fn load_gradle_project(
         } else {
             root.join(&module_ref.dir_rel)
         };
+        let module_root = canonicalize_or_fallback(&module_root);
+
         let module_display_name = if module_ref.dir_rel == "." {
             root.file_name()
                 .and_then(|s| s.to_str())
@@ -430,6 +432,7 @@ pub(crate) fn load_gradle_project(
             for src_root in &cfg.main_source_roots {
                 let path = resolve_snapshot_project_dir(root, src_root);
                 if !path.as_os_str().is_empty() {
+                    let path = canonicalize_or_fallback(&path);
                     source_roots.push(SourceRoot {
                         kind: SourceRootKind::Main,
                         origin: SourceRootOrigin::Source,
@@ -440,6 +443,7 @@ pub(crate) fn load_gradle_project(
             for src_root in &cfg.test_source_roots {
                 let path = resolve_snapshot_project_dir(root, src_root);
                 if !path.as_os_str().is_empty() {
+                    let path = canonicalize_or_fallback(&path);
                     source_roots.push(SourceRoot {
                         kind: SourceRootKind::Test,
                         origin: SourceRootOrigin::Source,
@@ -459,12 +463,12 @@ pub(crate) fn load_gradle_project(
             let main_output = cfg
                 .main_output_dir
                 .as_deref()
-                .map(|p| resolve_snapshot_project_dir(root, p))
+                .map(|p| canonicalize_or_fallback(&resolve_snapshot_project_dir(root, p)))
                 .unwrap_or_else(|| module_root.join("build/classes/java/main"));
             let test_output = cfg
                 .test_output_dir
                 .as_deref()
-                .map(|p| resolve_snapshot_project_dir(root, p))
+                .map(|p| canonicalize_or_fallback(&resolve_snapshot_project_dir(root, p)))
                 .unwrap_or_else(|| module_root.join("build/classes/java/test"));
 
             output_dirs.push(OutputDir {
@@ -495,6 +499,7 @@ pub(crate) fn load_gradle_project(
                 if path.as_os_str().is_empty() {
                     continue;
                 }
+                let path = canonicalize_or_fallback(&path);
                 classpath.push(ClasspathEntry {
                     kind: classpath_entry_kind_for_path(&path),
                     path,
@@ -505,6 +510,7 @@ pub(crate) fn load_gradle_project(
                 if path.as_os_str().is_empty() {
                     continue;
                 }
+                let path = canonicalize_or_fallback(&path);
                 module_path.push(ClasspathEntry {
                     kind: classpath_entry_kind_for_path(&path),
                     path,
@@ -569,6 +575,8 @@ pub(crate) fn load_gradle_project(
             }
         }
     }
+
+    sort_dedup_modules(&mut modules);
 
     // Add user-provided classpath entries for unresolved dependencies (Gradle).
     for entry in &options.classpath_overrides {
@@ -698,6 +706,7 @@ pub(crate) fn load_gradle_workspace_model(
         } else {
             root.join(&module_ref.dir_rel)
         };
+        let module_root = canonicalize_or_fallback(&module_root);
 
         let module_display_name = if module_ref.dir_rel == "." {
             root.file_name()
@@ -747,6 +756,7 @@ pub(crate) fn load_gradle_workspace_model(
                 if path.as_os_str().is_empty() {
                     continue;
                 }
+                let path = canonicalize_or_fallback(&path);
                 source_roots.push(SourceRoot {
                     kind: SourceRootKind::Main,
                     origin: SourceRootOrigin::Source,
@@ -758,6 +768,7 @@ pub(crate) fn load_gradle_workspace_model(
                 if path.as_os_str().is_empty() {
                     continue;
                 }
+                let path = canonicalize_or_fallback(&path);
                 source_roots.push(SourceRoot {
                     kind: SourceRootKind::Test,
                     origin: SourceRootOrigin::Source,
@@ -781,12 +792,12 @@ pub(crate) fn load_gradle_workspace_model(
             let main_output = cfg
                 .main_output_dir
                 .as_deref()
-                .map(|p| resolve_snapshot_project_dir(root, p))
+                .map(|p| canonicalize_or_fallback(&resolve_snapshot_project_dir(root, p)))
                 .unwrap_or_else(|| module_root.join("build/classes/java/main"));
             let test_output = cfg
                 .test_output_dir
                 .as_deref()
-                .map(|p| resolve_snapshot_project_dir(root, p))
+                .map(|p| canonicalize_or_fallback(&resolve_snapshot_project_dir(root, p)))
                 .unwrap_or_else(|| module_root.join("build/classes/java/test"));
             (main_output, test_output)
         } else {
@@ -831,6 +842,7 @@ pub(crate) fn load_gradle_workspace_model(
                 if path.as_os_str().is_empty() {
                     continue;
                 }
+                let path = canonicalize_or_fallback(&path);
                 classpath.push(ClasspathEntry {
                     kind: classpath_entry_kind_for_path(&path),
                     path,
@@ -841,6 +853,7 @@ pub(crate) fn load_gradle_workspace_model(
                 if path.as_os_str().is_empty() {
                     continue;
                 }
+                let path = canonicalize_or_fallback(&path);
                 module_path.push(ClasspathEntry {
                     kind: classpath_entry_kind_for_path(&path),
                     path,
@@ -912,6 +925,8 @@ pub(crate) fn load_gradle_workspace_model(
             dependencies,
         });
     }
+
+    sort_dedup_workspace_modules(&mut module_configs);
 
     let modules_for_jpms = module_configs
         .iter()
@@ -2317,6 +2332,20 @@ fn split_known_scope(scope: Option<&str>) -> (Option<&str>, Option<&str>) {
         Some(s) => (None, Some(s)),
         None => (None, None),
     }
+}
+
+fn canonicalize_or_fallback(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn sort_dedup_modules(modules: &mut Vec<Module>) {
+    modules.sort_by(|a, b| a.root.cmp(&b.root).then(a.name.cmp(&b.name)));
+    modules.dedup_by(|a, b| a.root == b.root);
+}
+
+fn sort_dedup_workspace_modules(modules: &mut Vec<WorkspaceModuleConfig>) {
+    modules.sort_by(|a, b| a.root.cmp(&b.root).then(a.id.cmp(&b.id)));
+    modules.dedup_by(|a, b| a.root == b.root);
 }
 
 #[cfg(test)]

@@ -195,7 +195,6 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
     ] {
         write_file(&repo_jar_path(&repo, group_id, artifact_id, version), "");
     }
-
     // Leaf dependencies.
     write_file(
         &repo_pom_path(&repo, "com.dep", "dep-parent", "9.9.9"),

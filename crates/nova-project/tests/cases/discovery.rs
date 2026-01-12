@@ -859,14 +859,16 @@ fn loads_gradle_includeflat_workspace_model() {
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
     let app = model.module_by_id("gradle::app").expect("app module");
-    assert_eq!(app.root, model.workspace_root.join("../app"));
+    let expected_app_root =
+        std::fs::canonicalize(model.workspace_root.join("../app")).expect("canonicalize app root");
+    assert_eq!(app.root, expected_app_root);
 
-    let app_file = model
-        .workspace_root
-        .join("../app/src/main/java/com/example/app/App.java");
-    let match_app = model
-        .module_for_path(&app_file)
-        .expect("module for App.java");
+    let app_file = std::fs::canonicalize(
+        model.workspace_root
+            .join("../app/src/main/java/com/example/app/App.java"),
+    )
+    .expect("canonicalize app file");
+    let match_app = model.module_for_path(&app_file).expect("module for App.java");
     assert_eq!(match_app.module.id, "gradle::app");
     assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
 }
