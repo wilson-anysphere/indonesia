@@ -1103,12 +1103,40 @@ impl<'a> JavaSketchParser<'a> {
                             self.cursor = saved;
                         }
                     }
-                    JavaTypeDeclKind::Class | JavaTypeDeclKind::Enum | JavaTypeDeclKind::Record => {
+                    JavaTypeDeclKind::Class => {
                         // Parse optional `extends Foo`
                         let saved = self.cursor;
                         if let Some((kw, _)) = self.next_identifier() {
                             if kw == "extends" {
                                 extends = self.next_simple_type_name();
+                            } else {
+                                self.cursor = saved;
+                            }
+                        } else {
+                            self.cursor = saved;
+                        }
+
+                        // Parse optional `implements I, J`
+                        self.skip_ws_and_comments();
+                        let saved = self.cursor;
+                        if let Some((kw, _)) = self.next_identifier() {
+                            if kw == "implements" {
+                                implements = self.parse_simple_type_name_list();
+                            } else {
+                                self.cursor = saved;
+                            }
+                        } else {
+                            self.cursor = saved;
+                        }
+                    }
+                    JavaTypeDeclKind::Enum | JavaTypeDeclKind::Record => {
+                        // Enums and records can implement interfaces. They can't declare a named
+                        // base class in Java, but we may encounter `extends` in malformed code.
+                        // Best-effort: skip it without recording so we can still locate `implements`.
+                        let saved = self.cursor;
+                        if let Some((kw, _)) = self.next_identifier() {
+                            if kw == "extends" {
+                                let _ = self.next_type_name();
                             } else {
                                 self.cursor = saved;
                             }

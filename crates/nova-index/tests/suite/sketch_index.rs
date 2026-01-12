@@ -676,6 +676,7 @@ fn interface_declarations_are_indexed_as_classes() {
             .any(|sym| sym.kind == SymbolKind::Class && sym.name == "I"),
         "expected interface I to be indexed as a Class symbol"
     );
+    assert!(index.is_interface("I"));
 }
 
 #[test]
