@@ -3773,3 +3773,113 @@ fn rename_lambda_parameter_block_body_updates_all_occurrences() {
         "expected no remaining x references: {after}"
     );
 }
+
+#[test]
+fn inline_variable_rejects_shadowed_dependency_in_nested_block() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    {
+      int b = 2;
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            SemanticRefactorError::InlineShadowedDependency { name } if name == "b"
+        ),
+        "expected InlineShadowedDependency for `b`, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_allows_when_no_shadowing() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("println(b);"),
+        "expected `a` to be inlined to `b`, got: {after}"
+    );
+    assert!(
+        !after.contains("int a ="),
+        "expected `a` declaration to be removed, got: {after}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_shadowing_by_lambda_parameter() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    java.util.function.IntConsumer c = (b) -> System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            SemanticRefactorError::InlineShadowedDependency { name } if name == "b"
+        ),
+        "expected InlineShadowedDependency for `b`, got: {err:?}"
+    );
+}

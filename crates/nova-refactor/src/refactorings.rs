@@ -35,6 +35,8 @@ pub enum RefactorError {
     InlineSideEffects,
     #[error("inlining would change value: {reason}")]
     InlineWouldChangeValue { reason: String },
+    #[error("cannot inline: `{name}` would resolve differently at the usage site")]
+    InlineShadowedDependency { name: String },
     #[error("failed to parse Java source")]
     ParseError,
     #[error("selection does not resolve to a single expression")]
@@ -875,6 +877,16 @@ pub fn inline_variable(
         return Err(RefactorError::InlineNotSupported);
     }
 
+    ensure_inline_variable_dependencies_not_shadowed(
+        db,
+        &parsed,
+        &def.file,
+        text,
+        init_range,
+        &init_expr,
+        &targets,
+    )?;
+
     // Reject inlining across lambda execution-context boundaries. Inlining a local into a lambda
     // body (or out of it) can change evaluation timing and captured-variable semantics.
     //
@@ -1052,6 +1064,91 @@ pub fn inline_variable(
     Ok(edit)
 }
 
+fn ensure_inline_variable_dependencies_not_shadowed(
+    db: &dyn RefactorDatabase,
+    parsed: &nova_syntax::JavaParseResult,
+    file: &FileId,
+    text: &str,
+    initializer_range: TextRange,
+    initializer: &ast::Expression,
+    targets: &[crate::semantic::Reference],
+) -> Result<(), RefactorError> {
+    let mut deps: HashMap<String, SymbolId> = HashMap::new();
+
+    // Collect locals/params referenced by the initializer so we can prevent cases where inlining
+    // would change what those identifiers resolve to at the usage site (shadowing).
+    for tok in initializer
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        if tok.kind() != SyntaxKind::Identifier {
+            continue;
+        }
+
+        let range = syntax_token_range(&tok);
+        let Some(sym) = db.symbol_at(file, range.start) else {
+            continue;
+        };
+
+        if !matches!(
+            db.symbol_kind(sym),
+            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+        ) {
+            continue;
+        }
+
+        // Ignore locals/params declared inside the initializer expression itself (for example,
+        // lambda parameters). Inlining doesn't change their binding.
+        if let Some(def) = db.symbol_definition(sym) {
+            if def.file == *file
+                && initializer_range.start <= def.name_range.start
+                && def.name_range.end <= initializer_range.end
+            {
+                continue;
+            }
+        }
+
+        let name = tok.text().to_string();
+        if let Some(existing) = deps.insert(name.clone(), sym) {
+            if existing != sym {
+                // Same spelling resolves to different locals/params inside the initializer
+                // (e.g. nested scopes). This best-effort resolver doesn't support that.
+                return Err(RefactorError::InlineNotSupported);
+            }
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(());
+    }
+
+    for usage in targets {
+        if usage.file != *file {
+            // Locals should not have cross-file references.
+            return Err(RefactorError::InlineNotSupported);
+        }
+
+        for (name, init_sym) in &deps {
+            let Some(decl_offset) =
+                lexical_resolve_local_or_param_decl_offset(parsed, text, usage.range.start, name)
+            else {
+                return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+            };
+
+            let Some(resolved_sym) = db.symbol_at(file, decl_offset) else {
+                return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+            };
+
+            if resolved_sym != *init_sym {
+                return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn ensure_inline_variable_value_stable(
     db: &dyn RefactorDatabase,
     parsed: &nova_syntax::JavaParseResult,
@@ -1112,6 +1209,127 @@ fn ensure_inline_variable_value_stable(
     }
 
     Ok(())
+}
+
+/// Best-effort lexical name resolution for locals/parameters at `offset`.
+///
+/// This is intentionally syntax-based and only understands:
+/// - local variables declared via `LocalVariableDeclarationStatement` in blocks,
+/// - method/constructor parameters, and
+/// - lambda parameters.
+///
+/// It returns the *declaration identifier token start offset* of the resolved binding, if found.
+fn lexical_resolve_local_or_param_decl_offset(
+    parsed: &nova_syntax::JavaParseResult,
+    text: &str,
+    offset: usize,
+    name: &str,
+) -> Option<usize> {
+    if offset >= text.len() {
+        return None;
+    }
+
+    let element = parsed.covering_element(nova_syntax::TextRange {
+        start: u32::try_from(offset).ok()?,
+        end: u32::try_from(offset + 1).ok()?,
+    });
+
+    let node = match element {
+        nova_syntax::SyntaxElement::Node(node) => node,
+        nova_syntax::SyntaxElement::Token(token) => token.parent()?,
+    };
+
+    for anc in node.ancestors() {
+        if let Some(block) = ast::Block::cast(anc.clone()) {
+            if let Some(decl_offset) = lexical_resolve_in_block(&block, offset, name) {
+                return Some(decl_offset);
+            }
+        }
+
+        // Lambdas introduce their own parameter scope which shadows outer locals/params.
+        if let Some(lambda) = ast::LambdaExpression::cast(anc.clone()) {
+            if let Some(decl_offset) = lexical_resolve_in_lambda_params(&lambda, name) {
+                return Some(decl_offset);
+            }
+        }
+    }
+
+    // If no locals were found, fall back to method/constructor parameters.
+    if let Some(method) = node.ancestors().find_map(ast::MethodDeclaration::cast) {
+        if let Some(decl_offset) = lexical_resolve_in_parameter_list(method.parameter_list(), name)
+        {
+            return Some(decl_offset);
+        }
+    }
+
+    if let Some(ctor) = node.ancestors().find_map(ast::ConstructorDeclaration::cast) {
+        if let Some(decl_offset) = lexical_resolve_in_parameter_list(ctor.parameter_list(), name) {
+            return Some(decl_offset);
+        }
+    }
+
+    None
+}
+
+fn lexical_resolve_in_block(block: &ast::Block, offset: usize, name: &str) -> Option<usize> {
+    let mut found = None;
+    for stmt in block.statements() {
+        let stmt_range = syntax_range(stmt.syntax());
+        if stmt_range.start > offset {
+            break;
+        }
+
+        let ast::Statement::LocalVariableDeclarationStatement(local) = stmt else {
+            continue;
+        };
+
+        let Some(list) = local.declarator_list() else {
+            continue;
+        };
+
+        for declarator in list.declarators() {
+            let Some(name_tok) = declarator.name_token() else {
+                continue;
+            };
+            if name_tok.text() != name {
+                continue;
+            }
+            let start = u32::from(name_tok.text_range().start()) as usize;
+            if start < offset {
+                found = Some(start);
+            }
+        }
+    }
+    found
+}
+
+fn lexical_resolve_in_lambda_params(lambda: &ast::LambdaExpression, name: &str) -> Option<usize> {
+    let params = lambda.parameters()?;
+    for param in params.parameters() {
+        let Some(name_tok) = param.name_token() else {
+            continue;
+        };
+        if name_tok.text() == name {
+            return Some(u32::from(name_tok.text_range().start()) as usize);
+        }
+    }
+    None
+}
+
+fn lexical_resolve_in_parameter_list(
+    params: Option<ast::ParameterList>,
+    name: &str,
+) -> Option<usize> {
+    let params = params?;
+    for param in params.parameters() {
+        let Some(name_tok) = param.name_token() else {
+            continue;
+        };
+        if name_tok.text() == name {
+            return Some(u32::from(name_tok.text_range().start()) as usize);
+        }
+    }
+    None
 }
 
 fn has_write_to_symbol_between(
