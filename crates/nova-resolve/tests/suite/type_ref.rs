@@ -1058,3 +1058,51 @@ fn required_examples_type_use_annotations_are_skipped() {
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 }
+
+#[test]
+fn type_use_annotations_with_arguments_are_ignored() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    // Nested parens inside the annotation argument list should not break parsing.
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String...", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String@A(x=(y))...",
+        None,
+    );
+
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
+
+#[test]
+fn type_use_annotations_can_be_qualified_and_glued_to_type_tokens() {
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    // Source `List<@com.example.A String>` becomes `List<@com.example.AString>` in `TypeRef.text`.
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<String>", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<@com.example.AString>",
+        None,
+    );
+
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
