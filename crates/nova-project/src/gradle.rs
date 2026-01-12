@@ -2288,7 +2288,7 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|compileOnlyApi|providedCompile|runtimeOnly|providedRuntime|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest|ksp|kspTest)";
+const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|compileOnlyApi|provided|providedCompile|runtimeOnly|providedRuntime|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|apt|testApt|kapt|kaptTest|ksp|kspTest)";
 
 type GradleProperties = HashMap<String, String>;
 
@@ -2384,9 +2384,9 @@ fn resolve_gradle_properties_placeholder(
 /// coarse scopes:
 /// - `implementation|api|compile` => `compile`
 /// - `runtimeOnly|runtime|providedRuntime` => `runtime`
-/// - `compileOnly|compileOnlyApi|providedCompile` => `provided`
+/// - `compileOnly|compileOnlyApi|provided|providedCompile` => `provided`
 /// - `testImplementation|testRuntimeOnly|testCompileOnly|testCompile|testRuntime` => `test`
-/// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest|ksp|kspTest` => `annotationProcessor`
+/// - `annotationProcessor|testAnnotationProcessor|apt|testApt|kapt|kaptTest|ksp|kspTest` => `annotationProcessor`
 fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
     let configuration = configuration.trim();
     if configuration.eq_ignore_ascii_case("implementation")
@@ -2405,6 +2405,7 @@ fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> 
 
     if configuration.eq_ignore_ascii_case("compileOnly")
         || configuration.eq_ignore_ascii_case("compileOnlyApi")
+        || configuration.eq_ignore_ascii_case("provided")
         || configuration.eq_ignore_ascii_case("providedCompile")
     {
         return Some("provided");
@@ -2421,6 +2422,8 @@ fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> 
 
     if configuration.eq_ignore_ascii_case("annotationProcessor")
         || configuration.eq_ignore_ascii_case("testAnnotationProcessor")
+        || configuration.eq_ignore_ascii_case("apt")
+        || configuration.eq_ignore_ascii_case("testApt")
         || configuration.eq_ignore_ascii_case("kapt")
         || configuration.eq_ignore_ascii_case("kaptTest")
         || configuration.eq_ignore_ascii_case("ksp")
@@ -3881,6 +3884,8 @@ dependencies {
     providedRuntime("g19:a19:19")
     // `java-library` style config for API deps that should still be compile-only.
     compileOnlyApi("g20:a20:20")
+    // Some builds still use a plain `provided` configuration.
+    provided("g23:a23:23")
     runtimeOnly("g4:a4:4")
     testImplementation("g5:a5:5")
     testCompile("g16:a16:16")
@@ -3893,6 +3898,9 @@ dependencies {
     kaptTest("g11:a11:11")
     ksp("g21:a21:21")
     kspTest("g22:a22:22")
+    // Legacy/third-party annotation processing plugin configurations.
+    apt("g24:a24:24")
+    testApt("g25:a25:25")
 
     // Groovy-style call form (no parens)
     implementation 'g12:a12:12'
@@ -3944,6 +3952,9 @@ dependencies {
             ("g20", "a20", "20"),
             ("g21", "a21", "21"),
             ("g22", "a22", "22"),
+            ("g23", "a23", "23"),
+            ("g24", "a24", "24"),
+            ("g25", "a25", "25"),
             ("dup", "dep", "1.0"),
         ]
         .into_iter()
@@ -3959,7 +3970,7 @@ dependencies {
 
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
-        let expected_scopes: [((String, String, Option<String>), &str); 23] = [
+        let expected_scopes: [((String, String, Option<String>), &str); 26] = [
             (
                 (String::from("g1"), String::from("a1"), Some("1".into())),
                 "compile",
@@ -4046,6 +4057,18 @@ dependencies {
             ),
             (
                 (String::from("g22"), String::from("a22"), Some("22".into())),
+                "annotationProcessor",
+            ),
+            (
+                (String::from("g23"), String::from("a23"), Some("23".into())),
+                "provided",
+            ),
+            (
+                (String::from("g24"), String::from("a24"), Some("24".into())),
+                "annotationProcessor",
+            ),
+            (
+                (String::from("g25"), String::from("a25"), Some("25".into())),
                 "annotationProcessor",
             ),
             (
