@@ -734,6 +734,9 @@ impl WorkspaceEngine {
             }
         }
 
+        // Update `project_files` membership for both paths so that renames that leave the Java set
+        // (e.g. `A.java` -> `A.txt`) or move out of the workspace root correctly remove the file.
+        self.update_project_files_membership(&from_vfs, file_id, false);
         self.update_project_files_membership(&to_vfs, file_id, exists);
 
         // Surface both paths as changed so consumers can react to deletions at `from` and
@@ -1163,6 +1166,44 @@ mod tests {
         engine.apply_filesystem_events(vec![NormalizedEvent::Deleted(file_b.clone())]);
         engine.query_db.with_snapshot(|snap| {
             assert!(!snap.file_exists(file_id));
+            assert!(!snap.project_files(project).contains(&file_id));
+        });
+    }
+
+    #[test]
+    fn renaming_java_file_to_non_java_removes_it_from_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        let java_path = root.join("src/A.java");
+        fs::write(&java_path, "class A {}".as_bytes()).unwrap();
+        engine.apply_filesystem_events(vec![NormalizedEvent::Created(java_path.clone())]);
+
+        let vfs_java = VfsPath::local(java_path.clone());
+        let file_id = engine.vfs.get_id(&vfs_java).expect("file id allocated");
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.project_files(project).contains(&file_id));
+        });
+
+        let txt_path = root.join("src/A.txt");
+        fs::rename(&java_path, &txt_path).unwrap();
+        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: java_path.clone(),
+            to: txt_path.clone(),
+        }]);
+
+        let vfs_txt = VfsPath::local(txt_path.clone());
+        assert_eq!(engine.vfs.get_id(&vfs_java), None);
+        assert_eq!(engine.vfs.get_id(&vfs_txt), Some(file_id));
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file_id));
             assert!(!snap.project_files(project).contains(&file_id));
         });
     }
