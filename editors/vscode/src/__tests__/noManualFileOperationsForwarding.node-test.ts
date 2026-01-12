@@ -135,6 +135,22 @@ function resolveNotificationMethod(
     return asString;
   }
 
+  // Handle manually constructed NotificationType instances, e.g.
+  //   new NotificationType('workspace/didRenameFiles')
+  // so forwarding can't bypass this check by avoiding the predefined
+  // Did*FilesNotification constants.
+  if (ts.isNewExpression(expr)) {
+    const ctorName = lastPropertyName(expr.expression);
+    const importedName = ctorName ? (imports.get(ctorName) ?? ctorName) : undefined;
+    if (importedName && /^NotificationType\d*$/.test(importedName)) {
+      const arg0 = expr.arguments?.[0];
+      const method = arg0 ? evalConstString(arg0, env) : undefined;
+      if (typeof method === 'string') {
+        return method;
+      }
+    }
+  }
+
   // Handle common LSP constant patterns, e.g.
   //   client.sendNotification(DidRenameFilesNotification.type, ...)
   //   client.sendNotification(DidRenameFilesNotification.type.method, ...)
