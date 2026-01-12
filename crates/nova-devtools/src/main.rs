@@ -147,6 +147,32 @@ fn run() -> anyhow::Result<ExitCode> {
                 ExitCode::from(1)
             })
         }
+        "check-test-layout" => {
+            let opts = parse_check_test_layout_args(args)?;
+            let report = nova_devtools::check_test_layout::check(
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+                &opts.allowlist,
+            )
+            .with_context(|| {
+                format!(
+                    "check-test-layout failed using allowlist {}",
+                    opts.allowlist.display()
+                )
+            })?;
+
+            emit_report(
+                "check-test-layout",
+                opts.json,
+                report.ok,
+                report.diagnostics,
+            )?;
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
         "check-repo-invariants" => {
             let opts = parse_check_repo_invariants_args(args)?;
 
@@ -191,7 +217,15 @@ fn run() -> anyhow::Result<ExitCode> {
                 })?;
             let proto_ok = proto.ok;
 
-            let overall_ok = deps_ok && layers_ok && arch_ok && proto_ok;
+            let test_layout = nova_devtools::check_test_layout::check(
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+                std::path::Path::new("test-layout-allowlist.txt"),
+            )
+            .context("check-test-layout failed")?;
+            let test_layout_ok = test_layout.ok;
+
+            let overall_ok = deps_ok && layers_ok && arch_ok && proto_ok && test_layout_ok;
 
             if opts.json {
                 let mut diagnostics = Vec::new();
@@ -199,12 +233,14 @@ fn run() -> anyhow::Result<ExitCode> {
                 diagnostics.extend(layers.diagnostics);
                 diagnostics.extend(arch.diagnostics);
                 diagnostics.extend(proto.diagnostics);
+                diagnostics.extend(test_layout.diagnostics);
                 emit_report("check-repo-invariants", true, overall_ok, diagnostics)?;
             } else {
                 print_human("check-deps", deps_ok, &deps.diagnostics);
                 print_human("check-layers", layers_ok, &layers.diagnostics);
                 print_human("check-architecture-map", arch_ok, &arch.diagnostics);
                 print_human("check-protocol-extensions", proto_ok, &proto.diagnostics);
+                print_human("check-test-layout", test_layout_ok, &test_layout.diagnostics);
 
                 if overall_ok {
                     println!("check-repo-invariants: ok");
@@ -468,6 +504,64 @@ where
 }
 
 #[derive(Debug)]
+struct CheckTestLayoutArgs {
+    manifest_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    allowlist: PathBuf,
+    json: bool,
+}
+
+fn parse_check_test_layout_args<I>(mut args: I) -> anyhow::Result<CheckTestLayoutArgs>
+where
+    I: Iterator<Item = String>,
+{
+    let mut manifest_path = None;
+    let mut metadata_path = None;
+    let mut allowlist = PathBuf::from("test-layout-allowlist.txt");
+    let mut json = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--manifest-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
+                manifest_path = Some(PathBuf::from(value));
+            }
+            "--metadata-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
+                metadata_path = Some(PathBuf::from(value));
+            }
+            "--allowlist" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--allowlist requires a value"))?;
+                allowlist = PathBuf::from(value);
+            }
+            "--json" => json = true,
+            "-h" | "--help" => {
+                print_command_help("check-test-layout");
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown argument {other:?}\n\nRun `nova-devtools check-test-layout --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(CheckTestLayoutArgs {
+        manifest_path,
+        metadata_path,
+        allowlist,
+        json,
+    })
+}
+
+#[derive(Debug)]
 struct RepoInvariantsArgs {
     config: PathBuf,
     manifest_path: Option<PathBuf>,
@@ -556,7 +650,8 @@ COMMANDS:
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
   check-architecture-map Validate docs/architecture-map.md coverage for workspace crates
   check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
-  check-repo-invariants  Run all nova-devtools repo invariants (deps, layers, architecture-map --strict, protocol-extensions)
+  check-test-layout      Validate integration test layout (avoid multiple root `tests/*.rs` binaries per crate)
+  check-repo-invariants  Run all nova-devtools repo invariants (deps, layers, architecture-map --strict, protocol-extensions, test-layout)
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
 OPTIONS:
@@ -631,6 +726,21 @@ OPTIONS:
 "
             );
         }
+        "check-test-layout" => {
+            println!(
+                "\
+USAGE:
+  nova-devtools check-test-layout [--manifest-path <path>] [--metadata-path <path>] [--allowlist <path>] [--json]
+
+OPTIONS:
+  --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --allowlist <path>      Path to test layout allowlist (default: test-layout-allowlist.txt)
+  --json                  Emit machine-readable JSON output
+  -h, --help              Print help
+"
+            );
+        }
         "check-repo-invariants" => {
             println!(
                 "\
@@ -642,6 +752,7 @@ This runs:
   - check-layers
   - check-architecture-map --strict
   - check-protocol-extensions
+  - check-test-layout
 
 OPTIONS:
   --config <path>               Path to crate-layers.toml (default: crate-layers.toml)

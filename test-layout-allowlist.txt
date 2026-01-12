@@ -1,0 +1,38 @@
+# Integration test layout allowlist
+#
+# Each `tests/*.rs` file becomes its own integration test binary. Our repo guidance is to keep
+# only ONE root-level `tests/*.rs` per crate (a single harness), and put additional tests into
+# submodules under a directory.
+#
+# This allowlist is a temporary escape hatch for crates that haven't been consolidated yet.
+# We prefer WARNINGS (not failures) for stale entries so the list can be cleaned up gradually.
+#
+# One crate name per line. `#` comments and blank lines are ignored.
+
+nova-lsp
+nova-dap
+nova-ide
+nova-cache
+nova-ai
+nova-build-bazel
+nova-router
+nova-types
+nova-refactor
+nova-db
+nova-index
+nova-remote-proto
+nova-build
+nova-format
+nova-project
+nova-config
+nova-testing
+nova-cli
+nova-workspace
+nova-resolve
+nova-classpath
+nova-decompile
+nova-framework-quarkus
+nova-framework-spring
+nova-memory
+nova-syntax
+nova-worker

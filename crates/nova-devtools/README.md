@@ -61,6 +61,19 @@ This enforces that the protocol extension spec stays in sync with both server + 
 cargo run -p nova-devtools -- check-protocol-extensions
 ```
 
+### `check-test-layout`
+
+Validates integration test layout across the workspace:
+
+- each crate should have **at most one** root-level `tests/*.rs` file (since each one is a separate
+  integration test binary)
+- crates with multiple `tests/*.rs` files must be explicitly allowlisted
+  (see [`test-layout-allowlist.txt`](../../test-layout-allowlist.txt))
+
+```
+cargo run -p nova-devtools -- check-test-layout
+```
+
 ### `check-repo-invariants`
 
 Runs the full CI-equivalent invariant suite in one command:
@@ -69,6 +82,7 @@ Runs the full CI-equivalent invariant suite in one command:
 - `check-layers`
 - `check-architecture-map --strict`
 - `check-protocol-extensions`
+- `check-test-layout`
 
 ```
 cargo run -p nova-devtools -- check-repo-invariants
@@ -120,6 +134,7 @@ cargo run -p nova-devtools -- check-deps --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
 cargo run -p nova-devtools -- check-protocol-extensions
+cargo run -p nova-devtools -- check-test-layout --metadata-path "$tmp"
 ```
 
 For convenience, you can also run:
