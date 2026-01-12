@@ -49,6 +49,9 @@ mod maven_snapshot;
 #[path = "cases/real_projects.rs"]
 mod real_projects;
 
+#[path = "cases/reload_build_files.rs"]
+mod reload_build_files;
+
 #[path = "cases/reload_project.rs"]
 mod reload_project;
 

@@ -25,7 +25,11 @@ fn reload_project_rescans_on_maven_build_markers() {
 "#,
     );
 
-    let mut options = LoadOptions::default();
+    let repo_dir = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
     let config = load_project_with_options(root, &options).expect("load project");
     assert_eq!(config.build_system, BuildSystem::Maven);
 
@@ -59,7 +63,11 @@ fn reload_project_rescans_on_gradle_build_markers() {
     write_file(&root.join("settings.gradle"), "include ':app'\n");
     write_file(&root.join("build.gradle"), "\n");
 
-    let mut options = LoadOptions::default();
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
     let config = load_project_with_options(root, &options).expect("load project");
     assert_eq!(config.build_system, BuildSystem::Gradle);
     assert!(
