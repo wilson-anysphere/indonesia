@@ -1,10 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::{
-    CallKind, ClassId, ClassKind, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId,
-    WildcardBound,
-};
+use crate::{CallKind, ClassId, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId, WildcardBound};
 
 /// Per-invocation typing context used by overload resolution and related algorithms.
 ///
@@ -70,27 +67,7 @@ impl<'env> TyContext<'env> {
                 return uniq.into_iter().next().unwrap();
             }
 
-            uniq.sort_by_cached_key(|ty| {
-                let rank: u8 = match ty {
-                    Type::Unknown | Type::Error => 0,
-                    Type::Class(ClassType { def, .. }) => match env.class(*def).map(|c| c.kind) {
-                        Some(ClassKind::Interface) => 2,
-                        Some(ClassKind::Class) | None => 1,
-                    },
-                    Type::Named(name) => env
-                        .lookup_class(name)
-                        .and_then(|id| env.class(id))
-                        .map(|c| c.kind)
-                        .map(|k| match k {
-                            ClassKind::Interface => 2,
-                            ClassKind::Class => 1,
-                        })
-                        .unwrap_or(1),
-                    Type::Array(_) | Type::VirtualInner { .. } => 1,
-                    _ => 2,
-                };
-                (rank, crate::type_sort_key(env, ty))
-            });
+            uniq.sort_by_cached_key(|ty| (crate::intersection_component_rank(env, ty), crate::type_sort_key(env, ty)));
 
             Type::Intersection(uniq)
         }

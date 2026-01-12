@@ -2782,6 +2782,27 @@ fn is_object_class(env: &dyn TypeEnv, ty: &Type) -> bool {
     )
 }
 
+fn intersection_component_rank(env: &dyn TypeEnv, ty: &Type) -> u8 {
+    match ty {
+        Type::Unknown | Type::Error => 0,
+        Type::Class(ClassType { def, .. }) => match env.class(*def).map(|c| c.kind) {
+            Some(ClassKind::Interface) => 2,
+            Some(ClassKind::Class) | None => 1,
+        },
+        Type::Named(name) => env
+            .lookup_class(name)
+            .and_then(|id| env.class(id))
+            .map(|c| c.kind)
+            .map(|k| match k {
+                ClassKind::Interface => 2,
+                ClassKind::Class => 1,
+            })
+            .unwrap_or(1),
+        Type::Array(_) | Type::VirtualInner { .. } => 1,
+        _ => 2,
+    }
+}
+
 fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
     match ty {
         Type::Void => "void".to_string(),
@@ -2817,11 +2838,26 @@ fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
             }
             out
         }
-        Type::Intersection(types) => types
-            .iter()
-            .map(|t| type_sort_key(env, t))
-            .collect::<Vec<_>>()
-            .join(" & "),
+        Type::Intersection(types) => {
+            // Canonicalize intersection keys to be order-insensitive. This helps keep derived
+            // sorting stable even when an intersection type is constructed in a non-canonical
+            // order (e.g. from external type loaders or best-effort recovery).
+            let mut flat: Vec<&Type> = Vec::new();
+            let mut stack: Vec<&Type> = types.iter().collect();
+            while let Some(t) = stack.pop() {
+                match t {
+                    Type::Intersection(parts) => stack.extend(parts.iter()),
+                    other => flat.push(other),
+                }
+            }
+
+            let mut keys: Vec<(u8, String)> = flat
+                .into_iter()
+                .map(|t| (intersection_component_rank(env, t), type_sort_key(env, t)))
+                .collect();
+            keys.sort();
+            keys.into_iter().map(|(_, k)| k).collect::<Vec<_>>().join(" & ")
+        }
     }
 }
 
@@ -2848,41 +2884,13 @@ fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
         return Type::Intersection(Vec::new());
     }
 
-    uniq.sort_by_cached_key(|ty| {
-        // Canonical ordering for intersection components.
-        //
-        // Even though intersection types are commutative, Java's erasure rules use the *first*
-        // bound for some computations (notably type variables and some intersection uses),
-        // and Java syntax requires a class bound (if present) to appear first.
-        //
-        // Additionally, we want error recovery types (`Unknown`/`Error`) to dominate so that
-        // we don't accidentally "hide" missing information by returning a concrete bound.
-        let rank: u8 = match ty {
-            Type::Unknown | Type::Error => 0,
-            Type::Class(ClassType { def, .. }) => match env.class(*def).map(|c| c.kind) {
-                Some(ClassKind::Interface) => 2,
-                Some(ClassKind::Class) | None => 1,
-            },
-            Type::Named(name) => env
-                .lookup_class(name)
-                .and_then(|id| env.class(id))
-                .map(|c| c.kind)
-                .map(|k| match k {
-                    ClassKind::Interface => 2,
-                    ClassKind::Class => 1,
-                })
-                .unwrap_or(1),
-            Type::Array(_) | Type::VirtualInner { .. } => 1,
-            _ => 2,
-        };
-        (rank, type_sort_key(env, ty))
-    });
+    uniq.sort_by_cached_key(|ty| (intersection_component_rank(env, ty), type_sort_key(env, ty)));
 
     // Prune redundant supertypes (e.g. `ArrayList & List` => `ArrayList`), while
     // remaining deterministic in the face of our best-effort subtyping relation
     // (e.g. `Named` vs `Class`, and error recovery types like `Unknown`).
     //
-    // Since `uniq` is sorted by `type_sort_key`, we always keep the first
+    // Since `uniq` is sorted deterministically, we always keep the first
     // representative when two types are mutually subtypes.
     let mut pruned: Vec<Type> = Vec::with_capacity(uniq.len());
     'cand: for t in uniq {
