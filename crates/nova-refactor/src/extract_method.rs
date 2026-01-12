@@ -204,8 +204,9 @@ pub struct ExtractMethod {
 
 impl ExtractMethod {
     pub fn analyze(&self, source: &str) -> Result<ExtractMethodAnalysis, String> {
-        let selection = trim_range(source, self.selection);
-        if selection.len() == 0 || selection.end > source.len() {
+        let raw_selection = self.selection;
+        let selection = trim_range(source, raw_selection);
+        if selection.len() == 0 || raw_selection.end > source.len() {
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
@@ -287,6 +288,25 @@ impl ExtractMethod {
         }
 
         if let Some(selection_info) = find_statement_selection(&method_body, selection) {
+            // For statement-region extraction, require that the trimmed selection ends at a
+            // statement terminator (`;` or `}`) so we never leave behind an extra `;` (which can
+            // break `if/else`, `do/while`, etc).
+            let last = source
+                .get(selection.start..selection.end)
+                .and_then(|text| text.as_bytes().last().copied());
+            if !matches!(last, Some(b';') | Some(b'}')) {
+                issues.push(ExtractMethodIssue::InvalidSelection);
+                return Ok(ExtractMethodAnalysis {
+                    region: ExtractRegionKind::Statements,
+                    parameters: Vec::new(),
+                    return_value: None,
+                    return_ty: "void".to_string(),
+                    thrown_exceptions: Vec::new(),
+                    hazards: Vec::new(),
+                    issues,
+                });
+            }
+
             // Until lambdas are modeled in flow IR, selections inside lambda bodies are invalid.
             //
             // `nova_hir::body_lowering` intentionally skips lowering lambda bodies (they're lazily
@@ -650,7 +670,8 @@ impl ExtractMethod {
 
         let newline = NewlineStyle::detect(source).as_str();
 
-        let selection = trim_range(source, self.selection);
+        let raw_selection = self.selection;
+        let selection = trim_range(source, raw_selection);
         let parsed = parse_java(source);
         if !parsed.errors.is_empty() {
             return Err("failed to parse source".to_string());
@@ -803,9 +824,29 @@ impl ExtractMethod {
         new_method_text.push_str(&method_indent);
         new_method_text.push('}');
 
+        // Preserve any leading/trailing whitespace that was part of the user's selection so we
+        // don't disturb adjacent comments/formatting.
+        let prefix = source
+            .get(raw_selection.start..selection.start)
+            .ok_or("selection out of bounds")?;
+        let suffix = source
+            .get(selection.end..raw_selection.end)
+            .ok_or("selection out of bounds")?;
+        let replacement_core = replacement;
+        let mut replacement = String::new();
+        replacement.push_str(prefix);
+        replacement.push_str(&replacement_core);
+        replacement.push_str(suffix);
+        if selection_ends_at_line_boundary(source, raw_selection)
+            && !replacement.ends_with('\n')
+            && !replacement.ends_with('\r')
+        {
+            replacement.push_str(newline);
+        }
+
         let file_id = FileId::new(self.file.clone());
         let mut edit = WorkspaceEdit::new(vec![
-            WorkspaceTextEdit::replace(file_id.clone(), selection, replacement),
+            WorkspaceTextEdit::replace(file_id.clone(), raw_selection, replacement),
             WorkspaceTextEdit::insert(file_id, insertion_offset, new_method_text),
         ]);
         edit.normalize().map_err(|e| e.to_string())?;
@@ -2867,6 +2908,10 @@ fn line_start_offset(source: &str, offset: usize) -> usize {
         .rfind(['\n', '\r'])
         .map(|p| p + 1)
         .unwrap_or(0)
+}
+
+fn selection_ends_at_line_boundary(source: &str, selection: TextRange) -> bool {
+    selection.end <= source.len() && line_start_offset(source, selection.end) == selection.end
 }
 
 fn indentation_at(source: &str, offset: usize) -> String {
