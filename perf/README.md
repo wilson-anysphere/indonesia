@@ -63,7 +63,9 @@ requests and on pushes to `main`:
 - `nova-classpath/index`: JAR/JMOD indexing over committed testdata fixtures.
 - `nova-ide/completion`: representative Java completion latency microbenchmarks.
 - `nova-fuzzy/fuzzy`: fuzzy scoring hot-path + trigram candidate generation.
-- `nova-index/symbol_search`: in-memory workspace symbol search with different candidate strategies.
+- `nova-index/symbol_search`: in-memory workspace symbol search with different candidate strategies
+  (including a separate `symbol_search_full_scan_many` group for a worst-case bounded full-scan that
+  produces many matches).
 
 ## Capturing a run
 
