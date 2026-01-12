@@ -3819,8 +3819,7 @@ class A {
         "expected Outer.bar to insert without parens; got {bar:#?}"
     );
     assert_eq!(
-        bar.insert_text_format,
-        None,
+        bar.insert_text_format, None,
         "expected Outer.bar to not use snippet insertion; got {bar:#?}"
     );
 }
@@ -7139,30 +7138,5 @@ class A {
     assert!(
         bar_idx < foo_idx,
         "expected `bar` to rank above `foo` due to recency; got indices bar={bar_idx} foo={foo_idx}"
-    );
-}
-
-#[test]
-fn file_diagnostics_includes_unresolved_import() {
-    let mut db = InMemoryFileStore::new();
-    let path = PathBuf::from("/test.java");
-    let file = db.file_id_for_path(&path);
-    db.set_file_text(
-        file,
-        r#"
-import foo.Bar;
-class A {}
-"#
-        .to_string(),
-    );
-
-    let diags = file_diagnostics(&db, file);
-    assert!(
-        diags.iter().any(|d| {
-            d.code == "unresolved-import"
-                && d.severity == Severity::Error
-                && d.message.contains("foo.Bar")
-        }),
-        "expected unresolved-import diagnostic; got {diags:#?}"
     );
 }

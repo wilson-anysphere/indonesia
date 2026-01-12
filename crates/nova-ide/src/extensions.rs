@@ -1282,7 +1282,6 @@ where
         if cancel.is_cancelled() {
             return actions;
         }
-
         if let (Some(uri), Some(span)) = (uri, span) {
             let selection = source_index.span_to_lsp_range(span);
 

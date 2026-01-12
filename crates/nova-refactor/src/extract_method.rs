@@ -83,13 +83,7 @@ fn type_at_offset_fully_qualified(
             DefWithBodyId::Initializer(i) => snapshot.hir_initializer_body(i),
         };
 
-        find_best_expr_in_stmt(
-            body.as_ref(),
-            body.root,
-            offset as usize,
-            owner,
-            &mut best,
-        );
+        find_best_expr_in_stmt(body.as_ref(), body.root, offset as usize, owner, &mut best);
     }
 
     let (owner, expr, _) = best?;
@@ -104,8 +98,7 @@ fn infer_type_at_offsets(
 ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(ty) =
-            type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
+        let Some(ty) = type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
         else {
             continue;
         };
@@ -173,7 +166,11 @@ fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
             let Some(owner_def) = env.class(*owner) else {
                 return format!("<class#{}>.{}", owner.to_raw(), name);
             };
-            format!("{}.{}", binary_name_to_source_qualified(&owner_def.name), name)
+            format!(
+                "{}.{}",
+                binary_name_to_source_qualified(&owner_def.name),
+                name
+            )
         }
         Type::Unknown => "<?>".to_string(),
         Type::Error => "<error>".to_string(),
@@ -212,7 +209,10 @@ fn binary_name_to_source_qualified(binary_name: &str) -> String {
     binary_name.replace('$', ".")
 }
 
-fn item_members<'a>(tree: &'a item_tree::ItemTree, item: hir_ids::ItemId) -> &'a [item_tree::Member] {
+fn item_members<'a>(
+    tree: &'a item_tree::ItemTree,
+    item: hir_ids::ItemId,
+) -> &'a [item_tree::Member] {
     match item {
         hir_ids::ItemId::Class(id) => &tree.class(id).members,
         hir_ids::ItemId::Interface(id) => &tree.interface(id).members,

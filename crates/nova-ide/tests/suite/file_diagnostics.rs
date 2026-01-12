@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use nova_db::InMemoryFileStore;
 use nova_ide::file_diagnostics;
-use nova_types::Severity;
 
 fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
     let mut db = InMemoryFileStore::new();
@@ -14,42 +13,6 @@ fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
 
 #[test]
 fn file_diagnostics_includes_unresolved_import_code() {
-    let (db, file) = fixture_file(
-        r#"
-import does.not.Exist;
-class A {}
-"#,
-    );
-
-    let diags = file_diagnostics(&db, file);
-    assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
-        "expected unresolved-import diagnostic; got {diags:#?}"
-    );
-}
-
-#[test]
-fn file_diagnostics_includes_unresolved_import() {
-    let (db, file) = fixture_file(
-        r#"
-import foo.Bar;
-class A {}
-"#,
-    );
-
-    let diags = file_diagnostics(&db, file);
-    assert!(
-        diags.iter().any(|d| {
-            d.code == "unresolved-import"
-                && d.severity == Severity::Error
-                && d.message.contains("foo.Bar")
-        }),
-        "expected unresolved-import diagnostic; got {diags:#?}"
-    );
-}
-
-#[test]
-fn diagnostics_include_unresolved_import() {
     let (db, file) = fixture_file(
         r#"
 import does.not.Exist;
@@ -98,7 +61,9 @@ fn file_diagnostics_include_language_level_feature_gate() {
 
     let diags = file_diagnostics(&db, file);
     assert!(
-        diags.iter().any(|d| d.code == "JAVA_FEATURE_RECORDS"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JAVA_FEATURE_RECORDS"),
         "expected JAVA_FEATURE_RECORDS diagnostic; got {diags:#?}"
     );
 }

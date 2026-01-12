@@ -848,9 +848,7 @@ class C { void m(){ Runnable[] rs = new Runnable[] { () -> {} }; } }
 "#;
 
     let (db, file) = setup_db(src);
-    let offset = src
-        .find("() -> {}")
-        .expect("snippet should contain lambda");
+    let offset = src.find("() -> {}").expect("snippet should contain lambda");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");

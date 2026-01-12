@@ -5965,6 +5965,10 @@ fn collect_switch_contexts(
                     );
                 }
             }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
+                }
             }
             hir::Expr::Switch {
                 selector,
@@ -6049,7 +6053,15 @@ fn collect_switch_contexts(
                 body: switch_body,
                 ..
             } => {
-                walk_expr(body, *selector, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *selector,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
                 walk_stmt(
                     body,
                     *switch_body,

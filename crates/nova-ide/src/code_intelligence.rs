@@ -7683,7 +7683,10 @@ fn format_type_for_postfix_snippet(
 
     let outer_source_name = outer_binary_name.to_string();
     let wildcard_shadowed_by_explicit = import_ctx.explicit.iter().any(|imp| {
-        let imp_simple = imp.rsplit_once('.').map(|(_, name)| name).unwrap_or(imp.as_str());
+        let imp_simple = imp
+            .rsplit_once('.')
+            .map(|(_, name)| name)
+            .unwrap_or(imp.as_str());
         imp_simple == outer_simple_name && imp != &outer_source_name
     });
     let outer_in_scope = import_ctx.package.as_deref() == Some(outer_package)
@@ -13497,10 +13500,9 @@ fn static_import_completion_item_from_completion_kind(
     kind: CompletionItemKind,
 ) -> CompletionItem {
     let (insert_text, insert_text_format) = match kind {
-        CompletionItemKind::METHOD => (
-            Some(format!("{name}($0)")),
-            Some(InsertTextFormat::SNIPPET),
-        ),
+        CompletionItemKind::METHOD => {
+            (Some(format!("{name}($0)")), Some(InsertTextFormat::SNIPPET))
+        }
         _ => (Some(name.to_string()), None),
     };
 

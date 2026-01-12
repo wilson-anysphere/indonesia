@@ -886,9 +886,8 @@ impl DistributedRouter {
         let connection_limit = config.max_worker_connections.max(1);
         let handshake_semaphore = Arc::new(Semaphore::new(handshake_limit));
         let connection_semaphore = Arc::new(Semaphore::new(connection_limit));
-        let shard_snapshot_semaphore = Arc::new(Semaphore::new(
-            MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1),
-        ));
+        let shard_snapshot_semaphore =
+            Arc::new(Semaphore::new(MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1)));
 
         info!(
             listen_addr = ?config.listen_addr,

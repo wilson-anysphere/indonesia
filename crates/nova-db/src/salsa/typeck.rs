@@ -722,33 +722,33 @@ fn type_of_expr_demand_result(
         // within a lambda argument to a method call), infer that enclosing expression first so
         // context-sensitive typing (target-typed lambdas, assignments, etc) can populate the type
         // environment before we query the leaf expression's type.
-         let mut inference_root: Option<(HirExprId, usize, Option<Type>)> = None;
-         {
-             let mut update_inference_root = |expr_id: HirExprId, expected: Option<Type>| {
-                 let range = body.exprs[expr_id].range();
-                 let size = range.end.saturating_sub(range.start);
-                 let replace = match inference_root {
-                     Some((_, best_size, _)) => size < best_size,
-                     None => true,
-                 };
-                 if replace {
-                     inference_root = Some((expr_id, size, expected));
-                 }
-             };
+        let mut inference_root: Option<(HirExprId, usize, Option<Type>)> = None;
+        {
+            let mut update_inference_root = |expr_id: HirExprId, expected: Option<Type>| {
+                let range = body.exprs[expr_id].range();
+                let size = range.end.saturating_sub(range.start);
+                let replace = match inference_root {
+                    Some((_, best_size, _)) => size < best_size,
+                    None => true,
+                };
+                if replace {
+                    inference_root = Some((expr_id, size, expected));
+                }
+            };
 
-             let mut stack = vec![body.root];
-             while let Some(stmt) = stack.pop() {
-                 match &body.stmts[stmt] {
+            let mut stack = vec![body.root];
+            while let Some(stmt) = stack.pop() {
+                match &body.stmts[stmt] {
                     HirStmt::Block { statements, .. } => {
                         stack.extend(statements.iter().rev().copied());
                     }
-                     HirStmt::Let {
-                         local, initializer, ..
-                     } => {
-                         if let Some(init) = initializer {
-                             let local_data = &body.locals[*local];
-                             let is_infer_var = local_data.ty_text.trim() == "var"
-                                 && checker.var_inference_enabled();
+                    HirStmt::Let {
+                        local, initializer, ..
+                    } => {
+                        if let Some(init) = initializer {
+                            let local_data = &body.locals[*local];
+                            let is_infer_var = local_data.ty_text.trim() == "var"
+                                && checker.var_inference_enabled();
                             let declared_ty = if is_infer_var {
                                 None
                             } else {

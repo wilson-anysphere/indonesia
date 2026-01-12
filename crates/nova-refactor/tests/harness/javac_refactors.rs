@@ -5,4 +5,3 @@
 
 #[path = "../suite/javac_refactors.rs"]
 mod javac_refactors;
-

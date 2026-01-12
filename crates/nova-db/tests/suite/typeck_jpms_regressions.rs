@@ -154,7 +154,9 @@ module a {
         let diag = diags
             .iter()
             .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains(missing))
-            .unwrap_or_else(|| panic!("expected unresolved-type diagnostic for {missing}, got {diags:?}"));
+            .unwrap_or_else(|| {
+                panic!("expected unresolved-type diagnostic for {missing}, got {diags:?}")
+            });
         let span = diag
             .span
             .expect("expected anchored span for unresolved implementation type");
