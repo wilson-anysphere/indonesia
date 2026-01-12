@@ -247,4 +247,47 @@ mod tests {
         let third = workspace_index_for_file(&db, file);
         assert!(!Arc::ptr_eq(&first, &third));
     }
+
+    #[test]
+    fn does_not_mix_files_across_roots() {
+        let mut db = InMemoryFileStore::new();
+
+        let root_a = PathBuf::from("/project-a");
+        let file_a_path = root_a.join("src/main/resources/application.properties");
+        let file_a = db.file_id_for_path(&file_a_path);
+        db.set_file_text(file_a, "a.key=1\n".to_string());
+
+        let root_b = PathBuf::from("/project-b");
+        let file_b_path = root_b.join("src/main/resources/application.properties");
+        let file_b = db.file_id_for_path(&file_b_path);
+        db.set_file_text(file_b, "b.key=2\n".to_string());
+
+        let index_a = workspace_index_for_file(&db, file_a);
+        assert!(
+            index_a.observed_keys().any(|k| k == "a.key"),
+            "expected index for {} to include a.key; got {:?}",
+            file_a_path.display(),
+            index_a.observed_keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !index_a.observed_keys().any(|k| k == "b.key"),
+            "expected index for {} to not include b.key; got {:?}",
+            file_a_path.display(),
+            index_a.observed_keys().collect::<Vec<_>>()
+        );
+
+        let index_b = workspace_index_for_file(&db, file_b);
+        assert!(
+            index_b.observed_keys().any(|k| k == "b.key"),
+            "expected index for {} to include b.key; got {:?}",
+            file_b_path.display(),
+            index_b.observed_keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !index_b.observed_keys().any(|k| k == "a.key"),
+            "expected index for {} to not include a.key; got {:?}",
+            file_b_path.display(),
+            index_b.observed_keys().collect::<Vec<_>>()
+        );
+    }
 }
