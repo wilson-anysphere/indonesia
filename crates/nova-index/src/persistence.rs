@@ -1889,14 +1889,85 @@ pub struct LoadedShardedIndexView {
     pub missing_shards: BTreeSet<ShardId>,
 }
 
-/// Query interface over sharded, persisted indexes.
+/// In-memory overlay for sharded index updates.
 ///
-/// This type is intentionally read-only: it operates directly on the archived `rkyv`
-/// representation backed by `mmap` where possible.
+/// This stores incremental index deltas for a subset of shards without requiring
+/// callers to materialize all shards in memory. Callers typically populate the
+/// overlay with newly indexed results for files in `invalidated_files`, then use
+/// `*_merged` query helpers on [`ShardedIndexView`] to see a combined view of
+/// persisted data (with invalidated files filtered out) and freshly indexed
+/// overlay data.
+#[derive(Clone, Debug)]
+pub struct ShardedIndexOverlay {
+    shard_count: u32,
+    shards: BTreeMap<ShardId, ProjectIndexes>,
+    /// Files for which this overlay contains authoritative (fresh) results.
+    ///
+    /// This includes both re-indexed files (`apply_file_delta`) and deleted
+    /// files (`mark_file_deleted`).
+    pub covered_files: BTreeSet<String>,
+}
+
+impl ShardedIndexOverlay {
+    pub fn new(shard_count: u32) -> Result<Self, IndexPersistenceError> {
+        if shard_count == 0 {
+            return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+        }
+
+        Ok(Self {
+            shard_count,
+            shards: BTreeMap::new(),
+            covered_files: BTreeSet::new(),
+        })
+    }
+
+    #[must_use]
+    pub fn shard_count(&self) -> u32 {
+        self.shard_count
+    }
+
+    pub fn apply_file_delta(&mut self, file_rel_path: &str, delta: ProjectIndexes) {
+        let shard_id = shard_id_for_path(file_rel_path, self.shard_count);
+        let shard = self.shards.entry(shard_id).or_default();
+
+        // Repeated updates should replace previous overlay state for this file.
+        shard.invalidate_file(file_rel_path);
+        shard.merge_from(delta);
+
+        self.covered_files.insert(file_rel_path.to_string());
+    }
+
+    pub fn mark_file_deleted(&mut self, file_rel_path: &str) {
+        let shard_id = shard_id_for_path(file_rel_path, self.shard_count);
+        if let Some(shard) = self.shards.get_mut(&shard_id) {
+            shard.invalidate_file(file_rel_path);
+        }
+
+        self.covered_files.insert(file_rel_path.to_string());
+    }
+
+    #[must_use]
+    pub fn shard(&self, shard_id: ShardId) -> Option<&ProjectIndexes> {
+        self.shards.get(&shard_id)
+    }
+
+    pub fn iter_shards(&self) -> impl Iterator<Item = (ShardId, &ProjectIndexes)> {
+        self.shards.iter().map(|(&id, shard)| (id, shard))
+    }
+}
+
+/// Query interface over sharded, persisted indexes with an optional in-memory overlay.
+///
+/// Archived results are filtered by `invalidated_files` so callers get an
+/// effectively "pruned" view of the on-disk cache without requiring
+/// `PersistedArchive::to_owned()`. The `*_merged` helpers combine these filtered
+/// persisted results with unfiltered results from [`ShardedIndexOverlay`].
 #[derive(Debug)]
 pub struct ShardedIndexView {
     shards: Vec<Option<LoadedShardIndexArchives>>,
     invalidated_files: BTreeSet<String>,
+    /// Optional in-memory overlay for newly indexed/updated files.
+    pub overlay: ShardedIndexOverlay,
 }
 
 impl ShardedIndexView {
@@ -1946,6 +2017,34 @@ impl ShardedIndexView {
             })
     }
 
+    /// Return all symbol definition locations for `symbol`, merging persisted
+    /// results (with invalidated files filtered out) and the in-memory overlay.
+    #[must_use]
+    pub fn symbol_locations_merged<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let archived = self.symbol_locations(symbol);
+
+        let mut overlay_lists = Vec::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            if let Some(locations) = shard.symbols.symbols.get(symbol) {
+                overlay_lists.push(locations.as_slice());
+            }
+        }
+
+        let overlay = overlay_lists
+            .into_iter()
+            .flat_map(|locations| locations.iter())
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            });
+
+        archived.chain(overlay)
+    }
+
     /// Returns all symbol names that have at least one location in a
     /// non-invalidated file.
     pub fn symbol_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
@@ -1964,6 +2063,69 @@ impl ShardedIndexView {
         }
 
         names.into_iter()
+    }
+
+    /// Returns symbol names starting with `prefix` that have at least one
+    /// location in a non-invalidated file.
+    pub fn symbol_names_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut names: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
+            for (name, locations) in shard
+                .symbols
+                .archived()
+                .symbols
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+            {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    names.insert(name.as_str());
+                }
+            }
+        }
+
+        names.into_iter()
+    }
+
+    /// Returns all symbol names from both persisted archives (filtering out
+    /// invalidated files) and the in-memory overlay.
+    pub fn symbol_names_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let mut overlay_names: BTreeSet<&'a str> = BTreeSet::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            overlay_names.extend(shard.symbols.symbols.keys().map(|name| name.as_str()));
+        }
+
+        merge_sorted_dedup(self.symbol_names(), overlay_names.into_iter())
+    }
+
+    /// Returns symbol names starting with `prefix` from both persisted archives
+    /// (filtering out invalidated files) and the in-memory overlay.
+    pub fn symbol_names_with_prefix_merged<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let mut overlay_names: BTreeSet<&'a str> = BTreeSet::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            overlay_names.extend(
+                shard
+                    .symbols
+                    .symbols
+                    .keys()
+                    .skip_while(move |name| name.as_str() < prefix)
+                    .take_while(move |name| name.starts_with(prefix))
+                    .map(|name| name.as_str()),
+            );
+        }
+
+        merge_sorted_dedup(self.symbol_names_with_prefix(prefix), overlay_names.into_iter())
     }
 
     #[must_use]
@@ -1991,6 +2153,34 @@ impl ShardedIndexView {
             })
     }
 
+    /// Returns reference locations for `symbol`, merging persisted results (with
+    /// invalidated files filtered out) and the in-memory overlay.
+    #[must_use]
+    pub fn reference_locations_merged<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let archived = self.reference_locations(symbol);
+
+        let mut overlay_lists = Vec::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            if let Some(locations) = shard.references.references.get(symbol) {
+                overlay_lists.push(locations.as_slice());
+            }
+        }
+
+        let overlay = overlay_lists
+            .into_iter()
+            .flat_map(|locations| locations.iter())
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            });
+
+        archived.chain(overlay)
+    }
+
     /// Returns all symbols that have at least one reference location in a
     /// non-invalidated file.
     pub fn referenced_symbols<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
@@ -2009,6 +2199,78 @@ impl ShardedIndexView {
         }
 
         symbols.into_iter()
+    }
+
+    /// Returns referenced symbols starting with `prefix` that have at least one
+    /// location in a non-invalidated file.
+    pub fn referenced_symbols_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut symbols: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
+            for (symbol, locations) in shard
+                .references
+                .archived()
+                .references
+                .iter()
+                .skip_while(move |(symbol, _)| symbol.as_str() < prefix)
+                .take_while(move |(symbol, _)| symbol.as_str().starts_with(prefix))
+            {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    symbols.insert(symbol.as_str());
+                }
+            }
+        }
+
+        symbols.into_iter()
+    }
+
+    /// Returns referenced symbols from both persisted archives (filtering out
+    /// invalidated files) and the in-memory overlay.
+    pub fn referenced_symbols_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let mut overlay_symbols: BTreeSet<&'a str> = BTreeSet::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            overlay_symbols.extend(
+                shard
+                    .references
+                    .references
+                    .keys()
+                    .map(|symbol| symbol.as_str()),
+            );
+        }
+
+        merge_sorted_dedup(self.referenced_symbols(), overlay_symbols.into_iter())
+    }
+
+    /// Returns referenced symbols starting with `prefix` from both persisted
+    /// archives (filtering out invalidated files) and the in-memory overlay.
+    pub fn referenced_symbols_with_prefix_merged<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let mut overlay_symbols: BTreeSet<&'a str> = BTreeSet::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            overlay_symbols.extend(
+                shard
+                    .references
+                    .references
+                    .keys()
+                    .skip_while(move |symbol| symbol.as_str() < prefix)
+                    .take_while(move |symbol| symbol.starts_with(prefix))
+                    .map(|symbol| symbol.as_str()),
+            );
+        }
+
+        merge_sorted_dedup(
+            self.referenced_symbols_with_prefix(prefix),
+            overlay_symbols.into_iter(),
+        )
     }
 
     #[must_use]
@@ -2036,6 +2298,34 @@ impl ShardedIndexView {
             })
     }
 
+    /// Returns annotation locations for `annotation`, merging persisted results
+    /// (with invalidated files filtered out) and the in-memory overlay.
+    #[must_use]
+    pub fn annotation_locations_merged<'a>(
+        &'a self,
+        annotation: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let archived = self.annotation_locations(annotation);
+
+        let mut overlay_lists = Vec::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            if let Some(locations) = shard.annotations.annotations.get(annotation) {
+                overlay_lists.push(locations.as_slice());
+            }
+        }
+
+        let overlay = overlay_lists
+            .into_iter()
+            .flat_map(|locations| locations.iter())
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            });
+
+        archived.chain(overlay)
+    }
+
     /// Returns all annotation names that have at least one location in a
     /// non-invalidated file.
     pub fn annotation_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
@@ -2054,6 +2344,78 @@ impl ShardedIndexView {
         }
 
         names.into_iter()
+    }
+
+    /// Returns annotation names starting with `prefix` that have at least one
+    /// location in a non-invalidated file.
+    pub fn annotation_names_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut names: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
+            for (name, locations) in shard
+                .annotations
+                .archived()
+                .annotations
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+            {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    names.insert(name.as_str());
+                }
+            }
+        }
+
+        names.into_iter()
+    }
+
+    /// Returns annotation names from both persisted archives (filtering out
+    /// invalidated files) and the in-memory overlay.
+    pub fn annotation_names_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let mut overlay_names: BTreeSet<&'a str> = BTreeSet::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            overlay_names.extend(
+                shard
+                    .annotations
+                    .annotations
+                    .keys()
+                    .map(|name| name.as_str()),
+            );
+        }
+
+        merge_sorted_dedup(self.annotation_names(), overlay_names.into_iter())
+    }
+
+    /// Returns annotation names starting with `prefix` from both persisted
+    /// archives (filtering out invalidated files) and the in-memory overlay.
+    pub fn annotation_names_with_prefix_merged<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let mut overlay_names: BTreeSet<&'a str> = BTreeSet::new();
+        for (_shard_id, shard) in self.overlay.iter_shards() {
+            overlay_names.extend(
+                shard
+                    .annotations
+                    .annotations
+                    .keys()
+                    .skip_while(move |name| name.as_str() < prefix)
+                    .take_while(move |name| name.starts_with(prefix))
+                    .map(|name| name.as_str()),
+            );
+        }
+
+        merge_sorted_dedup(
+            self.annotation_names_with_prefix(prefix),
+            overlay_names.into_iter(),
+        )
     }
 }
 
@@ -2167,6 +2529,140 @@ pub fn save_sharded_indexes(
             shard_dir.join("annotations.idx"),
             nova_storage::ArtifactKind::AnnotationIndex,
             &shard.annotations,
+        )?;
+    }
+
+    // Update metadata after persisting the shards.
+    let mut metadata = match previous_metadata {
+        Some(existing) => existing,
+        None => CacheMetadata::new(snapshot),
+    };
+    metadata.update_from_snapshot(snapshot);
+    metadata.last_updated_millis = generation;
+    metadata.save(metadata_path)?;
+
+    Ok(())
+}
+
+/// Incrementally persist sharded index updates without materializing untouched shards.
+///
+/// This is intended for incremental indexing flows:
+/// - Load the existing cache via [`load_sharded_index_archives`]
+/// - Re-index `base.invalidated_files`
+/// - Store newly indexed results in `overlay` (typically using
+///   [`ShardedIndexOverlay::apply_file_delta`])
+/// - Call this function to rewrite only affected shards and update the cache metadata.
+///
+/// If the shard manifest is missing or does not match `shard_count`, this
+/// function returns `Ok(())` without writing anything. Callers should fall back
+/// to a full rebuild/save using [`save_sharded_indexes`].
+pub fn save_sharded_indexes_incremental(
+    cache_dir: &CacheDir,
+    snapshot: &ProjectSnapshot,
+    shard_count: u32,
+    base: &LoadedShardedIndexArchives,
+    overlay: &ShardedIndexOverlay,
+) -> Result<(), IndexPersistenceError> {
+    if shard_count == 0 {
+        return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+    }
+    if base.shards.len() != shard_count as usize {
+        return Err(IndexPersistenceError::ShardVectorLenMismatch {
+            expected: shard_count as usize,
+            found: base.shards.len(),
+        });
+    }
+    if overlay.shard_count() != shard_count {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "shard count mismatch: expected {shard_count}, got {}",
+                overlay.shard_count()
+            ),
+        )
+        .into());
+    }
+
+    let indexes_dir = cache_dir.indexes_dir();
+    std::fs::create_dir_all(&indexes_dir)?;
+    let _lock = acquire_index_write_lock(&indexes_dir)?;
+
+    let shards_root = indexes_dir.join(SHARDS_DIR_NAME);
+    std::fs::create_dir_all(&shards_root)?;
+
+    match read_shard_manifest(&shards_root) {
+        Some(value) if value == shard_count => {}
+        _ => return Ok(()),
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    let previous_metadata = CacheMetadata::load(&metadata_path)
+        .ok()
+        .filter(|m| m.is_compatible() && &m.project_hash == snapshot.project_hash());
+
+    let generation = next_generation(
+        previous_metadata
+            .as_ref()
+            .map(|m| m.last_updated_millis)
+            .unwrap_or(0),
+    );
+
+    let shards_to_write = affected_shards(&base.invalidated_files, shard_count);
+
+    let mut invalidated_by_shard: BTreeMap<ShardId, Vec<&str>> = BTreeMap::new();
+    for file in &base.invalidated_files {
+        let shard_id = shard_id_for_path(file, shard_count);
+        invalidated_by_shard
+            .entry(shard_id)
+            .or_default()
+            .push(file.as_str());
+    }
+
+    for shard_id in shards_to_write {
+        let mut indexes = match base.shards.get(shard_id as usize).and_then(|s| s.as_ref()) {
+            Some(archives) => ProjectIndexes {
+                symbols: archives.symbols.to_owned()?,
+                references: archives.references.to_owned()?,
+                inheritance: archives.inheritance.to_owned()?,
+                annotations: archives.annotations.to_owned()?,
+            },
+            None => ProjectIndexes::default(),
+        };
+
+        if let Some(files) = invalidated_by_shard.get(&shard_id) {
+            for file in files {
+                indexes.invalidate_file(file);
+            }
+        }
+
+        if let Some(delta) = overlay.shard(shard_id) {
+            indexes.merge_from(delta.clone());
+        }
+
+        indexes.set_generation(generation);
+
+        let shard_dir = shard_dir(&shards_root, shard_id);
+        std::fs::create_dir_all(&shard_dir)?;
+
+        write_index_file(
+            shard_dir.join("symbols.idx"),
+            nova_storage::ArtifactKind::SymbolIndex,
+            &indexes.symbols,
+        )?;
+        write_index_file(
+            shard_dir.join("references.idx"),
+            nova_storage::ArtifactKind::ReferenceIndex,
+            &indexes.references,
+        )?;
+        write_index_file(
+            shard_dir.join("inheritance.idx"),
+            nova_storage::ArtifactKind::InheritanceIndex,
+            &indexes.inheritance,
+        )?;
+        write_index_file(
+            shard_dir.join("annotations.idx"),
+            nova_storage::ArtifactKind::AnnotationIndex,
+            &indexes.annotations,
         )?;
     }
 
@@ -2365,6 +2861,7 @@ pub fn load_sharded_index_view(
         view: ShardedIndexView {
             shards: archives.shards,
             invalidated_files: invalidated_files_set,
+            overlay: ShardedIndexOverlay::new(shard_count)?,
         },
         invalidated_files: archives.invalidated_files,
         missing_shards: archives.missing_shards,
@@ -2389,6 +2886,7 @@ pub fn load_sharded_index_view_fast(
         view: ShardedIndexView {
             shards: archives.shards,
             invalidated_files: invalidated_files_set,
+            overlay: ShardedIndexOverlay::new(shard_count)?,
         },
         invalidated_files: archives.invalidated_files,
         missing_shards: archives.missing_shards,

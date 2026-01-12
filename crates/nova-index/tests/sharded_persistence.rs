@@ -1,8 +1,9 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
     affected_shards, load_sharded_index_archives, load_sharded_index_archives_fast,
-    load_sharded_index_view, save_sharded_indexes, shard_id_for_path, AnnotationLocation,
-    InheritanceEdge, ProjectIndexes, ReferenceLocation, SymbolLocation,
+    load_sharded_index_view, save_sharded_indexes, save_sharded_indexes_incremental,
+    shard_id_for_path, AnnotationLocation, InheritanceEdge, ProjectIndexes, ReferenceLocation,
+    ShardedIndexOverlay, SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -241,6 +242,222 @@ fn sharded_index_view_filters_invalidated_files() {
     assert!(loaded_v2.view.symbol_locations("A").next().is_none());
     assert_eq!(loaded_v2.view.symbol_locations("B").count(), 1);
     assert_eq!(loaded_v2.view.symbol_names().collect::<Vec<_>>(), vec!["B"]);
+}
+
+#[test]
+fn sharded_index_view_overlay_merges_invalidated_files() {
+    let shard_count = 64;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let file_a = "A.java".to_string();
+    let shard_a = shard_id_for_path(&file_a, shard_count);
+    let file_b = (0..500u32)
+        .map(|idx| format!("B{idx}.java"))
+        .find(|name| shard_id_for_path(name, shard_count) != shard_a)
+        .expect("expected to find a filename in a different shard");
+
+    let a = project_root.join(&file_a);
+    let b = project_root.join(&file_b);
+    std::fs::write(&a, "class A {}").unwrap();
+    std::fs::write(&b, "class B {}").unwrap();
+
+    let snapshot_v1 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from(&file_a), PathBuf::from(&file_b)],
+    )
+    .unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    for file in [&file_a, &file_b] {
+        let shard = shard_id_for_path(file, shard_count) as usize;
+        shards[shard].symbols.insert(
+            "Foo",
+            SymbolLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+        shards[shard].references.insert(
+            "Foo",
+            ReferenceLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+        shards[shard].annotations.insert(
+            "@Deprecated",
+            AnnotationLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+
+    let shard_a_idx = shard_id_for_path(&file_a, shard_count) as usize;
+    shards[shard_a_idx].symbols.insert(
+        "OnlyA",
+        SymbolLocation {
+            file: file_a.clone(),
+            line: 1,
+            column: 1,
+        },
+    );
+    shards[shard_a_idx].references.insert(
+        "OnlyA",
+        ReferenceLocation {
+            file: file_a.clone(),
+            line: 1,
+            column: 1,
+        },
+    );
+    shards[shard_a_idx].annotations.insert(
+        "@OnlyA",
+        AnnotationLocation {
+            file: file_a.clone(),
+            line: 1,
+            column: 1,
+        },
+    );
+
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
+
+    // Modify A.java so it's invalidated.
+    std::fs::write(&a, "class A { void m() {} }").unwrap();
+    let snapshot_v2 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from(&file_a), PathBuf::from(&file_b)],
+    )
+    .unwrap();
+
+    let mut loaded_v2 = load_sharded_index_view(&cache_dir, &snapshot_v2, shard_count)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_v2.invalidated_files, vec![file_a.clone()]);
+
+    // Persisted view should filter out A.java results.
+    assert_eq!(
+        loaded_v2
+            .view
+            .symbol_locations("Foo")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_b.as_str()]
+    );
+    assert_eq!(loaded_v2.view.symbol_locations("OnlyA").count(), 0);
+    assert_eq!(
+        loaded_v2.view.symbol_names().collect::<Vec<_>>(),
+        vec!["Foo"]
+    );
+
+    // Apply overlay deltas for the invalidated file.
+    let mut delta = ProjectIndexes::default();
+    for (symbol, column) in [("Foo", 1u32), ("OnlyA", 1), ("NewInA", 10)] {
+        delta.symbols.insert(
+            symbol,
+            SymbolLocation {
+                file: file_a.clone(),
+                line: 2,
+                column,
+            },
+        );
+        delta.references.insert(
+            symbol,
+            ReferenceLocation {
+                file: file_a.clone(),
+                line: 2,
+                column,
+            },
+        );
+    }
+    for (annotation, column) in [("@Deprecated", 1u32), ("@OnlyA", 1), ("@NewInA", 10)] {
+        delta.annotations.insert(
+            annotation,
+            AnnotationLocation {
+                file: file_a.clone(),
+                line: 2,
+                column,
+            },
+        );
+    }
+
+    loaded_v2.view.overlay.apply_file_delta(&file_a, delta);
+    assert_eq!(
+        loaded_v2.view.overlay.covered_files,
+        BTreeSet::from([file_a.clone()])
+    );
+
+    assert_eq!(
+        loaded_v2
+            .view
+            .symbol_locations_merged("Foo")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_b.as_str(), file_a.as_str()]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .reference_locations_merged("NewInA")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_a.as_str()]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .annotation_locations_merged("@Deprecated")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![file_b.as_str(), file_a.as_str()]
+    );
+
+    assert_eq!(
+        loaded_v2.view.symbol_names_merged().collect::<Vec<_>>(),
+        vec!["Foo", "NewInA", "OnlyA"]
+    );
+    assert_eq!(
+        loaded_v2.view.referenced_symbols_merged().collect::<Vec<_>>(),
+        vec!["Foo", "NewInA", "OnlyA"]
+    );
+    assert_eq!(
+        loaded_v2.view.annotation_names_merged().collect::<Vec<_>>(),
+        vec!["@Deprecated", "@NewInA", "@OnlyA"]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .symbol_names_with_prefix_merged("N")
+            .collect::<Vec<_>>(),
+        vec!["NewInA"]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .annotation_names_with_prefix_merged("@N")
+            .collect::<Vec<_>>(),
+        vec!["@NewInA"]
+    );
+    assert_eq!(
+        loaded_v2
+            .view
+            .referenced_symbols_with_prefix_merged("O")
+            .collect::<Vec<_>>(),
+        vec!["OnlyA"]
+    );
 }
 
 #[test]
@@ -605,4 +822,138 @@ fn save_sharded_indexes_rewrites_only_affected_shards() {
 
     assert_ne!(affected_mtime_v2, affected_mtime_v1);
     assert_eq!(unaffected_mtime_v2, unaffected_mtime_v1);
+}
+
+#[test]
+fn save_sharded_indexes_incremental_rewrites_only_touched_shards() {
+    let shard_count = 64;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Pick two file names that land in different shards.
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+    for idx in 0..500u32 {
+        let name = format!("File{idx}.java");
+        let shard_id = shard_id_for_path(&name, shard_count);
+        if seen.insert(shard_id) {
+            paths.push(name);
+        }
+        if paths.len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(paths.len(), 2);
+
+    for name in &paths {
+        std::fs::write(project_root.join(name), "class X {}").unwrap();
+    }
+
+    let snapshot_v1 =
+        ProjectSnapshot::new(&project_root, paths.iter().map(PathBuf::from).collect()).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    for name in &paths {
+        let shard = shard_id_for_path(name, shard_count) as usize;
+        let symbol = name.trim_end_matches(".java");
+        shards[shard].symbols.insert(
+            symbol,
+            SymbolLocation {
+                file: name.clone(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
+
+    let affected_path = &paths[0];
+    let unaffected_path = &paths[1];
+    let affected_shard = shard_id_for_path(affected_path, shard_count);
+    let unaffected_shard = shard_id_for_path(unaffected_path, shard_count);
+    assert_ne!(affected_shard, unaffected_shard);
+
+    let affected_symbols_idx = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join(affected_shard.to_string())
+        .join("symbols.idx");
+    let unaffected_symbols_idx = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join(unaffected_shard.to_string())
+        .join("symbols.idx");
+
+    let affected_mtime_v1 = std::fs::metadata(&affected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+    let unaffected_mtime_v1 = std::fs::metadata(&unaffected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    std::thread::sleep(Duration::from_millis(1100));
+
+    // Modify exactly one file so exactly one shard is affected.
+    std::fs::write(project_root.join(affected_path), "class X { void m() {} }").unwrap();
+    let snapshot_v2 =
+        ProjectSnapshot::new(&project_root, paths.iter().map(PathBuf::from).collect()).unwrap();
+
+    let base = load_sharded_index_archives(&cache_dir, &snapshot_v2, shard_count)
+        .unwrap()
+        .unwrap();
+    assert_eq!(base.invalidated_files, vec![affected_path.clone()]);
+    assert!(base.missing_shards.is_empty());
+
+    let mut overlay = ShardedIndexOverlay::new(shard_count).unwrap();
+    let mut delta = ProjectIndexes::default();
+    delta.symbols.insert(
+        "Updated",
+        SymbolLocation {
+            file: affected_path.clone(),
+            line: 2,
+            column: 1,
+        },
+    );
+    overlay.apply_file_delta(affected_path, delta);
+
+    save_sharded_indexes_incremental(&cache_dir, &snapshot_v2, shard_count, &base, &overlay)
+        .unwrap();
+
+    let affected_mtime_v2 = std::fs::metadata(&affected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+    let unaffected_mtime_v2 = std::fs::metadata(&unaffected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    assert_ne!(affected_mtime_v2, affected_mtime_v1);
+    assert_eq!(unaffected_mtime_v2, unaffected_mtime_v1);
+
+    let loaded = load_sharded_index_view(&cache_dir, &snapshot_v2, shard_count)
+        .unwrap()
+        .unwrap();
+    assert!(loaded.invalidated_files.is_empty());
+    assert_eq!(
+        loaded
+            .view
+            .symbol_locations("Updated")
+            .map(|loc| loc.file)
+            .collect::<Vec<_>>(),
+        vec![affected_path.as_str()]
+    );
 }
