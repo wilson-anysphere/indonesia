@@ -992,9 +992,10 @@ fn parse_type_body(
                                 let body_span =
                                     Span::new(tokens[i].span.start, tokens[body_end_idx].span.end);
 
-                                let (mut locals, mut method_calls) =
+                                let (body_locals, mut method_calls) =
                                     parse_method_body(tokens, j, body_end_idx);
-                                locals.extend(params);
+                                let mut locals = params;
+                                locals.extend(body_locals);
                                 sort_dedup_vars(&mut locals);
                                 calls.append(&mut method_calls);
 

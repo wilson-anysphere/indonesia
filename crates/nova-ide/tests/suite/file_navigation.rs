@@ -468,6 +468,28 @@ class Main { void test(Foo $1foo){ $0foo.toString(); } }
 }
 
 #[test]
+fn go_to_declaration_on_param_usage_prefers_param_over_local_class_member() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Main.java
+class Main {
+    void test(Foo $1foo) {
+        class Inner { Foo foo; }
+        $0foo.toString();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_declaration_on_second_local_in_comma_separated_decl() {
     let fixture = FileIdFixture::parse(
         r#"
