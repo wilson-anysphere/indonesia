@@ -334,7 +334,7 @@ cargo test -p nova-lsp stdio_
 
 #### 3b) DAP end-to-end tests (in-memory transport)
 
-**Where:** `crates/nova-dap/tests/suite/*.rs` (compiled into `crates/nova-dap/tests/real_jvm.rs`;
+**Where:** `crates/nova-dap/tests/real_jvm.rs` + `crates/nova-dap/tests/suite/*.rs` (single harness;
 most tests use in-memory duplex streams + a mock JDWP server).
 
 **Run locally:**
@@ -351,13 +351,13 @@ message and returns early so normal CI stays stable.
 
 **Where:**
 
-- Test: `crates/nova-dap/tests/real_jvm.rs`
+- Test module: `crates/nova-dap/tests/suite/real_jvm.rs` (compiled by `crates/nova-dap/tests/real_jvm.rs`)
 - Java fixture: `crates/nova-dap/testdata/java/Main.java`
 
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm suite::real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.
