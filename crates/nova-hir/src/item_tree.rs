@@ -497,6 +497,7 @@ pub struct Param {
     pub annotations: Vec<AnnotationUse>,
     pub ty: String,
     pub ty_range: Span,
+    pub is_varargs: bool,
     pub name: String,
     pub range: Span,
     pub name_range: Span,
@@ -507,6 +508,7 @@ impl PartialEq for Param {
         self.modifiers == other.modifiers
             && self.annotations == other.annotations
             && self.ty == other.ty
+            && self.is_varargs == other.is_varargs
             && self.name == other.name
     }
 }

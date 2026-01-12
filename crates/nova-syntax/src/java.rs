@@ -240,6 +240,12 @@ pub mod ast {
         pub modifiers: Modifiers,
         pub annotations: Vec<AnnotationUse>,
         pub ty: TypeRef,
+        /// `true` for a variable-arity parameter (`T... xs`).
+        ///
+        /// This is tracked explicitly because the `...` token is *not* part of
+        /// the `TypeRef` syntax node, so it would otherwise be lost during
+        /// lowering.
+        pub is_varargs: bool,
         pub name: String,
         pub name_range: Span,
         pub range: Span,
@@ -1402,6 +1408,12 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::Type)?;
         let ty = self.lower_type_ref(&ty_node);
 
+        let is_varargs = node.children_with_tokens().any(|child| {
+            child
+                .as_token()
+                .is_some_and(|tok| tok.kind() == SyntaxKind::Ellipsis)
+        });
+
         let mut seen_type = false;
         let mut name_token = None;
         for child in node.children_with_tokens() {
@@ -1434,6 +1446,7 @@ impl Lowerer {
             modifiers,
             annotations,
             ty,
+            is_varargs,
             name,
             name_range,
             range,

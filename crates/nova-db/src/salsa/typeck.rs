@@ -7552,17 +7552,34 @@ fn resolve_param_types<'idx>(
         DefWithBodyId::Initializer(_) => &[],
     };
 
-    for param in params {
+    let is_varargs = params
+        .last()
+        .is_some_and(|p| p.is_varargs || p.ty.trim_end().ends_with("..."));
+
+    for (idx, param) in params.iter().enumerate() {
+        let is_varargs_param = is_varargs && idx + 1 == params.len();
+        let ty_text = if is_varargs_param {
+            param
+                .ty
+                .trim_end()
+                .strip_suffix("...")
+                .unwrap_or(param.ty.trim_end())
+                .trim_end()
+        } else {
+            param.ty.trim_end()
+        };
+
         let resolved = resolve_type_ref_text(
             resolver,
             scopes,
             scope_id,
             loader,
             type_vars,
-            &param.ty,
+            ty_text,
             Some(param.ty_range),
         );
         diags.extend(resolved.diagnostics);
+
         if resolved.ty == Type::Void {
             diags.push(Diagnostic::error(
                 "void-parameter-type",
@@ -7570,9 +7587,15 @@ fn resolve_param_types<'idx>(
                 Some(param.ty_range),
             ));
             out.push(Type::Error);
-        } else {
-            out.push(resolved.ty);
+            continue;
         }
+
+        let ty = if is_varargs_param {
+            Type::Array(Box::new(resolved.ty))
+        } else {
+            resolved.ty
+        };
+        out.push(ty);
     }
 
     (out, diags)
@@ -8168,23 +8191,40 @@ fn define_source_types<'idx>(
                     let is_varargs = method
                         .params
                         .last()
-                        .is_some_and(|param| param.ty.trim().contains("..."));
+                        .is_some_and(|p| p.is_varargs || p.ty.trim().contains("..."));
 
                     let params = method
                         .params
                         .iter()
-                        .map(|p| {
-                            preload_type_names(resolver, &scopes.scopes, scope, loader, &p.ty);
-                            nova_resolve::type_ref::resolve_type_ref_text(
+                        .enumerate()
+                        .map(|(idx, p)| {
+                            let is_varargs_param = is_varargs && idx + 1 == method.params.len();
+                            let ty_text = if is_varargs_param {
+                                p.ty
+                                    .trim_end()
+                                    .strip_suffix("...")
+                                    .unwrap_or(p.ty.trim_end())
+                                    .trim_end()
+                            } else {
+                                p.ty.trim_end()
+                            };
+
+                            preload_type_names(resolver, &scopes.scopes, scope, loader, ty_text);
+                            let ty = nova_resolve::type_ref::resolve_type_ref_text(
                                 resolver,
                                 &scopes.scopes,
                                 scope,
                                 &*loader.store,
                                 &vars,
-                                &p.ty,
+                                ty_text,
                                 Some(p.ty_range),
                             )
-                            .ty
+                            .ty;
+                            if is_varargs_param {
+                                Type::Array(Box::new(ty))
+                            } else {
+                                ty
+                            }
                         })
                         .collect::<Vec<_>>();
 
@@ -8223,30 +8263,45 @@ fn define_source_types<'idx>(
                     // Constructors can refer to the enclosing class type parameters.
                     let vars = class_vars.clone();
 
+                    let is_varargs = ctor
+                        .params
+                        .last()
+                        .is_some_and(|p| p.is_varargs || p.ty.trim().contains("..."));
+
                     let params = ctor
                         .params
                         .iter()
-                        .map(|p| {
-                            preload_type_names(resolver, &scopes.scopes, scope, loader, &p.ty);
-                            nova_resolve::type_ref::resolve_type_ref_text(
+                        .enumerate()
+                        .map(|(idx, p)| {
+                            let is_varargs_param = is_varargs && idx + 1 == ctor.params.len();
+                            let ty_text = if is_varargs_param {
+                                p.ty
+                                    .trim_end()
+                                    .strip_suffix("...")
+                                    .unwrap_or(p.ty.trim_end())
+                                    .trim_end()
+                            } else {
+                                p.ty.trim_end()
+                            };
+
+                            preload_type_names(resolver, &scopes.scopes, scope, loader, ty_text);
+                            let ty = nova_resolve::type_ref::resolve_type_ref_text(
                                 resolver,
                                 &scopes.scopes,
                                 scope,
                                 &*loader.store,
                                 &vars,
-                                &p.ty,
+                                ty_text,
                                 Some(p.ty_range),
                             )
-                            .ty
+                            .ty;
+                            if is_varargs_param {
+                                Type::Array(Box::new(ty))
+                            } else {
+                                ty
+                            }
                         })
                         .collect::<Vec<_>>();
-
-                    let used_ellipsis = ctor
-                        .params
-                        .last()
-                        .is_some_and(|p| p.ty.as_str().contains("..."));
-                    let last_is_array = params.last().is_some_and(|t| matches!(t, Type::Array(_)));
-                    let is_varargs = used_ellipsis && last_is_array;
 
                     let is_accessible = ctor.modifiers.raw & Modifiers::PRIVATE == 0;
                     constructors.push(ConstructorDef {

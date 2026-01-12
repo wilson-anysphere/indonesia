@@ -562,11 +562,17 @@ impl ItemTreeLower<'_> {
 
             let (modifiers, annotations) = lower_param_modifiers_and_annotations(&param);
 
+            let is_varargs = param
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| tok.kind() == SyntaxKind::Ellipsis);
+
             params.push(Param {
                 modifiers,
                 annotations,
                 ty,
                 ty_range,
+                is_varargs,
                 name,
                 range,
                 name_range,
@@ -691,6 +697,7 @@ fn lower_param(param: &syntax::ParamDecl) -> Param {
         annotations: lower_annotation_uses(&param.annotations),
         ty: param.ty.text.clone(),
         ty_range: param.ty.range,
+        is_varargs: param.is_varargs,
         name: param.name.clone(),
         range: param.range,
         name_range: param.name_range,
