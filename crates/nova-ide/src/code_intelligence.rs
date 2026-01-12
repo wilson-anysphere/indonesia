@@ -2861,9 +2861,19 @@ fn parse_java_imports(text: &str) -> JavaImportInfo {
         }
 
         let mut rest = line["import ".len()..].trim();
-        if let Some(rest2) = rest.strip_suffix(';') {
-            rest = rest2.trim();
+        // Import statements may have trailing comments (`import foo.Bar; // ...`) or be mid-edit
+        // without a trailing semicolon. Take only the segment up to the first `;`/comment marker.
+        let mut end = rest.len();
+        if let Some(idx) = rest.find(';') {
+            end = end.min(idx);
         }
+        if let Some(idx) = rest.find("//") {
+            end = end.min(idx);
+        }
+        if let Some(idx) = rest.find("/*") {
+            end = end.min(idx);
+        }
+        rest = rest.get(..end).unwrap_or(rest).trim();
         if rest.is_empty() {
             continue;
         }

@@ -2245,6 +2245,27 @@ fn completion_new_expression_includes_arraylist_with_star_import() {
 }
 
 #[test]
+fn completion_new_expression_does_not_add_import_when_explicit_import_has_trailing_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.ArrayList; // already imported
+class A { void m(){ new Arr<|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    assert_eq!(
+        item.additional_text_edits, None,
+        "expected no additional_text_edits when ArrayList is already imported"
+    );
+}
+
+#[test]
 fn completion_in_package_declaration_uses_workspace_packages_and_replaces_segment_only() {
     let file_a_path = PathBuf::from("/workspace/src/main/java/com/foo/A.java");
     let file_b_path = PathBuf::from("/workspace/src/main/java/com/B.java");
