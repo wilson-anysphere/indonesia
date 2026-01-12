@@ -85,3 +85,24 @@ impl Database for SalsaDbView {
         self.path_to_file.get(path).copied()
     }
 }
+
+impl SourceDatabase for SalsaDbView {
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        self.file_contents
+            .get(&file_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(String::new()))
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        self.file_paths.get(&file_id).cloned()
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        Arc::new(self.file_ids.clone())
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.path_to_file.get(path).copied()
+    }
+}
