@@ -59,6 +59,33 @@ fn stdio_server_loads_config_from_flag_and_initializes() {
     assert!(status.success());
 }
 
+#[test]
+fn legacy_listen_is_rejected() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nova-dap"))
+        .arg("--legacy")
+        .arg("--listen")
+        .arg("127.0.0.1:0")
+        .env_remove("NOVA_CONFIG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run nova-dap");
+
+    assert!(!output.status.success(), "expected failure exit status");
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--listen is not supported with --legacy"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn tcp_server_listens_and_speaks_dap() {
     use nova_dap::dap_tokio::{DapReader, DapWriter};
