@@ -4656,6 +4656,24 @@ fn parse_java_expression_primitive_cast_allows_unary_plus() {
 }
 
 #[test]
+fn parse_java_expression_parenthesized_postfix_inc_is_not_cast() {
+    let result = parse_java_expression("(x)++");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::UnaryExpression);
+}
+
+#[test]
+fn parse_java_expression_primitive_cast_allows_preincrement() {
+    let result = parse_java_expression("(int) ++x");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
 fn parse_java_expression_parameterized_cast_with_lambda_is_cast_expression() {
     let result = parse_java_expression(
         "(java.util.function.Function<String, Integer>) (s) -> s.length()",

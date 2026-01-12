@@ -4160,7 +4160,13 @@ impl<'a> Parser<'a> {
                                 continue;
                             }
                             if !is_primitive_cast
-                                && matches!(next.kind, SyntaxKind::Plus | SyntaxKind::Minus)
+                                && matches!(
+                                    next.kind,
+                                    SyntaxKind::Plus
+                                        | SyntaxKind::Minus
+                                        | SyntaxKind::PlusPlus
+                                        | SyntaxKind::MinusMinus
+                                )
                             {
                                 return false;
                             }
