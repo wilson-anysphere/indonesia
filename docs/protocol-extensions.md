@@ -1228,6 +1228,13 @@ This is the “poll for async AI completions” endpoint used by the VS Code ext
 - **Rust types:** `crates/nova-lsp/src/requests.rs` (`MoreCompletionsParams`, `MoreCompletionsResult`)
 - **Client usage:** `editors/vscode/src/aiCompletionMore.ts`
 
+Notes:
+
+- The stdio server only spawns background AI completions when `ai.enabled = true` and
+  `ai.features.multi_token_completion = true` in `nova.toml`. Clients should also gate polling on
+  `CompletionList.isIncomplete = true`; when AI completions are disabled, the server returns
+  `isIncomplete = false` and `nova/completion/more` will return an empty result.
+
 #### Request params (note: snake_case)
 
 ```json

@@ -434,6 +434,7 @@ enabled = true
 [ai.features]
 completion_ranking = true
 semantic_search = true
+multi_token_completion = true
 
 [ai.timeouts]
 completion_ranking_ms = 20
