@@ -8664,6 +8664,14 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
 // -----------------------------------------------------------------------------
 
 static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> = Lazy::new(|| {
+    // Building a full symbol index for a system JDK can be very expensive when
+    // persistence is disabled (the default for debug/test builds in `nova-jdk`).
+    //
+    // To keep unit tests and debug builds snappy/deterministic, only attempt JDK
+    // discovery when persistence is explicitly enabled (e.g. `NOVA_PERSISTENCE=rw`).
+    if !jdk_discovery_enabled() {
+        return None;
+    }
     // Best-effort: honor workspace JDK overrides from `nova.toml` if the process is started
     // inside a workspace (common for `nova-lsp`/`nova-cli` usage). If config loading fails
     // (missing config, invalid config, etc.), fall back to environment-based discovery.
@@ -8678,6 +8686,34 @@ static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> = Lazy::new(|| {
 });
 
 static EMPTY_JDK_INDEX: Lazy<Arc<JdkIndex>> = Lazy::new(|| Arc::new(JdkIndex::new()));
+fn jdk_discovery_enabled() -> bool {
+    // If a cache dir is explicitly configured, assume the caller is opting into indexing.
+    if std::env::var_os("NOVA_JDK_CACHE_DIR").is_some() {
+        return true;
+    }
+
+    // Mirror `nova_jdk::PersistenceMode::from_env` and its default behavior.
+    let mode = std::env::var("NOVA_PERSISTENCE").unwrap_or_default();
+    let mode = mode.trim().to_ascii_lowercase();
+    match mode.as_str() {
+        "" => {
+            // In debug builds, default to no discovery to avoid expensive full JDK indexing
+            // without persistence. In release builds, discovery is enabled by default.
+            !cfg!(debug_assertions)
+        }
+        "0" | "off" | "disabled" | "false" | "no" => false,
+        "ro" | "read-only" | "readonly" => true,
+        "rw" | "read-write" | "readwrite" | "on" | "enabled" | "true" | "1" => true,
+        _ => !cfg!(debug_assertions),
+    }
+}
+
+pub(crate) fn jdk_index() -> Arc<JdkIndex> {
+    JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone())
+}
 
 fn semantic_call_signatures(
     types: &mut TypeStore,

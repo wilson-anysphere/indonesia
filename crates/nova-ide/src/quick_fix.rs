@@ -15,6 +15,13 @@ pub(crate) fn quick_fixes_for_diagnostics(
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
 
+    actions.extend(crate::quickfix::unresolved_type_quick_fixes(
+        uri,
+        source,
+        selection,
+        diagnostics,
+    ));
+
     for diag in diagnostics {
         if diag.code.as_ref() != "unresolved-name" {
             continue;
@@ -150,4 +157,3 @@ fn line_indent<'a>(text: &'a str, line_start: usize) -> &'a str {
     // SAFETY: we only advance on ASCII bytes, which are always char boundaries.
     &text[line_start..end]
 }
-
