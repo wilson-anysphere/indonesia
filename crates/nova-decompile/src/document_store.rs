@@ -100,6 +100,9 @@ impl DecompiledDocumentStore {
         self.store_text(content_hash, binary_name, text)?;
 
         let meta_path = self.meta_path_for(content_hash, binary_name)?;
+        if let Some(parent) = meta_path.parent() {
+            ensure_dir_safe(parent)?;
+        }
         let stored = StoredDecompiledMappings::from_mappings(mappings);
         let bytes = serde_json::to_vec(&stored)?;
         atomic_write(&meta_path, &bytes)
@@ -124,7 +127,7 @@ impl DecompiledDocumentStore {
         match String::from_utf8(bytes) {
             Ok(text) => Ok(Some(text)),
             Err(_) => {
-                let _ = std::fs::remove_file(&path);
+                remove_corrupt_path(&path);
                 Ok(None)
             }
         }
@@ -153,7 +156,7 @@ impl DecompiledDocumentStore {
         let stored: StoredDecompiledMappings = match serde_json::from_slice(&meta_bytes) {
             Ok(value) => value,
             Err(_) => {
-                let _ = std::fs::remove_file(&meta_path);
+                remove_corrupt_path(&meta_path);
                 return Ok(None);
             }
         };
