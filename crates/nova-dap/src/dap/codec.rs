@@ -2,14 +2,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 
-/// Maximum allowed DAP message payload size (in bytes).
-///
-/// DAP clients are untrusted. Without an upper bound, a hostile client can send a
-/// huge `Content-Length` header and trigger an unbounded allocation before we
-/// attempt to read the body.
-pub const MAX_DAP_MESSAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
-
-const MAX_DAP_HEADER_LINE_BYTES: usize = 8 * 1024;
+// Re-export these constants so existing users of the historical
+// `nova_dap::dap::codec::MAX_*` paths continue to compile.
+pub use super::{MAX_DAP_HEADER_LINE_BYTES, MAX_DAP_MESSAGE_BYTES};
 
 fn read_line_limited<R: BufRead>(reader: &mut R, max_len: usize) -> io::Result<Option<String>> {
     let mut buf = Vec::<u8>::new();

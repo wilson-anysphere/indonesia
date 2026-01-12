@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::dap::MAX_DAP_MESSAGE_BYTES;
+use crate::dap::{MAX_DAP_HEADER_LINE_BYTES, MAX_DAP_MESSAGE_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -84,8 +84,6 @@ pub fn make_event(seq: i64, event: impl Into<String>, body: Option<Value>) -> Ev
 pub struct DapReader<R> {
     reader: BufReader<R>,
 }
-
-const MAX_DAP_HEADER_LINE_BYTES: usize = 8 * 1024;
 
 async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
