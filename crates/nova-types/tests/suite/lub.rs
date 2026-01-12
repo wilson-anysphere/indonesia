@@ -52,6 +52,22 @@ fn lub_string_array_integer_array_is_object_array() {
 }
 
 #[test]
+fn lub_equivalent_intersections_is_normalized_and_commutative() {
+    let env = TypeStore::with_minimal_jdk();
+
+    let cloneable = Type::class(env.well_known().cloneable, vec![]);
+    let serializable = Type::class(env.well_known().serializable, vec![]);
+
+    let a = Type::Intersection(vec![cloneable.clone(), serializable.clone()]);
+    let b = Type::Intersection(vec![serializable.clone(), cloneable.clone()]);
+
+    let expected = Type::Intersection(vec![serializable, cloneable]);
+
+    assert_eq!(lub(&env, &a, &b), expected);
+    assert_eq!(lub(&env, &b, &a), expected);
+}
+
+#[test]
 fn inference_uses_lub_for_generic_instances() {
     let mut env = TypeStore::with_minimal_jdk();
     let object = env.well_known().object;

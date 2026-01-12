@@ -2902,17 +2902,48 @@ pub fn lub(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
 
     // Preserve exact equality (including unresolved `Named` types).
     if a == b {
-        return a.clone();
+        return match a {
+            Type::Intersection(_) => make_intersection(env, vec![a.clone()]),
+            _ => a.clone(),
+        };
     }
 
     let a = canonicalize_for_lub(env, a);
     let b = canonicalize_for_lub(env, b);
 
-    if is_subtype(env, &a, &b) {
-        return b;
-    }
-    if is_subtype(env, &b, &a) {
-        return a;
+    let a_sub_b = is_subtype(env, &a, &b);
+    let b_sub_a = is_subtype(env, &b, &a);
+
+    match (a_sub_b, b_sub_a) {
+        (true, false) => {
+            return match b {
+                Type::Intersection(_) => make_intersection(env, vec![b]),
+                _ => b,
+            };
+        }
+        (false, true) => {
+            return match a {
+                Type::Intersection(_) => make_intersection(env, vec![a]),
+                _ => a,
+            };
+        }
+        // Equivalent types (e.g. intersection permutations) should yield a deterministic,
+        // normalized result.
+        (true, true) => {
+            return match (&a, &b) {
+                (Type::Intersection(_), _) | (_, Type::Intersection(_)) => {
+                    make_intersection(env, vec![a, b])
+                }
+                _ => {
+                    if type_sort_key(env, &a) <= type_sort_key(env, &b) {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            };
+        }
+        (false, false) => {}
     }
 
     match (&a, &b) {
