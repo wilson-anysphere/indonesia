@@ -1841,3 +1841,45 @@ fn string_template_expression_accessors_brace_depth() {
     let returned = return_stmt.expression().expect("expected return expression");
     assert_eq!(returned.syntax().text().to_string(), "1");
 }
+
+#[test]
+fn string_template_expression_accessors_qualified_processor() {
+    let src = r#"
+        class Foo {
+          void m(String name) {
+            String s = Foo.STR."Hello \{name}!";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    assert_eq!(processor.syntax().text().to_string(), "Foo.STR");
+
+    let template = template_expr.template().expect("expected string template");
+    assert_eq!(template.start_token().unwrap().text(), "\"");
+    assert_eq!(template.end_token().unwrap().text(), "\"");
+
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Hello ", "!"]);
+
+    let interpolations: Vec<_> = template.parts().collect();
+    assert_eq!(interpolations.len(), 1);
+    let interpolation_expr = interpolations[0]
+        .expression()
+        .expect("expected interpolation expression");
+    assert_eq!(interpolation_expr.syntax().text().to_string(), "name");
+}
