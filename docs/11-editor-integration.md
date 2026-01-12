@@ -72,6 +72,7 @@ Notes:
 - `workspace/didChangeWatchedFiles` is handled, but the server does not dynamically register file watchers today; clients must configure watchers on their side if they want to send these notifications.
 - OS file watching for the workspace engine (used by `nova` CLI / `nova-workspace`) is implemented in `nova-vfs` behind `watch-notify`. See [`file-watching.md`](file-watching.md) for the watcher layering and deterministic testing guidance.
 - Some Nova commands/requests apply edits by sending the standard `workspace/applyEdit` request to the client (e.g. `nova/java/organizeImports`, `nova.safeDelete`). Clients must handle `workspace/applyEdit` for these to take effect.
+- `textDocument/rename` (and some refactor-related edits) may include file operations (create/delete/rename) and therefore use `WorkspaceEdit.documentChanges` with resource operations instead of the legacy `WorkspaceEdit.changes` map. Editor clients must support applying `documentChanges` for these edits to work correctly.
 
 ### Server Architecture
 
