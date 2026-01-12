@@ -231,13 +231,19 @@ fn subsequence_score_alloc(query: &[u8], candidate: &[u8]) -> Option<i32> {
 ///   the query or candidate contains non-ASCII.
 mod unicode_impl {
     use super::MIN_SCORE;
-    use crate::unicode_folding;
+    use unicode_casefold::UnicodeCaseFold;
+    use unicode_normalization::UnicodeNormalization;
     use unicode_segmentation::UnicodeSegmentation;
 
     pub type GraphemeRange = (usize, usize);
 
     pub fn fold_nfkc_casefold(input: &str, out: &mut String) {
-        unicode_folding::fold_nfkc_casefold(input, out);
+        // Normalize (NFKC) and then apply Unicode case folding (including expansions).
+        //
+        // `unicode-normalization` does not currently expose an `nfkc_casefold()` helper
+        // or a case-folding iterator, so we compose `nfkc()` with `unicode-casefold`.
+        out.clear();
+        out.extend(input.nfkc().case_fold());
     }
 
     pub fn grapheme_ranges(s: &str, out: &mut Vec<GraphemeRange>) {
