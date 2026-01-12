@@ -218,6 +218,73 @@ class Derived extends Base {
 }
 
 #[test]
+fn safe_delete_delete_anyway_removes_interface_implementations() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "I.java".to_string(),
+        r#"
+interface I {
+    void used();
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "C.java".to_string(),
+        r#"
+class C implements I {
+    @Override
+    public void used() {
+    }
+
+    public void other() {
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files.clone());
+    let target = index.find_method("I", "used").expect("method exists").id;
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert_eq!(report.usages.len(), 1);
+    assert_eq!(report.usages[0].file, "C.java");
+    assert_eq!(report.usages[0].kind, UsageKind::Override);
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::DeleteAnyway,
+    )
+    .expect("safe delete runs");
+    let edit = match outcome {
+        SafeDeleteOutcome::Applied { edit } => edit,
+        SafeDeleteOutcome::Preview { .. } => panic!("expected applied edits"),
+    };
+
+    let updated = apply_workspace_edit(&files, &edit);
+
+    let iface = updated.get("I.java").unwrap();
+    assert!(!iface.contains("used()"), "interface method should be removed");
+
+    let c = updated.get("C.java").unwrap();
+    assert!(!c.contains("@Override"), "override annotation should be removed");
+    assert!(!c.contains("used()"), "implementing method should be removed");
+    assert!(c.contains("other()"), "unrelated members should remain");
+}
+
+#[test]
 fn safe_delete_ignores_other_overload_calls() {
     let mut files = BTreeMap::new();
     files.insert(
