@@ -145,7 +145,7 @@ pub trait NovaInternedClassKeys: ra_salsa::Database {
 
 #[cfg(test)]
 mod tests {
-    use nova_memory::{MemoryBudget, MemoryManager, MemoryPressure};
+    use nova_memory::{MemoryBudget, MemoryManager, MemoryPressure, MemoryPressureThresholds};
     use ra_salsa::InternKey;
 
     use super::*;
@@ -346,23 +346,30 @@ mod tests {
     #[test]
     fn interned_ids_survive_memory_manager_driven_memo_eviction() {
         // Use a tiny query-cache budget to force the memory manager to evict Salsa memo tables via
-        // `SalsaMemoEvictor::evict`, while keeping overall pressure low.
+        // `SalsaMemoEvictor::evict`.
         //
-        // Note: `SalsaMemoEvictor` avoids rebuilding the entire Salsa database under
-        // Low/Medium pressure unless eviction is targeting `0` bytes. Setting the query-cache
-        // budget to `0` makes `MemoryManager::enforce()` request a full eviction even when the
-        // overall memory pressure is low.
+        // `MemoryManager::enforce()` skips the per-category eviction loop under *Low* pressure
+        // when total usage is within the overall budget. To exercise the evictor deterministically
+        // in unit tests (without depending on process RSS), configure thresholds so we enter at
+        // least `Medium` pressure even at low usage ratios.
         let total = 1_000_000_000_000_u64;
-        let manager = MemoryManager::new(MemoryBudget {
-            total,
-            categories: nova_memory::MemoryBreakdown {
-                query_cache: 0,
-                syntax_trees: total / 2,
-                indexes: 0,
-                type_info: 0,
-                other: total - (total / 2),
+        let manager = MemoryManager::with_thresholds(
+            MemoryBudget {
+                total,
+                categories: nova_memory::MemoryBreakdown {
+                    query_cache: 0,
+                    syntax_trees: total / 2,
+                    indexes: 0,
+                    type_info: 0,
+                    other: total - (total / 2),
+                },
             },
-        });
+            MemoryPressureThresholds {
+                medium: 0.0,
+                high: 0.85,
+                critical: 0.95,
+            },
+        );
 
         let db = SalsaDatabase::new_with_memory_manager(&manager);
         let project = ProjectId::from_raw(0);

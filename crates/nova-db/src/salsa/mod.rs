@@ -3742,7 +3742,7 @@ mod tests {
     use super::*;
     use nova_cache::{CacheConfig, Fingerprint};
     use nova_hir::hir::{Body, Expr, ExprId};
-    use nova_memory::{MemoryBudget, MemoryCategory, MemoryPressure, GB};
+    use nova_memory::{MemoryBudget, MemoryCategory, MemoryPressure, MemoryPressureThresholds, GB};
     use nova_syntax::SyntaxTreeStore;
     use nova_vfs::OpenDocuments;
     use std::collections::BTreeMap;
@@ -6602,17 +6602,29 @@ class Foo {
         // We force eviction by setting the query-cache budget to `0`, while keeping the overall
         // total (and syntax tree) budgets very large so pressure stays low and the syntax tree
         // store is not itself evicted.
+        //
+        // `MemoryManager::enforce()` skips the per-category eviction loop under `Low` pressure
+        // when total usage is within the overall budget. To trigger the eviction path
+        // deterministically in unit tests, we configure thresholds so we enter `Medium` pressure
+        // even at low usage ratios.
         let total = 1_000_000_000_000_u64;
-        let manager = MemoryManager::new(MemoryBudget {
-            total,
-            categories: nova_memory::MemoryBreakdown {
-                query_cache: 0,
-                syntax_trees: total / 2,
-                indexes: 0,
-                type_info: 0,
-                other: total - (total / 2),
+        let manager = MemoryManager::with_thresholds(
+            MemoryBudget {
+                total,
+                categories: nova_memory::MemoryBreakdown {
+                    query_cache: 0,
+                    syntax_trees: total / 2,
+                    indexes: 0,
+                    type_info: 0,
+                    other: total - (total / 2),
+                },
             },
-        });
+            MemoryPressureThresholds {
+                medium: 0.0,
+                high: 0.85,
+                critical: 0.95,
+            },
+        );
 
         let open_docs = Arc::new(OpenDocuments::default());
         let store = SyntaxTreeStore::new(&manager, open_docs.clone());
@@ -6655,16 +6667,23 @@ class Foo {
         // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
         // `ItemTreeStore` intact so open documents can reuse pinned item_tree results.
         let total = 1_000_000_000_000_u64;
-        let manager = MemoryManager::new(MemoryBudget {
-            total,
-            categories: nova_memory::MemoryBreakdown {
-                query_cache: 0,
-                syntax_trees: total / 2,
-                indexes: 0,
-                type_info: 0,
-                other: total - (total / 2),
+        let manager = MemoryManager::with_thresholds(
+            MemoryBudget {
+                total,
+                categories: nova_memory::MemoryBreakdown {
+                    query_cache: 0,
+                    syntax_trees: total / 2,
+                    indexes: 0,
+                    type_info: 0,
+                    other: total - (total / 2),
+                },
             },
-        });
+            MemoryPressureThresholds {
+                medium: 0.0,
+                high: 0.85,
+                critical: 0.95,
+            },
+        );
 
         let open_docs = Arc::new(OpenDocuments::default());
         let db = Database::new_with_memory_manager(&manager);
@@ -6706,16 +6725,23 @@ class Foo {
         // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
         // `JavaParseStore` intact so open documents can reuse pinned parse_java results.
         let total = 1_000_000_000_000_u64;
-        let manager = MemoryManager::new(MemoryBudget {
-            total,
-            categories: nova_memory::MemoryBreakdown {
-                query_cache: 0,
-                syntax_trees: total / 2,
-                indexes: 0,
-                type_info: 0,
-                other: total - (total / 2),
+        let manager = MemoryManager::with_thresholds(
+            MemoryBudget {
+                total,
+                categories: nova_memory::MemoryBreakdown {
+                    query_cache: 0,
+                    syntax_trees: total / 2,
+                    indexes: 0,
+                    type_info: 0,
+                    other: total - (total / 2),
+                },
             },
-        });
+            MemoryPressureThresholds {
+                medium: 0.0,
+                high: 0.85,
+                critical: 0.95,
+            },
+        );
 
         let open_docs = Arc::new(OpenDocuments::default());
         let store = JavaParseStore::new(&manager, open_docs.clone());
