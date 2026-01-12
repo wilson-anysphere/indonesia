@@ -150,6 +150,7 @@ impl JdkIndex {
         // java.util
         this.add_type("java.util", "List");
         this.add_type("java.util", "ArrayList");
+        this.add_type("java.util", "Collections");
         // Keep a few nested-type examples around so resolver tests can validate
         // `Outer.Inner` → `Outer$Inner` translation without relying on an
         // on-disk JDK index.

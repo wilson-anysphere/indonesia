@@ -14,9 +14,10 @@ use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
 use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_types::{
-    assignment_conversion, binary_numeric_promotion, format_type, CallKind, ClassDef, ClassKind,
-    Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution, PrimitiveType, ResolvedMethod,
-    Span, TyContext, Type, TypeEnv, TypeProvider, TypeStore, TypeVarId,
+    assignment_conversion, binary_numeric_promotion, format_resolved_method, format_type, CallKind,
+    ClassDef, ClassKind, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
+    MethodDef, MethodNotFound, MethodResolution, PrimitiveType,
+    ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeProvider, TypeStore, TypeVarId,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -614,7 +615,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     return;
                 };
 
-                let init_ty = self.infer_expr(loader, *init).ty;
+                let init_ty = self
+                    .infer_expr_with_expected(
+                        loader,
+                        *init,
+                        (!decl_ty.is_errorish()).then_some(&decl_ty),
+                    )
+                    .ty;
 
                 if decl_ty.is_errorish() || init_ty.is_errorish() {
                     return;
@@ -638,7 +645,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let Some(expr) = expr else {
                     return;
                 };
-                let expr_ty = self.infer_expr(loader, *expr).ty;
+                let expected = (!self.expected_return.is_errorish())
+                    .then_some(self.expected_return.clone());
+                let expr_ty = self
+                    .infer_expr_with_expected(loader, *expr, expected.as_ref())
+                    .ty;
                 if self.expected_return == Type::Void {
                     self.diagnostics.push(Diagnostic::error(
                         "return-mismatch",
@@ -775,6 +786,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     }
 
     fn infer_expr(&mut self, loader: &mut ExternalTypeLoader<'_>, expr: HirExprId) -> ExprInfo {
+        self.infer_expr_with_expected(loader, expr, None)
+    }
+
+    fn infer_expr_with_expected(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        expr: HirExprId,
+        expected: Option<&Type>,
+    ) -> ExprInfo {
         if let Some(info) = self.expr_info[expr.idx()].clone() {
             return info;
         }
@@ -850,7 +870,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Call { callee, args, .. } => self.infer_call(loader, *callee, args, expr),
+            HirExpr::Call { callee, args, .. } => {
+                self.infer_call(loader, *callee, args, expr, expected)
+            }
             HirExpr::New {
                 class,
                 class_range,
@@ -903,7 +925,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, *op, *lhs, *rhs),
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
-                let rhs_info = self.infer_expr(loader, *rhs);
+                let rhs_expected = match op {
+                    AssignOp::Assign if !lhs_info.ty.is_errorish() => Some(&lhs_info.ty),
+                    _ => None,
+                };
+                let rhs_info = self.infer_expr_with_expected(loader, *rhs, rhs_expected);
                 let lhs_ty = lhs_info.ty.clone();
                 let rhs_ty = rhs_info.ty.clone();
 
@@ -926,8 +952,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         // Best-effort support for compound assignments (JLS 15.26.2):
                         // accept primitive numeric cases where binary numeric promotion applies.
                         if !lhs_ty.is_errorish() && !rhs_ty.is_errorish() {
-                            let string_ty =
-                                Type::class(loader.store.well_known().string, vec![]);
+                            let string_ty = Type::class(loader.store.well_known().string, vec![]);
                             let ok = if *op == AssignOp::AddAssign && lhs_ty == string_ty {
                                 true
                             } else {
@@ -987,8 +1012,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ..
             } => {
                 let _ = self.infer_expr(loader, *condition);
-                let then_ty = self.infer_expr(loader, *then_expr).ty;
-                let else_ty = self.infer_expr(loader, *else_expr).ty;
+                let then_ty = self
+                    .infer_expr_with_expected(loader, *then_expr, expected)
+                    .ty;
+                let else_ty = self
+                    .infer_expr_with_expected(loader, *else_expr, expected)
+                    .ty;
                 let ty = if then_ty == else_ty {
                     then_ty
                 } else if then_ty.is_errorish() {
@@ -1278,6 +1307,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         callee: HirExprId,
         args: &[HirExprId],
         expr: HirExprId,
+        expected: Option<&Type>,
     ) -> ExprInfo {
         match &self.body.exprs[callee] {
             HirExpr::FieldAccess { receiver, name, .. } => {
@@ -1300,7 +1330,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     call_kind,
                     name: name.as_str(),
                     args: arg_types,
-                    expected_return: None,
+                    expected_return: expected.cloned(),
                     explicit_type_args: Vec::new(),
                 };
 
@@ -1315,10 +1345,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     MethodResolution::Ambiguous(amb) => {
-                        self.diagnostics.push(Diagnostic::error(
-                            "ambiguous-call",
-                            format!("ambiguous call `{}`", name),
-                            Some(self.body.exprs[expr].range()),
+                        self.diagnostics.push(self.ambiguous_call_diag(
+                            env_ro,
+                            name.as_str(),
+                            &amb.candidates,
+                            self.body.exprs[expr].range(),
                         ));
                         if let Some(first) = amb.candidates.first() {
                             self.call_resolutions[expr.idx()] = Some(first.clone());
@@ -1333,11 +1364,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             }
                         }
                     }
-                    MethodResolution::NotFound(_) => {
-                        self.diagnostics.push(Diagnostic::error(
-                            "unresolved-method",
-                            format!("unresolved method `{}`", name),
-                            Some(self.body.exprs[expr].range()),
+                    MethodResolution::NotFound(not_found) => {
+                        self.diagnostics.push(self.unresolved_method_diag(
+                            env_ro,
+                            &not_found,
+                            self.body.exprs[expr].range(),
                         ));
                         ExprInfo {
                             ty: Type::Error,
@@ -1371,7 +1402,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         call_kind,
                         name: name.as_str(),
                         args: arg_types.clone(),
-                        expected_return: None,
+                        expected_return: expected.cloned(),
                         explicit_type_args: Vec::new(),
                     };
 
@@ -1386,10 +1417,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             };
                         }
                         MethodResolution::Ambiguous(amb) => {
-                            self.diagnostics.push(Diagnostic::error(
-                                "ambiguous-call",
-                                format!("ambiguous call `{}`", name),
-                                Some(self.body.exprs[expr].range()),
+                            self.diagnostics.push(self.ambiguous_call_diag(
+                                env_ro,
+                                name.as_str(),
+                                &amb.candidates,
+                                self.body.exprs[expr].range(),
                             ));
                             if let Some(first) = amb.candidates.first() {
                                 self.call_resolutions[expr.idx()] = Some(first.clone());
@@ -1476,7 +1508,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     call_kind: CallKind::Static,
                     name: member,
                     args: arg_types,
-                    expected_return: None,
+                    expected_return: expected.cloned(),
                     explicit_type_args: Vec::new(),
                 };
 
@@ -1491,10 +1523,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     MethodResolution::Ambiguous(amb) => {
-                        self.diagnostics.push(Diagnostic::error(
-                            "ambiguous-call",
-                            format!("ambiguous call `{member}`"),
-                            Some(self.body.exprs[expr].range()),
+                        self.diagnostics.push(self.ambiguous_call_diag(
+                            env_ro,
+                            member,
+                            &amb.candidates,
+                            self.body.exprs[expr].range(),
                         ));
                         if let Some(first) = amb.candidates.first() {
                             self.call_resolutions[expr.idx()] = Some(first.clone());
@@ -1509,11 +1542,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             }
                         }
                     }
-                    MethodResolution::NotFound(_) => {
-                        self.diagnostics.push(Diagnostic::error(
-                            "unresolved-method",
-                            format!("unresolved method `{member}`"),
-                            Some(self.body.exprs[expr].range()),
+                    MethodResolution::NotFound(not_found) => {
+                        self.diagnostics.push(self.unresolved_method_diag(
+                            env_ro,
+                            &not_found,
+                            self.body.exprs[expr].range(),
                         ));
                         ExprInfo {
                             ty: Type::Error,
@@ -1527,6 +1560,81 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 is_type_ref: false,
             },
         }
+    }
+
+    fn unresolved_method_diag(
+        &self,
+        env: &dyn TypeEnv,
+        not_found: &MethodNotFound,
+        span: Span,
+    ) -> Diagnostic {
+        let receiver = format_type(env, &not_found.receiver);
+        let args = if not_found.args.is_empty() {
+            "()".to_string()
+        } else {
+            let rendered = not_found
+                .args
+                .iter()
+                .map(|t| format_type(env, t))
+                .collect::<Vec<_>>();
+            format!("({})", rendered.join(", "))
+        };
+
+        let mut message = format!(
+            "unresolved method `{}` for receiver `{}` with arguments {}",
+            not_found.name, receiver, args
+        );
+
+        if not_found.candidates.is_empty() {
+            return Diagnostic::error("unresolved-method", message, Some(span));
+        }
+
+        message.push_str("\n\ncandidates:");
+        for cand in not_found.candidates.iter().take(5) {
+            message.push_str("\n  - ");
+            message.push_str(&format_method_candidate_signature(env, &cand.candidate));
+
+            if let Some(failure) = cand.failures.first() {
+                message.push_str("\n    ");
+                message.push_str(&format_method_candidate_failure_reason(env, &failure.reason));
+            }
+        }
+
+        if not_found.candidates.len() > 5 {
+            message.push_str(&format!(
+                "\n  ... and {} more",
+                not_found.candidates.len().saturating_sub(5)
+            ));
+        }
+
+        Diagnostic::error("unresolved-method", message, Some(span))
+    }
+
+    fn ambiguous_call_diag(
+        &self,
+        env: &dyn TypeEnv,
+        name: &str,
+        candidates: &[ResolvedMethod],
+        span: Span,
+    ) -> Diagnostic {
+        let mut message = format!("ambiguous call `{name}`");
+        if candidates.is_empty() {
+            return Diagnostic::error("ambiguous-call", message, Some(span));
+        }
+
+        message.push_str("\n\ncandidates:");
+        for cand in candidates.iter().take(8) {
+            message.push_str("\n  - ");
+            message.push_str(&format_resolved_method(env, cand));
+        }
+        if candidates.len() > 8 {
+            message.push_str(&format!(
+                "\n  ... and {} more",
+                candidates.len().saturating_sub(8)
+            ));
+        }
+
+        Diagnostic::error("ambiguous-call", message, Some(span))
     }
 
     fn is_static_context(&self) -> bool {
@@ -2253,5 +2361,69 @@ fn type_binary_name(env: &TypeStore, ty: &Type) -> Option<String> {
         Type::Class(nova_types::ClassType { def, .. }) => env.class(*def).map(|c| c.name.clone()),
         Type::Named(name) => Some(name.clone()),
         _ => None,
+    }
+}
+
+fn format_method_candidate_signature(env: &dyn TypeEnv, cand: &nova_types::MethodCandidate) -> String {
+    let mut out = String::new();
+    out.push_str(&format_type(env, &cand.return_type));
+    out.push(' ');
+    out.push_str(&cand.name);
+    out.push('(');
+    for (idx, param) in cand.params.iter().enumerate() {
+        if idx != 0 {
+            out.push_str(", ");
+        }
+
+        if cand.is_varargs && idx == cand.params.len().saturating_sub(1) {
+            match param {
+                Type::Array(elem) => out.push_str(&format_type(env, elem)),
+                other => out.push_str(&format_type(env, other)),
+            }
+            out.push_str("...");
+        } else {
+            out.push_str(&format_type(env, param));
+        }
+    }
+    out.push(')');
+    out
+}
+
+fn format_method_candidate_failure_reason(
+    env: &dyn TypeEnv,
+    reason: &MethodCandidateFailureReason,
+) -> String {
+    match reason {
+        MethodCandidateFailureReason::WrongCallKind { call_kind } => match call_kind {
+            CallKind::Static => "method is not static".to_string(),
+            CallKind::Instance => "method is static".to_string(),
+        },
+        MethodCandidateFailureReason::WrongArity {
+            expected,
+            found,
+            is_varargs,
+        } => {
+            let suffix = if *is_varargs { " (varargs)" } else { "" };
+            format!("wrong arity: expected {expected}, found {found}{suffix}")
+        }
+        MethodCandidateFailureReason::ExplicitTypeArgCountMismatch { expected, found } => {
+            format!("wrong number of type arguments: expected {expected}, found {found}")
+        }
+        MethodCandidateFailureReason::TypeArgOutOfBounds {
+            type_param,
+            type_arg,
+            upper_bound,
+        } => {
+            let tv = format_type(env, &Type::TypeVar(*type_param));
+            let arg = format_type(env, type_arg);
+            let ub = format_type(env, upper_bound);
+            format!("type argument {arg} is not within bounds of {tv}: {ub}")
+        }
+        MethodCandidateFailureReason::ArgumentConversion { arg_index, from, to } => {
+            let from = format_type(env, from);
+            let to = format_type(env, to);
+            // Present as 1-based for user display.
+            format!("argument {}: cannot convert from {from} to {to}", arg_index + 1)
+        }
     }
 }

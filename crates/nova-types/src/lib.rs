@@ -902,6 +902,31 @@ impl TypeStore {
             ],
         });
 
+        // java.util.Collections
+        //
+        // We include this primarily to support target-typing regression tests like:
+        // `return Collections.emptyList();` where the method has no arguments and
+        // type argument inference depends on the expected return type.
+        let collections_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let _collections = store.add_class(ClassDef {
+            name: "java.util.Collections".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "emptyList".to_string(),
+                type_params: vec![collections_t],
+                params: vec![],
+                return_type: Type::class(list, vec![Type::TypeVar(collections_t)]),
+                is_static: true,
+                is_varargs: false,
+                is_abstract: false,
+            }],
+        });
+
         // java.util.ArrayList<E> implements List<E>
         let array_list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
         let _array_list = store.add_class(ClassDef {

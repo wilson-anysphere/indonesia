@@ -206,6 +206,58 @@ class C {
 }
 
 #[test]
+fn target_typing_infers_generic_method_return_from_expected_type() {
+    let src = r#"
+import java.util.*;
+class C {
+    List<String> m() {
+        return Collections.emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
+fn unresolved_method_diagnostic_includes_candidates_and_arity() {
+    let src = r#"
+import java.util.*;
+class C {
+    void m() {
+        Collections.emptyList(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-method")
+        .expect("expected unresolved-method diagnostic");
+
+    assert!(
+        diag.message.contains("emptyList"),
+        "expected diagnostic message to mention method name, got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("wrong arity") && diag.message.contains("expected 0"),
+        "expected diagnostic to mention arity/candidates, got {:?}",
+        diag.message
+    );
+}
+
+#[test]
 fn type_at_offset_shows_enclosing_class_for_this() {
     let src = r#"
 class C {
