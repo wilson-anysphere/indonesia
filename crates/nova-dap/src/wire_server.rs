@@ -3590,6 +3590,7 @@ async fn attach_debugger_with_retry_hosts(
 
     loop {
         let mut last_err: Option<DebuggerError> = None;
+        let mut any_retryable = false;
         for &host in &hosts {
             match Debugger::attach(AttachArgs {
                 host,
@@ -3599,7 +3600,10 @@ async fn attach_debugger_with_retry_hosts(
             .await
             {
                 Ok(dbg) => return Ok(dbg),
-                Err(err) => last_err = Some(err),
+                Err(err) => {
+                    any_retryable |= is_retryable_attach_error(&err);
+                    last_err = Some(err);
+                }
             }
         }
 
@@ -3613,7 +3617,7 @@ async fn attach_debugger_with_retry_hosts(
         }
 
         let elapsed = start.elapsed();
-        if elapsed >= timeout || !is_retryable_attach_error(&err) {
+        if elapsed >= timeout || !any_retryable {
             return Err(err);
         }
 
