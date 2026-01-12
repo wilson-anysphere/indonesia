@@ -275,9 +275,10 @@ impl NovaServer {
 │  • nova/java/organizeImports - Organize imports                 │
 │                                                                  │
 │  FRAMEWORK SUPPORT                                               │
-│  • nova/spring/beans - List Spring beans                        │
-│  • nova/spring/endpoints - List REST endpoints                  │
-│  • nova/spring/navigateToBean - Navigate to bean def            │
+│  • nova/web/endpoints - List web endpoints                      │
+│  • nova/quarkus/endpoints - Alias of nova/web/endpoints         │
+│  • nova/micronaut/endpoints - List Micronaut endpoints          │
+│  • nova/micronaut/beans - List Micronaut beans                  │
 │                                                                  │
 │  REFACTORING                                                     │
 │  • nova/refactor/preview - Preview refactoring                  │
@@ -354,37 +355,25 @@ impl NovaServer {
             s.java_classpath(params)
         });
         
-        // Spring beans
-        self.register_method("nova/spring/beans", |s, params| {
-            s.spring_beans(params)
+        // Framework introspection (see `protocol-extensions.md`)
+        self.register_method("nova/web/endpoints", |s, params| {
+            s.web_endpoints(params)
+        });
+        // Backwards-compat alias for some clients.
+        self.register_method("nova/quarkus/endpoints", |s, params| {
+            s.web_endpoints(params)
+        });
+        self.register_method("nova/micronaut/endpoints", |s, params| {
+            s.micronaut_endpoints(params)
+        });
+        self.register_method("nova/micronaut/beans", |s, params| {
+            s.micronaut_beans(params)
         });
         
         // Refactoring preview
         self.register_method("nova/refactor/preview", |s, params| {
             s.refactor_preview(params)
         });
-    }
-    
-    fn spring_beans(&self, params: SpringBeansParams) -> Result<SpringBeansResponse> {
-        let db = self.db.read().snapshot();
-        let project = db.project_for_uri(&params.uri)?;
-        
-        let beans: Vec<_> = db.spring_analyzer()
-            .get_beans(project)
-            .iter()
-            .map(|b| SpringBeanInfo {
-                name: b.name.clone(),
-                bean_type: format_type(&b.bean_type),
-                scope: b.scope.to_string(),
-                profiles: b.profiles.clone(),
-                location: Location {
-                    uri: b.file.to_uri(),
-                    range: b.range,
-                },
-            })
-            .collect();
-        
-        Ok(SpringBeansResponse { beans })
     }
 }
 ```
@@ -407,7 +396,7 @@ impl NovaServer {
 │    - Project explorer integration                               │
 │    - Debug launch configurations                                │
 │    - Test runner integration                                    │
-│    - Spring Boot dashboard                                      │
+│    - Frameworks dashboard ("Nova Frameworks" view)              │
 │                                                                  │
 │  NEOVIM                                                         │
 │  • Built-in LSP client (0.5+)                                   │
@@ -445,8 +434,75 @@ Templates shipped with this repo:
 
 ### VS Code Extension
 
+Example / sketch of wiring up a **Frameworks dashboard** view (`novaFrameworks`) that queries
+framework-introspection endpoints. The canonical method list + JSON schemas are in
+[`protocol-extensions.md`](protocol-extensions.md); clients should treat JSON-RPC `-32601 Method not found`
+as capability gating (older servers) and degrade gracefully.
+
 ```typescript
-// VS Code extension for Nova
+// VS Code extension for Nova (example / sketch).
+//
+// Note: `protocol-extensions.md` is the source of truth for supported `nova/*` methods and
+// JSON schemas. Extensions should treat "method not found" (-32601) as capability gating for
+// older server builds, and degrade gracefully.
+
+type FrameworkNode =
+  | { kind: 'group'; label: string }
+  | { kind: 'item'; label: string; location?: vscode.Location };
+
+class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<FrameworkNode> {
+  private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<FrameworkNode | undefined>();
+  readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
+
+  constructor(private readonly client: LanguageClient) {}
+
+  refresh(): void {
+    this.onDidChangeTreeDataEmitter.fire(undefined);
+  }
+
+  getTreeItem(element: FrameworkNode): vscode.TreeItem {
+    const item = new vscode.TreeItem(element.label);
+    item.collapsibleState = element.kind === 'group' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+    if (element.location) {
+      item.command = {
+        command: 'vscode.open',
+        title: 'Open',
+        arguments: [element.location.uri, { selection: element.location.range }],
+      };
+    }
+    return item;
+  }
+
+  async getChildren(element?: FrameworkNode): Promise<FrameworkNode[]> {
+    if (element?.kind === 'item') return [];
+
+    const projectRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!projectRoot) return [];
+
+    // Best-effort: servers that don't implement these endpoints will throw "method not found".
+    const web = (await this.sendOptional('nova/web/endpoints', { projectRoot })) ??
+      (await this.sendOptional('nova/quarkus/endpoints', { projectRoot })); // alias
+    const micronautEndpoints = await this.sendOptional('nova/micronaut/endpoints', { projectRoot });
+    const micronautBeans = await this.sendOptional('nova/micronaut/beans', { projectRoot });
+
+    const children: FrameworkNode[] = [];
+    if (web) children.push({ kind: 'group', label: `Web Endpoints (${web.endpoints?.length ?? 0})` });
+    if (micronautEndpoints) children.push({ kind: 'group', label: `Micronaut Endpoints (${micronautEndpoints.endpoints?.length ?? 0})` });
+    if (micronautBeans) children.push({ kind: 'group', label: `Micronaut Beans (${micronautBeans.beans?.length ?? 0})` });
+    return children;
+  }
+
+  private async sendOptional(method: string, params: unknown): Promise<any | undefined> {
+    try {
+      return await this.client.sendRequest(method, params);
+    } catch (err: any) {
+      // JSON-RPC method not found
+      if (err?.code === -32601) return undefined;
+      throw err;
+    }
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // Start language server
     const serverOptions: ServerOptions = {
@@ -475,16 +531,11 @@ export function activate(context: vscode.ExtensionContext) {
                 uri: vscode.window.activeTextEditor?.document.uri.toString(),
             });
         }),
-        
-        vscode.commands.registerCommand('nova.showBeans', async () => {
-            const beans = await client.sendRequest('nova/spring/beans', {});
-            showBeansView(beans);
-        }),
     );
     
-    // Spring Boot dashboard
-    const springProvider = new SpringBootTreeDataProvider(client);
-    vscode.window.registerTreeDataProvider('novaSpringBoot', springProvider);
+    // Frameworks dashboard ("Nova Frameworks" view)
+    const frameworksProvider = new FrameworkDashboardTreeDataProvider(client);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('novaFrameworks', frameworksProvider));
     
     client.start();
 }
