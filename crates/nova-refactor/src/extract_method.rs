@@ -166,6 +166,9 @@ pub enum ExtractMethodIssue {
     /// declared inside a method). Extracting this into a type-level method would change scoping and
     /// can break compilation.
     UnsupportedLocalTypeDeclaration,
+    /// Selection would violate Java's constructor invocation rule (`super(...)`/`this(...)` must be
+    /// the first statement of a constructor).
+    ConstructorInvocation,
     UnknownType {
         name: String,
     },
@@ -268,6 +271,19 @@ impl ExtractMethod {
         }
         if enclosing_type_body.is_none() {
             issues.push(ExtractMethodIssue::InvalidSelection);
+        }
+
+        if matches!(method, EnclosingMethod::Constructor(_)) {
+            if let Some(invocation_range) =
+                first_explicit_constructor_invocation_range(source, &method_body)
+            {
+                // Java requires the explicit constructor invocation (`super(...)`/`this(...)`) to
+                // remain the first statement in a constructor. Reject any selection that could
+                // move it into the extracted method or insert a call before it.
+                if selection.start < invocation_range.end {
+                    issues.push(ExtractMethodIssue::ConstructorInvocation);
+                }
+            }
         }
 
         if let Some(selection_info) = find_statement_selection(&method_body, selection) {
@@ -1269,6 +1285,44 @@ fn parameter_type_text(source: &str, param: &ast::Parameter) -> Option<String> {
     }
 
     Some(text)
+}
+
+fn first_explicit_constructor_invocation_range(
+    source: &str,
+    body: &ast::Block,
+) -> Option<TextRange> {
+    let first = body.statements().next()?;
+    if !is_explicit_constructor_invocation_statement(source, &first) {
+        return None;
+    }
+    non_trivia_range(first.syntax()).or_else(|| Some(syntax_range(first.syntax())))
+}
+
+fn is_explicit_constructor_invocation_statement(source: &str, stmt: &ast::Statement) -> bool {
+    match stmt {
+        ast::Statement::ExplicitConstructorInvocation(_) => true,
+        ast::Statement::ExpressionStatement(expr_stmt) => {
+            let Some(expr) = expr_stmt.expression() else {
+                return false;
+            };
+            let ast::Expression::MethodCallExpression(call) = expr else {
+                return false;
+            };
+            let Some(callee) = call.callee() else {
+                return false;
+            };
+            match callee {
+                ast::Expression::ThisExpression(_) | ast::Expression::SuperExpression(_) => true,
+                _ => {
+                    // Extremely defensive: fall back to text matching if the parser ever
+                    // represents `this`/`super` differently.
+                    let callee_text = slice_syntax(source, callee.syntax()).unwrap_or("").trim();
+                    matches!(callee_text, "this" | "super")
+                }
+            }
+        }
+        _ => false,
+    }
 }
 
 fn collect_control_flow_hazards(
