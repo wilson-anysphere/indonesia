@@ -1373,7 +1373,4 @@ impl<'a> BodyLower<'a> {
     }
 }
 
-#[must_use]
-pub(crate) fn slice_range(text: &str, range: Span) -> &str {
-    &text[range.start..range.end]
-}
+// Intentionally no helpers past this point: keep this module warning-free under `-D warnings`.
