@@ -126,8 +126,8 @@ struct AiModelsArgs {
 struct LspLauncherArgs {
     /// Optional path to the `nova-lsp` binary.
     ///
-    /// If unset, `nova` will first look for a `nova-lsp` binary adjacent to the running `nova`
-    /// executable, then fall back to resolving `nova-lsp` on $PATH.
+    /// If unset, `nova` will first try to resolve `nova-lsp` on $PATH, then fall back to looking
+    /// for a `nova-lsp` binary adjacent to the running `nova` executable.
     #[arg(long = "nova-lsp", visible_alias = "path")]
     nova_lsp: Option<PathBuf>,
 
@@ -148,8 +148,8 @@ struct LspLauncherArgs {
 struct DapLauncherArgs {
     /// Optional path to the `nova-dap` binary.
     ///
-    /// If unset, `nova` will first look for a `nova-dap` binary adjacent to the running `nova`
-    /// executable, then fall back to resolving `nova-dap` on $PATH.
+    /// If unset, `nova` will first try to resolve `nova-dap` on $PATH, then fall back to looking
+    /// for a `nova-dap` binary adjacent to the running `nova` executable.
     #[arg(long = "nova-dap", visible_alias = "path")]
     nova_dap: Option<PathBuf>,
 
@@ -1044,50 +1044,89 @@ fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Resul
             .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
     }
 
-    let program = args
-        .nova_lsp
-        .as_deref()
-        .map(PathBuf::from)
-        .or_else(|| resolve_adjacent_binary("nova-lsp"));
+    fn build_lsp_command<S: AsRef<OsStr>>(
+        program: S,
+        args: &LspLauncherArgs,
+        config_path: Option<&Path>,
+    ) -> Command {
+        let mut cmd = Command::new(program);
 
-    let mut cmd = match program {
-        Some(path) => Command::new(path),
-        None => Command::new("nova-lsp"),
-    };
+        // Important: no output on stdout except what the child writes (LSP frames).
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
 
-    // Important: no output on stdout except what the child writes (LSP frames).
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    // Always force stdio transport unless the caller explicitly opts in to a different mode.
-    // Today `nova-lsp` ignores this flag, but future transports may require it.
-    if !args.args.iter().any(|arg| arg == "--stdio") {
-        cmd.arg("--stdio");
-    }
-
-    // Forward the CLI's global `--config <path>` to `nova-lsp` unless the user is already
-    // explicitly passing `--config` in the passthrough args.
-    if let Some(config_path) = config_path {
-        if !passthrough_has_flag(&args.args, "--config") {
-            cmd.arg("--config").arg(config_path);
+        // Always force stdio transport unless the caller explicitly opts in to a different mode.
+        // Today `nova-lsp` ignores this flag, but future transports may require it.
+        if !args.args.iter().any(|arg| arg == "--stdio") {
+            cmd.arg("--stdio");
         }
+
+        // Forward the CLI's global `--config <path>` to `nova-lsp` unless the user is already
+        // explicitly passing `--config` in the passthrough args.
+        if let Some(config_path) = config_path {
+            if !passthrough_has_flag(&args.args, "--config") {
+                cmd.arg("--config").arg(config_path);
+            }
+        }
+
+        cmd.args(&args.args);
+        cmd
     }
 
-    cmd.args(&args.args);
+    let explicit_program = args.nova_lsp.as_deref().map(PathBuf::from);
+    let adjacent_program = if explicit_program.is_none() {
+        resolve_adjacent_binary("nova-lsp")
+    } else {
+        None
+    };
 
     // Prefer an `exec()`-style handoff on Unix so `nova lsp` behaves exactly like
     // running `nova-lsp` directly (signal handling, process identity, etc.).
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        if let Some(program) = explicit_program {
+            let mut cmd = build_lsp_command(program, args, config_path);
+            let err = cmd.exec();
+            return Err(err).with_context(|| "failed to exec nova-lsp");
+        }
+
+        let mut cmd = build_lsp_command("nova-lsp", args, config_path);
         let err = cmd.exec();
+        if err.kind() == std::io::ErrorKind::NotFound {
+            if let Some(program) = adjacent_program {
+                let mut cmd = build_lsp_command(&program, args, config_path);
+                let err = cmd.exec();
+                return Err(err)
+                    .with_context(|| format!("failed to exec {}", program.display()));
+            }
+        }
         return Err(err).with_context(|| "failed to exec nova-lsp");
     }
 
     #[cfg(not(unix))]
     {
-        let status = cmd.status().with_context(|| "failed to spawn nova-lsp")?;
+        if let Some(program) = explicit_program {
+            let status = build_lsp_command(program, args, config_path)
+                .status()
+                .with_context(|| "failed to spawn nova-lsp")?;
+            return Ok(exit_code_from_status(status));
+        }
+
+        let status = match build_lsp_command("nova-lsp", args, config_path).status() {
+            Ok(status) => status,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(program) = adjacent_program {
+                    build_lsp_command(program, args, config_path)
+                        .status()
+                        .with_context(|| "failed to spawn nova-lsp")?
+                } else {
+                    return Err(err).with_context(|| "failed to spawn nova-lsp");
+                }
+            }
+            Err(err) => return Err(err).with_context(|| "failed to spawn nova-lsp"),
+        };
         Ok(exit_code_from_status(status))
     }
 }
@@ -1100,39 +1139,78 @@ fn run_dap_launcher(args: &DapLauncherArgs, config_path: Option<&Path>) -> Resul
             .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
     }
 
-    let program = args
-        .nova_dap
-        .as_deref()
-        .map(PathBuf::from)
-        .or_else(|| resolve_adjacent_binary("nova-dap"));
+    fn build_dap_command<S: AsRef<OsStr>>(
+        program: S,
+        args: &DapLauncherArgs,
+        config_path: Option<&Path>,
+    ) -> Command {
+        let mut cmd = Command::new(program);
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
 
-    let mut cmd = match program {
-        Some(path) => Command::new(path),
-        None => Command::new("nova-dap"),
-    };
-
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    if let Some(config_path) = config_path {
-        if !passthrough_has_flag(&args.args, "--config") {
-            cmd.arg("--config").arg(config_path);
+        if let Some(config_path) = config_path {
+            if !passthrough_has_flag(&args.args, "--config") {
+                cmd.arg("--config").arg(config_path);
+            }
         }
+
+        cmd.args(&args.args);
+        cmd
     }
 
-    cmd.args(&args.args);
+    let explicit_program = args.nova_dap.as_deref().map(PathBuf::from);
+    let adjacent_program = if explicit_program.is_none() {
+        resolve_adjacent_binary("nova-dap")
+    } else {
+        None
+    };
 
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        if let Some(program) = explicit_program {
+            let mut cmd = build_dap_command(program, args, config_path);
+            let err = cmd.exec();
+            return Err(err).with_context(|| "failed to exec nova-dap");
+        }
+
+        let mut cmd = build_dap_command("nova-dap", args, config_path);
         let err = cmd.exec();
+        if err.kind() == std::io::ErrorKind::NotFound {
+            if let Some(program) = adjacent_program {
+                let mut cmd = build_dap_command(&program, args, config_path);
+                let err = cmd.exec();
+                return Err(err)
+                    .with_context(|| format!("failed to exec {}", program.display()));
+            }
+        }
         return Err(err).with_context(|| "failed to exec nova-dap");
     }
 
     #[cfg(not(unix))]
     {
-        let status = cmd.status().with_context(|| "failed to spawn nova-dap")?;
+        if let Some(program) = explicit_program {
+            let status = build_dap_command(program, args, config_path)
+                .status()
+                .with_context(|| "failed to spawn nova-dap")?;
+            return Ok(exit_code_from_status(status));
+        }
+
+        let status = match build_dap_command("nova-dap", args, config_path).status() {
+            Ok(status) => status,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(program) = adjacent_program {
+                    build_dap_command(program, args, config_path)
+                        .status()
+                        .with_context(|| "failed to spawn nova-dap")?
+                } else {
+                    return Err(err).with_context(|| "failed to spawn nova-dap");
+                }
+            }
+            Err(err) => return Err(err).with_context(|| "failed to spawn nova-dap"),
+        };
+
         Ok(exit_code_from_status(status))
     }
 }
@@ -2441,6 +2519,36 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
+    const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+    const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024; // 8 KiB
+
+    fn read_line_limited<R: BufRead>(reader: &mut R, max_len: usize) -> Result<Option<String>> {
+        let mut buf = Vec::<u8>::new();
+        loop {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            let newline_pos = available.iter().position(|&b| b == b'\n');
+            let take = newline_pos.map(|pos| pos + 1).unwrap_or(available.len());
+            if buf.len() + take > max_len {
+                anyhow::bail!("LSP header line exceeds maximum size ({max_len} bytes)");
+            }
+
+            buf.extend_from_slice(&available[..take]);
+            reader.consume(take);
+            if newline_pos.is_some() {
+                break;
+            }
+        }
+
+        Ok(Some(String::from_utf8(buf)?))
+    }
+
     fn write_lsp_message<W: Write>(writer: &mut W, value: &serde_json::Value) -> Result<()> {
         let payload = serde_json::to_vec(value)?;
         write!(writer, "Content-Length: {}\r\n\r\n", payload.len())?;
@@ -2451,14 +2559,11 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
 
     fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> Result<Option<serde_json::Value>> {
         let mut content_length: Option<usize> = None;
-        let mut line = String::new();
 
         loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line)?;
-            if bytes == 0 {
+            let Some(line) = read_line_limited(reader, MAX_LSP_HEADER_LINE_BYTES)? else {
                 return Ok(None);
-            }
+            };
 
             let header = line.trim_end_matches(['\r', '\n']);
             if header.is_empty() {
@@ -2466,11 +2571,18 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
             }
 
             if let Some(rest) = header.strip_prefix("Content-Length:") {
-                content_length = Some(rest.trim().parse::<usize>()?);
+                let value = rest.trim();
+                content_length = Some(value.parse::<usize>().with_context(|| {
+                    format!("invalid Content-Length header value {value:?}")
+                })?);
             }
         }
 
         let len = content_length.context("missing Content-Length header")?;
+        anyhow::ensure!(
+            len <= MAX_LSP_MESSAGE_BYTES,
+            "LSP message Content-Length {len} exceeds maximum allowed size {MAX_LSP_MESSAGE_BYTES}"
+        );
         let mut payload = vec![0u8; len];
         reader.read_exact(&mut payload)?;
         Ok(Some(serde_json::from_slice(&payload)?))
