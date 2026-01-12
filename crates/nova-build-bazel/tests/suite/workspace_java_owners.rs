@@ -307,20 +307,26 @@ fn workspace_package_cache_is_reused_across_multiple_files() {
     create_file(&dir.path().join("java/B.java"));
 
     let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
-    let label = workspace.workspace_file_label(Path::new("java/A.java")).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/A.java"))
+        .unwrap();
     assert_eq!(label.as_deref(), Some("//java:A.java"));
 
     // Remove the BUILD file. Without a package-dir cache, a fresh lookup for a different file in
     // the same directory would now return `None`.
     std::fs::remove_file(dir.path().join("java/BUILD")).unwrap();
 
-    let cached = workspace.workspace_file_label(Path::new("java/B.java")).unwrap();
+    let cached = workspace
+        .workspace_file_label(Path::new("java/B.java"))
+        .unwrap();
     assert_eq!(cached.as_deref(), Some("//java:B.java"));
 
     workspace
         .invalidate_changed_files(&[PathBuf::from("java/BUILD")])
         .unwrap();
-    let label = workspace.workspace_file_label(Path::new("java/B.java")).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/B.java"))
+        .unwrap();
     assert_eq!(label, None);
 }
 

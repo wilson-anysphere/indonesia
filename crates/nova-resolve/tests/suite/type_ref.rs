@@ -6,7 +6,9 @@ use nova_hir::queries::HirDatabase;
 use nova_jdk::JdkIndex;
 use nova_resolve::type_ref::resolve_type_ref_text;
 use nova_resolve::{build_scopes, Resolver};
-use nova_types::{ClassDef, ClassKind, PrimitiveType, Span, Type, TypeEnv, TypeStore, WildcardBound};
+use nova_types::{
+    ClassDef, ClassKind, PrimitiveType, Span, Type, TypeEnv, TypeStore, WildcardBound,
+};
 
 #[derive(Default)]
 struct TestDb {
@@ -911,7 +913,9 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         .iter()
         .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
         .expect("expected unresolved-type diagnostic for missing annotation type");
-    let span = diag.span.expect("expected anchored span for unresolved-type diagnostic");
+    let span = diag
+        .span
+        .expect("expected anchored span for unresolved-type diagnostic");
     assert_eq!(
         &text[span.start..span.end],
         "Missing",

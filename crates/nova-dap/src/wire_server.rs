@@ -300,8 +300,10 @@ async fn handle_request(
     //
     // We keep the top-level guard here to capture end-to-end request latency.
     let command_for_metrics = request.command.clone();
-    let _request_metrics =
-        RequestMetricsGuard::new(&command_for_metrics, nova_metrics::MetricsRegistry::global());
+    let _request_metrics = RequestMetricsGuard::new(
+        &command_for_metrics,
+        nova_metrics::MetricsRegistry::global(),
+    );
     let request_seq = request.seq;
     let mut in_flight_cleanup = InFlightCleanupGuard::new(in_flight.clone(), request_seq);
 

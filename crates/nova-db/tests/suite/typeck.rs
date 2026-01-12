@@ -1110,7 +1110,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "instanceof-invalid-type"),
         "expected instanceof-invalid-type diagnostic; got {diags:?}"
     );
@@ -1129,7 +1130,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "instanceof-on-primitive"),
         "expected instanceof-on-primitive diagnostic; got {diags:?}"
     );

@@ -2073,7 +2073,9 @@ impl Lowerer {
             .map(|expr| self.lower_expr(expr))
             .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
 
-        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Type);
         let ty = ty_node
             .as_ref()
             .map(|ty| self.lower_type_ref(ty))

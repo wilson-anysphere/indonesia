@@ -1,6 +1,7 @@
 use nova_refactor::{
-    apply_workspace_edit, move_package_workspace_edit, FileId, FileOp, MovePackageParams,
-    TextDatabase, WorkspaceEdit, workspace_edit_to_lsp_document_changes_with_uri_mapper,
+    apply_workspace_edit, move_package_workspace_edit,
+    workspace_edit_to_lsp_document_changes_with_uri_mapper, FileId, FileOp, MovePackageParams,
+    TextDatabase, WorkspaceEdit,
 };
 use pretty_assertions::assert_eq;
 use std::collections::{BTreeMap, BTreeSet};
@@ -205,10 +206,9 @@ fn move_package_workspace_edit_lsp_document_changes_include_renames_and_new_file
     let rename_ops: BTreeSet<(String, String)> = ops
         .iter()
         .filter_map(|op| match op {
-            DocumentChangeOperation::Op(ResourceOp::Rename(rename)) => Some((
-                rename.old_uri.to_string(),
-                rename.new_uri.to_string(),
-            )),
+            DocumentChangeOperation::Op(ResourceOp::Rename(rename)) => {
+                Some((rename.old_uri.to_string(), rename.new_uri.to_string()))
+            }
             _ => None,
         })
         .collect();
@@ -253,7 +253,10 @@ fn move_package_workspace_edit_lsp_document_changes_include_renames_and_new_file
             lsp_types::OneOf::Left(e) => e,
             lsp_types::OneOf::Right(e) => &e.text_edit,
         };
-        edits_by_uri.insert(text_doc_edit.text_document.uri.to_string(), edit.new_text.clone());
+        edits_by_uri.insert(
+            text_doc_edit.text_document.uri.to_string(),
+            edit.new_text.clone(),
+        );
     }
 
     let expected_by_uri: BTreeMap<String, String> = expected

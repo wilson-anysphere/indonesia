@@ -1316,9 +1316,7 @@ pub fn parse_maven_evaluate_scalar_output(output: &str) -> Option<String> {
         if line.is_empty() || is_maven_noise_line(line) || is_maven_null_value(line) {
             continue;
         }
-        let candidate = line
-            .trim_matches(|c| matches!(c, '"' | '\''))
-            .trim();
+        let candidate = line.trim_matches(|c| matches!(c, '"' | '\'')).trim();
         // `help:evaluate` may print a bracketed list when the expression resolves to a list.
         // Treat that as invalid for scalar extraction so callers can fall back to defaults.
         if candidate.starts_with('[') {
@@ -1428,10 +1426,7 @@ fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
     let mut entries = Vec::new();
     let inner = &trimmed[1..trimmed.len() - 1];
     for part in inner.split(',') {
-        let s = part
-            .trim()
-            .trim_matches(|c| matches!(c, '"' | '\''))
-            .trim();
+        let s = part.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
         if s.is_empty() || is_maven_null_value(s) {
             continue;
         }

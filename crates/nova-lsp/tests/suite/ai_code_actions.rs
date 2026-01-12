@@ -1601,7 +1601,8 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
           "text": "    // AI-generated tests would go here\n"
         }
       ]
-    }).to_string();
+    })
+    .to_string();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -1727,7 +1728,8 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let expected_uri = file_uri.parse::<Uri>().expect("file uri");
     let edits = changes.get(&expected_uri).expect("edits for file");
     assert!(
-        edits.iter()
+        edits
+            .iter()
             .any(|edit| edit.new_text.contains("AI-generated tests would go here")),
         "expected inserted comment, got {edits:?}"
     );

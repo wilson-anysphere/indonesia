@@ -2458,9 +2458,10 @@ fn is_build_tool_input_file(path: &Path) -> bool {
     if !in_ignored_dir
         && name.ends_with(".lockfile")
         && path.parent().is_some_and(|parent| {
-            parent
-                .ancestors()
-                .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+            parent.ancestors().any(|dir| {
+                dir.file_name()
+                    .is_some_and(|name| name == "dependency-locks")
+            })
         })
     {
         return true;
@@ -3176,7 +3177,10 @@ mod tests {
         // named `build/`.
         let root_under_build = PathBuf::from("/tmp/build/workspace");
         assert!(
-            should_refresh_build_config(&root_under_build, &[root_under_build.join("gradle.lockfile")]),
+            should_refresh_build_config(
+                &root_under_build,
+                &[root_under_build.join("gradle.lockfile")]
+            ),
             "expected gradle.lockfile under /tmp/build/... to trigger refresh"
         );
     }

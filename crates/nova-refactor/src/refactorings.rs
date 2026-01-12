@@ -989,7 +989,8 @@ pub fn inline_variable(
                 end += 2;
             } else if tail.starts_with('\n') || tail.starts_with('\r') {
                 end += 1;
-            } else if let Some(comment_end) = statement_end_including_trailing_inline_comment(text, end)
+            } else if let Some(comment_end) =
+                statement_end_including_trailing_inline_comment(text, end)
             {
                 // When deleting a mid-line statement (e.g. after `case 1:`), also delete any trailing
                 // inline comments (`// ...` or `/* ... */`) that occur before the line break. This

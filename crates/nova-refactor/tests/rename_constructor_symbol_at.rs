@@ -14,4 +14,3 @@ fn symbol_at_constructor_name_returns_type_symbol() {
 
     assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
 }
-

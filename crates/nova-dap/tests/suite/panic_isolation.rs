@@ -30,4 +30,3 @@ async fn request_handler_panic_isolation_sends_error_response_and_continues() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

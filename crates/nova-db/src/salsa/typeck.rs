@@ -4246,7 +4246,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, expr, *op, *lhs, *rhs),
+            HirExpr::Binary { op, lhs, rhs, .. } => {
+                self.infer_binary(loader, expr, *op, *lhs, *rhs)
+            }
             HirExpr::Instanceof {
                 expr: lhs_expr,
                 ty_text,
