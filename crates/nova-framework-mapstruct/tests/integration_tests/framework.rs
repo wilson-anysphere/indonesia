@@ -92,26 +92,27 @@ fn unmapped_target_properties_diagnostic_via_framework_analyzer() {
     db.add_dependency(project, "org.mapstruct", "mapstruct");
 
     let src_dir = root.join("src/main/java/com/example");
-    write_file(
-        &src_dir.join("Source.java"),
-        r#"package com.example;
+    let source = r#"package com.example;
 
 public class Source {
   private String a;
 }
-"#,
-    );
-
-    write_file(
-        &src_dir.join("Target.java"),
-        r#"package com.example;
+"#;
+    let target = r#"package com.example;
 
 public class Target {
   private String a;
   private String b;
 }
-"#,
-    );
+"#;
+
+    let source_path = src_dir.join("Source.java");
+    write_file(&source_path, source);
+    db.add_file_with_path_and_text(project, source_path, source);
+
+    let target_path = src_dir.join("Target.java");
+    write_file(&target_path, target);
+    db.add_file_with_path_and_text(project, target_path, target);
 
     let mapper = r#"
 package com.example;
