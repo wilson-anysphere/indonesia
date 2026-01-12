@@ -3,6 +3,7 @@ use nova_core::SymbolId;
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
 use nova_hir::ast_id::AstId;
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
+use std::cmp::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
@@ -169,103 +170,98 @@ impl SymbolSearchIndex {
             );
         }
 
-        let strategy: CandidateStrategy;
-        let candidates_considered: usize;
-        let mut results: Vec<ScoredCandidate> = Vec::new();
-        let mut matcher = FuzzyMatcher::new(query);
+        enum CandidateSource<'a> {
+            Ids(&'a [SymbolId]),
+            FullScan(usize),
+        }
 
-        if q_bytes.len() < 3 {
+        let mut trigram_scratch = TrigramCandidateScratch::default();
+
+        let (strategy, candidates_considered, candidates): (
+            CandidateStrategy,
+            usize,
+            CandidateSource<'_>,
+        ) = if q_bytes.len() < 3 {
             let key = q_bytes[0].to_ascii_lowercase();
             let bucket = &self.prefix1[key as usize];
             if !bucket.is_empty() {
-                strategy = CandidateStrategy::Prefix;
-                candidates_considered = bucket.len();
-                for &id in bucket {
-                    if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        results.push(ScoredCandidate { id, score });
-                    }
-                }
+                (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
             } else {
                 let scan_limit = 50_000usize.min(self.symbols.len());
-                strategy = CandidateStrategy::FullScan;
-                candidates_considered = scan_limit;
-                for id in 0..scan_limit {
-                    let id = id as SymbolId;
-                    if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        results.push(ScoredCandidate { id, score });
-                    }
-                }
+                (
+                    CandidateStrategy::FullScan,
+                    scan_limit,
+                    CandidateSource::FullScan(scan_limit),
+                )
             }
         } else {
-            let mut trigram_scratch = TrigramCandidateScratch::default();
-            let candidates = self
-                .trigram
-                .candidates_with_scratch(query, &mut trigram_scratch);
-            if candidates.is_empty() {
+            let trigram_candidates =
+                self.trigram
+                    .candidates_with_scratch(query, &mut trigram_scratch);
+            if trigram_candidates.is_empty() {
                 // For longer queries, a missing trigram intersection likely means no
                 // substring match exists. Fall back to a (bounded) scan to still
                 // support acronym-style queries.
                 let key = q_bytes[0].to_ascii_lowercase();
                 let bucket = &self.prefix1[key as usize];
                 if !bucket.is_empty() {
-                    strategy = CandidateStrategy::Prefix;
-                    candidates_considered = bucket.len();
-                    for &id in bucket {
-                        if let Some(score) = self.score_candidate(id, &mut matcher) {
-                            results.push(ScoredCandidate { id, score });
-                        }
-                    }
+                    (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
                 } else {
                     let scan_limit = 50_000usize.min(self.symbols.len());
-                    strategy = CandidateStrategy::FullScan;
-                    candidates_considered = scan_limit;
-                    for id in 0..scan_limit {
-                        let id = id as SymbolId;
-                        if let Some(score) = self.score_candidate(id, &mut matcher) {
-                            results.push(ScoredCandidate { id, score });
-                        }
-                    }
+                    (
+                        CandidateStrategy::FullScan,
+                        scan_limit,
+                        CandidateSource::FullScan(scan_limit),
+                    )
                 }
             } else {
-                strategy = CandidateStrategy::Trigram;
-                candidates_considered = candidates.len();
-                for &id in candidates {
+                (
+                    CandidateStrategy::Trigram,
+                    trigram_candidates.len(),
+                    CandidateSource::Ids(trigram_candidates),
+                )
+            }
+        };
+
+        if limit == 0 {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy,
+                    candidates_considered,
+                },
+            );
+        }
+
+        let mut scored: Vec<ScoredCandidate> = Vec::new();
+        let mut matcher = FuzzyMatcher::new(query);
+
+        match candidates {
+            CandidateSource::Ids(ids) => {
+                for &id in ids {
                     if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        results.push(ScoredCandidate { id, score });
+                        scored.push(ScoredCandidate { id, score });
+                    }
+                }
+            }
+            CandidateSource::FullScan(scan_limit) => {
+                for id in 0..scan_limit {
+                    let id = id as SymbolId;
+                    if let Some(score) = self.score_candidate(id, &mut matcher) {
+                        scored.push(ScoredCandidate { id, score });
                     }
                 }
             }
         }
 
-        results.sort_by(|a, b| {
-            let a_sym = &self.symbols[a.id as usize].symbol;
-            let b_sym = &self.symbols[b.id as usize].symbol;
+        // Keep the `limit` best candidates without sorting the entire result set.
+        if scored.len() > limit {
+            scored.select_nth_unstable_by(limit, |a, b| self.cmp_scored_candidate(a, b));
+            scored.truncate(limit);
+        }
+        scored.sort_by(|a, b| self.cmp_scored_candidate(a, b));
 
-            // Sort by (kind, score), then stable disambiguators.
-            b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
-                a_sym.name.len().cmp(&b_sym.name.len())
-            })
-            .then_with(|| a_sym.name.cmp(&b_sym.name))
-            .then_with(|| a_sym.qualified_name.cmp(&b_sym.qualified_name))
-                .then_with(|| {
-                    a_sym
-                        .location
-                        .as_ref()
-                        .map(|loc| loc.file.as_str())
-                        .cmp(
-                            &b_sym
-                                .location
-                                .as_ref()
-                                .map(|loc| loc.file.as_str()),
-                        )
-                })
-                .then_with(|| a_sym.ast_id.cmp(&b_sym.ast_id))
-                .then_with(|| a.id.cmp(&b.id))
-        });
-
-        results.truncate(limit);
-
-        let results: Vec<SearchResult> = results
+        let results: Vec<SearchResult> = scored
             .into_iter()
             .map(|res| SearchResult {
                 id: res.id,
@@ -304,6 +300,28 @@ impl SymbolSearchIndex {
         }
 
         best
+    }
+
+    fn cmp_scored_candidate(&self, a: &ScoredCandidate, b: &ScoredCandidate) -> Ordering {
+        let a_sym = &self.symbols[a.id as usize].symbol;
+        let b_sym = &self.symbols[b.id as usize].symbol;
+
+        // Sort by (kind, score), then stable disambiguators.
+        b.score
+            .rank_key()
+            .cmp(&a.score.rank_key())
+            .then_with(|| a_sym.name.len().cmp(&b_sym.name.len()))
+            .then_with(|| a_sym.name.cmp(&b_sym.name))
+            .then_with(|| a_sym.qualified_name.cmp(&b_sym.qualified_name))
+            .then_with(|| {
+                a_sym
+                    .location
+                    .as_ref()
+                    .map(|loc| loc.file.as_str())
+                    .cmp(&b_sym.location.as_ref().map(|loc| loc.file.as_str()))
+            })
+            .then_with(|| a_sym.ast_id.cmp(&b_sym.ast_id))
+            .then_with(|| a.id.cmp(&b.id))
     }
 }
 
@@ -732,6 +750,45 @@ mod tests {
         assert_eq!(results[0].score.rank_key(), results[1].score.rank_key());
         assert_eq!(results[0].symbol.qualified_name, "com.a.Foo");
         assert_eq!(results[1].symbol.qualified_name, "com.b.Foo");
+    }
+
+    #[test]
+    fn search_limit_preserves_global_ordering() {
+        // Regression test: when `limit` is small we now avoid sorting the full
+        // result set. This must still produce the exact same top-N ordering as a
+        // full sort (including tie-breaking).
+        let mut symbols = Vec::new();
+        for ch in ('a'..='t').rev() {
+            symbols.push(Symbol {
+                name: "Foo".into(),
+                qualified_name: format!("com.{ch}.Foo"),
+                container_name: None,
+                location: None,
+                ast_id: None,
+            });
+        }
+
+        let index = SymbolSearchIndex::build(symbols);
+
+        // Get the globally-sorted list by using a `limit` larger than the number of matches.
+        let (all_results, _stats) = index.search_with_stats("Foo", 1_000);
+        assert_eq!(all_results.len(), 20);
+
+        // Sanity-check the expected ordering (same score, same name ⇒ qualified-name tiebreak).
+        let all_qualified: Vec<String> = all_results
+            .iter()
+            .map(|r| r.symbol.qualified_name.clone())
+            .collect();
+        let expected_all: Vec<String> = ('a'..='t')
+            .map(|ch| format!("com.{ch}.Foo"))
+            .collect();
+        assert_eq!(all_qualified, expected_all);
+
+        // Now exercise the top-k path.
+        let (limited, _stats) = index.search_with_stats("Foo", 5);
+        let limited_qualified: Vec<String> =
+            limited.iter().map(|r| r.symbol.qualified_name.clone()).collect();
+        assert_eq!(limited_qualified, expected_all[..5].to_vec());
     }
 
     #[test]
