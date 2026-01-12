@@ -1,7 +1,7 @@
 //! Minimal `nova-db` type-checking integration test entrypoint.
 //!
 //! Most `nova-db` integration tests are consolidated into `tests/harness.rs` for compile-time and
-//! memory efficiency. Some tooling still expects `cargo test -p nova-db --test typeck`, so we keep
+//! memory efficiency. Some tooling still expects `cargo test --locked -p nova-db --test typeck`, so we keep
 //! a tiny dedicated test target that exercises a handful of representative typeck behaviors.
 
 use std::path::PathBuf;
