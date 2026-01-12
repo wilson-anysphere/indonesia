@@ -385,14 +385,29 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const normalized = endpoints
       .map((ep) => ({
-        path: typeof ep.path === 'string' ? ep.path : String((ep as { path?: unknown }).path ?? ''),
+        path:
+          typeof ep.path === 'string'
+            ? ep.path.trim()
+            : String((ep as { path?: unknown }).path ?? '').trim(),
         methods: Array.isArray(ep.methods)
-          ? ep.methods.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).sort((a, b) => a.localeCompare(b))
+          ? Array.from(
+              new Set(
+                ep.methods
+                  .filter((m): m is string => typeof m === 'string')
+                  .map((m) => m.trim())
+                  .filter((m) => m.length > 0)
+                  .map((m) => m.toUpperCase()),
+              ),
+            ).sort((a, b) => a.localeCompare(b))
           : [],
-        file: typeof ep.file === 'string' ? ep.file : ep.file == null ? null : String(ep.file),
+        file:
+          typeof ep.file === 'string'
+            ? ep.file.trim()
+            : ep.file == null
+              ? null
+              : String(ep.file),
         line: typeof ep.line === 'number' ? ep.line : Number(ep.line),
       }))
-      .filter((ep) => ep.path.length > 0)
       .sort(compareWebEndpoint);
 
     return normalized.map((endpoint) => ({
