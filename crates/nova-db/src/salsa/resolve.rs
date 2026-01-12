@@ -7,6 +7,7 @@ use nova_project::ProjectConfig;
 use nova_types::Diagnostic;
 
 use crate::{FileId, ProjectId};
+use crate::persistence::HasPersistence;
 
 use super::cancellation as cancel;
 use super::hir::NovaHir;
@@ -14,7 +15,7 @@ use super::stats::HasQueryStats;
 use super::ArcEq;
 
 #[ra_salsa::query_group(NovaResolveStorage)]
-pub trait NovaResolve: NovaHir + HasQueryStats {
+pub trait NovaResolve: NovaHir + HasQueryStats + HasPersistence {
     /// Build the scope graph for a file.
     fn scope_graph(&self, file: FileId) -> Arc<nova_resolve::ItemTreeScopeBuildResult>;
 
@@ -150,10 +151,15 @@ fn jpms_compilation_env(
     }
 
     let jdk = db.jdk_index(project);
+    let cache_dir = db.persistence().cache_dir().map(|dir| dir.classpath_dir());
     let env =
-        nova_resolve::jpms_env::build_jpms_compilation_environment_for_project(&*jdk, &cfg, None)
-            .ok()
-            .map(|env| ArcEq::new(Arc::new(env)));
+        nova_resolve::jpms_env::build_jpms_compilation_environment_for_project(
+            &*jdk,
+            &cfg,
+            cache_dir.as_deref(),
+        )
+        .ok()
+        .map(|env| ArcEq::new(Arc::new(env)));
     db.record_query_stat("jpms_compilation_env", start.elapsed());
     env
 }

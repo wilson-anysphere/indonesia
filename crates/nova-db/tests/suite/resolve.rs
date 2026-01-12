@@ -1,9 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nova_cache::CacheConfig;
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{Name, StaticMemberId, TypeName};
-use nova_db::{ArcEq, FileId, NovaInputs, NovaResolve, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_db::{
+    ArcEq, FileId, NovaInputs, NovaResolve, PersistenceConfig, PersistenceMode, ProjectId,
+    SalsaRootDatabase, SourceRootId,
+};
 use nova_hir::module_info::lower_module_info_source_strict;
 use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
@@ -885,5 +889,65 @@ class Bar {
     assert_eq!(
         resolved,
         Some(Resolution::Type(TypeResolution::Source(foo_item)))
+    );
+}
+
+#[test]
+fn jpms_resolve_compilation_env_uses_persistence_classpath_cache_dir() {
+    let tmp = TempDir::new().unwrap();
+
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let cache_root = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+
+    let class_dir = project_root.join("classes");
+    std::fs::create_dir_all(&class_dir).unwrap();
+
+    let mut db = SalsaRootDatabase::new_with_persistence(
+        &project_root,
+        PersistenceConfig {
+            mode: PersistenceMode::ReadWrite,
+            cache: CacheConfig {
+                cache_root_override: Some(cache_root.clone()),
+            },
+        },
+    );
+
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    let mut cfg = base_project_config(project_root.clone());
+    cfg.module_path = vec![nova_project::ClasspathEntry {
+        kind: nova_project::ClasspathEntryKind::Directory,
+        path: class_dir,
+    }];
+    db.set_project_config(project, Arc::new(cfg));
+
+    // Force JPMS environment construction (which also builds a module-aware classpath index).
+    assert!(
+        db.jpms_compilation_env(project).is_some(),
+        "expected JPMS compilation environment to be constructed"
+    );
+
+    let cache_dir = nova_cache::CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(cache_root),
+        },
+    )
+    .unwrap();
+    let classpath_dir = cache_dir.classpath_dir();
+
+    let has_entry_cache = std::fs::read_dir(&classpath_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("classpath-entry-"));
+
+    assert!(
+        has_entry_cache,
+        "expected at least one `classpath-entry-*` cache file in `{}`",
+        classpath_dir.display()
     );
 }
