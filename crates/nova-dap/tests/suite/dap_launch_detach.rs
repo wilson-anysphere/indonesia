@@ -66,6 +66,10 @@ async fn wait_for_pid_file(path: &Path) -> u32 {
     panic!("pid file {path:?} was not written");
 }
 
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
 struct KillOnDrop(u32);
 
 impl Drop for KillOnDrop {
@@ -132,6 +136,7 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
 
     let temp = TempDir::new().unwrap();
     let pid_path = temp.path().join("pid.txt");
+    let heartbeat_path = temp.path().join("heartbeat.txt");
 
     let helper = env!("CARGO_BIN_EXE_nova_dap_test_helper");
     send_request(
@@ -145,6 +150,8 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
                 "--pid-file",
                 pid_path.to_string_lossy(),
                 "--heartbeat",
+                "--heartbeat-file",
+                heartbeat_path.to_string_lossy(),
                 "--sleep-ms",
                 "50"
             ],
@@ -164,6 +171,7 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
 
     let pid = wait_for_pid_file(&pid_path).await;
     let _kill = KillOnDrop(pid);
+    let heartbeat_len_before_detach = file_len(&heartbeat_path);
 
     send_request(
         &mut writer,
@@ -204,6 +212,22 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
 
     // Wait for the adapter to fully shut down so the debuggee's stdout/stderr pipes are closed.
     server_task.await.unwrap().unwrap();
+
+    // The helper should keep running after detach. Assert this by observing that it continues
+    // appending to a file even after the adapter exits (stdout/stderr are pipes that have been
+    // closed at this point).
+    let mut heartbeat_grew = false;
+    for _ in 0..50 {
+        if file_len(&heartbeat_path) > heartbeat_len_before_detach {
+            heartbeat_grew = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        heartbeat_grew,
+        "expected helper to keep running and writing heartbeats after detach"
+    );
 
     // The launched process should remain running after the adapter detaches.
     #[cfg(unix)]

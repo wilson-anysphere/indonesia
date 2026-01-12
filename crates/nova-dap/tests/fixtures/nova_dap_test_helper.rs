@@ -13,6 +13,7 @@ fn main() {
     let mut print_line_len: Option<usize> = None;
     let mut print_line_len_stderr: Option<usize> = None;
     let mut heartbeat: bool = false;
+    let mut heartbeat_file_path: Option<String> = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -40,6 +41,10 @@ fn main() {
                 print_line_len_stderr = args.next().and_then(|v| v.parse::<usize>().ok());
             }
             "--heartbeat" => heartbeat = true,
+            "--heartbeat-file" => {
+                heartbeat_file_path = args.next();
+                heartbeat = true;
+            }
             _ => {}
         }
     }
@@ -75,6 +80,16 @@ fn main() {
         std::process::exit(exit_code);
     }
 
+    let mut heartbeat_file = heartbeat_file_path
+        .as_deref()
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        });
+
     loop {
         thread::sleep(Duration::from_millis(sleep_ms));
         if heartbeat {
@@ -88,6 +103,11 @@ fn main() {
             let mut err = io::stderr().lock();
             let _ = writeln!(&mut err, "nova-dap test helper heartbeat stderr pid={pid}");
             let _ = err.flush();
+
+            if let Some(file) = heartbeat_file.as_mut() {
+                let _ = writeln!(file, "heartbeat pid={pid}");
+                let _ = file.flush();
+            }
         }
     }
 }
