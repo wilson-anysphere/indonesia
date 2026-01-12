@@ -477,11 +477,9 @@ fn collect_gradle_build_files_rec(
             continue;
         }
         if name.ends_with(".lockfile")
-            && path.parent().is_some_and(|parent| {
-                parent.ancestors().any(|dir| {
-                    dir.file_name()
-                        .is_some_and(|name| name == "dependency-locks")
-                })
+            && path.ancestors().any(|dir| {
+                dir.file_name()
+                    .is_some_and(|name| name == "dependency-locks")
             })
         {
             out.push(path);
