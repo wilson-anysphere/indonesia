@@ -13,6 +13,8 @@ use nova_scheduler::CancellationToken;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::text::TextIndex;
+
 /// Adapter that exposes a `nova-framework` [`FrameworkAnalyzer`] via the unified `nova-ext` traits.
 ///
 /// This allows framework analyzers (Lombok, Spring, etc.) to coexist with third-party `nova-ext`
@@ -306,7 +308,8 @@ where
         let mut completions =
             crate::code_intelligence::core_completions(self.db.as_ref(), file, position);
         let text = self.db.file_content(file);
-        let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
+        let text_index = TextIndex::new(text);
+        let offset = text_index.position_to_offset(position).unwrap_or(text.len());
 
         let extension_items = self
             .completions(cancel, file, offset)
@@ -322,7 +325,7 @@ where
                 if let Some(span) = item.replace_span {
                     out.text_edit =
                         Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                            range: crate::text::span_to_lsp_range(text, span),
+                            range: text_index.span_to_lsp_range(span),
                             new_text: label,
                         }));
                 }
@@ -352,7 +355,8 @@ where
             .and_then(|uri| uri.parse().ok());
 
         if let (Some(uri), Some(span)) = (uri, span) {
-            let selection = crate::text::span_to_lsp_range(source, span);
+            let source_index = TextIndex::new(source);
+            let selection = source_index.span_to_lsp_range(span);
 
             actions.extend(crate::refactor::extract_member_code_actions(
                 &uri, source, selection,
@@ -395,8 +399,9 @@ where
         range: lsp_types::Range,
     ) -> Vec<lsp_types::InlayHint> {
         let text = self.db.file_content(file);
-        let start_offset = crate::text::position_to_offset(text, range.start).unwrap_or(0);
-        let end_offset = crate::text::position_to_offset(text, range.end).unwrap_or(text.len());
+        let text_index = TextIndex::new(text);
+        let start_offset = text_index.position_to_offset(range.start).unwrap_or(0);
+        let end_offset = text_index.position_to_offset(range.end).unwrap_or(text.len());
 
         let mut hints = crate::code_intelligence::inlay_hints(self.db.as_ref(), file, range);
 
@@ -427,7 +432,7 @@ where
                 continue;
             }
 
-            let position = crate::text::offset_to_position(text, span.start);
+            let position = text_index.offset_to_position(span.start);
             let label = hint.label;
             let key = (position.line, position.character, label.clone());
             if !seen.insert(key) {
@@ -473,7 +478,8 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let mut completions =
             crate::code_intelligence::core_completions(self.db.as_ref(), file, position);
         let text = self.db.file_content(file);
-        let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
+        let text_index = TextIndex::new(text);
+        let offset = text_index.position_to_offset(position).unwrap_or(text.len());
 
         let extension_items = self
             .completions(cancel, file, offset)
@@ -489,7 +495,7 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
                 if let Some(span) = item.replace_span {
                     out.text_edit =
                         Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                            range: crate::text::span_to_lsp_range(text, span),
+                            range: text_index.span_to_lsp_range(span),
                             new_text: label,
                         }));
                 }
@@ -519,7 +525,8 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
             .and_then(|uri| uri.parse().ok());
 
         if let (Some(uri), Some(span)) = (uri, span) {
-            let selection = crate::text::span_to_lsp_range(source, span);
+            let source_index = TextIndex::new(source);
+            let selection = source_index.span_to_lsp_range(span);
 
             actions.extend(crate::refactor::extract_member_code_actions(
                 &uri, source, selection,
@@ -562,8 +569,9 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         range: lsp_types::Range,
     ) -> Vec<lsp_types::InlayHint> {
         let text = self.db.file_content(file);
-        let start_offset = crate::text::position_to_offset(text, range.start).unwrap_or(0);
-        let end_offset = crate::text::position_to_offset(text, range.end).unwrap_or(text.len());
+        let text_index = TextIndex::new(text);
+        let start_offset = text_index.position_to_offset(range.start).unwrap_or(0);
+        let end_offset = text_index.position_to_offset(range.end).unwrap_or(text.len());
 
         let mut hints = crate::code_intelligence::inlay_hints(self.db.as_ref(), file, range);
 
@@ -594,7 +602,7 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
                 continue;
             }
 
-            let position = crate::text::offset_to_position(text, span.start);
+            let position = text_index.offset_to_position(span.start);
             let label = hint.label;
             let key = (position.line, position.character, label.clone());
             if !seen.insert(key) {

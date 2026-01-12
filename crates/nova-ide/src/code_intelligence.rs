@@ -34,7 +34,7 @@ use crate::micronaut_intel;
 use crate::quarkus_intel;
 use crate::spring_config;
 use crate::spring_di;
-use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
+use crate::text::TextIndex;
 
 #[cfg(feature = "ai")]
 use nova_ai::{maybe_rank_completions, BaselineCompletionRanker};
@@ -96,10 +96,11 @@ fn spring_location_to_lsp(
         .file_id(&loc.path)
         .map(|id| db.file_content(id).to_string())
         .or_else(|| std::fs::read_to_string(&loc.path).ok())?;
+    let text_index = TextIndex::new(&target_text);
 
     Some(Location {
         uri,
-        range: span_to_lsp_range(&target_text, loc.span),
+        range: text_index.span_to_lsp_range(loc.span),
     })
 }
 
@@ -112,10 +113,11 @@ fn spring_source_location_to_lsp(
         .file_id(&loc.path)
         .map(|id| db.file_content(id).to_string())
         .or_else(|| std::fs::read_to_string(&loc.path).ok())?;
+    let text_index = TextIndex::new(&target_text);
 
     Some(Location {
         uri,
-        range: span_to_lsp_range(&target_text, loc.span),
+        range: text_index.span_to_lsp_range(loc.span),
     })
 }
 
@@ -135,9 +137,10 @@ fn location_from_path_and_span(
         .file_id(path)
         .map(|id| db.file_content(id).to_string())
         .or_else(|| std::fs::read_to_string(path).ok())?;
+    let text_index = TextIndex::new(&target_text);
     Some(Location {
         uri,
-        range: span_to_lsp_range(&target_text, span),
+        range: text_index.span_to_lsp_range(span),
     })
 }
 
@@ -639,12 +642,13 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
 /// Map Nova diagnostics into LSP diagnostics.
 pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::Diagnostic> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     file_diagnostics(db, file)
         .into_iter()
         .map(|d| lsp_types::Diagnostic {
             range: d
                 .span
-                .map(|span| span_to_lsp_range(text, span))
+                .map(|span| text_index.span_to_lsp_range(span))
                 .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0))),
             severity: Some(match d.severity {
                 Severity::Error => DiagnosticSeverity::ERROR,
@@ -865,7 +869,8 @@ pub(crate) fn core_completions(
     }
 
     let text = db.file_content(file);
-    let Some(offset) = position_to_offset(text, position) else {
+    let text_index = TextIndex::new(text);
+    let Some(offset) = text_index.position_to_offset(position) else {
         return Vec::new();
     };
     let (prefix_start, prefix) = identifier_prefix(text, offset);
@@ -883,7 +888,7 @@ pub(crate) fn core_completions(
     if before > 0 && text.as_bytes()[before - 1] == b'.' {
         let receiver = receiver_before_dot(text, before - 1);
         return decorate_completions(
-            text,
+            &text_index,
             prefix_start,
             offset,
             member_completions(db, file, &receiver, &prefix),
@@ -891,7 +896,7 @@ pub(crate) fn core_completions(
     }
 
     decorate_completions(
-        text,
+        &text_index,
         prefix_start,
         offset,
         general_completions(db, file, &prefix),
@@ -900,7 +905,8 @@ pub(crate) fn core_completions(
 
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);
-    let Some(offset) = position_to_offset(text, position) else {
+    let text_index = TextIndex::new(text);
+    let Some(offset) = text_index.position_to_offset(position) else {
         return Vec::new();
     };
     let (prefix_start, prefix) = identifier_prefix(text, offset);
@@ -921,7 +927,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     .map(|span| span.start)
                     .unwrap_or(prefix_start);
             return decorate_completions(
-                text,
+                &text_index,
                 replace_start,
                 offset,
                 spring_completions_to_lsp(items),
@@ -941,7 +947,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 .map(|span| span.start)
                 .unwrap_or(prefix_start);
             return decorate_completions(
-                text,
+                &text_index,
                 replace_start,
                 offset,
                 spring_completions_to_lsp(items),
@@ -996,7 +1002,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                             .map(|span| span.start)
                             .unwrap_or(prefix_start);
                     return decorate_completions(
-                        text,
+                        &text_index,
                         replace_start,
                         offset,
                         spring_completions_to_lsp(items),
@@ -1013,7 +1019,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 );
                 if !items.is_empty() {
                     return decorate_completions(
-                        text,
+                        &text_index,
                         prefix_start,
                         offset,
                         spring_completions_to_lsp(items),
@@ -1039,7 +1045,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 );
                 if !items.is_empty() {
                     return decorate_completions(
-                        text,
+                        &text_index,
                         prefix_start,
                         offset,
                         spring_completions_to_lsp(items),
@@ -1061,7 +1067,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                         nova_framework_jpa::jpql_completions(&query, query_cursor, &analysis.model);
                     if !items.is_empty() {
                         return decorate_completions(
-                            text,
+                            &text_index,
                             prefix_start,
                             offset,
                             jpa_completions_to_lsp(items),
@@ -1085,7 +1091,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     if before > 0 && text.as_bytes()[before - 1] == b'.' {
         let receiver = receiver_before_dot(text, before - 1);
         return decorate_completions(
-            text,
+            &text_index,
             prefix_start,
             offset,
             member_completions(db, file, &receiver, &prefix),
@@ -1093,7 +1099,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     }
 
     decorate_completions(
-        text,
+        &text_index,
         prefix_start,
         offset,
         general_completions(db, file, &prefix),
@@ -1101,14 +1107,14 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 }
 
 fn decorate_completions(
-    text: &str,
+    text_index: &TextIndex<'_>,
     prefix_start: usize,
     offset: usize,
     mut items: Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
     let replace_range = Range::new(
-        offset_to_position(text, prefix_start),
-        offset_to_position(text, offset),
+        text_index.offset_to_position(prefix_start),
+        text_index.offset_to_position(offset),
     );
 
     for item in &mut items {
@@ -1157,7 +1163,8 @@ pub async fn completions_with_ai(
     }
 
     let text = db.file_content(file);
-    let Some(offset) = position_to_offset(text, position) else {
+    let text_index = TextIndex::new(text);
+    let Some(offset) = text_index.position_to_offset(position) else {
         return baseline;
     };
     let (_, prefix) = identifier_prefix(text, offset);
@@ -1423,7 +1430,8 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>) {
 
 pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position)?;
+    let text_index = TextIndex::new(text);
+    let offset = text_index.position_to_offset(position)?;
 
     // Spring config navigation from `@Value("${foo.bar}")` -> config definition.
     if db
@@ -1484,9 +1492,10 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
             .file_id(&target_path)
             .map(|id| db.file_content(id).to_string())
             .or_else(|| std::fs::read_to_string(&target_path).ok())?;
+        let target_index = TextIndex::new(&target_text);
         return Some(Location {
             uri,
-            range: span_to_lsp_range(&target_text, target_span),
+            range: target_index.span_to_lsp_range(target_span),
         });
     }
 
@@ -1502,7 +1511,7 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         let uri = file_uri(db, file);
         return Some(Location {
             uri,
-            range: span_to_lsp_range(text, decl.name_span),
+            range: text_index.span_to_lsp_range(decl.name_span),
         });
     }
 
@@ -1516,7 +1525,8 @@ pub fn find_references(
     include_declaration: bool,
 ) -> Vec<Location> {
     let text = db.file_content(file);
-    let Some(offset) = position_to_offset(text, position) else {
+    let text_index = TextIndex::new(text);
+    let Some(offset) = text_index.position_to_offset(position) else {
         return Vec::new();
     };
 
@@ -1589,13 +1599,14 @@ pub fn find_references(
             .into_iter()
             .filter_map(|(path, span)| {
                 let uri = uri_from_path(&path)?;
-                let text = db
+                let target_text = db
                     .file_id(&path)
                     .map(|id| db.file_content(id).to_string())
                     .or_else(|| std::fs::read_to_string(&path).ok())?;
+                let target_index = TextIndex::new(&target_text);
                 Some(Location {
                     uri,
-                    range: span_to_lsp_range(&text, span),
+                    range: target_index.span_to_lsp_range(span),
                 })
             })
             .collect();
@@ -1614,7 +1625,7 @@ pub fn find_references(
         if let Some(method) = analysis.methods.iter().find(|m| m.name == token.text) {
             locations.push(Location {
                 uri: uri.clone(),
-                range: span_to_lsp_range(text, method.name_span),
+                range: text_index.span_to_lsp_range(method.name_span),
             });
         }
     }
@@ -1623,7 +1634,7 @@ pub fn find_references(
         if tok.kind == TokenKind::Ident && tok.text == token.text {
             locations.push(Location {
                 uri: uri.clone(),
-                range: span_to_lsp_range(text, tok.span),
+                range: text_index.span_to_lsp_range(tok.span),
             });
         }
     }
@@ -1638,6 +1649,7 @@ pub fn find_references(
 #[allow(deprecated)]
 pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     let analysis = analyze(text);
 
     let mut symbols = Vec::new();
@@ -1657,8 +1669,8 @@ pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> 
                     kind: SymbolKind::FIELD,
                     tags: None,
                     deprecated: None,
-                    range: span_to_lsp_range(text, field.name_span),
-                    selection_range: span_to_lsp_range(text, field.name_span),
+                    range: text_index.span_to_lsp_range(field.name_span),
+                    selection_range: text_index.span_to_lsp_range(field.name_span),
                     children: None,
                 },
             ));
@@ -1677,8 +1689,8 @@ pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> 
                     kind: SymbolKind::METHOD,
                     tags: None,
                     deprecated: None,
-                    range: span_to_lsp_range(text, method.body_span),
-                    selection_range: span_to_lsp_range(text, method.name_span),
+                    range: text_index.span_to_lsp_range(method.body_span),
+                    selection_range: text_index.span_to_lsp_range(method.name_span),
                     children: None,
                 },
             ));
@@ -1693,8 +1705,8 @@ pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> 
             kind: SymbolKind::CLASS,
             tags: None,
             deprecated: None,
-            range: span_to_lsp_range(text, class.span),
-            selection_range: span_to_lsp_range(text, class.name_span),
+            range: text_index.span_to_lsp_range(class.span),
+            selection_range: text_index.span_to_lsp_range(class.name_span),
             children: (!children.is_empty()).then_some(children),
         });
     }
@@ -1712,8 +1724,8 @@ pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> 
             kind: SymbolKind::METHOD,
             tags: None,
             deprecated: None,
-            range: span_to_lsp_range(text, method.body_span),
-            selection_range: span_to_lsp_range(text, method.name_span),
+            range: text_index.span_to_lsp_range(method.body_span),
+            selection_range: text_index.span_to_lsp_range(method.name_span),
             children: None,
         });
     }
@@ -1725,8 +1737,8 @@ pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> 
             kind: SymbolKind::FIELD,
             tags: None,
             deprecated: None,
-            range: span_to_lsp_range(text, field.name_span),
-            selection_range: span_to_lsp_range(text, field.name_span),
+            range: text_index.span_to_lsp_range(field.name_span),
+            selection_range: text_index.span_to_lsp_range(field.name_span),
             children: None,
         });
     }
@@ -1744,7 +1756,8 @@ pub fn prepare_call_hierarchy(
     position: Position,
 ) -> Option<Vec<CallHierarchyItem>> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position)?;
+    let text_index = TextIndex::new(text);
+    let offset = text_index.position_to_offset(position)?;
     let analysis = analyze(text);
     let uri = file_uri(db, file);
 
@@ -1754,7 +1767,7 @@ pub fn prepare_call_hierarchy(
         .iter()
         .find(|m| span_contains(m.name_span, offset))
     {
-        return Some(vec![call_hierarchy_item(&uri, text, method)]);
+        return Some(vec![call_hierarchy_item(&uri, &text_index, method)]);
     }
 
     // Next try call sites.
@@ -1764,7 +1777,7 @@ pub fn prepare_call_hierarchy(
         .find(|c| span_contains(c.name_span, offset))
     {
         if let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) {
-            return Some(vec![call_hierarchy_item(&uri, text, target)]);
+            return Some(vec![call_hierarchy_item(&uri, &text_index, target)]);
         }
     }
 
@@ -1774,7 +1787,7 @@ pub fn prepare_call_hierarchy(
         .iter()
         .find(|m| span_contains(m.body_span, offset))?;
 
-    Some(vec![call_hierarchy_item(&uri, text, method)])
+    Some(vec![call_hierarchy_item(&uri, &text_index, method)])
 }
 
 pub fn call_hierarchy_outgoing_calls(
@@ -1783,6 +1796,7 @@ pub fn call_hierarchy_outgoing_calls(
     method_name: &str,
 ) -> Vec<CallHierarchyOutgoingCall> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     let analysis = analyze(text);
     let uri = file_uri(db, file);
 
@@ -1813,10 +1827,10 @@ pub fn call_hierarchy_outgoing_calls(
             let target = analysis.methods.iter().find(|m| m.name == target_name)?;
             spans.sort_by_key(|s| s.start);
             Some(CallHierarchyOutgoingCall {
-                to: call_hierarchy_item(&uri, text, target),
+                to: call_hierarchy_item(&uri, &text_index, target),
                 from_ranges: spans
                     .into_iter()
-                    .map(|span| span_to_lsp_range(text, span))
+                    .map(|span| text_index.span_to_lsp_range(span))
                     .collect(),
             })
         })
@@ -1829,6 +1843,7 @@ pub fn call_hierarchy_incoming_calls(
     method_name: &str,
 ) -> Vec<CallHierarchyIncomingCall> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     let analysis = analyze(text);
     let uri = file_uri(db, file);
 
@@ -1857,24 +1872,28 @@ pub fn call_hierarchy_incoming_calls(
         .map(|(method, mut spans)| {
             spans.sort_by_key(|s| s.start);
             CallHierarchyIncomingCall {
-                from: call_hierarchy_item(&uri, text, &method),
+                from: call_hierarchy_item(&uri, &text_index, &method),
                 from_ranges: spans
                     .into_iter()
-                    .map(|span| span_to_lsp_range(text, span))
+                    .map(|span| text_index.span_to_lsp_range(span))
                     .collect(),
             }
         })
         .collect()
 }
-fn call_hierarchy_item(uri: &lsp_types::Uri, text: &str, method: &MethodDecl) -> CallHierarchyItem {
+fn call_hierarchy_item(
+    uri: &lsp_types::Uri,
+    text_index: &TextIndex<'_>,
+    method: &MethodDecl,
+) -> CallHierarchyItem {
     CallHierarchyItem {
         name: method.name.clone(),
         kind: SymbolKind::METHOD,
         tags: None,
         detail: Some(format_method_signature(method)),
         uri: uri.clone(),
-        range: span_to_lsp_range(text, method.body_span),
-        selection_range: span_to_lsp_range(text, method.name_span),
+        range: text_index.span_to_lsp_range(method.body_span),
+        selection_range: text_index.span_to_lsp_range(method.name_span),
         data: None,
     }
 }
@@ -1885,7 +1904,8 @@ pub fn prepare_type_hierarchy(
     position: Position,
 ) -> Option<Vec<TypeHierarchyItem>> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position)?;
+    let text_index = TextIndex::new(text);
+    let offset = text_index.position_to_offset(position)?;
     let analysis = analyze(text);
     let uri = file_uri(db, file);
 
@@ -1894,7 +1914,7 @@ pub fn prepare_type_hierarchy(
         .iter()
         .find(|c| span_contains(c.name_span, offset))?;
 
-    Some(vec![type_hierarchy_item(&uri, text, class)])
+    Some(vec![type_hierarchy_item(&uri, &text_index, class)])
 }
 
 pub fn type_hierarchy_supertypes(
@@ -1903,6 +1923,7 @@ pub fn type_hierarchy_supertypes(
     class_name: &str,
 ) -> Vec<TypeHierarchyItem> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     let analysis = analyze(text);
     let uri = file_uri(db, file);
 
@@ -1918,7 +1939,7 @@ pub fn type_hierarchy_supertypes(
         return Vec::new();
     };
 
-    vec![type_hierarchy_item(&uri, text, super_decl)]
+    vec![type_hierarchy_item(&uri, &text_index, super_decl)]
 }
 
 pub fn type_hierarchy_subtypes(
@@ -1927,6 +1948,7 @@ pub fn type_hierarchy_subtypes(
     class_name: &str,
 ) -> Vec<TypeHierarchyItem> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     let analysis = analyze(text);
     let uri = file_uri(db, file);
 
@@ -1934,19 +1956,23 @@ pub fn type_hierarchy_subtypes(
         .classes
         .iter()
         .filter(|c| c.extends.as_deref() == Some(class_name))
-        .map(|c| type_hierarchy_item(&uri, text, c))
+        .map(|c| type_hierarchy_item(&uri, &text_index, c))
         .collect()
 }
 
-fn type_hierarchy_item(uri: &lsp_types::Uri, text: &str, class: &ClassDecl) -> TypeHierarchyItem {
+fn type_hierarchy_item(
+    uri: &lsp_types::Uri,
+    text_index: &TextIndex<'_>,
+    class: &ClassDecl,
+) -> TypeHierarchyItem {
     TypeHierarchyItem {
         name: class.name.clone(),
         kind: SymbolKind::CLASS,
         tags: None,
         detail: class.extends.as_ref().map(|s| format!("extends {s}")),
         uri: uri.clone(),
-        range: span_to_lsp_range(text, class.span),
-        selection_range: span_to_lsp_range(text, class.name_span),
+        range: text_index.span_to_lsp_range(class.span),
+        selection_range: text_index.span_to_lsp_range(class.name_span),
         data: None,
     }
 }
@@ -1972,7 +1998,8 @@ fn file_uri_from_path(path: &Path) -> Option<lsp_types::Uri> {
 
 pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hover> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position)?;
+    let text_index = TextIndex::new(text);
+    let offset = text_index.position_to_offset(position)?;
     let analysis = analyze(text);
     let token = token_at_offset(&analysis.tokens, offset);
 
@@ -2078,7 +2105,8 @@ pub fn signature_help(
     position: Position,
 ) -> Option<SignatureHelp> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position)?;
+    let text_index = TextIndex::new(text);
+    let offset = text_index.position_to_offset(position)?;
     let analysis = analyze(text);
 
     // Find the first call whose argument list includes the cursor (best-effort).
@@ -2135,10 +2163,11 @@ pub fn signature_help(
 
 pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHint> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     // Some clients use `(u32::MAX, u32::MAX)` as a sentinel for "end of file".
     // Treat invalid positions as best-effort whole-file ranges.
-    let start = position_to_offset(text, range.start).unwrap_or(0);
-    let end = position_to_offset(text, range.end).unwrap_or(text.len());
+    let start = text_index.position_to_offset(range.start).unwrap_or(0);
+    let end = text_index.position_to_offset(range.end).unwrap_or(text.len());
     if start > end {
         return Vec::new();
     }
@@ -2157,7 +2186,7 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
         }
         let ty = parse_source_type(&mut types, &v.ty);
         let ty = nova_types::format_type(&types, &ty);
-        let pos = offset_to_position(text, v.name_span.end);
+        let pos = text_index.offset_to_position(v.name_span.end);
         hints.push(InlayHint {
             position: pos,
             label: lsp_types::InlayHintLabel::String(format!(": {ty}")),
@@ -2186,7 +2215,7 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
                     .get(idx)
                     .map(|ty| nova_types::format_type(&types, ty))
                     .unwrap_or_else(|| "?".to_string());
-                let pos = offset_to_position(text, *arg_start);
+                let pos = text_index.offset_to_position(*arg_start);
                 hints.push(InlayHint {
                     position: pos,
                     label: lsp_types::InlayHintLabel::String(format!("{name}:")),
@@ -2211,7 +2240,7 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
             let Some(param) = callee.params.get(idx) else {
                 continue;
             };
-            let pos = offset_to_position(text, *arg_start);
+            let pos = text_index.offset_to_position(*arg_start);
             hints.push(InlayHint {
                 position: pos,
                 label: lsp_types::InlayHintLabel::String(format!("{}:", param.name)),
@@ -2728,6 +2757,7 @@ fn parse_field_descriptor<'a>(types: &TypeStore, desc: &'a str) -> Option<(Type,
 
 pub fn semantic_tokens(db: &dyn Database, file: FileId) -> Vec<SemanticToken> {
     let text = db.file_content(file);
+    let text_index = TextIndex::new(text);
     let analysis = analyze(text);
 
     let mut classified: Vec<(Span, u32)> = Vec::new();
@@ -2780,7 +2810,7 @@ pub fn semantic_tokens(db: &dyn Database, file: FileId) -> Vec<SemanticToken> {
     let mut prev_line: u32 = 0;
     let mut prev_col: u32 = 0;
     for (span, token_type) in classified {
-        let pos = offset_to_position(text, span.start);
+        let pos = text_index.offset_to_position(span.start);
         let delta_line = pos.line.saturating_sub(prev_line);
         let delta_start = if delta_line == 0 {
             pos.character.saturating_sub(prev_col)

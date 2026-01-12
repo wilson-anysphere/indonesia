@@ -3,7 +3,7 @@ use nova_types::Span;
 
 use crate::db::DatabaseSnapshot;
 use crate::parse::{CallSite, ParsedFile, TypeKind};
-use crate::text::{position_to_offset, span_to_lsp_range};
+use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
 
 impl DatabaseSnapshot {
     /// Best-effort `textDocument/implementation`.
@@ -12,7 +12,9 @@ impl DatabaseSnapshot {
         let Some(parsed) = self.file(file) else {
             return Vec::new();
         };
-        let Some(offset) = position_to_offset(&parsed.text, position) else {
+        let Some(offset) =
+            position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+        else {
             return Vec::new();
         };
 
@@ -44,7 +46,7 @@ impl DatabaseSnapshot {
     #[must_use]
     pub fn declaration(&self, file: &Uri, position: Position) -> Option<Location> {
         let parsed = self.file(file)?;
-        let offset = position_to_offset(&parsed.text, position)?;
+        let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
         if let Some((ty_name, method_name)) = self.method_decl_at(parsed, offset) {
             return self.declaration_for_override(&ty_name, &method_name);
@@ -55,7 +57,11 @@ impl DatabaseSnapshot {
             let decl_parsed = self.file(&decl_file)?;
             return Some(Location {
                 uri: decl_file,
-                range: span_to_lsp_range(&decl_parsed.text, decl_span),
+                range: span_to_lsp_range_with_index(
+                    &decl_parsed.line_index,
+                    &decl_parsed.text,
+                    decl_span,
+                ),
             });
         }
 
@@ -66,14 +72,18 @@ impl DatabaseSnapshot {
     #[must_use]
     pub fn type_definition(&self, file: &Uri, position: Position) -> Option<Location> {
         let parsed = self.file(file)?;
-        let offset = position_to_offset(&parsed.text, position)?;
+        let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
         if let Some((ident, _ident_span)) = identifier_at(&parsed.text, offset) {
             if let Some(type_info) = self.type_info(&ident) {
                 let def_file = self.file(&type_info.uri)?;
                 return Some(Location {
                     uri: type_info.uri.clone(),
-                    range: span_to_lsp_range(&def_file.text, type_info.def.name_span),
+                    range: span_to_lsp_range_with_index(
+                        &def_file.line_index,
+                        &def_file.text,
+                        type_info.def.name_span,
+                    ),
                 });
             }
 
@@ -82,7 +92,11 @@ impl DatabaseSnapshot {
             let def_file = self.file(&type_info.uri)?;
             return Some(Location {
                 uri: type_info.uri.clone(),
-                range: span_to_lsp_range(&def_file.text, type_info.def.name_span),
+                range: span_to_lsp_range_with_index(
+                    &def_file.line_index,
+                    &def_file.text,
+                    type_info.def.name_span,
+                ),
             });
         }
 
@@ -96,7 +110,11 @@ impl DatabaseSnapshot {
                 if let Some(parsed) = self.file(&type_info.uri) {
                     out.push(Location {
                         uri: type_info.uri.clone(),
-                        range: span_to_lsp_range(&parsed.text, type_info.def.name_span),
+                        range: span_to_lsp_range_with_index(
+                            &parsed.line_index,
+                            &parsed.text,
+                            type_info.def.name_span,
+                        ),
                     });
                 }
             }
@@ -131,7 +149,7 @@ impl DatabaseSnapshot {
             };
             out.push(Location {
                 uri,
-                range: span_to_lsp_range(&parsed.text, span),
+                range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, span),
             });
         }
 
@@ -209,7 +227,7 @@ impl DatabaseSnapshot {
                 let file = self.file(&uri)?;
                 Some(Location {
                     uri,
-                    range: span_to_lsp_range(&file.text, span),
+                    range: span_to_lsp_range_with_index(&file.line_index, &file.text, span),
                 })
             })
             .collect()
@@ -260,7 +278,7 @@ impl DatabaseSnapshot {
             .find(|m| m.name == method_name)?;
         Some(Location {
             uri: type_info.uri.clone(),
-            range: span_to_lsp_range(&file.text, method.name_span),
+            range: span_to_lsp_range_with_index(&file.line_index, &file.text, method.name_span),
         })
     }
 
@@ -282,7 +300,7 @@ impl DatabaseSnapshot {
         let file = self.file(&type_info.uri)?;
         Some(Location {
             uri: type_info.uri.clone(),
-            range: span_to_lsp_range(&file.text, method.name_span),
+            range: span_to_lsp_range_with_index(&file.line_index, &file.text, method.name_span),
         })
     }
 

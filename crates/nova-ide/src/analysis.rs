@@ -23,7 +23,8 @@ pub fn completions(java_source: &str, offset: usize) -> Vec<CompletionItem> {
     let file_id = db.file_id_for_path("/virtual/Main.java");
     db.set_file_text(file_id, java_source.to_string());
 
-    let position = crate::text::offset_to_position(java_source, offset);
+    let text_index = crate::text::TextIndex::new(java_source);
+    let position = text_index.offset_to_position(offset);
     crate::code_intelligence::completions(&db, file_id, position)
         .into_iter()
         .map(|item| CompletionItem {

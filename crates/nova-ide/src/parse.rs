@@ -1,4 +1,5 @@
 use lsp_types::Uri;
+use nova_core::LineIndex;
 use nova_types::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +66,7 @@ pub struct CallSite {
 pub struct ParsedFile {
     pub uri: Uri,
     pub text: String,
+    pub line_index: LineIndex,
     pub types: Vec<TypeDef>,
     pub calls: Vec<CallSite>,
 }
@@ -444,6 +446,7 @@ fn parse_type_body(
 }
 
 pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
+    let line_index = LineIndex::new(&text);
     let tokens = lex(&text);
 
     let mut types = Vec::new();
@@ -575,6 +578,7 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
     ParsedFile {
         uri,
         text,
+        line_index,
         types,
         calls,
     }

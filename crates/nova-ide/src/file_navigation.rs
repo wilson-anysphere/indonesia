@@ -10,7 +10,7 @@ use nova_types::Span;
 
 use crate::lombok_intel;
 use crate::parse::{parse_file, CallSite, ParsedFile, TypeDef, TypeKind};
-use crate::text::{position_to_offset, span_to_lsp_range};
+use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
 
 #[derive(Clone, Debug)]
 struct TypeInfo {
@@ -108,7 +108,11 @@ impl FileNavigationIndex {
             };
             out.push(Location {
                 uri: type_info.uri.clone(),
-                range: span_to_lsp_range(&parsed.text, type_info.def.name_span),
+                range: span_to_lsp_range_with_index(
+                    &parsed.line_index,
+                    &parsed.text,
+                    type_info.def.name_span,
+                ),
             });
         }
         out
@@ -140,7 +144,7 @@ impl FileNavigationIndex {
             };
             out.push(Location {
                 uri,
-                range: span_to_lsp_range(&parsed.text, span),
+                range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, span),
             });
         }
 
@@ -218,7 +222,7 @@ impl FileNavigationIndex {
                 let parsed = self.file_by_uri(&uri)?;
                 Some(Location {
                     uri,
-                    range: span_to_lsp_range(&parsed.text, span),
+                    range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, span),
                 })
             })
             .collect()
@@ -266,7 +270,7 @@ impl FileNavigationIndex {
             .find(|m| m.name == method_name)?;
         Some(Location {
             uri: type_info.uri.clone(),
-            range: span_to_lsp_range(&parsed.text, method.name_span),
+            range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, method.name_span),
         })
     }
 
@@ -288,7 +292,7 @@ impl FileNavigationIndex {
         let parsed = self.file(type_info.file_id)?;
         Some(Location {
             uri: type_info.uri.clone(),
-            range: span_to_lsp_range(&parsed.text, method.name_span),
+            range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, method.name_span),
         })
     }
 
@@ -367,7 +371,9 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     let Some(parsed) = index.file(file) else {
         return Vec::new();
     };
-    let Some(offset) = position_to_offset(&parsed.text, position) else {
+    let Some(offset) =
+        position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+    else {
         return Vec::new();
     };
 
@@ -400,7 +406,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
 pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
     let index = FileNavigationIndex::new(db);
     let parsed = index.file(file)?;
-    let offset = position_to_offset(&parsed.text, position)?;
+    let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
     if let Some((ty_name, method_name)) = index.method_decl_at(parsed, offset) {
         return index.declaration_for_override(&ty_name, &method_name);
@@ -411,7 +417,11 @@ pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Optio
         let decl_parsed = index.file_by_uri(&decl_uri)?;
         return Some(Location {
             uri: decl_uri,
-            range: span_to_lsp_range(&decl_parsed.text, decl_span),
+            range: span_to_lsp_range_with_index(
+                &decl_parsed.line_index,
+                &decl_parsed.text,
+                decl_span,
+            ),
         });
     }
 
@@ -423,14 +433,18 @@ pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Optio
 pub fn type_definition(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
     let index = FileNavigationIndex::new(db);
     let parsed = index.file(file)?;
-    let offset = position_to_offset(&parsed.text, position)?;
+    let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
     if let Some((ident, _ident_span)) = identifier_at(&parsed.text, offset) {
         if let Some(type_info) = index.type_info(&ident) {
             let def_file = index.file(type_info.file_id)?;
             return Some(Location {
                 uri: type_info.uri.clone(),
-                range: span_to_lsp_range(&def_file.text, type_info.def.name_span),
+                range: span_to_lsp_range_with_index(
+                    &def_file.line_index,
+                    &def_file.text,
+                    type_info.def.name_span,
+                ),
             });
         }
 
@@ -439,7 +453,11 @@ pub fn type_definition(db: &dyn Database, file: FileId, position: Position) -> O
         let def_file = index.file(type_info.file_id)?;
         return Some(Location {
             uri: type_info.uri.clone(),
-            range: span_to_lsp_range(&def_file.text, type_info.def.name_span),
+            range: span_to_lsp_range_with_index(
+                &def_file.line_index,
+                &def_file.text,
+                type_info.def.name_span,
+            ),
         });
     }
 
