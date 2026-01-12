@@ -273,3 +273,72 @@ class C {
         "expected varargs call to resolve, got {diags:?}"
     );
 }
+
+#[test]
+fn instanceof_expression_typechecks_as_boolean() {
+    let src = r#"
+class C {
+    void m() {
+        boolean b = "x" instanceof String;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
+
+    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn instanceof_reports_primitive_lhs() {
+    let src = r#"
+class C {
+    void m() {
+        boolean b = 1 instanceof String;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "instanceof-primitive"),
+        "expected instanceof-primitive diagnostic, got {diags:?}"
+    );
+
+    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn instanceof_reports_void_rhs() {
+    let src = r#"
+class C {
+    void m() {
+        boolean b = "x" instanceof void;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "instanceof-void"),
+        "expected instanceof-void diagnostic, got {diags:?}"
+    );
+
+    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
