@@ -299,4 +299,24 @@ mod tests {
         let err = fs.read_bytes(&path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
+
+    #[test]
+    fn exists_falls_back_to_base_fs_for_decompiled_paths() {
+        let path = VfsPath::decompiled(HASH_64, "com.example.Exists");
+        let base = MockFs::new(path.clone(), "class Exists {}".to_string());
+        let store = VirtualDocumentStore::new(1024);
+        let fs = VirtualDocumentsFs::new(base, store);
+
+        assert!(fs.exists(&path));
+    }
+
+    #[test]
+    fn exists_reports_true_for_decompiled_paths_present_in_store() {
+        let path = VfsPath::decompiled(HASH_64, "com.example.Cached");
+        let store = VirtualDocumentStore::new(1024);
+        store.insert_text(path.clone(), "class Cached {}".to_string());
+        let fs = VirtualDocumentsFs::new(UnsupportedFs, store);
+
+        assert!(fs.exists(&path));
+    }
 }
