@@ -6,6 +6,7 @@
 
 use nova_types::Span;
 
+use crate::ast::AstNode as _;
 use crate::{parse_java, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub mod ast {
@@ -2139,6 +2140,35 @@ impl Lowerer {
         }
     }
 
+    fn lower_switch_expr_block(&self, node: &SyntaxNode) -> ast::Block {
+        let mut block = self.lower_switch_block(node);
+
+        // Switch expression rule bodies can be a bare expression (`case 1 -> 1;`) rather than a
+        // statement. The lightweight statement-only switch block lowering would otherwise drop
+        // these expressions entirely, leading to `Unknown` switch expression types and missing
+        // traversal for downstream semantic passes.
+        //
+        // Best-effort: treat rule-body expressions as synthetic `yield <expr>;` statements so
+        // typeck can compute a result type.
+        let Some(switch_block) = crate::ast::SwitchBlock::cast(node.clone()) else {
+            return block;
+        };
+
+        for rule in switch_block.rules() {
+            let Some(crate::ast::SwitchRuleBody::Expression(expr)) = rule.body() else {
+                continue;
+            };
+
+            let expr = self.lower_expr(expr.syntax());
+            let range = expr.range();
+            block
+                .statements
+                .push(ast::Stmt::Yield(ast::YieldStmt { expr: Some(expr), range }));
+        }
+
+        block
+    }
+
     fn lower_try_stmt(&self, node: &SyntaxNode) -> ast::TryStmt {
         let range = self.spans.map_node(node);
 
@@ -2441,7 +2471,7 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::SwitchBlock);
         let body = switch_block
             .as_ref()
-            .map(|block| self.lower_switch_block(block))
+            .map(|block| self.lower_switch_expr_block(block))
             .unwrap_or_else(|| ast::Block {
                 statements: Vec::new(),
                 range: Span::new(range.end, range.end),
@@ -3980,6 +4010,31 @@ mod tests {
                 .iter()
                 .any(|stmt| matches!(stmt, ast::Stmt::Yield(_))),
             "expected rule body block to contain a yield statement"
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_switch_expression_rule_expression_body_as_yield() {
+        let text = "{ int x = switch (n) { default -> 1; }; }";
+        let block = parse_block(text, 0);
+
+        let ast::Stmt::LocalVar(local) = &block.statements[0] else {
+            panic!("expected local variable statement");
+        };
+
+        let Some(ast::Expr::Switch(switch_expr)) = &local.initializer else {
+            panic!("expected switch expression initializer");
+        };
+
+        assert!(
+            switch_expr.body.statements.iter().any(|stmt| matches!(
+                stmt,
+                ast::Stmt::Yield(ast::YieldStmt {
+                    expr: Some(ast::Expr::IntLiteral(_)),
+                    ..
+                })
+            )),
+            "expected switch rule expression body to lower to a yield statement"
         );
     }
 }
