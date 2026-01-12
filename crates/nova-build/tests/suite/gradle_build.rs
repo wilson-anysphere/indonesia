@@ -44,7 +44,13 @@ impl CommandRunner for FakeGradleRunner {
 
         // If the build tries to run `compileJava` at the root, simulate the
         // common Gradle failure for aggregator projects.
-        if args.iter().any(|arg| arg.ends_with("compileJava")) {
+        //
+        // Note: buildSrc is queried via `--project-dir buildSrc`, which also invokes
+        // `compileJava` without a project path prefix. Do not treat that as a failure.
+        let is_buildsrc_invocation = args.windows(2).any(|window| {
+            (window[0] == "--project-dir" || window[0] == "-p") && window[1] == "buildSrc"
+        });
+        if args.iter().any(|arg| arg == "compileJava") && !is_buildsrc_invocation {
             return Ok(output(
                 1,
                 "",
@@ -302,6 +308,107 @@ fn java_compile_config_for_buildsrc_uses_project_dir_flag_and_root_task() {
         "expected snapshot to include config for :__buildSrc, got keys {:?}",
         java_configs.keys().collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn annotation_processing_for_buildsrc_uses_project_dir_flag_and_root_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let buildsrc_dir = project_root.join("buildSrc");
+    std::fs::create_dir_all(&buildsrc_dir).unwrap();
+
+    let payload = serde_json::json!({
+        "projectPath": ":",
+        "projectDir": buildsrc_dir.to_string_lossy(),
+        "main": {
+            "annotationProcessorPath": [],
+            "compilerArgs": [],
+            "generatedSourcesDir": null,
+        }
+    });
+    let stdout = format!(
+        "NOVA_APT_BEGIN\n{}\nNOVA_APT_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, &stdout, "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let ap = gradle
+        .annotation_processing(&project_root, Some(":__buildSrc"), &cache)
+        .unwrap();
+    let main = ap.main.expect("expected main annotation processing config");
+    assert_eq!(
+        main.generated_sources_dir,
+        Some(
+            buildsrc_dir.join("build/generated/sources/annotationProcessor/java/main")
+        )
+    );
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    let args = &invocations[0].args;
+
+    let mut has_project_dir_flag = false;
+    for window in args.windows(2) {
+        if window[0] == "--project-dir" || window[0] == "-p" {
+            assert_eq!(window[1], "buildSrc");
+            has_project_dir_flag = true;
+        }
+    }
+    assert!(
+        has_project_dir_flag,
+        "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
+    );
+
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some("printNovaAnnotationProcessing")
+    );
+    assert!(!args
+        .iter()
+        .any(|arg| arg == ":__buildSrc:printNovaAnnotationProcessing"));
+}
+
+#[test]
+fn build_for_buildsrc_uses_project_dir_flag_and_unprefixed_compile_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let buildsrc_dir = project_root.join("buildSrc");
+    std::fs::create_dir_all(&buildsrc_dir).unwrap();
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, "", "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let result = gradle.build(&project_root, Some(":__buildSrc"), &cache).unwrap();
+    assert!(result.diagnostics.is_empty());
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    let args = &invocations[0].args;
+
+    let mut has_project_dir_flag = false;
+    for window in args.windows(2) {
+        if window[0] == "--project-dir" || window[0] == "-p" {
+            assert_eq!(window[1], "buildSrc");
+            has_project_dir_flag = true;
+        }
+    }
+    assert!(
+        has_project_dir_flag,
+        "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
+    );
+
+    assert_eq!(args.last().map(String::as_str), Some("compileJava"));
+    assert!(!args.iter().any(|arg| arg == ":__buildSrc:compileJava"));
 }
 
 #[test]
