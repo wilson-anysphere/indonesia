@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicI32, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -18,8 +18,8 @@ use super::{
     codec::{encode_command, encode_reply, JdwpReader, JdwpWriter, HANDSHAKE, HEADER_LEN},
     types::{
         FieldId, FrameId, JdwpIdSizes, JdwpValue, Location, MethodId, ObjectId, ReferenceTypeId,
-        ThreadId, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_FIELD_ACCESS, EVENT_KIND_FIELD_MODIFICATION,
-        EVENT_KIND_VM_DISCONNECT, EVENT_MODIFIER_KIND_CLASS_EXCLUDE,
+        ThreadId, EVENT_KIND_CLASS_PREPARE, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_FIELD_ACCESS,
+        EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_VM_DISCONNECT, EVENT_MODIFIER_KIND_CLASS_EXCLUDE,
         EVENT_MODIFIER_KIND_CLASS_MATCH, EVENT_MODIFIER_KIND_CLASS_ONLY, EVENT_MODIFIER_KIND_COUNT,
         EVENT_MODIFIER_KIND_EXCEPTION_ONLY, EVENT_MODIFIER_KIND_FIELD_ONLY,
         EVENT_MODIFIER_KIND_INSTANCE_ONLY, EVENT_MODIFIER_KIND_LOCATION_ONLY,
@@ -73,6 +73,13 @@ pub struct MockJdwpServerConfig {
     ///
     /// Example: `Lcom/example/Main;`
     pub class_signature: String,
+    /// Controls whether the mock VM reports classes as already loaded when the debugger attaches.
+    ///
+    /// When set to `false`, `VirtualMachine.AllClasses` (and optionally related class lookup
+    /// commands) will report zero classes until the first `ClassPrepare` event is emitted.
+    ///
+    /// Default: `true` for backwards compatibility.
+    pub all_classes_initially_loaded: bool,
     /// Java source file name returned by `ReferenceType.SourceFile`.
     ///
     /// Example: `Main.java`
@@ -85,6 +92,8 @@ pub struct MockJdwpServerConfig {
     pub breakpoint_events: usize,
     /// Maximum number of single-step events to emit after a `VirtualMachine.Resume`.
     pub step_events: usize,
+    /// Maximum number of `ClassPrepare` events to emit after a resume.
+    pub class_prepare_events: usize,
     /// When enabled, the mock will emit a composite event packet containing an
     /// `Exception`, `Breakpoint`, and `MethodExitWithReturnValue` (in that order, with the
     /// method-exit last) after a `VirtualMachine.Resume`, provided all three event requests
@@ -117,11 +126,13 @@ impl Default for MockJdwpServerConfig {
             capabilities_legacy_error_code: None,
             id_sizes: JdwpIdSizes::default(),
             class_signature: "LMain;".to_string(),
+            all_classes_initially_loaded: true,
             source_file: "Main.java".to_string(),
             // Preserve historical behavior: keep emitting stop events after every resume
             // unless tests opt into a finite budget via `spawn_with_config`.
             breakpoint_events: usize::MAX,
             step_events: usize::MAX,
+            class_prepare_events: 0,
             emit_exception_breakpoint_method_exit_composite: false,
             field_access_events: 0,
             field_modification_events: 0,
@@ -419,6 +430,7 @@ impl Drop for MockJdwpServer {
 
 struct State {
     config: MockJdwpServerConfig,
+    all_classes_loaded: AtomicBool,
     next_request_id: AtomicI32,
     next_packet_id: AtomicU32,
     next_object_id: AtomicU64,
@@ -435,6 +447,7 @@ struct State {
     method_exit_request: tokio::sync::Mutex<Option<i32>>,
     thread_start_request: tokio::sync::Mutex<Option<i32>>,
     thread_death_request: tokio::sync::Mutex<Option<i32>>,
+    class_prepare_request: tokio::sync::Mutex<Option<MockSimpleEventRequest>>,
     class_unload_request: tokio::sync::Mutex<Option<MockSimpleEventRequest>>,
     field_access_request: tokio::sync::Mutex<Option<MockWatchpointRequest>>,
     field_modification_request: tokio::sync::Mutex<Option<MockWatchpointRequest>>,
@@ -469,6 +482,7 @@ struct State {
     smart_step_next_call: AtomicUsize,
     breakpoint_events_remaining: AtomicUsize,
     step_events_remaining: AtomicUsize,
+    class_prepare_events_remaining: AtomicUsize,
     field_access_events_remaining: AtomicUsize,
     field_modification_events_remaining: AtomicUsize,
     class_unload_events_remaining: AtomicUsize,
@@ -491,8 +505,10 @@ impl Default for State {
 
 impl State {
     fn new(config: MockJdwpServerConfig) -> Self {
+        let all_classes_loaded = config.all_classes_initially_loaded;
         let breakpoint_events = config.breakpoint_events;
         let step_events = config.step_events;
+        let class_prepare_events = config.class_prepare_events;
         let field_access_events = config.field_access_events;
         let field_modification_events = config.field_modification_events;
         let class_unload_events = config.class_unload_events;
@@ -507,6 +523,7 @@ impl State {
 
         Self {
             config,
+            all_classes_loaded: AtomicBool::new(all_classes_loaded),
             next_request_id: AtomicI32::new(0),
             next_packet_id: AtomicU32::new(0),
             next_object_id: AtomicU64::new(ALLOC_OBJECT_ID_START),
@@ -523,6 +540,7 @@ impl State {
             method_exit_request: tokio::sync::Mutex::new(None),
             thread_start_request: tokio::sync::Mutex::new(None),
             thread_death_request: tokio::sync::Mutex::new(None),
+            class_prepare_request: tokio::sync::Mutex::new(None),
             class_unload_request: tokio::sync::Mutex::new(None),
             field_access_request: tokio::sync::Mutex::new(None),
             field_modification_request: tokio::sync::Mutex::new(None),
@@ -560,6 +578,7 @@ impl State {
             smart_step_next_call: AtomicUsize::new(0),
             breakpoint_events_remaining: AtomicUsize::new(breakpoint_events),
             step_events_remaining: AtomicUsize::new(step_events),
+            class_prepare_events_remaining: AtomicUsize::new(class_prepare_events),
             field_access_events_remaining: AtomicUsize::new(field_access_events),
             field_modification_events_remaining: AtomicUsize::new(field_modification_events),
             class_unload_events_remaining: AtomicUsize::new(class_unload_events),
@@ -601,6 +620,14 @@ impl State {
 
     fn take_step_event(&self) -> bool {
         self.step_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_class_prepare_event(&self) -> bool {
+        self.class_prepare_events_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
@@ -991,10 +1018,14 @@ async fn handle_packet(
             let nested_prefix = format!("{outer_prefix}$");
             match signature.as_str() {
                 sig if sig == state.config.class_signature || sig.starts_with(&nested_prefix) => {
-                    w.write_u32(1);
-                    w.write_u8(1); // class
-                    w.write_reference_type_id(CLASS_ID, sizes);
-                    w.write_u32(1);
+                    if state.all_classes_loaded.load(Ordering::Relaxed) {
+                        w.write_u32(1);
+                        w.write_u8(1); // class
+                        w.write_reference_type_id(CLASS_ID, sizes);
+                        w.write_u32(1);
+                    } else {
+                        w.write_u32(0);
+                    }
                 }
                 "Lcom/example/Foo;" => {
                     w.write_u32(1);
@@ -1017,11 +1048,15 @@ async fn handle_packet(
         // VirtualMachine.AllClasses
         (1, 3) => {
             let mut w = JdwpWriter::new();
-            w.write_u32(1);
-            w.write_u8(1); // class
-            w.write_reference_type_id(CLASS_ID, sizes);
-            w.write_string(&state.config.class_signature);
-            w.write_u32(1);
+            if state.all_classes_loaded.load(Ordering::Relaxed) {
+                w.write_u32(1);
+                w.write_u8(1); // class
+                w.write_reference_type_id(CLASS_ID, sizes);
+                w.write_string(&state.config.class_signature);
+                w.write_u32(1);
+            } else {
+                w.write_u32(0);
+            }
             (0, w.into_vec())
         }
         // VirtualMachine.RedefineClasses
@@ -2483,6 +2518,12 @@ async fn handle_packet(
                 6 => *state.thread_start_request.lock().await = Some(request_id),
                 7 => *state.thread_death_request.lock().await = Some(request_id),
                 42 => *state.method_exit_request.lock().await = Some(request_id),
+                EVENT_KIND_CLASS_PREPARE => {
+                    *state.class_prepare_request.lock().await = Some(MockSimpleEventRequest {
+                        request_id,
+                        suspend_policy,
+                    })
+                }
                 EVENT_KIND_CLASS_UNLOAD => {
                     *state.class_unload_request.lock().await = Some(MockSimpleEventRequest {
                         request_id,
@@ -2558,6 +2599,12 @@ async fn handle_packet(
                         *guard = None;
                     }
                 }
+                EVENT_KIND_CLASS_PREPARE => {
+                    let mut guard = state.class_prepare_request.lock().await;
+                    if guard.map(|v| v.request_id == request_id).unwrap_or(false) {
+                        *guard = None;
+                    }
+                }
                 EVENT_KIND_CLASS_UNLOAD => {
                     let mut guard = state.class_unload_request.lock().await;
                     if guard.map(|v| v.request_id == request_id).unwrap_or(false) {
@@ -2625,6 +2672,7 @@ async fn handle_packet(
         let exception_request = { *state.exception_request.lock().await };
         let thread_start_request = { *state.thread_start_request.lock().await };
         let thread_death_request = { *state.thread_death_request.lock().await };
+        let class_prepare_request = { *state.class_prepare_request.lock().await };
         let class_unload_request = { *state.class_unload_request.lock().await };
         let field_access_request = { *state.field_access_request.lock().await };
         let field_modification_request = { *state.field_modification_request.lock().await };
@@ -2661,6 +2709,21 @@ async fn handle_packet(
                 request_id,
                 WORKER_THREAD_ID,
             ));
+        }
+
+        if let Some(request) = class_prepare_request {
+            if state.take_class_prepare_event() {
+                // Once the class prepare event is observed, treat the main class as loaded so
+                // subsequent `VirtualMachine.AllClasses` calls can return it.
+                state.all_classes_loaded.store(true, Ordering::Relaxed);
+                follow_up.extend(make_class_prepare_event_packet(
+                    state,
+                    id_sizes,
+                    request.suspend_policy,
+                    request.request_id,
+                    &state.config.class_signature,
+                ));
+            }
         }
 
         if let Some(request) = class_unload_request {
@@ -2793,6 +2856,29 @@ fn make_thread_event_packet(
     w.write_u8(event_kind);
     w.write_i32(request_id);
     w.write_object_id(thread_id, id_sizes);
+    let payload = w.into_vec();
+    let packet_id = state.alloc_packet_id();
+    encode_command(packet_id, 64, 100, &payload)
+}
+
+fn make_class_prepare_event_packet(
+    state: &State,
+    id_sizes: &JdwpIdSizes,
+    suspend_policy: u8,
+    request_id: i32,
+    signature: &str,
+) -> Vec<u8> {
+    let mut w = JdwpWriter::new();
+    w.write_u8(suspend_policy);
+    w.write_u32(1); // event count
+    w.write_u8(EVENT_KIND_CLASS_PREPARE);
+    w.write_i32(request_id);
+    w.write_object_id(THREAD_ID, id_sizes);
+    w.write_u8(1); // RefTypeTag.CLASS
+    w.write_reference_type_id(CLASS_ID, id_sizes);
+    w.write_string(signature);
+    w.write_u32(1); // class status (non-zero)
+
     let payload = w.into_vec();
     let packet_id = state.alloc_packet_id();
     encode_command(packet_id, 64, 100, &payload)

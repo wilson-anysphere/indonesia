@@ -2059,7 +2059,8 @@ mod tests {
     };
     use crate::wire::types::{
         JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, EVENT_KIND_BREAKPOINT,
-        EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
+        EVENT_KIND_CLASS_PREPARE, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION,
+        EVENT_KIND_FIELD_ACCESS,
         EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
         EVENT_KIND_VM_DISCONNECT, INVOKE_NONVIRTUAL, INVOKE_SINGLE_THREADED, SUSPEND_POLICY_ALL,
         SUSPEND_POLICY_EVENT_THREAD, SUSPEND_POLICY_NONE,
@@ -2419,6 +2420,58 @@ mod tests {
             } => assert_eq!(rid, request_id),
             other => panic!("expected breakpoint event, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn class_prepare_event_marks_main_class_as_loaded() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            class_prepare_events: 1,
+            all_classes_initially_loaded: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let mut events = client.subscribe_events();
+
+        assert_eq!(client.all_classes().await.unwrap().len(), 0);
+
+        let request_id = client
+            .event_request_set(EVENT_KIND_CLASS_PREPARE, SUSPEND_POLICY_NONE, Vec::new())
+            .await
+            .unwrap();
+
+        client.vm_resume().await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("timed out waiting for ClassPrepare")
+            .expect("failed to receive ClassPrepare");
+
+        let prepared_type_id = match event {
+            JdwpEvent::ClassPrepare {
+                request_id: rid,
+                thread,
+                ref_type_tag,
+                type_id,
+                signature,
+                status,
+            } => {
+                assert_eq!(rid, request_id);
+                assert_eq!(thread, THREAD_ID);
+                assert_eq!(ref_type_tag, 1);
+                assert_eq!(signature, "LMain;");
+                assert_ne!(status, 0);
+                type_id
+            }
+            other => panic!("expected ClassPrepare, got {other:?}"),
+        };
+
+        let classes = client.all_classes().await.unwrap();
+        assert_eq!(classes.len(), 1);
+        assert_eq!(classes[0].type_id, prepared_type_id);
+        assert_eq!(classes[0].signature, "LMain;");
     }
 
     #[tokio::test]
