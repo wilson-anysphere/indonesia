@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -2275,6 +2276,31 @@ fn load_gradle_properties(workspace_root: &Path) -> GradleProperties {
     parse_gradle_properties_from_text(&contents)
 }
 
+fn load_gradle_module_properties(module_root: &Path) -> GradleProperties {
+    let path = module_root.join("gradle.properties");
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return GradleProperties::new();
+    };
+    parse_gradle_properties_from_text(&contents)
+}
+
+fn merged_gradle_properties_for_module<'a>(
+    module_root: &Path,
+    root_properties: &'a GradleProperties,
+) -> Cow<'a, GradleProperties> {
+    let module_properties = load_gradle_module_properties(module_root);
+    if module_properties.is_empty() {
+        return Cow::Borrowed(root_properties);
+    }
+
+    // Deterministic merge: module values are used as a fallback, but root values take precedence.
+    let mut merged = module_properties;
+    for (k, v) in root_properties {
+        merged.insert(k.clone(), v.clone());
+    }
+    Cow::Owned(merged)
+}
+
 /// Best-effort parsing for Gradle's `gradle.properties`.
 ///
 /// This intentionally does **not** implement full Java-properties escaping semantics; it only
@@ -2522,6 +2548,7 @@ fn parse_gradle_dependencies(
     version_catalog: Option<&GradleVersionCatalog>,
     gradle_properties: &GradleProperties,
 ) -> Vec<Dependency> {
+    let gradle_properties = merged_gradle_properties_for_module(module_root, gradle_properties);
     let candidates = ["build.gradle.kts", "build.gradle"]
         .into_iter()
         .map(|name| module_root.join(name))
@@ -2537,7 +2564,7 @@ fn parse_gradle_dependencies(
         out.extend(parse_gradle_dependencies_from_text(
             &contents,
             version_catalog,
-            gradle_properties,
+            gradle_properties.as_ref(),
         ));
     }
     out
