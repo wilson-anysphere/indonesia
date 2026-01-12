@@ -187,7 +187,7 @@ fn maven_project_accepts_exploded_dependency_directory_as_classpath_dir() {
         !config
             .module_path
             .iter()
-            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
+            .any(|e| e.path == expected_jar_dir),
         "non-JPMS projects should not place exploded jars on module-path"
     );
 }
@@ -247,7 +247,7 @@ fn maven_workspace_model_accepts_exploded_dependency_directory_as_classpath_dir(
             !module
                 .module_path
                 .iter()
-                .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
+                .any(|e| e.path == expected_jar_dir),
             "non-JPMS modules should not place exploded jars on module-path ({})",
             module.id
         );
