@@ -220,10 +220,14 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         self.ignored_prefixes.get_or_init(|| {
             let ignore_file = self.root.join(".bazelignore");
             let Ok(contents) = fs::read_to_string(&ignore_file) else {
-                return Vec::new();
+                // Bazel ignores `.git`-internal files/directories regardless of `.bazelignore`, and
+                // editors/file-watchers may still hand us such paths. Treat it as ignored by
+                // default to match Bazel's package universe.
+                return vec![PathBuf::from(".git")];
             };
 
-            let mut prefixes = Vec::new();
+            // Bazel also ignores `.git` regardless of `.bazelignore`.
+            let mut prefixes = vec![PathBuf::from(".git")];
             for line in contents.lines() {
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {

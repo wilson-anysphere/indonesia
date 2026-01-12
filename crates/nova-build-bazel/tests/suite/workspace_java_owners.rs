@@ -1301,3 +1301,24 @@ fn bazelignore_applies_to_canonical_paths_when_root_is_symlink() {
         .unwrap();
     assert_eq!(label, None);
 }
+
+#[test]
+fn git_dir_is_ignored_by_default() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+
+    // Even if `.git` contains BUILD files, Bazel treats it as outside the package universe.
+    write_file(&dir.path().join(".git/BUILD"), "# pretend\n");
+    create_file(&dir.path().join(".git/Foo.java"));
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new(".git/Foo.java"))
+        .unwrap();
+    assert_eq!(label, None);
+
+    let owners = workspace
+        .java_owning_targets_for_file(Path::new(".git/Foo.java"))
+        .unwrap();
+    assert!(owners.is_empty());
+}
