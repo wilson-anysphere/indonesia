@@ -122,7 +122,7 @@ fn prune_ast(
     let metadata = load_ast_metadata(&metadata_path, report);
 
     let mut referenced = HashMap::<String, u64>::new();
-    let mut compatible_metadata = metadata.filter(|m| is_compatible_ast_metadata(m));
+    let mut compatible_metadata = metadata.filter(is_compatible_ast_metadata);
 
     if let Some(meta) = &compatible_metadata {
         for entry in meta.files.values() {
@@ -476,10 +476,8 @@ fn prune_classpath(
         };
 
         let last_used = file_modified_millis(&path, report).unwrap_or(0);
-        if last_used < cutoff {
-            if delete_file(&path, policy, report) {
-                report.record_delete(size, policy.dry_run);
-            }
+        if last_used < cutoff && delete_file(&path, policy, report) {
+            report.record_delete(size, policy.dry_run);
         }
     }
 }

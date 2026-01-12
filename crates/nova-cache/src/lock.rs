@@ -34,6 +34,7 @@ impl CacheLock {
 
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)?;
@@ -61,7 +62,7 @@ fn process_lock_for_path(path: &Path) -> &'static Mutex<()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(existing) = map.get(path) {
-        return *existing;
+        return existing;
     }
 
     let mutex: &'static Mutex<()> = Box::leak(Box::new(Mutex::new(())));

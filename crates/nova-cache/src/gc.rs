@@ -137,20 +137,18 @@ pub fn enumerate_project_caches(
                 }
             }
 
-            if !loaded_metadata {
-                if std::fs::symlink_metadata(&metadata_path)
+            if !loaded_metadata
+                && std::fs::symlink_metadata(&metadata_path)
                     .ok()
                     .is_some_and(|meta| meta.is_file())
-                {
-                    if let Ok(file) = std::fs::File::open(&metadata_path) {
-                        let reader = std::io::BufReader::new(file);
-                        if let Ok(metadata) =
-                            serde_json::from_reader::<_, CacheMetadataSummary>(reader)
-                        {
-                            last_updated_millis = metadata.last_updated_millis;
-                            nova_version = metadata.nova_version;
-                            schema_version = metadata.schema_version;
-                        }
+            {
+                if let Ok(file) = std::fs::File::open(&metadata_path) {
+                    let reader = std::io::BufReader::new(file);
+                    if let Ok(metadata) = serde_json::from_reader::<_, CacheMetadataSummary>(reader)
+                    {
+                        last_updated_millis = metadata.last_updated_millis;
+                        nova_version = metadata.nova_version;
+                        schema_version = metadata.schema_version;
                     }
                 }
             }
