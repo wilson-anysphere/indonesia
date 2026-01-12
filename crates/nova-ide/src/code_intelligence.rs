@@ -3457,7 +3457,9 @@ fn infer_call_receiver_lexical(
     call: &CallExpr,
 ) -> (Type, CallKind) {
     if let Some(receiver) = call.receiver.as_deref() {
-        return infer_receiver(types, analysis, receiver);
+        let (mut receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+        receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
+        return (receiver_ty, call_kind);
     }
 
     let Some(name_idx) = analysis
@@ -3474,13 +3476,16 @@ fn infer_call_receiver_lexical(
         let dot_offset = analysis.tokens[name_idx - 1].span.start;
         let receiver = receiver_before_dot(text, dot_offset);
         if !receiver.is_empty() {
-            return infer_receiver(types, analysis, &receiver);
+            let (mut receiver_ty, call_kind) = infer_receiver(types, analysis, &receiver);
+            receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
+            return (receiver_ty, call_kind);
         }
 
         // Handle common complex receivers like `new Foo().bar()`.
         if let Some(receiver_ty) =
             infer_receiver_type_of_expr_ending_at(types, analysis, text, dot_offset)
         {
+            let receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
             return (receiver_ty, CallKind::Instance);
         }
 
@@ -3491,7 +3496,8 @@ fn infer_call_receiver_lexical(
     let Some(class) = enclosing_class(analysis, call.name_span.start) else {
         return (Type::Unknown, CallKind::Instance);
     };
-    (parse_source_type(types, &class.name), CallKind::Instance)
+    let class_id = ensure_local_class_id(types, analysis, class);
+    (Type::class(class_id, vec![]), CallKind::Instance)
 }
 
 fn enclosing_class<'a>(analysis: &'a Analysis, offset: usize) -> Option<&'a ClassDecl> {

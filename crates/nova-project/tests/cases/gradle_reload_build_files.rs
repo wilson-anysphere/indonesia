@@ -235,3 +235,48 @@ include(":app", ":lib")
         BTreeSet::from([PathBuf::from("app"), PathBuf::from("lib")])
     );
 }
+
+#[test]
+fn reloads_gradle_project_when_gradlew_changes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        &root.join("settings.gradle"),
+        r#"
+rootProject.name = "demo"
+include(":app")
+"#,
+    );
+    write_file(&root.join("build.gradle"), "");
+    write_file(&root.join("gradlew"), "#!/bin/sh\n");
+    create_dir(&root.join("app/src/main/java"));
+
+    let mut options = LoadOptions::default();
+    let config = load_project_with_options(root, &options).expect("load gradle project");
+
+    assert_eq!(
+        module_roots(&config),
+        BTreeSet::from([PathBuf::from("app")])
+    );
+
+    // Simulate a change that should be picked up on reload.
+    let workspace_root = &config.workspace_root;
+    write_file(
+        &workspace_root.join("settings.gradle"),
+        r#"
+rootProject.name = "demo"
+include(":app", ":lib")
+"#,
+    );
+    create_dir(&workspace_root.join("lib/src/main/java"));
+    write_file(&workspace_root.join("gradlew"), "#!/bin/sh\n# changed\n");
+
+    let reloaded = reload_project(&config, &mut options, &[workspace_root.join("gradlew")])
+        .expect("reload project");
+
+    assert_eq!(
+        module_roots(&reloaded),
+        BTreeSet::from([PathBuf::from("app"), PathBuf::from("lib")])
+    );
+}
