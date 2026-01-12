@@ -469,6 +469,7 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         salsa.set_jdk_index(project, jdk);
         salsa.set_classpath_index(project, None);
         salsa.set_file_text(file, text.to_string());
+        salsa.set_project_files(project, Arc::new(vec![file]));
         let snap = salsa.snapshot();
         diagnostics.extend(snap.type_diagnostics(file));
         diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
@@ -554,6 +555,7 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         salsa.set_jdk_index(project, jdk);
         salsa.set_classpath_index(project, None);
         salsa.set_file_text(file, text.to_string());
+        salsa.set_project_files(project, Arc::new(vec![file]));
         let snap = salsa.snapshot();
         diagnostics.extend(snap.type_diagnostics(file));
         diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
@@ -2011,6 +2013,24 @@ fn general_completions(
         }
     }
 
+    // Common Java literals/keywords that should always be available in expression
+    // completion, even when semantic / expected-type inference is unavailable.
+    for lit in ["null", "true", "false"] {
+        items.push(CompletionItem {
+            label: lit.to_string(),
+            kind: Some(CompletionItemKind::VALUE),
+            ..Default::default()
+        });
+    }
+
+    for kw in ["this", "super"] {
+        items.push(CompletionItem {
+            label: kw.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        });
+    }
+
     let last_used_offsets = last_used_offsets(&analysis, offset);
 
     let in_scope_types = in_scope_types(&analysis, enclosing_method, offset);
@@ -3084,6 +3104,7 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     salsa.set_jdk_index(project, jdk);
     salsa.set_classpath_index(project, None);
     salsa.set_file_text(file, text.to_string());
+    salsa.set_project_files(project, Arc::new(vec![file]));
     let snap = salsa.snapshot();
     let ty = snap.type_at_offset_display(file, offset as u32)?;
     Some(Hover {

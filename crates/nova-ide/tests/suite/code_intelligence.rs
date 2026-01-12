@@ -164,6 +164,46 @@ class A {
 }
 
 #[test]
+fn completion_includes_null_literal() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"null"),
+        "expected completion list to contain `null`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_true_literal_with_prefix() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    tr<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"true"),
+        "expected completion list to contain `true`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_includes_arraylist_with_star_import() {
     let (db, file, pos) = fixture(
         r#"
