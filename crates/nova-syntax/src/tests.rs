@@ -469,6 +469,34 @@ fn lexer_text_block_closing_allows_trailing_quotes() {
 }
 
 #[test]
+fn lexer_string_template_text_block_allows_backslash_before_newline() {
+    // Text blocks allow raw newlines, and the legacy `TextBlock` lexer does not validate escape
+    // sequences. String templates in text-block form should therefore also allow a `\` character
+    // immediately before a newline without terminating the template.
+    let input = "STR.\"\"\"\nline1 \\\nline2\n\"\"\"";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        non_trivia,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"\"\"".into()),
+            (SyntaxKind::StringTemplateText, "\nline1 \\\nline2\n".into()),
+            (SyntaxKind::StringTemplateEnd, "\"\"\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
 fn lexer_char_literals_validate_length_and_octal_escapes() {
     let input = "'a' '\\n' '\\123'";
     let (tokens, errors) = lex_with_errors(input);
