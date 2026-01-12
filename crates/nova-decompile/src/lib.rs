@@ -672,6 +672,32 @@ impl ParsedDecompiledUri {
     }
 }
 
+fn normalize_decompiled_binary_name(binary_name: &str) -> String {
+    // Keep this logic in sync with `nova-vfs/src/path.rs:normalize_decompiled_binary_name`.
+    let binary_name = binary_name
+        .replace('\\', ".")
+        .replace('/', ".")
+        .trim_matches('.')
+        .to_string();
+
+    let mut out = String::with_capacity(binary_name.len());
+    let mut last_dot = false;
+    for ch in binary_name.chars() {
+        if ch == '.' {
+            if last_dot {
+                continue;
+            }
+            last_dot = true;
+            out.push('.');
+        } else {
+            last_dot = false;
+            out.push(ch);
+        }
+    }
+
+    out
+}
+
 fn decompiled_content_fingerprint(bytes: &[u8], schema_version: u32) -> Fingerprint {
     // Domain-separate the hash so it can't collide with other uses of
     // `Fingerprint::from_bytes` across the codebase.
@@ -731,19 +757,18 @@ pub fn parse_decompiled_uri(uri: &str) -> Option<ParsedDecompiledUri> {
     let content_hash = content_hash.to_ascii_lowercase();
 
     let binary_name = filename.strip_suffix(".java")?;
-    if binary_name.is_empty()
-        || binary_name.contains('/')
-        || binary_name.contains('\\')
-        || matches!(binary_name, "." | "..")
-        || binary_name.starts_with('.')
-        || binary_name.ends_with('.')
-    {
+    if binary_name.is_empty() || binary_name.contains('/') {
+        return None;
+    }
+
+    let binary_name = normalize_decompiled_binary_name(binary_name);
+    if binary_name.is_empty() {
         return None;
     }
 
     Some(ParsedDecompiledUri {
         content_hash,
-        binary_name: binary_name.to_string(),
+        binary_name,
     })
 }
 

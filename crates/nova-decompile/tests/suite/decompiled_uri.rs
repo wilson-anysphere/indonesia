@@ -64,6 +64,42 @@ fn parse_decompiled_uri_round_trips() {
 }
 
 #[test]
+fn parse_decompiled_uri_normalizes_binary_name_dots() {
+    let hash = content_hash_for(DECOMPILER_SCHEMA_VERSION);
+    let uri = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{hash}/com..example..Foo.java");
+
+    let parsed = parse_decompiled_uri(&uri).expect("parse");
+    assert_eq!(parsed.binary_name, "com.example.Foo");
+
+    let rebuilt = format!(
+        "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{}/{}.java",
+        parsed.content_hash, parsed.binary_name
+    );
+    assert_eq!(
+        rebuilt,
+        format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{hash}/com.example.Foo.java")
+    );
+}
+
+#[test]
+fn parse_decompiled_uri_normalizes_binary_name_backslashes() {
+    let hash = content_hash_for(DECOMPILER_SCHEMA_VERSION);
+    let uri = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{hash}/com\\example\\Foo.java");
+
+    let parsed = parse_decompiled_uri(&uri).expect("parse");
+    assert_eq!(parsed.binary_name, "com.example.Foo");
+
+    let rebuilt = format!(
+        "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{}/{}.java",
+        parsed.content_hash, parsed.binary_name
+    );
+    assert_eq!(
+        rebuilt,
+        format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{hash}/com.example.Foo.java")
+    );
+}
+
+#[test]
 fn content_hash_changes_when_schema_version_changes() {
     let hash_v1 = content_hash_for(DECOMPILER_SCHEMA_VERSION);
     let hash_v2 = content_hash_for(DECOMPILER_SCHEMA_VERSION + 1);
