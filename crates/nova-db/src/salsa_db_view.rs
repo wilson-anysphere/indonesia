@@ -31,7 +31,15 @@ pub struct SalsaDbView {
 impl SalsaDbView {
     /// Build a new view by snapshotting and caching all known file metadata.
     pub fn new(snapshot: crate::salsa::Snapshot) -> Self {
-        let file_ids_arc = SourceDatabase::all_file_ids(&snapshot);
+        Self::from_source_db(&snapshot)
+    }
+
+    /// Build a new view from any [`SourceDatabase`].
+    ///
+    /// This is primarily useful for adapting Salsa snapshots, but it can also be
+    /// used to wrap other `SourceDatabase` implementations.
+    pub fn from_source_db(db: &dyn SourceDatabase) -> Self {
+        let file_ids_arc = SourceDatabase::all_file_ids(db);
         let file_ids: Vec<FileId> = file_ids_arc.as_ref().clone();
 
         let mut file_contents = HashMap::with_capacity(file_ids.len());
@@ -39,10 +47,10 @@ impl SalsaDbView {
         let mut path_to_file = HashMap::new();
 
         for file_id in &file_ids {
-            let content = SourceDatabase::file_content(&snapshot, *file_id);
+            let content = SourceDatabase::file_content(db, *file_id);
             file_contents.insert(*file_id, content);
 
-            if let Some(path) = SourceDatabase::file_path(&snapshot, *file_id) {
+            if let Some(path) = SourceDatabase::file_path(db, *file_id) {
                 path_to_file.insert(path.clone(), *file_id);
                 file_paths.insert(*file_id, path);
             }
