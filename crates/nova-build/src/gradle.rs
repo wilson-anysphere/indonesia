@@ -1,6 +1,8 @@
 use crate::cache::{BuildCache, BuildFileFingerprint, CachedProjectInfo};
 use crate::command::format_command;
-use crate::jpms::{infer_module_path_entries, main_source_roots_have_module_info};
+use crate::jpms::{
+    compiler_args_looks_like_jpms, infer_module_path_entries, main_source_roots_have_module_info,
+};
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, GradleBuildTask, JavaCompileConfig, Result,
@@ -1784,28 +1786,6 @@ fn normalize_gradle_java_compile_config(
 
 fn compiler_args_enable_preview(args: &[String]) -> bool {
     args.iter().any(|arg| arg.trim() == "--enable-preview")
-}
-
-fn compiler_args_looks_like_jpms(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        let arg = arg.trim();
-        [
-            "--module-path",
-            "-p",
-            "--add-modules",
-            "--patch-module",
-            "--add-reads",
-            "--add-exports",
-            "--add-opens",
-            "--limit-modules",
-            "--upgrade-module-path",
-            "--module",
-            "-m",
-            "--module-source-path",
-        ]
-        .iter()
-        .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
-    })
 }
 
 fn extract_nova_json_block(output: &str) -> Result<String> {

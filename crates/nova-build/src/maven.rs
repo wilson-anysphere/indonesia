@@ -1,6 +1,9 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
 use crate::command::format_command;
-use crate::jpms::{infer_module_path_for_compile_config, main_source_roots_have_module_info};
+use crate::jpms::{
+    compiler_arg_looks_like_jpms, infer_module_path_for_compile_config,
+    main_source_roots_have_module_info,
+};
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
@@ -9,30 +12,6 @@ use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const MAVEN_JPMS_FLAG_NEEDLES: [&str; 12] = [
-    "--module-path",
-    "-p",
-    "--add-modules",
-    "--patch-module",
-    "--add-reads",
-    "--add-exports",
-    "--add-opens",
-    "--limit-modules",
-    "--upgrade-module-path",
-    "--module",
-    "-m",
-    "--module-source-path",
-];
-
-fn maven_compiler_arg_looks_like_jpms(arg: &str) -> bool {
-    let arg = arg.trim();
-    MAVEN_JPMS_FLAG_NEEDLES.iter().any(|flag| {
-        arg == *flag
-            || arg
-                .strip_prefix(flag)
-                .is_some_and(|rest| rest.starts_with('='))
-    })
-}
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
     /// Path to the Maven executable (defaults to `mvn` in `PATH`).
@@ -361,9 +340,7 @@ impl MavenBuild {
             .map(parse_maven_string_list_output)
             .map(|args| {
                 let enable_preview = args.iter().any(|arg| arg.trim() == "--enable-preview");
-                let looks_like_jpms = args
-                    .iter()
-                    .any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                let looks_like_jpms = args.iter().any(|arg| compiler_arg_looks_like_jpms(arg));
                 (enable_preview, looks_like_jpms)
             })
             .unwrap_or((false, false));
@@ -377,9 +354,8 @@ impl MavenBuild {
             if let Some(output) = compiler_argument_raw.as_deref() {
                 let args = parse_maven_string_list_output(output);
                 enable_preview |= args.iter().any(|arg| arg.trim() == "--enable-preview");
-                compiler_args_looks_like_jpms |= args
-                    .iter()
-                    .any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                compiler_args_looks_like_jpms |=
+                    args.iter().any(|arg| compiler_arg_looks_like_jpms(arg));
             }
         }
 
@@ -1749,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn infer_module_path_includes_classpath_when_module_info_present() {
+    fn infer_module_path_includes_only_stable_modules_and_excludes_output_dir() {
         let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
         let named = testdata_dir.join("named-module.jar");
         let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
@@ -1765,9 +1741,7 @@ mod tests {
         .unwrap();
 
         // Simulate a stable module output dir. Even for JPMS projects, output directories should
-        // live on the compile classpath (not the inferred module-path). We only infer stable
-        // module-path entries from the resolved classpath (named modules + explicit
-        // Automatic-Module-Name jars).
+        // live on the compile classpath (not the inferred module-path).
         let out_dir = tmp.path().join("target/classes");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("module-info.class"), b"").unwrap();

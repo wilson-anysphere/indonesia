@@ -3,6 +3,32 @@ use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
+const JPMS_COMPILER_FLAG_NEEDLES: [&str; 12] = [
+    "--module-path",
+    "-p",
+    "--add-modules",
+    "--patch-module",
+    "--add-reads",
+    "--add-exports",
+    "--add-opens",
+    "--limit-modules",
+    "--upgrade-module-path",
+    "--module",
+    "-m",
+    "--module-source-path",
+];
+
+pub(crate) fn compiler_arg_looks_like_jpms(arg: &str) -> bool {
+    let arg = arg.trim();
+    JPMS_COMPILER_FLAG_NEEDLES.iter().any(|flag| {
+        arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
+    })
+}
+
+pub(crate) fn compiler_args_looks_like_jpms(args: &[String]) -> bool {
+    args.iter().any(|arg| compiler_arg_looks_like_jpms(arg))
+}
+
 pub(crate) fn main_source_roots_have_module_info(main_source_roots: &[PathBuf]) -> bool {
     main_source_roots
         .iter()
@@ -270,6 +296,18 @@ mod tests {
         )
         .unwrap();
         assert!(stable_module_path_entry(&exploded_manifest));
+    }
+
+    #[test]
+    fn compiler_args_looks_like_jpms_handles_short_and_long_flags() {
+        assert!(compiler_args_looks_like_jpms(&["--module-path".to_string()]));
+        assert!(compiler_args_looks_like_jpms(&["--module-path=/tmp".to_string()]));
+        assert!(compiler_args_looks_like_jpms(&["-p".to_string()]));
+
+        assert!(compiler_args_looks_like_jpms(&["--module".to_string()]));
+        assert!(compiler_args_looks_like_jpms(&["-m".to_string()]));
+
+        assert!(!compiler_args_looks_like_jpms(&["-processorpath".to_string()]));
     }
 
     #[test]
