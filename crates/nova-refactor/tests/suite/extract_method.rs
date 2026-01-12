@@ -1,4 +1,6 @@
-use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
+use nova_refactor::extract_method::{
+    ExtractMethod, ExtractMethodIssue, InsertionStrategy, Visibility,
+};
 use nova_refactor::{apply_workspace_edit, FileId, WorkspaceEdit};
 use nova_test_utils::extract_range;
 use std::collections::BTreeMap;
@@ -76,6 +78,86 @@ class C {
 "#;
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_allows_overloading() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        /*start*/System.out.println(a);/*end*/
+    }
+
+    private void extracted(String s) {
+        System.out.println(s);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int a) {
+        extracted(a);
+    }
+
+    private void extracted(int a) {
+        System.out.println(a);
+    }
+
+    private void extracted(String s) {
+        System.out.println(s);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_rejects_true_signature_collision() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        /*start*/System.out.println(a);/*end*/
+    }
+
+    private void extracted(int a) {
+        System.out.println(a);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let analysis = refactoring.analyze(&source).expect("analysis should succeed");
+    assert!(
+        analysis.issues.iter().any(|issue| matches!(
+            issue,
+            ExtractMethodIssue::NameCollision { name } if name == "extracted"
+        )),
+        "expected NameCollision issue, got: {:?}",
+        analysis.issues
+    );
 }
 
 #[test]

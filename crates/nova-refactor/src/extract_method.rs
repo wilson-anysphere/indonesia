@@ -242,7 +242,8 @@ impl ExtractMethod {
         let local_type_names = collect_local_type_names(&method_body);
 
         let mut issues = Vec::new();
-        if !is_valid_java_identifier(&self.name) {
+        let valid_method_name = is_valid_java_identifier(&self.name);
+        if !valid_method_name {
             issues.push(ExtractMethodIssue::InvalidMethodName {
                 name: self.name.clone(),
             });
@@ -261,13 +262,7 @@ impl ExtractMethod {
                 Visibility::Private | Visibility::Public => {}
             }
         }
-        if let Some(enclosing_type_body) = enclosing_type_body.as_ref() {
-            if issues.is_empty() && type_body_has_method_named(enclosing_type_body, &self.name) {
-                issues.push(ExtractMethodIssue::NameCollision {
-                    name: self.name.clone(),
-                });
-            }
-        } else {
+        if enclosing_type_body.is_none() {
             issues.push(ExtractMethodIssue::InvalidSelection);
         }
 
@@ -418,6 +413,25 @@ impl ExtractMethod {
                 .map(|r| r.ty.clone())
                 .unwrap_or_else(|| "void".to_string());
 
+            if valid_method_name {
+                if let Some(enclosing_type_body) = enclosing_type_body.as_ref() {
+                    let extracted_param_types = parameters
+                        .iter()
+                        .map(|p| p.ty.trim().to_string())
+                        .collect::<Vec<_>>();
+                    if type_body_has_method_signature(
+                        source,
+                        enclosing_type_body,
+                        &self.name,
+                        &extracted_param_types,
+                    ) {
+                        issues.push(ExtractMethodIssue::NameCollision {
+                            name: self.name.clone(),
+                        });
+                    }
+                }
+            }
+
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
                 parameters,
@@ -560,6 +574,25 @@ impl ExtractMethod {
                 name: self.name.clone(),
             });
             return_ty = Some("Object".to_string());
+        }
+
+        if valid_method_name {
+            if let Some(enclosing_type_body) = enclosing_type_body.as_ref() {
+                let extracted_param_types = parameters
+                    .iter()
+                    .map(|p| p.ty.trim().to_string())
+                    .collect::<Vec<_>>();
+                if type_body_has_method_signature(
+                    source,
+                    enclosing_type_body,
+                    &self.name,
+                    &extracted_param_types,
+                ) {
+                    issues.push(ExtractMethodIssue::NameCollision {
+                        name: self.name.clone(),
+                    });
+                }
+            }
         }
 
         Ok(ExtractMethodAnalysis {
@@ -1066,7 +1099,12 @@ fn find_enclosing_type_body(node: &nova_syntax::SyntaxNode) -> Option<EnclosingT
     })
 }
 
-fn type_body_has_method_named(type_body: &EnclosingTypeBody, name: &str) -> bool {
+fn type_body_has_method_signature(
+    source: &str,
+    type_body: &EnclosingTypeBody,
+    name: &str,
+    param_types: &[String],
+) -> bool {
     type_body
         .syntax()
         .children()
@@ -1075,7 +1113,24 @@ fn type_body_has_method_named(type_body: &EnclosingTypeBody, name: &str) -> bool
             let ast::ClassMember::MethodDeclaration(method) = member else {
                 return false;
             };
-            method.name_token().is_some_and(|tok| tok.text() == name)
+            let Some(name_tok) = method.name_token() else {
+                return false;
+            };
+            if name_tok.text() != name {
+                return false;
+            }
+
+            let (arity, existing_param_types) = method_parameter_types(source, &method);
+            if arity != param_types.len() {
+                return false;
+            }
+
+            match existing_param_types {
+                Some(existing_param_types) => existing_param_types == param_types,
+                // Conservative fallback: if we can't recover parameter types, treat name+arity as a
+                // collision.
+                None => true,
+            }
         })
 }
 
@@ -1148,6 +1203,58 @@ fn find_referenced_local_type_name_in_range(
         }
     }
     None
+}
+
+fn method_parameter_types(
+    source: &str,
+    method: &ast::MethodDeclaration,
+) -> (usize, Option<Vec<String>>) {
+    let Some(param_list) = method.parameter_list() else {
+        return (0, Some(Vec::new()));
+    };
+
+    let mut arity = 0usize;
+    let mut types = Vec::new();
+    let mut unknown = false;
+    for param in param_list.parameters() {
+        arity += 1;
+        if unknown {
+            continue;
+        }
+        match parameter_type_text(source, &param) {
+            Some(ty) => types.push(ty),
+            None => unknown = true,
+        }
+    }
+
+    if unknown {
+        (arity, None)
+    } else {
+        (arity, Some(types))
+    }
+}
+
+fn parameter_type_text(source: &str, param: &ast::Parameter) -> Option<String> {
+    let ty = param.ty()?;
+    let ty_range = syntax_range(ty.syntax());
+    let mut text = source
+        .get(ty_range.start..ty_range.end)?
+        .trim()
+        .to_string();
+
+    // Varargs: include the ellipsis token (`...`) as part of the type text so we can
+    // distinguish `foo(String...)` from `foo(String)`.
+    let ellipsis_after_type = param
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| tok.kind() == SyntaxKind::Ellipsis)
+        .is_some_and(|tok| (u32::from(tok.text_range().start()) as usize) >= ty_range.end);
+    if ellipsis_after_type && !text.ends_with("...") {
+        text.push_str("...");
+    }
+
+    Some(text)
 }
 
 fn collect_control_flow_hazards(
