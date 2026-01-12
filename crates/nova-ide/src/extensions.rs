@@ -1460,10 +1460,8 @@ fn type_mismatch_quick_fixes_from_context(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-
-    let mut actions = Vec::new();
-
     let source_index = TextIndex::new(source);
+    let mut actions = Vec::new();
     for diagnostic in context_diagnostics {
         if cancel.is_cancelled() {
             return Vec::new();
