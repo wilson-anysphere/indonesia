@@ -33,6 +33,30 @@ fn strip_selection_markers(src: &str) -> (String, WorkspaceTextRange) {
     )
 }
 
+fn to_crlf(text: &str) -> String {
+    // The fixtures in this file are written with `\n` newlines. Convert to CRLF so we can assert
+    // refactorings preserve the file's existing newline style.
+    text.replace('\n', "\r\n")
+}
+
+fn assert_all_newlines_are_crlf(text: &str) {
+    let bytes = text.as_bytes();
+    for (idx, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            assert!(
+                idx > 0 && bytes[idx - 1] == b'\r',
+                "found LF not preceded by CR at byte offset {idx}"
+            );
+        }
+        if b == b'\r' {
+            assert!(
+                idx + 1 < bytes.len() && bytes[idx + 1] == b'\n',
+                "found stray CR not followed by LF at byte offset {idx}"
+            );
+        }
+    }
+}
+
 #[test]
 fn rename_updates_all_occurrences_not_strings() {
     let file = FileId::new("Test.java");
@@ -188,6 +212,85 @@ fn extract_variable_generates_valid_edit() {
   }
 }
 "#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_preserves_crlf_newlines() {
+    let file = FileId::new("Test.java");
+    let src_lf = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+  }
+}
+"#;
+    let src = to_crlf(src_lf);
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert_all_newlines_are_crlf(&after);
+    assert!(
+        after.contains("    var sum = 1 + 2;\r\n"),
+        "expected inserted declaration to be indented correctly: {after:?}"
+    );
+
+    let expected_lf = r#"class Test {
+  void m() {
+    var sum = 1 + 2;
+    int x = sum;
+  }
+}
+"#;
+    let expected = to_crlf(expected_lf);
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_preserves_no_final_newline() {
+    let file = FileId::new("Test.java");
+    let src = "class Test {\n  void m() {\n    int x = 1 + 2;\n  }\n}";
+    assert!(
+        !src.ends_with('\n') && !src.ends_with('\r'),
+        "test precondition: fixture must not end with a newline"
+    );
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        !after.ends_with('\n') && !after.ends_with('\r'),
+        "expected refactoring to preserve lack of final newline, got: {after:?}"
+    );
+    let expected = "class Test {\n  void m() {\n    var sum = 1 + 2;\n    int x = sum;\n  }\n}";
     assert_eq!(after, expected);
 }
 
@@ -2679,6 +2782,82 @@ fn inline_variable_all_usages_replaces_and_deletes_declaration() {
   }
 }
 "#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_preserves_crlf_newlines_and_removes_decl_cleanly() {
+    let file = FileId::new("Test.java");
+    let src_lf = r#"class Test {
+  void m() {
+    int a = 1 + 2;
+    System.out.println(a);
+    System.out.println(a);
+  }
+}
+"#;
+    let src = to_crlf(src_lf);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert_all_newlines_are_crlf(&after);
+
+    let expected_lf = r#"class Test {
+  void m() {
+    System.out.println((1 + 2));
+    System.out.println((1 + 2));
+  }
+}
+"#;
+    let expected = to_crlf(expected_lf);
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_preserves_no_final_newline() {
+    let file = FileId::new("Test.java");
+    let src =
+        "class Test {\n  void m() {\n    int a = 1 + 2;\n    System.out.println(a);\n    System.out.println(a);\n  }\n}";
+    assert!(
+        !src.ends_with('\n') && !src.ends_with('\r'),
+        "test precondition: fixture must not end with a newline"
+    );
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        !after.ends_with('\n') && !after.ends_with('\r'),
+        "expected refactoring to preserve lack of final newline, got: {after:?}"
+    );
+    let expected =
+        "class Test {\n  void m() {\n    System.out.println((1 + 2));\n    System.out.println((1 + 2));\n  }\n}";
     assert_eq!(after, expected);
 }
 
