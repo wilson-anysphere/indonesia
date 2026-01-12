@@ -239,6 +239,8 @@ pub enum TrackedSalsaMemo {
     /// to avoid double-counting; the bytes are instead accounted under
     /// [`MemoryCategory::SyntaxTrees`].
     ItemTree,
+    /// File-level HIR item tree produced by [`NovaHir::hir_item_tree`].
+    HirItemTree,
     /// Per-file `ProjectIndexes` fragment produced by [`NovaIndexing::file_index_delta`].
     ///
     /// This can be large in projects with many symbols and references, so we
@@ -294,7 +296,8 @@ struct FileMemoBytes {
     parse_java: Option<u64>,
     /// Bytes recorded for the `item_tree` memo (None if the query has never been executed).
     item_tree: Option<u64>,
-    /// Bytes recorded for the `file_index_delta` memo.
+    /// Bytes recorded for the `hir_item_tree` memo.
+    hir_item_tree: u64,
     file_index_delta: u64,
 }
 
@@ -303,6 +306,7 @@ impl FileMemoBytes {
         self.parse.unwrap_or(0)
             + self.parse_java.unwrap_or(0)
             + self.item_tree.unwrap_or(0)
+            + self.hir_item_tree
             + self.file_index_delta
     }
 }
@@ -349,6 +353,7 @@ impl SalsaMemoFootprint {
             TrackedSalsaMemo::Parse => entry.parse = Some(bytes),
             TrackedSalsaMemo::ParseJava => entry.parse_java = Some(bytes),
             TrackedSalsaMemo::ItemTree => entry.item_tree = Some(bytes),
+            TrackedSalsaMemo::HirItemTree => entry.hir_item_tree = bytes,
             TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
         }
 
@@ -3423,6 +3428,110 @@ class Foo {
             report.usage.query_cache < text_len / 2,
             "expected query cache usage to not include pinned parse/item_tree allocations (query_cache={}, text_len={text_len})",
             report.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn salsa_memo_footprint_tracks_hir_and_indexing_memos() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+
+        let files: Vec<FileId> = (0..64).map(FileId::from_raw).collect();
+        for (idx, file) in files.iter().copied().enumerate() {
+            db.set_file_text(
+                file,
+                format!("package test; class C{idx} {{ int x = {idx}; int y = {idx}; }}"),
+            );
+            db.set_file_rel_path(file, Arc::new(format!("src/C{idx}.java")));
+        }
+
+        // Baseline: queries that were historically tracked.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.parse(*file);
+                let _ = snap.parse_java(*file);
+                let _ = snap.item_tree(*file);
+            }
+        });
+
+        let baseline_bytes = db.salsa_memo_bytes();
+        assert!(baseline_bytes > 0, "expected baseline memo bytes to be > 0");
+
+        // New tracking: HIR item trees.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.hir_item_tree(*file);
+            }
+        });
+
+        let after_hir_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_hir_bytes > baseline_bytes,
+            "expected hir_item_tree memos to increase tracked bytes"
+        );
+
+        // New tracking: per-file index deltas.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.file_index_delta(*file);
+            }
+        });
+
+        let after_index_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_index_bytes > after_hir_bytes,
+            "expected file_index_delta memos to increase tracked bytes"
+        );
+
+        assert_eq!(
+            manager.report().usage.query_cache,
+            after_index_bytes,
+            "memory manager should see tracked salsa memo usage (including HIR + indexing)"
+        );
+
+        let hir_exec_before = executions(&db.inner.lock(), "hir_item_tree");
+        let delta_exec_before = executions(&db.inner.lock(), "file_index_delta");
+
+        // Validate memoization before eviction.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.hir_item_tree(*file);
+                let _ = snap.file_index_delta(*file);
+            }
+        });
+        assert_eq!(
+            executions(&db.inner.lock(), "hir_item_tree"),
+            hir_exec_before,
+            "expected cached hir_item_tree results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "file_index_delta"),
+            delta_exec_before,
+            "expected cached file_index_delta results prior to eviction"
+        );
+
+        manager.enforce();
+
+        assert_eq!(
+            db.salsa_memo_bytes(),
+            0,
+            "expected memo tracker to clear after eviction"
+        );
+
+        // Ensure queries recompute after eviction.
+        let hir_exec_after_evict = executions(&db.inner.lock(), "hir_item_tree");
+        let delta_exec_after_evict = executions(&db.inner.lock(), "file_index_delta");
+        db.with_snapshot(|snap| {
+            let _ = snap.hir_item_tree(files[0]);
+            let _ = snap.file_index_delta(files[0]);
+        });
+        assert!(
+            executions(&db.inner.lock(), "hir_item_tree") > hir_exec_after_evict,
+            "expected hir_item_tree to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "file_index_delta") > delta_exec_after_evict,
+            "expected file_index_delta to re-execute after memo eviction"
         );
     }
 

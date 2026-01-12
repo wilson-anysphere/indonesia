@@ -122,18 +122,19 @@ fn file_index_delta(db: &dyn NovaIndexing, file: FileId) -> Arc<ProjectIndexes> 
 
     cancel::check_cancelled(db);
 
-    let out = if db.file_exists(file) {
+    let (out, approx_bytes) = if db.file_exists(file) {
         let rel_path = db.file_rel_path(file);
         let hir = db.hir_item_tree(file);
         let extras = db.file_index_extras(file);
-        build_file_indexes(rel_path.as_ref(), hir.as_ref(), extras.as_ref())
+        let out = build_file_indexes(rel_path.as_ref(), hir.as_ref(), extras.as_ref());
+        let approx_bytes = out.estimated_bytes();
+        (out, approx_bytes)
     } else {
-        ProjectIndexes::default()
+        (ProjectIndexes::default(), 0)
     };
 
-    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::FileIndexDelta, out.estimated_bytes());
-
     let result = Arc::new(out);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::FileIndexDelta, approx_bytes);
     db.record_query_stat("file_index_delta", start.elapsed());
     result
 }

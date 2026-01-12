@@ -14,6 +14,7 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::stats::HasQueryStats;
 use super::syntax::NovaSyntax;
+use super::TrackedSalsaMemo;
 
 #[ra_salsa::query_group(NovaHirStorage)]
 pub trait NovaHir: NovaSyntax + HasQueryStats {
@@ -101,6 +102,16 @@ fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
     );
 
     let result = Arc::new(tree);
+    // NOTE: This is a best-effort estimate intended for memory pressure heuristics. HIR item trees
+    // can be significantly larger than the raw file text due to storing identifiers, spans, and
+    // nested item data, so we apply a small multiplier.
+    let approx_bytes = if db.file_exists(file) {
+        let text = db.file_content(file);
+        (text.len() as u64).saturating_mul(2)
+    } else {
+        0
+    };
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::HirItemTree, approx_bytes);
     db.record_query_stat("hir_item_tree", start.elapsed());
     result
 }
