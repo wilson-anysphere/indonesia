@@ -1052,18 +1052,27 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let changed = changed
             .iter()
             .map(|path| {
-                if path.is_absolute() {
+                let abs = if path.is_absolute() {
                     path.clone()
                 } else {
                     self.root.join(path)
-                }
+                };
+                normalize_absolute_path_lexically(&abs)
             })
             .collect::<Vec<_>>();
 
         // Owning-target results are derived from BUILD/BUILD.bazel/.bzl state. Avoid clearing the
         // cache for plain source edits (hot swap calls this frequently) but still invalidate on
         // build definition changes for correctness.
-        if changed.iter().any(|path| is_bazel_build_definition_file(path)) {
+        let mut saw_build_definition_change = changed.iter().any(|path| is_bazel_build_definition_file(path));
+        if !saw_build_definition_change && !self.java_owning_targets_cache.is_empty() {
+            let imported = bazelrc_imported_files(&self.root);
+            if changed.iter().any(|p| imported.iter().any(|i| i == p)) {
+                saw_build_definition_change = true;
+            }
+        }
+
+        if saw_build_definition_change {
             self.java_owning_targets_cache.clear();
             self.preferred_java_compile_info_targets.clear();
             // BSP-based compile info is invalidated conservatively because we do not track the full

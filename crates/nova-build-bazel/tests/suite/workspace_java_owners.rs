@@ -906,6 +906,50 @@ fn owning_targets_cache_is_cleared_by_invalidate_changed_files_on_bazelrc() {
 }
 
 #[test]
+fn owning_targets_cache_is_cleared_by_invalidate_changed_files_on_bazelrc_import() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+
+    // `.bazelrc` can be split across multiple files via `import` / `try-import`; those imported
+    // files can affect query results and should clear the owning-target cache.
+    write_file(&dir.path().join(".bazelrc"), "try-import tools/bazel.rc\n");
+    write_file(&dir.path().join("tools/bazel.rc"), "query --output=label_kind\n");
+
+    let runner = QueryRunner::new([(
+        format!("same_pkg_direct_rdeps({file_label})"),
+        MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+    )]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners1 = workspace.java_owning_targets_for_file(&file).unwrap();
+    workspace
+        .invalidate_changed_files(&[PathBuf::from("tools/bazel.rc")])
+        .unwrap();
+    let owners2 = workspace.java_owning_targets_for_file(&file).unwrap();
+
+    assert_eq!(owners1, vec!["//java:hello_lib".to_string()]);
+    assert_eq!(owners2, owners1);
+
+    // Cache should have been cleared, resulting in a second query.
+    assert_eq!(
+        runner.calls(),
+        vec![
+            vec![
+                "query".to_string(),
+                format!("same_pkg_direct_rdeps({file_label})"),
+                "--output=label_kind".to_string()
+            ],
+            vec![
+                "query".to_string(),
+                format!("same_pkg_direct_rdeps({file_label})"),
+                "--output=label_kind".to_string()
+            ],
+        ]
+    );
+}
+
+#[test]
 fn owning_targets_run_target_closure_cache_key_includes_run_target() {
     let dir = tempdir().unwrap();
     let file = minimal_java_package(dir.path());
