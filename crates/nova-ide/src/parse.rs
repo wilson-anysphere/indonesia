@@ -629,7 +629,6 @@ fn parse_type_body(
             let close_paren = find_matching(tokens, i + 1, '(', ')');
             if let Some(close_paren) = close_paren {
                 let params = parse_method_parameters(tokens, i + 1, close_paren);
-
                 let mut j = close_paren + 1;
                 while j < body_end {
                     if let Some(sym) = tokens[j].symbol() {
