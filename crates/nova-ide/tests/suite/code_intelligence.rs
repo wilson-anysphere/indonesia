@@ -1619,6 +1619,18 @@ fn completion_inside_char_literal_is_empty() {
 }
 
 #[test]
+fn completion_inside_unterminated_text_block_at_eof_is_empty() {
+    // Regression test: ensure we still suppress completions when the user has typed a partial text
+    // block closing delimiter (e.g. `""` at EOF), which the lexer produces as an `Error` token.
+    let (db, file, pos) = fixture(r#"class A { void m(){ String s = """hello""<|>"#);
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside unterminated text block at EOF; got {items:#?}"
+    );
+}
+
+#[test]
 fn goto_definition_finds_local_method() {
     let (db, file, pos) = fixture(
         r#"

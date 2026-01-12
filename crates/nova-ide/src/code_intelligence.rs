@@ -3191,6 +3191,8 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
         return false;
     }
 
+    let bytes = text.as_bytes();
+
     // Best-effort: use the lexer-backed parser so we correctly handle escapes and avoid treating
     // quotes in comments as literals.
     let parse = nova_syntax::parse(text);
@@ -3209,8 +3211,44 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
                 // Token ranges include the opening + closing quote. Treat the cursor strictly
                 // inside the token (i.e. after the opening quote, before the closing quote) as
                 // "inside the literal".
-                if offset > start && offset < end {
-                    return true;
+                if offset > start {
+                    if offset < end {
+                        return true;
+                    }
+
+                    // `nova_syntax::parse` maps lexer `Error` tokens that look like literals
+                    // (e.g. unterminated strings/text blocks) to `StringLiteral`/`CharLiteral`.
+                    // In that case, the token range has no closing delimiter, so the cursor at
+                    // `offset == end` should still be treated as being inside the literal.
+                    if offset == end {
+                        let raw = tok.text(text);
+                        let terminated = match tok.kind {
+                            nova_syntax::SyntaxKind::CharLiteral => {
+                                raw.len() >= 2
+                                    && raw.ends_with('\'')
+                                    && end > 0
+                                    && !is_escaped_quote(bytes, end - 1)
+                            }
+                            _ => {
+                                // Treat anything containing a `"""` run as a text block (including
+                                // string templates like `STR."""..."""`).
+                                if raw.contains("\"\"\"") {
+                                    raw.len() >= 6
+                                        && raw.ends_with("\"\"\"")
+                                        && end >= 3
+                                        && !is_escaped_quote(bytes, end - 3)
+                                } else {
+                                    raw.len() >= 2
+                                        && raw.ends_with('"')
+                                        && end > 0
+                                        && !is_escaped_quote(bytes, end - 1)
+                                }
+                            }
+                        };
+                        if !terminated {
+                            return true;
+                        }
+                    }
                 }
             }
             nova_syntax::SyntaxKind::Error => {
@@ -3220,10 +3258,14 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
                 let raw = tok.text(text);
 
                 // Only consider error tokens that look like literals.
-                let (delim, terminated) = if raw.starts_with('"') {
-                    ('"', raw.len() >= 2 && raw.ends_with('"'))
+                let terminated = if raw.starts_with("\"\"\"") {
+                    // Text blocks terminate with `"""` (not a single `"`). Treat partial closing
+                    // delimiters (`""` at EOF) as unterminated so we keep suppressing completions.
+                    raw.len() >= 6 && raw.ends_with("\"\"\"")
+                } else if raw.starts_with('"') {
+                    raw.len() >= 2 && raw.ends_with('"')
                 } else if raw.starts_with('\'') {
-                    ('\'', raw.len() >= 2 && raw.ends_with('\''))
+                    raw.len() >= 2 && raw.ends_with('\'')
                 } else {
                     continue;
                 };
@@ -3232,7 +3274,6 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
                 // - the cursor is inside the token, or
                 // - the literal is unterminated (no closing delimiter) and the cursor is at the
                 //   end of the token (e.g. at EOF).
-                let _ = delim; // document intent: delimiter exists, but we only need `terminated`.
                 if offset > start && (offset < end || (!terminated && offset == end)) {
                     return true;
                 }
