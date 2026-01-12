@@ -13285,9 +13285,21 @@ fn tokenize(text: &str) -> Vec<Token> {
             // Java text block: """ ... """
             if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
                 i += 3;
-                while i + 2 < bytes.len() {
-                    if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
-                        i += 3;
+                while i < bytes.len() {
+                    // Text block closing delimiter: the last `"""` in a run of `"` characters.
+                    if i + 2 < bytes.len()
+                        && bytes[i] == b'"'
+                        && bytes[i + 1] == b'"'
+                        && bytes[i + 2] == b'"'
+                        && !is_escaped_quote(bytes, i)
+                    {
+                        // Consume the whole run of quotes; any extra quotes before the final
+                        // `"""` are part of the text block's contents.
+                        let mut run_len = 3usize;
+                        while i + run_len < bytes.len() && bytes[i + run_len] == b'"' {
+                            run_len += 1;
+                        }
+                        i += run_len;
                         break;
                     }
                     i += 1;
@@ -14015,5 +14027,33 @@ class Foo {
         // Still inside the paren token (inclusive end).
         let t = token_at_offset(&tokens, 4).expect("token at offset");
         assert_eq!(t.text, "(");
+    }
+
+    #[test]
+    fn tokenize_text_block_consumes_quote_run_at_end() {
+        let text = r#"String s = """foo"""";"#;
+        let tokens = tokenize(text);
+        let lit = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("expected a string literal token");
+        let start = text.find("\"\"\"").expect("expected opening text block delimiter");
+        let end = text.rfind(';').expect("expected semicolon");
+        assert_eq!(
+            lit.text,
+            text[start..end],
+            "expected token to include quote run"
+        );
+    }
+
+    #[test]
+    fn tokenize_unterminated_text_block_extends_to_eof() {
+        let text = r#"String s = """foo"#;
+        let tokens = tokenize(text);
+        let lit = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("expected a string literal token");
+        assert_eq!(lit.span.end, text.len());
     }
 }
