@@ -2554,7 +2554,7 @@ fn collect_type_use_annotation_diagnostics<'idx>(
                     name_text,
                     Some(name_span),
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
 
                 // Skip optional argument list: `@A(x = 1)`.
                 let mut k = name_end;
