@@ -1596,6 +1596,40 @@ impl RefactorDatabase for RefactorJavaDatabase {
                 .collect()
         }
 
+        fn inherited_methods_in_class_hierarchy(
+            db: &RefactorJavaDatabase,
+            start: ItemId,
+            signature: &OverrideMethodSignature,
+        ) -> Vec<MethodId> {
+            // Follow the class inheritance chain (excluding implemented interfaces) and return the
+            // first matching method declarations we can find. This matters for cases like:
+            // `interface I { void m(); } class Base { void m(){} } class C extends Base implements I {}`
+            // where the interface method is implemented via an inherited declaration.
+            let mut cur = start;
+            let mut visited: HashSet<ItemId> = HashSet::new();
+            loop {
+                if !visited.insert(cur) {
+                    break;
+                }
+                let methods = matching_methods_in_type(db, cur, signature);
+                if !methods.is_empty() {
+                    return methods;
+                }
+
+                let Some(sups) = db.type_supertypes.get(&cur) else {
+                    break;
+                };
+                let Some(next) = sups.iter().copied().find(|sup| {
+                    // Only follow the concrete class inheritance chain.
+                    !matches!(sup, ItemId::Interface(_) | ItemId::Annotation(_))
+                }) else {
+                    break;
+                };
+                cur = next;
+            }
+            Vec::new()
+        }
+
         let mut out: HashSet<SymbolId> = HashSet::new();
         out.insert(symbol);
 
@@ -1613,6 +1647,7 @@ impl RefactorDatabase for RefactorJavaDatabase {
             let Some(owner) = self.method_owners.get(&method_id).copied() else {
                 continue;
             };
+            let owner_is_interface = matches!(owner, ItemId::Interface(_));
             let Some(signature) = self.method_signatures.get(&method_id).cloned() else {
                 continue;
             };
@@ -1650,9 +1685,25 @@ impl RefactorDatabase for RefactorJavaDatabase {
                     continue;
                 }
 
-                for method in matching_methods_in_type(self, ty, &signature) {
-                    if let Some(sym) = self.method_to_symbol.get(&method).copied() {
+                let methods = matching_methods_in_type(self, ty, &signature);
+                for method in &methods {
+                    if let Some(sym) = self.method_to_symbol.get(method).copied() {
                         out.insert(sym);
+                    }
+                }
+
+                // Interface methods can be implemented by a class via an inherited superclass
+                // method declaration. The hierarchy index only points from interface -> implementer
+                // class, so we need an additional search to find the concrete declaration that
+                // satisfies the interface contract.
+                if owner_is_interface
+                    && methods.is_empty()
+                    && !matches!(ty, ItemId::Interface(_) | ItemId::Annotation(_))
+                {
+                    for method in inherited_methods_in_class_hierarchy(self, ty, &signature) {
+                        if let Some(sym) = self.method_to_symbol.get(&method).copied() {
+                            out.insert(sym);
+                        }
                     }
                 }
 
@@ -3161,8 +3212,9 @@ fn record_body_references(
                         resolver.resolve_method_name(&scope_result.scopes, callee_scope, &name);
 
                     // If call-context resolution fails, fall back to treating `foo()` as an
-                    // implicit `this.foo()` call and resolve against the enclosing class. This is a
-                    // best-effort workaround for incomplete method resolution.
+                    // implicit `this.foo()` call and resolve against the enclosing class +
+                    // supertypes. This is a best-effort workaround for incomplete method
+                    // resolution (in particular, inherited method calls).
                     let method = match resolved {
                         Some(Resolution::Methods(methods)) => methods.first().copied(),
                         Some(Resolution::StaticMember(StaticMemberResolution::SourceMethod(m))) => {
@@ -3174,52 +3226,59 @@ fn record_body_references(
                             else {
                                 return;
                             };
-                            let Some(def) = workspace_def_map.type_def(item) else {
-                                return;
-                            };
-                            let Some(methods) = def.methods.get(&name) else {
+
+                            if let Some(method) = resolve_receiver_method(
+                                item,
+                                ReceiverKind::This,
+                                name.as_str(),
+                                type_by_name,
+                                type_name_by_item,
+                                methods_by_item,
+                                inheritance,
+                            ) {
+                                Some(method)
+                            } else {
+                                let Some(def) = workspace_def_map.type_def(item) else {
+                                    return;
+                                };
                                 // Record component accessors are synthesized by Java, but Nova does
                                 // not currently model them as methods. Treat `x()` inside a record
                                 // as a reference to the record component field `x`.
-                                if !args.is_empty() {
+                                if args.is_empty() && matches!(def.kind, TypeKind::Record) {
+                                    let Some(field) = def.fields.get(&name).map(|f| f.id) else {
+                                        return;
+                                    };
+                                    let field_tree = item_trees
+                                        .get(&field.file)
+                                        .map(|t| t.as_ref())
+                                        .unwrap_or(tree);
+                                    if !matches!(
+                                        field_tree.field(field).kind,
+                                        nova_hir::item_tree::FieldKind::RecordComponent
+                                    ) {
+                                        return;
+                                    }
+                                    let Some(&symbol) =
+                                        resolution_to_symbol.get(&ResolutionKey::Field(field))
+                                    else {
+                                        return;
+                                    };
+                                    let range = TextRange::new(range.start, range.end);
+                                    let callee_interned_scope =
+                                        scope_interner.intern(db_file, callee_scope);
+                                    record(
+                                        file,
+                                        symbol,
+                                        range,
+                                        Some(callee_interned_scope),
+                                        ReferenceKind::FieldAccess,
+                                        references,
+                                        spans,
+                                    );
                                     return;
                                 }
-                                if !matches!(def.kind, TypeKind::Record) {
-                                    return;
-                                }
-                                let Some(field) = def.fields.get(&name).map(|f| f.id) else {
-                                    return;
-                                };
-                                let field_tree = item_trees
-                                    .get(&field.file)
-                                    .map(|t| t.as_ref())
-                                    .unwrap_or(tree);
-                                if !matches!(
-                                    field_tree.field(field).kind,
-                                    nova_hir::item_tree::FieldKind::RecordComponent
-                                ) {
-                                    return;
-                                }
-                                let Some(&symbol) =
-                                    resolution_to_symbol.get(&ResolutionKey::Field(field))
-                                else {
-                                    return;
-                                };
-                                let range = TextRange::new(range.start, range.end);
-                                let callee_interned_scope =
-                                    scope_interner.intern(db_file, callee_scope);
-                                record(
-                                    file,
-                                    symbol,
-                                    range,
-                                    Some(callee_interned_scope),
-                                    ReferenceKind::FieldAccess,
-                                    references,
-                                    spans,
-                                );
-                                return;
-                            };
-                            methods.first().map(|m| m.id)
+                                None
+                            }
                         }
                     };
                     let Some(method) = method else {
@@ -3308,30 +3367,35 @@ fn record_body_references(
                     let TypeResolution::Source(item) = receiver_ty else {
                         return;
                     };
-                    let Some(def) = workspace_def_map.type_def(item) else {
-                        return;
-                    };
 
-                    let method_name = Name::from(name.as_str());
-                    if let Some(methods) = def.methods.get(&method_name) {
-                        if let Some(method) = methods.first().map(|method| method.id) {
-                            if let Some(&symbol) =
-                                resolution_to_symbol.get(&ResolutionKey::Method(method))
-                            {
-                                let range = TextRange::new(name_range.start, name_range.end);
-                                record(
-                                    file,
-                                    symbol,
-                                    range,
-                                    Some(callee_interned_scope),
-                                    ReferenceKind::FieldAccess,
-                                    references,
-                                    spans,
-                                );
-                            }
+                    if let Some(method) = resolve_method_in_type_or_supertypes(
+                        item,
+                        name.as_str(),
+                        type_by_name,
+                        type_name_by_item,
+                        methods_by_item,
+                        inheritance,
+                    ) {
+                        if let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
+                        {
+                            let range = TextRange::new(name_range.start, name_range.end);
+                            record(
+                                file,
+                                symbol,
+                                range,
+                                Some(callee_interned_scope),
+                                ReferenceKind::FieldAccess,
+                                references,
+                                spans,
+                            );
                         }
                         return;
                     }
+
+                    let Some(def) = workspace_def_map.type_def(item) else {
+                        return;
+                    };
+                    let method_name = Name::from(name.as_str());
 
                     // Record component accessors are synthesized by Java, but Nova does not
                     // currently model them as methods. Treat `p.x()` as a reference to the record
