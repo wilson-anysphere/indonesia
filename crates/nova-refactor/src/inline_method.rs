@@ -74,8 +74,8 @@ pub fn inline_method(
     let parsed = java::parse(source);
     let unit = parsed.compilation_unit();
 
-    let invocation =
-        find_invocation_at_offset(unit, source, cursor_byte_offset).ok_or(InlineMethodError::NotOnInvocation)?;
+    let invocation = find_invocation_at_offset(unit, source, cursor_byte_offset)
+        .ok_or(InlineMethodError::NotOnInvocation)?;
     validate_receiver(invocation.receiver, source)?;
 
     let method = find_method_to_inline(unit, invocation.name, invocation.args.len())?;
@@ -108,8 +108,10 @@ pub fn inline_method(
         }
 
         let replacement = inline_at_site(source, &newline, &method, &site);
-        let stmt_range_including_indent =
-            TextRange::new(line_start(source, site.stmt_range.start), site.stmt_range.end);
+        let stmt_range_including_indent = TextRange::new(
+            line_start(source, site.stmt_range.start),
+            site.stmt_range.end,
+        );
         edits.push(TextEdit::replace(
             file_id.clone(),
             stmt_range_including_indent,
@@ -154,7 +156,10 @@ fn validate_method(source: &str, method: &jast::MethodDecl) -> Result<(), Inline
         return Err(InlineMethodError::MethodNotPrivate);
     }
 
-    if contains_word(prefix, "abstract") || contains_word(prefix, "native") || contains_word(prefix, "synchronized") {
+    if contains_word(prefix, "abstract")
+        || contains_word(prefix, "native")
+        || contains_word(prefix, "synchronized")
+    {
         return Err(InlineMethodError::UnsupportedModifiers);
     }
 
@@ -280,9 +285,7 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     || walk_stmt(source, method_name, stmt.body.as_ref())
             }
             jast::Stmt::For(stmt) => {
-                stmt.init
-                    .iter()
-                    .any(|s| walk_stmt(source, method_name, s))
+                stmt.init.iter().any(|s| walk_stmt(source, method_name, s))
                     || stmt
                         .condition
                         .as_ref()
@@ -340,11 +343,13 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     if name == method_name {
                         let is_self_receiver = match receiver {
                             None => true,
-                            Some(receiver) => matches!(receiver, jast::Expr::This(_) | jast::Expr::Missing(_))
-                                || matches!(
-                                    receiver,
-                                    jast::Expr::Name(name) if name.name.as_str() == "this"
-                                ),
+                            Some(receiver) => {
+                                matches!(receiver, jast::Expr::This(_) | jast::Expr::Missing(_))
+                                    || matches!(
+                                        receiver,
+                                        jast::Expr::Name(name) if name.name.as_str() == "this"
+                                    )
+                            }
                         };
                         if is_self_receiver {
                             return true;
@@ -356,15 +361,21 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
             }
             jast::Expr::FieldAccess(field) => walk_expr(source, method_name, &field.receiver),
             jast::Expr::MethodReference(expr) => walk_expr(source, method_name, &expr.receiver),
-            jast::Expr::ConstructorReference(expr) => walk_expr(source, method_name, &expr.receiver),
+            jast::Expr::ConstructorReference(expr) => {
+                walk_expr(source, method_name, &expr.receiver)
+            }
             jast::Expr::ClassLiteral(expr) => walk_expr(source, method_name, &expr.ty),
-            jast::Expr::New(expr) => expr.args.iter().any(|arg| walk_expr(source, method_name, arg)),
+            jast::Expr::New(expr) => expr
+                .args
+                .iter()
+                .any(|arg| walk_expr(source, method_name, arg)),
             jast::Expr::Unary(expr) => walk_expr(source, method_name, &expr.expr),
             jast::Expr::Binary(bin) => {
                 walk_expr(source, method_name, &bin.lhs) || walk_expr(source, method_name, &bin.rhs)
             }
             jast::Expr::Assign(expr) => {
-                walk_expr(source, method_name, &expr.lhs) || walk_expr(source, method_name, &expr.rhs)
+                walk_expr(source, method_name, &expr.lhs)
+                    || walk_expr(source, method_name, &expr.rhs)
             }
             jast::Expr::Conditional(expr) => {
                 walk_expr(source, method_name, &expr.condition)
@@ -390,13 +401,19 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
     }
 
     let _ = source;
-    body.statements.iter().any(|s| walk_stmt(source, method_name, s))
+    body.statements
+        .iter()
+        .any(|s| walk_stmt(source, method_name, s))
 }
 
-fn call_name_and_receiver<'a>(call: &'a jast::CallExpr) -> Option<(&'a str, Option<&'a jast::Expr>)> {
+fn call_name_and_receiver<'a>(
+    call: &'a jast::CallExpr,
+) -> Option<(&'a str, Option<&'a jast::Expr>)> {
     match call.callee.as_ref() {
         jast::Expr::Name(name) => Some((name.name.as_str(), None)),
-        jast::Expr::FieldAccess(field) => Some((field.name.as_str(), Some(field.receiver.as_ref()))),
+        jast::Expr::FieldAccess(field) => {
+            Some((field.name.as_str(), Some(field.receiver.as_ref())))
+        }
         _ => None,
     }
 }
@@ -451,7 +468,9 @@ fn find_invocation_at_offset<'a>(
                     enclosing_method_locals: locals.clone(),
                 };
                 best = Some(match best {
-                    Some(prev) if span_len(prev.call_range) <= span_len(candidate.call_range) => prev,
+                    Some(prev) if span_len(prev.call_range) <= span_len(candidate.call_range) => {
+                        prev
+                    }
                     _ => candidate,
                 });
             }
@@ -578,7 +597,12 @@ fn collect_local_names(block: &jast::Block) -> HashSet<String> {
     out
 }
 
-fn inline_at_site(source: &str, newline: &str, method: &MethodToInline<'_>, site: &Invocation<'_>) -> String {
+fn inline_at_site(
+    source: &str,
+    newline: &str,
+    method: &MethodToInline<'_>,
+    site: &Invocation<'_>,
+) -> String {
     let mut used_names = site.enclosing_method_locals.clone();
 
     // 1) Parameter temps (`<param>_arg`) to preserve evaluation order.
@@ -616,10 +640,7 @@ fn inline_at_site(source: &str, newline: &str, method: &MethodToInline<'_>, site
             .initializer
             .as_ref()
             .map(|expr| slice_span(source, expr.range()).trim().to_string());
-        let init_text = init_text
-            .as_deref()
-            .unwrap_or_default()
-            .to_string();
+        let init_text = init_text.as_deref().unwrap_or_default().to_string();
 
         let mut mapping = combined_mapping(&param_map, &local_map);
         let init_text = substitute_idents(&init_text, &mut mapping);
@@ -634,19 +655,28 @@ fn inline_at_site(source: &str, newline: &str, method: &MethodToInline<'_>, site
     }
 
     // 3) Return statement.
-    let return_text = slice_span(source, method.return_expr.range()).trim().to_string();
+    let return_text = slice_span(source, method.return_expr.range())
+        .trim()
+        .to_string();
     let mut mapping = combined_mapping(&param_map, &local_map);
     let return_text = substitute_idents(&return_text, &mut mapping);
 
     let mut lines: Vec<String> = Vec::new();
     lines.extend(arg_lines);
     lines.extend(inlined_lines);
-    lines.push(format!("{indent}return {expr};", indent = site.stmt_indent, expr = return_text));
+    lines.push(format!(
+        "{indent}return {expr};",
+        indent = site.stmt_indent,
+        expr = return_text
+    ));
 
     lines.join(newline)
 }
 
-fn combined_mapping(param_map: &HashMap<String, String>, local_map: &HashMap<String, String>) -> HashMap<String, String> {
+fn combined_mapping(
+    param_map: &HashMap<String, String>,
+    local_map: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for (k, v) in param_map {
         out.insert(k.clone(), v.clone());

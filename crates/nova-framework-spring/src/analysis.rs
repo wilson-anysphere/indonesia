@@ -626,12 +626,10 @@ fn parse_field_injections(
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 
-    if !annotations.iter().any(|a| {
-        matches!(
-            a.simple_name.as_str(),
-            "Autowired" | "Inject" | "Resource"
-        )
-    }) {
+    if !annotations
+        .iter()
+        .any(|a| matches!(a.simple_name.as_str(), "Autowired" | "Inject" | "Resource"))
+    {
         return;
     }
 

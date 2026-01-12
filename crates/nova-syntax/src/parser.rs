@@ -3054,10 +3054,8 @@ impl<'a> Parser<'a> {
                     // arguments on method invocations: `expr.<T>method()`.
                     let mut lookahead = skip_trivia(&self.tokens, 1);
                     if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
-                        lookahead = skip_trivia(
-                            &self.tokens,
-                            skip_type_arguments(&self.tokens, lookahead),
-                        );
+                        lookahead =
+                            skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, lookahead));
                     }
                     if self
                         .tokens
@@ -3229,7 +3227,8 @@ impl<'a> Parser<'a> {
         {
             offset += 2;
         }
-        (self.nth(offset) == Some(SyntaxKind::Dot) && self.nth(offset + 1) == Some(SyntaxKind::ClassKw))
+        (self.nth(offset) == Some(SyntaxKind::Dot)
+            && self.nth(offset + 1) == Some(SyntaxKind::ClassKw))
             || self.nth(offset) == Some(SyntaxKind::DoubleColon)
     }
 

@@ -135,7 +135,10 @@ impl ExtractMethod {
             });
         };
 
-        let class_decl = method.syntax().ancestors().find_map(ast::ClassDeclaration::cast);
+        let class_decl = method
+            .syntax()
+            .ancestors()
+            .find_map(ast::ClassDeclaration::cast);
 
         let mut issues = Vec::new();
         if let Some(class_decl) = class_decl.as_ref() {
@@ -207,9 +210,7 @@ impl ExtractMethod {
                     .or_else(|| local_types.get(name))
                     .cloned()
                     .unwrap_or_else(|| {
-                        issues.push(ExtractMethodIssue::UnknownType {
-                            name: name.clone(),
-                        });
+                        issues.push(ExtractMethodIssue::UnknownType { name: name.clone() });
                         "Object".to_string()
                     });
                 Some(ReturnValue {
@@ -373,7 +374,10 @@ impl ExtractMethod {
 
 fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
     let range = node.text_range();
-    TextRange::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn find_enclosing_method(
@@ -388,7 +392,10 @@ fn find_enclosing_method(
         let body_range = syntax_range(body.syntax());
         if body_range.start <= selection.start && selection.end <= body_range.end {
             let span = body_range.len();
-            if best.as_ref().is_none_or(|(best_span, _, _)| span < *best_span) {
+            if best
+                .as_ref()
+                .is_none_or(|(best_span, _, _)| span < *best_span)
+            {
                 best = Some((span, method, body));
             }
         }
@@ -496,10 +503,17 @@ fn collect_ident_tokens(
         let range = tok.text_range();
         out.push((
             name,
-            TextRange::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize),
+            TextRange::new(
+                u32::from(range.start()) as usize,
+                u32::from(range.end()) as usize,
+            ),
         ));
     }
-    out.sort_by(|a, b| a.1.start.cmp(&b.1.start).then_with(|| a.1.end.cmp(&b.1.end)));
+    out.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
     out
 }
 
@@ -548,7 +562,11 @@ fn collect_reads_writes_in_statement(
     }
 
     // Stable order + dedup by first occurrence.
-    reads.sort_by(|a, b| a.1.start.cmp(&b.1.start).then_with(|| a.1.end.cmp(&b.1.end)));
+    reads.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
     let mut seen = HashSet::new();
     reads.retain(|(name, _)| seen.insert(name.clone()));
 
@@ -561,7 +579,11 @@ fn collect_reads_after_offset(
     known: &HashSet<String>,
 ) -> HashSet<String> {
     let mut out = HashSet::new();
-    for expr in body.syntax().descendants().filter_map(ast::Expression::cast) {
+    for expr in body
+        .syntax()
+        .descendants()
+        .filter_map(ast::Expression::cast)
+    {
         let range = syntax_range(expr.syntax());
         if range.start < offset {
             continue;
@@ -579,7 +601,11 @@ fn insertion_offset_end_of_class(source: &str, class_decl: &ast::ClassDeclaratio
     };
     // Insert immediately before the newline that starts the closing brace line.
     let mut close = None;
-    for tok in body.syntax().children_with_tokens().filter_map(|el| el.into_token()) {
+    for tok in body
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
         if tok.kind() == SyntaxKind::RBrace {
             close = Some(u32::from(tok.text_range().start()) as usize);
         }
@@ -601,10 +627,7 @@ fn trim_range(source: &str, mut range: TextRange) -> TextRange {
 }
 
 fn line_start_offset(source: &str, offset: usize) -> usize {
-    source[..offset]
-        .rfind('\n')
-        .map(|p| p + 1)
-        .unwrap_or(0)
+    source[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0)
 }
 
 fn indentation_at(source: &str, offset: usize) -> String {

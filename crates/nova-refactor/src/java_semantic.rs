@@ -6,7 +6,9 @@ use nova_db::salsa::{Database as SalsaDatabase, NovaHir};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::queries::HirDatabase;
-use nova_resolve::{BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult};
+use nova_resolve::{
+    BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
+};
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
@@ -235,11 +237,13 @@ impl RefactorJavaDatabase {
                         continue;
                     };
 
-                    let body = body_cache.entry(local_ref.owner).or_insert_with(|| match local_ref.owner {
-                        BodyOwner::Method(m) => snap.hir_body(m),
-                        BodyOwner::Constructor(c) => snap.hir_constructor_body(c),
-                        BodyOwner::Initializer(i) => snap.hir_initializer_body(i),
-                    });
+                    let body = body_cache
+                        .entry(local_ref.owner)
+                        .or_insert_with(|| match local_ref.owner {
+                            BodyOwner::Method(m) => snap.hir_body(m),
+                            BodyOwner::Constructor(c) => snap.hir_constructor_body(c),
+                            BodyOwner::Initializer(i) => snap.hir_initializer_body(i),
+                        });
                     let local = &body.locals[local_ref.local];
 
                     candidates.push(SymbolCandidate {
@@ -527,7 +531,11 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                     walk_stmt(body, *stmt, f);
                 }
             }
-            hir::Stmt::While { condition, body: inner, .. } => {
+            hir::Stmt::While {
+                condition,
+                body: inner,
+                ..
+            } => {
                 walk_expr(body, *condition, f);
                 walk_stmt(body, *inner, f);
             }
@@ -550,13 +558,17 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 walk_stmt(body, *inner, f);
             }
             hir::Stmt::ForEach {
-                iterable, body: inner, ..
+                iterable,
+                body: inner,
+                ..
             } => {
                 walk_expr(body, *iterable, f);
                 walk_stmt(body, *inner, f);
             }
             hir::Stmt::Switch {
-                selector, body: inner, ..
+                selector,
+                body: inner,
+                ..
             } => {
                 walk_expr(body, *selector, f);
                 walk_stmt(body, *inner, f);
@@ -605,8 +617,7 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 }
             }
             hir::Expr::Unary { expr, .. } => walk_expr(body, *expr, f),
-            hir::Expr::Binary { lhs, rhs, .. }
-            | hir::Expr::Assign { lhs, rhs, .. } => {
+            hir::Expr::Binary { lhs, rhs, .. } | hir::Expr::Assign { lhs, rhs, .. } => {
                 walk_expr(body, *lhs, f);
                 walk_expr(body, *rhs, f);
             }
@@ -620,7 +631,9 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 walk_expr(body, *then_expr, f);
                 walk_expr(body, *else_expr, f);
             }
-            hir::Expr::Lambda { body: lambda_body, .. } => match lambda_body {
+            hir::Expr::Lambda {
+                body: lambda_body, ..
+            } => match lambda_body {
                 hir::LambdaBody::Expr(expr) => walk_expr(body, *expr, f),
                 hir::LambdaBody::Block(stmt) => walk_stmt(body, *stmt, f),
             },

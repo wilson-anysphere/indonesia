@@ -39,7 +39,7 @@ class A {
 
     assert_eq!(
         updated.get(&file_id).unwrap(),
-         r#"
+        r#"
 class A {
     private static final int VALUE = 1 + 2;
 
@@ -82,7 +82,7 @@ class A {
 
     assert_eq!(
         updated.get(&file_id).unwrap(),
-         r#"
+        r#"
 class A {
     private static final int VALUE = 1 + 2;
 
@@ -133,7 +133,7 @@ class A {
 
     assert_eq!(
         updated.get(&file_id).unwrap(),
-         r#"
+        r#"
 class A {
     private final int value = 1 + 2;
 

@@ -1,8 +1,8 @@
 use lsp_types::Uri;
 use nova_core::{LineIndex, TextSize};
 use nova_refactor::{
-    position_to_offset_utf16, workspace_edit_to_lsp, FileId, TextDatabase, WorkspaceEdit, WorkspaceTextEdit,
-    WorkspaceTextRange,
+    position_to_offset_utf16, workspace_edit_to_lsp, FileId, TextDatabase, WorkspaceEdit,
+    WorkspaceTextEdit, WorkspaceTextRange,
 };
 use pretty_assertions::assert_eq;
 

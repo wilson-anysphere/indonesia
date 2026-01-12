@@ -32,9 +32,8 @@ use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
-    FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams,
-    RefactorJavaDatabase, RenameParams as RefactorRenameParams, SafeDeleteTarget,
-    SemanticRefactorError,
+    FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
+    RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
 };
 use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;

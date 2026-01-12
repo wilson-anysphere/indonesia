@@ -162,7 +162,8 @@ fn extract_impl(
         }
         edits
     });
-    edit.normalize().map_err(|_| ExtractError::InvalidSelection)?;
+    edit.normalize()
+        .map_err(|_| ExtractError::InvalidSelection)?;
 
     Ok(ExtractOutcome { edit, name })
 }
@@ -180,7 +181,10 @@ fn trim_range(source: &str, mut range: TextRange) -> TextRange {
 
 fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
     let range = node.text_range();
-    TextRange::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn find_expression(root: nova_syntax::SyntaxNode, selection: TextRange) -> Option<ast::Expression> {
@@ -197,7 +201,9 @@ fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
     expr.descendants().any(|node| {
         matches!(
             node.kind(),
-            SyntaxKind::MethodCallExpression | SyntaxKind::NewExpression | SyntaxKind::AssignmentExpression
+            SyntaxKind::MethodCallExpression
+                | SyntaxKind::NewExpression
+                | SyntaxKind::AssignmentExpression
         )
     })
 }
@@ -222,8 +228,8 @@ fn infer_expr_type(source: &str, expr: &ast::Expression) -> Option<String> {
         | ast::Expression::ParenthesizedExpression(_) => {
             // Best-effort: if the expression contains string literals, treat it as `String`,
             // otherwise assume it's numeric (`int`).
-            let text = source[syntax_range(expr.syntax()).start..syntax_range(expr.syntax()).end]
-                .trim();
+            let text =
+                source[syntax_range(expr.syntax()).start..syntax_range(expr.syntax()).end].trim();
             if text.contains('"') {
                 Some("String".to_string())
             } else {
@@ -308,7 +314,11 @@ fn find_equivalent_expressions(
     );
 
     let mut ranges = Vec::new();
-    for expr in class_body.syntax().descendants().filter_map(ast::Expression::cast) {
+    for expr in class_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::Expression::cast)
+    {
         if has_side_effects(expr.syntax()) {
             continue;
         }
@@ -362,4 +372,3 @@ fn insertion_point(source: &str, body: &ast::ClassBody) -> (usize, String, bool)
 
     (offset, indent, needs_blank_line_after)
 }
-
