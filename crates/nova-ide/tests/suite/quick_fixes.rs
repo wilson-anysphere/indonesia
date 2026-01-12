@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lsp_types::{CodeActionOrCommand, Position};
+use lsp_types::{CodeActionOrCommand, DiagnosticSeverity, NumberOrString, Position, Range};
 use nova_config::NovaConfig;
 use nova_db::{InMemoryFileStore, SalsaDbView};
 use nova_ext::{ProjectId, Span};
@@ -9,7 +9,7 @@ use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
 
-use crate::text_fixture::position_to_offset;
+use crate::text_fixture::{offset_to_position, position_to_offset};
 
 fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
     use nova_core::{LineIndex, Position as CorePosition};
@@ -164,6 +164,60 @@ fn void_method_return_value_offers_remove_returned_value_quickfix() {
     assert!(
         find_code_action(&actions, "Remove returned value").is_none(),
         "quick fix should not be offered when selection is outside diagnostic span"
+    );
+}
+
+#[test]
+fn code_actions_with_context_void_method_return_value_offers_remove_returned_value_quickfix_for_cursor_at_span_start(
+) {
+    let source = r#"class A { void m() { return 1; } }"#.to_string();
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, source.clone());
+
+    let view = SalsaDbView::from_source_db(&db);
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let expr_start = source.find("return 1").expect("expected return statement") + "return ".len();
+    let expr_end = expr_start + 1;
+
+    let diag = lsp_types::Diagnostic {
+        range: Range::new(
+            offset_to_position(&source, expr_start),
+            offset_to_position(&source, expr_end),
+        ),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("return-mismatch".to_string())),
+        message: "cannot return a value from a `void` method".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let selection = Span::new(expr_start, expr_start);
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(selection),
+        &[diag],
+    );
+    let action = find_code_action(&actions, "Remove returned value").unwrap_or_else(|| {
+        panic!(
+            "missing `Remove returned value` quick fix; got titles {:?}",
+            action_titles(&actions)
+        )
+    });
+
+    assert_eq!(
+        action.kind.as_ref(),
+        Some(&lsp_types::CodeActionKind::QUICKFIX)
+    );
+
+    let updated = apply_workspace_edit(&source, action.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("return ;"),
+        "expected returned value to be removed; got {updated:?}"
     );
 }
 
