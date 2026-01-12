@@ -559,11 +559,12 @@ pub(crate) fn load_gradle_workspace_model(
         Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
         None => (JavaConfig::default(), LanguageLevelProvenance::Default),
     };
-    if let Some(snapshot) = snapshot.as_ref() {
-        if let Some(java) = java_config_from_snapshot(snapshot) {
-            root_java = java;
-        }
+    let snapshot_java = snapshot.as_ref().and_then(java_config_from_snapshot);
+    let aggregate_java_across_modules = snapshot_java.is_none();
+    if let Some(java) = snapshot_java {
+        root_java = java;
     }
+    let mut workspace_java = root_java;
 
     // Best-effort Gradle cache resolution. This does not execute Gradle; it only
     // adds jars that already exist in the local Gradle cache.
@@ -621,6 +622,12 @@ pub(crate) fn load_gradle_workspace_model(
             Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
             None => (root_java, root_java_provenance.clone()),
         };
+
+        if aggregate_java_across_modules {
+            workspace_java.source = workspace_java.source.max(module_java.source);
+            workspace_java.target = workspace_java.target.max(module_java.target);
+            workspace_java.enable_preview |= module_java.enable_preview;
+        }
 
         let mut language_level = ModuleLanguageLevel {
             level: JavaLanguageLevel::from_java_config(module_java),
@@ -916,7 +923,7 @@ pub(crate) fn load_gradle_workspace_model(
     Ok(WorkspaceProjectModel::new(
         root.to_path_buf(),
         BuildSystem::Gradle,
-        root_java,
+        workspace_java,
         module_configs,
         jpms_modules,
     ))
