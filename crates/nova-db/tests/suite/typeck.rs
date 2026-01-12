@@ -1457,6 +1457,28 @@ class C { int m(int[] a, boolean b){ return a[b]; } }
 }
 
 #[test]
+fn array_access_allows_boxed_integer_index() {
+    let src = r#"
+class C { int m(int[] a, Integer i){ return a[i]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-array-index"),
+        "expected no invalid-array-index diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find("a[i]").expect("snippet should contain a[i]") + 1; // at `[`
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
 fn assignment_to_array_access_is_allowed() {
     let src = r#"
 class C { void m(int[] a){ a[0] = 1; } }
@@ -1493,6 +1515,22 @@ class C { void m(int[] a){ a[0] = "no"; } }
             .iter()
             .all(|d| d.code.as_ref() != "invalid-assignment-target"),
         "expected no invalid-assignment-target diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_creation_allows_boxed_integer_dimension() {
+    let src = r#"
+class C { int[] m(Integer i){ return new int[i]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "array-dimension-type"),
+        "expected no array-dimension-type diagnostic; got {diags:?}"
     );
 }
 

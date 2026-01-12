@@ -4719,10 +4719,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let array_ty = self.infer_expr(loader, *array).ty;
                 let index_ty = self.infer_expr(loader, *index).ty;
 
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let index_prim = primitive_like(env_ro, &index_ty);
                 if !index_ty.is_errorish()
                     && !matches!(
-                        index_ty,
-                        Type::Primitive(
+                        index_prim,
+                        Some(
                             PrimitiveType::Byte
                                 | PrimitiveType::Short
                                 | PrimitiveType::Char
@@ -4924,9 +4926,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         continue;
                     }
 
+                    let dim_prim = primitive_like(&*loader.store, &dim_ty);
                     let is_integral = matches!(
-                        dim_ty,
-                        Type::Primitive(
+                        dim_prim,
+                        Some(
                             PrimitiveType::Byte
                                 | PrimitiveType::Short
                                 | PrimitiveType::Char
