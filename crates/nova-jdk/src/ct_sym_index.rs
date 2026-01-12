@@ -918,6 +918,8 @@ mod tests {
             .class_names_with_prefix("java.lang.S")?
             .contains(&"java.lang.String".to_owned()));
 
+        assert!(index.estimated_bytes() > 0);
+
         Ok(())
     }
 
