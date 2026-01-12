@@ -812,12 +812,14 @@ fn stdio_server_does_not_offer_extract_variable_in_try_with_resources_header() {
         .get("result")
         .and_then(|v| v.as_array())
         .expect("code actions array");
-    assert!(
-        actions
-            .iter()
-            .all(|action| action.get("title").and_then(|v| v.as_str()) != Some("Extract variable…")),
-        "expected Extract Variable to not be offered inside try-with-resources header; got: {actions:?}"
-    );
+    for title in ["Extract variable…", "Extract variable… (explicit type)"] {
+        assert!(
+            actions
+                .iter()
+                .all(|action| action.get("title").and_then(|v| v.as_str()) != Some(title)),
+            "expected {title:?} to not be offered inside try-with-resources header; got: {actions:?}"
+        );
+    }
 
     // 4) shutdown + exit
     write_jsonrpc_message(
