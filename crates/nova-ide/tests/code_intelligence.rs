@@ -942,3 +942,99 @@ class A {
         "expected no null-dereference diagnostic after null check; got {diags:#?}"
     );
 }
+
+#[test]
+fn diagnostics_do_not_warn_null_deref_in_and_and_condition_guard() {
+    let text = r#"
+class A {
+  void m(String s) {
+    if (s != null && s.length() == 0) {
+      return;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "s.length()";
+    let start = text.find(needle).expect("expected s.length in fixture");
+    let end = start + needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_NULL_DEREF"
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
+        "expected no null-dereference diagnostic for short-circuited condition; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_warn_null_deref_in_or_or_condition_guard() {
+    let text = r#"
+class A {
+  void m(String s) {
+    if (s == null || s.length() == 0) {
+      return;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "s.length()";
+    let start = text.find(needle).expect("expected s.length in fixture");
+    let end = start + needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_NULL_DEREF"
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
+        "expected no null-dereference diagnostic for short-circuited condition; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_report_use_before_assignment_in_false_and_and_condition() {
+    let text = r#"
+class A {
+  void m() {
+    int x;
+    if (false && x == 0) {
+      return;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNASSIGNED"),
+        "expected no use-before-assignment diagnostic for short-circuited rhs; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_report_use_before_assignment_in_true_or_or_condition() {
+    let text = r#"
+class A {
+  void m() {
+    int x;
+    if (true || x == 0) {
+      return;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNASSIGNED"),
+        "expected no use-before-assignment diagnostic for short-circuited rhs; got {diags:#?}"
+    );
+}

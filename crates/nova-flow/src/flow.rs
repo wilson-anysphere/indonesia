@@ -204,6 +204,35 @@ pub fn build_cfg_with(body: &Body, check_cancelled: &mut dyn FnMut()) -> Control
     builder.cfg.build(entry)
 }
 
+fn eval_const_bool(body: &Body, expr: ExprId) -> Option<bool> {
+    match &body.expr(expr).kind {
+        ExprKind::Bool(value) => Some(*value),
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr,
+        } => eval_const_bool(body, *expr).map(|v| !v),
+        ExprKind::Binary {
+            op: BinaryOp::AndAnd,
+            lhs,
+            rhs,
+        } => match eval_const_bool(body, *lhs) {
+            Some(false) => Some(false),
+            Some(true) => eval_const_bool(body, *rhs),
+            None => None,
+        },
+        ExprKind::Binary {
+            op: BinaryOp::OrOr,
+            lhs,
+            rhs,
+        } => match eval_const_bool(body, *lhs) {
+            Some(true) => Some(true),
+            Some(false) => eval_const_bool(body, *rhs),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
 struct HirCfgBuilder<'a, 'c> {
     body: &'a Body,
     cfg: CfgBuilder,
@@ -233,10 +262,7 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
     }
 
     fn const_bool_expr(&self, expr: ExprId) -> Option<bool> {
-        match &self.body.expr(expr).kind {
-            ExprKind::Bool(value) => Some(*value),
-            _ => None,
-        }
+        eval_const_bool(self.body, expr)
     }
 
     fn build_seq(&mut self, stmts: &[StmtId], entry: BlockId) -> Option<BlockId> {
@@ -1151,9 +1177,16 @@ fn check_expr_assigned(body: &Body, expr: ExprId, state: &[bool], diags: &mut Ve
             }
         }
         ExprKind::Unary { expr, .. } => check_expr_assigned(body, *expr, state, diags),
-        ExprKind::Binary { lhs, rhs, .. } => {
+        ExprKind::Binary { op, lhs, rhs } => {
             check_expr_assigned(body, *lhs, state, diags);
-            check_expr_assigned(body, *rhs, state, diags);
+            match op {
+                // For boolean short-circuit operators, only evaluate the RHS when required. This
+                // avoids false-positive definite-assignment errors on expressions that are never
+                // executed (e.g. `false && x`).
+                BinaryOp::AndAnd if eval_const_bool(body, *lhs) == Some(false) => {}
+                BinaryOp::OrOr if eval_const_bool(body, *lhs) == Some(true) => {}
+                _ => check_expr_assigned(body, *rhs, state, diags),
+            }
         }
         ExprKind::FieldAccess { receiver, .. } => {
             check_expr_assigned(body, *receiver, state, diags)
@@ -1557,11 +1590,51 @@ fn check_expr_null_deref(
             NullState::Unknown
         }
         ExprKind::Unary { expr, .. } => check_expr_null_deref(body, *expr, state, diags),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            let _ = check_expr_null_deref(body, *lhs, state, diags);
-            let _ = check_expr_null_deref(body, *rhs, state, diags);
-            NullState::NonNull
-        }
+        ExprKind::Binary { op, lhs, rhs } => match op {
+            BinaryOp::AndAnd => {
+                let _ = check_expr_null_deref(body, *lhs, state, diags);
+                if eval_const_bool(body, *lhs) == Some(false) {
+                    // `false && rhs` never evaluates the RHS.
+                    return NullState::NonNull;
+                }
+
+                // The RHS is only evaluated when the LHS is true, so we can narrow based on any
+                // null-checks found in the LHS (e.g. `x != null && x.foo()`).
+                let (on_true, _) = null_constraints(body, *lhs);
+                let mut rhs_state = state.to_vec();
+                for (local, value) in on_true {
+                    if local.index() < rhs_state.len() {
+                        rhs_state[local.index()] = value;
+                    }
+                }
+                let _ = check_expr_null_deref(body, *rhs, &mut rhs_state, diags);
+                NullState::NonNull
+            }
+            BinaryOp::OrOr => {
+                let _ = check_expr_null_deref(body, *lhs, state, diags);
+                if eval_const_bool(body, *lhs) == Some(true) {
+                    // `true || rhs` never evaluates the RHS.
+                    return NullState::NonNull;
+                }
+
+                // The RHS is only evaluated when the LHS is false, so we can narrow based on any
+                // null-checks found in the LHS (e.g. `x == null || x.foo()`).
+                let (_, on_false) = null_constraints(body, *lhs);
+                let mut rhs_state = state.to_vec();
+                for (local, value) in on_false {
+                    if local.index() < rhs_state.len() {
+                        rhs_state[local.index()] = value;
+                    }
+                }
+                let _ = check_expr_null_deref(body, *rhs, &mut rhs_state, diags);
+                NullState::NonNull
+            }
+            _ => {
+                let _ = check_expr_null_deref(body, *lhs, state, diags);
+                let _ = check_expr_null_deref(body, *rhs, state, diags);
+                NullState::NonNull
+            }
+        },
         ExprKind::FieldAccess { receiver, .. } => {
             let recv_state = check_expr_null_deref(body, *receiver, state, diags);
             if recv_state != NullState::NonNull {
