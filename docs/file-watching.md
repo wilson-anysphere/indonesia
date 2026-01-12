@@ -100,14 +100,24 @@ Implementation references:
 - `crates/nova-workspace/src/watch.rs` (normalization + build-vs-source categorization)
 - `crates/nova-workspace/src/watch_roots.rs` (`WatchRootManager`)
 
-## Optional build-tool invocation during workspace load/reload
+## Build-tool invocation during workspace load/reload
 
-By default, Nova does **not** invoke external build tools during workspace load/reload. This keeps
-startup fast and avoids spawning subprocesses unexpectedly, but it can result in a best-effort
-classpath/source root model in some Maven/Gradle workspaces.
+`nova-workspace` uses `nova-project` for discovery, but it may also invoke external build tools
+(via `nova-build`) during workspace load/reload for Maven/Gradle workspaces to compute accurate
+classpath/source roots.
 
-To allow Nova to invoke Maven/Gradle during workspace load/reload (to compute accurate classpaths
-and source roots), opt in via `nova.toml`:
+Today, `nova-workspace` refreshes build-tool-derived config when:
+
+- the workspace is loaded/reloaded with an empty `changed_files` list (initial load / forced reload),
+  or
+- any of the changed files are considered build-tool inputs (see
+  `crates/nova-workspace/src/engine.rs:is_build_tool_input_file`).
+
+Note: build-tool-produced snapshot outputs under `.nova/` (including `.nova/queries/gradle.json`)
+are treated as **build changes** for reload purposes, but are **not** considered build-tool inputs,
+so they trigger a reload without immediately re-running Maven/Gradle.
+
+There is a `nova.toml` configuration surface for build integration:
 
 ```toml
 [build]
@@ -122,11 +132,15 @@ enabled = true
 enabled = true
 ```
 
-Tradeoffs:
+As of today, `nova-workspace` loads and validates this config (it is available under
+`LoadOptions.nova_config.build`), but it does **not** currently use it to gate build-tool invocation
+or configure timeouts. Time-bounding is controlled by the `CommandRunner` used by the workspace
+engine (`WorkspaceEngineConfig.build_runner`).
 
-- Enabling build integration may be **slow** (build tools can take seconds to minutes).
+Tradeoffs of invoking build tools:
+
+- Build integration can be **slow** (build tools can take seconds to minutes).
 - It may spawn external processes and can download/update dependency caches.
-- `timeout_ms` exists to keep workspace loading time-bounded.
 
 ## Feature flags
 
