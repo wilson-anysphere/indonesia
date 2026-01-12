@@ -1,6 +1,18 @@
 use crate::edit::{FileId, TextRange};
 use crate::java::{JavaSymbolKind, SymbolId};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodSignature {
+    pub param_types: Vec<String>,
+}
+
+impl MethodSignature {
+    #[must_use]
+    pub fn arity(&self) -> usize {
+        self.param_types.len()
+    }
+}
+
 /// Semantic representation of program changes.
 ///
 /// The intent is that refactorings describe changes in terms of semantic
@@ -163,6 +175,15 @@ pub trait RefactorDatabase {
     }
 
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId>;
+    fn resolve_field_in_scope(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
+        None
+    }
+    fn resolve_methods_in_scope(&self, _scope: u32, _name: &str) -> Vec<SymbolId> {
+        Vec::new()
+    }
+    fn method_signature(&self, _symbol: SymbolId) -> Option<MethodSignature> {
+        None
+    }
     fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId>;
 
     fn find_references(&self, symbol: SymbolId) -> Vec<Reference>;

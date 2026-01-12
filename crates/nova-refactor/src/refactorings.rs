@@ -64,6 +64,8 @@ pub fn rename(
     params: RenameParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
     let kind = db.symbol_kind(params.symbol);
+
+    // Package rename is implemented as a Java package move (directory + package decl updates).
     if matches!(kind, Some(JavaSymbolKind::Package)) {
         let def = db
             .symbol_definition(params.symbol)
@@ -150,62 +152,69 @@ pub fn rename(
     }
 
     match kind {
-        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter | JavaSymbolKind::Type) => {
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
             let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
             if !conflicts.is_empty() {
                 return Err(RefactorError::Conflicts(conflicts));
             }
+
+            let changes = vec![SemanticChange::Rename {
+                symbol: params.symbol,
+                new_name: params.new_name,
+            }];
+            Ok(materialize(db, changes)?)
         }
-        Some(JavaSymbolKind::Field | JavaSymbolKind::Method) => {
-            // Best-effort: conflict checking is currently scope-based and tuned for local/parameter
-            // renames. Allow member renames without additional validation for now.
-        }
-        Some(JavaSymbolKind::Package) | None => {
-            return Err(RefactorError::RenameNotSupported { kind })
-        }
-    }
+        Some(JavaSymbolKind::Type) => {
+            let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
+            if !conflicts.is_empty() {
+                return Err(RefactorError::Conflicts(conflicts));
+            }
 
-    let new_name = params.new_name;
-    let mut changes = vec![SemanticChange::Rename {
-        symbol: params.symbol,
-        new_name: new_name.clone(),
-    }];
+            let new_name = params.new_name;
+            let changes = vec![SemanticChange::Rename {
+                symbol: params.symbol,
+                new_name: new_name.clone(),
+            }];
+            let mut edit = materialize(db, changes)?;
 
-    // Java annotation shorthand `@Anno(expr)` is desugared as `@Anno(value = expr)`. If the
-    // annotation element method `value()` is renamed, shorthand usages must be rewritten to an
-    // explicit element-value pair using the new name.
-    if matches!(kind, Some(JavaSymbolKind::Method)) {
-        changes.extend(annotation_value_shorthand_updates(
-            db,
-            params.symbol,
-            &new_name,
-        ));
-    }
-
-    let mut edit = materialize(db, changes)?;
-
-    // Optional file rename for public top-level types:
-    // `p/Foo.java` -> `p/Bar.java` when renaming `Foo` -> `Bar`.
-    if matches!(kind, Some(JavaSymbolKind::Type)) {
-        if let Some(info) = db.type_symbol_info(params.symbol) {
-            if info.is_top_level && info.is_public {
-                if let Some(def) = db.symbol_definition(params.symbol) {
-                    if let Some((from, to)) =
-                        type_file_rename_candidate(&def.file, &def.name, &new_name)
-                    {
-                        // File existence conflicts are checked in `check_rename_conflicts`.
-                        edit.file_ops.push(crate::edit::FileOp::Rename { from, to });
-                        // Materialize emitted edits against the pre-rename file id. Remap them so
-                        // `WorkspaceEdit::normalize()` accepts the file op.
-                        edit.remap_text_edits_across_renames()?;
-                        edit.normalize()?;
+            // Optional file rename for public top-level types:
+            // `p/Foo.java` -> `p/Bar.java` when renaming `Foo` -> `Bar`.
+            if let Some(info) = db.type_symbol_info(params.symbol) {
+                if info.is_top_level && info.is_public {
+                    if let Some(def) = db.symbol_definition(params.symbol) {
+                        if let Some((from, to)) =
+                            type_file_rename_candidate(&def.file, &def.name, &new_name)
+                        {
+                            // File existence conflicts are checked in `check_rename_conflicts`.
+                            edit.file_ops.push(crate::edit::FileOp::Rename { from, to });
+                            // Materialize emitted edits against the pre-rename file id. Remap them so
+                            // `WorkspaceEdit::normalize()` accepts the file op.
+                            edit.remap_text_edits_across_renames()?;
+                            edit.normalize()?;
+                        }
                     }
                 }
             }
-        }
-    }
 
-    Ok(edit)
+            Ok(edit)
+        }
+        Some(JavaSymbolKind::Field) => rename_field_with_accessors(db, params),
+        Some(JavaSymbolKind::Method) => {
+            let new_name = params.new_name;
+            let mut changes = vec![SemanticChange::Rename {
+                symbol: params.symbol,
+                new_name: new_name.clone(),
+            }];
+
+            // Java annotation shorthand `@Anno(expr)` is desugared as `@Anno(value = expr)`. If the
+            // annotation element method `value()` is renamed, shorthand usages must be rewritten to
+            // an explicit element-value pair using the new name.
+            changes.extend(annotation_value_shorthand_updates(db, params.symbol, &new_name));
+
+            Ok(materialize(db, changes)?)
+        }
+        Some(JavaSymbolKind::Package) | None => Err(RefactorError::RenameNotSupported { kind }),
+    }
 }
 
 fn annotation_value_shorthand_updates(
@@ -503,6 +512,120 @@ fn type_file_rename_candidate(
         return None;
     }
     Some((file.clone(), FileId::new(new_path)))
+}
+
+fn rename_field_with_accessors(
+    db: &dyn RefactorDatabase,
+    params: RenameParams,
+) -> Result<WorkspaceEdit, RefactorError> {
+    let Some(def) = db.symbol_definition(params.symbol) else {
+        // Keep behavior consistent with other rename operations: materialize will report the
+        // unknown symbol.
+        return Ok(materialize(
+            db,
+            [SemanticChange::Rename {
+                symbol: params.symbol,
+                new_name: params.new_name,
+            }],
+        )?);
+    };
+    let Some(scope) = db.symbol_scope(params.symbol) else {
+        return Ok(materialize(
+            db,
+            [SemanticChange::Rename {
+                symbol: params.symbol,
+                new_name: params.new_name,
+            }],
+        )?);
+    };
+
+    let mut conflicts = Vec::new();
+
+    if let Some(existing) = db.resolve_field_in_scope(scope, &params.new_name) {
+        if existing != params.symbol {
+            conflicts.push(Conflict::NameCollision {
+                file: def.file.clone(),
+                name: params.new_name.clone(),
+                existing_symbol: existing,
+            });
+        }
+    }
+
+    let Some(old_suffix) = java_bean_suffix(&def.name) else {
+        let changes = vec![SemanticChange::Rename {
+            symbol: params.symbol,
+            new_name: params.new_name,
+        }];
+        return Ok(materialize(db, changes)?);
+    };
+    let Some(new_suffix) = java_bean_suffix(&params.new_name) else {
+        let changes = vec![SemanticChange::Rename {
+            symbol: params.symbol,
+            new_name: params.new_name,
+        }];
+        return Ok(materialize(db, changes)?);
+    };
+
+    let accessors = [("get", 0usize), ("is", 0usize), ("set", 1usize)];
+
+    let mut accessor_changes = Vec::new();
+
+    for (prefix, arity) in accessors {
+        let old_name = format!("{prefix}{old_suffix}");
+        let new_name = format!("{prefix}{new_suffix}");
+
+        for method in db.resolve_methods_in_scope(scope, &old_name) {
+            let Some(sig) = db.method_signature(method) else {
+                continue;
+            };
+            if sig.arity() != arity {
+                continue;
+            }
+
+            // Collision check: new accessor name + same signature must not already exist in the
+            // declaring type.
+            for existing in db.resolve_methods_in_scope(scope, &new_name) {
+                if existing == method {
+                    continue;
+                }
+                if db.method_signature(existing).as_ref() == Some(&sig) {
+                    conflicts.push(Conflict::NameCollision {
+                        file: def.file.clone(),
+                        name: new_name.clone(),
+                        existing_symbol: existing,
+                    });
+                }
+            }
+
+            accessor_changes.push(SemanticChange::Rename {
+                symbol: method,
+                new_name: new_name.clone(),
+            });
+        }
+    }
+
+    if !conflicts.is_empty() {
+        return Err(RefactorError::Conflicts(conflicts));
+    }
+
+    let mut changes = Vec::with_capacity(1 + accessor_changes.len());
+    changes.push(SemanticChange::Rename {
+        symbol: params.symbol,
+        new_name: params.new_name,
+    });
+    changes.extend(accessor_changes);
+    Ok(materialize(db, changes)?)
+}
+
+fn java_bean_suffix(field_name: &str) -> Option<String> {
+    let mut chars = field_name.chars();
+    let first = chars.next()?;
+    let mut out = String::new();
+    for c in first.to_uppercase() {
+        out.push(c);
+    }
+    out.push_str(chars.as_str());
+    Some(out)
 }
 
 pub struct ExtractVariableParams {

@@ -6936,3 +6936,120 @@ fn symbol_at_returns_type_for_nested_class_name() {
         .expect("symbol at nested type name");
     assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
 }
+
+#[test]
+fn rename_field_renames_java_bean_accessors_and_call_sites() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Person {
+  private String name;
+
+  public String getName() { return name; }
+  public void setName(String name) { this.name = name; }
+
+  void m() {
+    Person p = new Person();
+    p.getName();
+    p.setName("x");
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("String name").unwrap() + "String ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at field name");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "title".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("private String title;"),
+        "expected field to be renamed: {after}"
+    );
+    assert!(
+        after.contains("getTitle()"),
+        "expected getter to be renamed: {after}"
+    );
+    assert!(
+        after.contains("setTitle(String name)"),
+        "expected setter to be renamed: {after}"
+    );
+    assert!(
+        after.contains("this.title = name;"),
+        "expected setter body field reference to be renamed: {after}"
+    );
+    assert!(
+        after.contains("p.getTitle();"),
+        "expected getter call site to be renamed: {after}"
+    );
+    assert!(
+        after.contains("p.setTitle(\"x\");"),
+        "expected setter call site to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("getName()") && !after.contains("setName("),
+        "expected old accessor names to be gone: {after}"
+    );
+}
+
+#[test]
+fn rename_field_does_not_rename_unrelated_java_bean_methods() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Person {
+  private String other;
+
+  public String getName() { return "x"; }
+
+  void m() {
+    Person p = new Person();
+    p.getName();
+    System.out.println(other);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("String other").unwrap() + "String ".len() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at field other");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "title".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("private String title;"),
+        "expected field to be renamed: {after}"
+    );
+    assert!(
+        after.contains("System.out.println(title);"),
+        "expected field usage to be renamed: {after}"
+    );
+    assert!(
+        after.contains("getName()"),
+        "expected unrelated method to remain unchanged: {after}"
+    );
+    assert!(
+        after.contains("p.getName();"),
+        "expected unrelated call site to remain unchanged: {after}"
+    );
+    assert!(
+        !after.contains("getTitle()"),
+        "expected no new accessor methods to be introduced: {after}"
+    );
+}

@@ -18,7 +18,9 @@ use nova_syntax::java as java_syntax;
 use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
-use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition, TypeSymbolInfo};
+use crate::semantic::{
+    MethodSignature, RefactorDatabase, Reference, SymbolDefinition, TypeSymbolInfo,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolId(u32);
@@ -48,6 +50,7 @@ struct SymbolData {
     def: SymbolDefinition,
     kind: JavaSymbolKind,
     type_info: Option<TypeInfo>,
+    method_signature: Option<MethodSignature>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,6 +78,7 @@ struct SymbolCandidate {
     scope: u32,
     kind: JavaSymbolKind,
     type_info: Option<TypeInfo>,
+    method_signature: Option<MethodSignature>,
 }
 
 #[derive(Clone, Debug)]
@@ -246,6 +250,7 @@ impl RefactorJavaDatabase {
                             scope,
                             kind: JavaSymbolKind::Package,
                             type_info: None,
+                            method_signature: None,
                         });
                     }
                 }
@@ -300,6 +305,7 @@ impl RefactorJavaDatabase {
                         scope,
                         kind: JavaSymbolKind::Parameter,
                         type_info: None,
+                        method_signature: None,
                     });
                 }
             }
@@ -326,6 +332,7 @@ impl RefactorJavaDatabase {
                         scope,
                         kind: JavaSymbolKind::Parameter,
                         type_info: None,
+                        method_signature: None,
                     });
                 }
             }
@@ -371,6 +378,7 @@ impl RefactorJavaDatabase {
                         scope,
                         kind: JavaSymbolKind::Local,
                         type_info: None,
+                        method_signature: None,
                     });
                 }
             }
@@ -435,6 +443,7 @@ impl RefactorJavaDatabase {
                             scope,
                             kind: JavaSymbolKind::Local,
                             type_info: None,
+                            method_signature: None,
                         });
                     }
                 });
@@ -505,6 +514,7 @@ impl RefactorJavaDatabase {
                 },
                 kind: candidate.kind,
                 type_info: candidate.type_info.clone(),
+                method_signature: candidate.method_signature.clone(),
             });
             references.push(Vec::new());
             spans.push((candidate.file, candidate.name_range, symbol));
@@ -954,6 +964,7 @@ fn collect_type_candidates(
             is_top_level,
             is_public,
         }),
+        method_signature: None,
     });
 
     let Some(&class_scope) = scope_result.class_scopes.get(&item) else {
@@ -976,6 +987,7 @@ fn collect_type_candidates(
                     scope: class_scope_interned,
                     kind: JavaSymbolKind::Field,
                     type_info: None,
+                    method_signature: None,
                 });
             }
             Member::Method(method_id) => {
@@ -1036,6 +1048,14 @@ fn collect_type_candidates(
             scope: class_scope_interned,
             kind: JavaSymbolKind::Method,
             type_info: None,
+            method_signature: Some(MethodSignature {
+                param_types: tree
+                    .method(representative)
+                    .params
+                    .iter()
+                    .map(|p| p.ty.clone())
+                    .collect(),
+            }),
         });
 
         method_groups.push(MethodGroupInfo {
@@ -1135,6 +1155,62 @@ impl RefactorDatabase for RefactorJavaDatabase {
         }
 
         None
+    }
+
+    fn resolve_field_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
+        let (file, local_scope) = self.decode_scope(scope)?;
+        let scope_result = self.scopes.get(&file)?;
+        let data = scope_result.scopes.scope(local_scope);
+
+        let name = Name::from(name);
+        let Some(resolution) = data.values().get(&name) else {
+            return None;
+        };
+        let Resolution::Field(field_id) = resolution else {
+            return None;
+        };
+
+        self.resolution_to_symbol
+            .get(&ResolutionKey::Field(*field_id))
+            .copied()
+    }
+
+    fn resolve_methods_in_scope(&self, scope: u32, name: &str) -> Vec<SymbolId> {
+        let Some((file, local_scope)) = self.decode_scope(scope) else {
+            return Vec::new();
+        };
+        let Some(scope_result) = self.scopes.get(&file) else {
+            return Vec::new();
+        };
+        let data = scope_result.scopes.scope(local_scope);
+
+        let name = Name::from(name);
+        let Some(methods) = data.methods().get(&name) else {
+            return Vec::new();
+        };
+
+        // Many Nova resolution sites can return multiple overloads; our refactoring symbol space
+        // can choose to group overloads (see `method_groups`). Return a stable, deduped list.
+        let mut seen: HashSet<SymbolId> = HashSet::new();
+        let mut out = Vec::new();
+        for method_id in methods {
+            let Some(&symbol) = self
+                .resolution_to_symbol
+                .get(&ResolutionKey::Method(*method_id))
+            else {
+                continue;
+            };
+            if seen.insert(symbol) {
+                out.push(symbol);
+            }
+        }
+        out
+    }
+
+    fn method_signature(&self, symbol: SymbolId) -> Option<MethodSignature> {
+        self.symbols
+            .get(symbol.as_usize())
+            .and_then(|s| s.method_signature.clone())
     }
 
     fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId> {
