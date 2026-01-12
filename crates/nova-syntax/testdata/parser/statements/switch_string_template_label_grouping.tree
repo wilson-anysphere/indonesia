@@ -1,0 +1,88 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            Identifier "x"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          SwitchStatement
+            SwitchKw "switch"
+            Whitespace " "
+            LParen "("
+            NameExpression
+              Identifier "x"
+            RParen ")"
+            SwitchBlock
+              Whitespace " "
+              LBrace "{"
+              Whitespace "\n      "
+              SwitchGroup
+                SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    LiteralExpression
+                      IntLiteral "0"
+                  Colon ":"
+                Whitespace "\n      "
+                SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    StringTemplateExpression
+                      NameExpression
+                        Identifier "STR"
+                      Dot "."
+                      StringTemplate
+                        StringTemplateStart "\""
+                        StringTemplateText "x "
+                        StringTemplateInterpolation
+                          StringTemplateExprStart "\\{"
+                          LambdaExpression
+                            LambdaParameters
+                              LambdaParameterList
+                                LParen "("
+                                RParen ")"
+                            Whitespace " "
+                            Arrow "->"
+                            LambdaBody
+                              Whitespace " "
+                              LiteralExpression
+                                IntLiteral "1"
+                          StringTemplateExprEnd "}"
+                        StringTemplateEnd "\""
+                  Colon ":"
+                Whitespace "\n        "
+                BreakStatement
+                  BreakKw "break"
+                  Semicolon ";"
+                Whitespace "\n    "
+              RBrace "}"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

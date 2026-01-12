@@ -59,8 +59,10 @@ impl DelimiterDepth {
 
     fn update(&mut self, kind: SyntaxKind, track_angles: bool) {
         match kind {
-            SyntaxKind::LBrace => self.braces += 1,
-            SyntaxKind::RBrace => self.braces = self.braces.saturating_sub(1),
+            SyntaxKind::LBrace | SyntaxKind::StringTemplateExprStart => self.braces += 1,
+            SyntaxKind::RBrace | SyntaxKind::StringTemplateExprEnd => {
+                self.braces = self.braces.saturating_sub(1)
+            }
             SyntaxKind::LParen => self.parens += 1,
             SyntaxKind::RParen => self.parens = self.parens.saturating_sub(1),
             SyntaxKind::LBracket => self.brackets += 1,
