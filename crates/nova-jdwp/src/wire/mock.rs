@@ -1076,7 +1076,7 @@ async fn handle_packet(
         // VirtualMachine.RedefineClasses
         (1, 18) => {
             let class_count = r.read_u32().unwrap_or(0);
-            let mut classes = Vec::with_capacity(class_count as usize);
+            let mut classes = Vec::new();
             for _ in 0..class_count {
                 let type_id = r.read_reference_type_id(sizes).unwrap_or(0);
                 let len = r.read_u32().unwrap_or(0) as usize;
@@ -1130,7 +1130,7 @@ async fn handle_packet(
         (1, 14) => {
             let res = (|| {
                 let count = r.read_u32()? as usize;
-                let mut objects = Vec::with_capacity(count);
+                let mut objects = Vec::new();
                 for _ in 0..count {
                     let object_id = r.read_object_id(sizes)?;
                     let ref_cnt = r.read_u32()?;
@@ -1641,7 +1641,7 @@ async fn handle_packet(
         (2, 6) => {
             let type_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let count = r.read_u32().unwrap_or(0) as usize;
-            let mut field_ids = Vec::with_capacity(count);
+            let mut field_ids = Vec::new();
             for _ in 0..count {
                 field_ids.push(r.read_id(sizes.field_id).unwrap_or(0));
             }
@@ -1754,7 +1754,7 @@ async fn handle_packet(
                 let thread_id = r.read_object_id(sizes).unwrap_or(0);
                 let frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
                 let count = r.read_u32().unwrap_or(0) as usize;
-                let mut slots = Vec::with_capacity(count);
+                let mut slots = Vec::new();
                 for _ in 0..count {
                     let slot = r.read_u32().unwrap_or(0);
                     let tag = r.read_u8().unwrap_or(0);
@@ -1797,7 +1797,7 @@ async fn handle_packet(
                 let thread = r.read_object_id(sizes)?;
                 let frame_id = r.read_id(sizes.frame_id)?;
                 let count = r.read_u32()? as usize;
-                let mut values = Vec::with_capacity(count);
+                let mut values = Vec::new();
                 for _ in 0..count {
                     let slot = r.read_u32()?;
                     let value = r.read_tagged_value(sizes)?;
@@ -1940,7 +1940,7 @@ async fn handle_packet(
                 let _class_id = r.read_reference_type_id(sizes)?;
                 let _method_id = r.read_id(sizes.method_id)?;
                 let arg_count = r.read_u32()? as usize;
-                let mut args = Vec::with_capacity(arg_count);
+                let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(r.read_tagged_value(sizes)?);
                 }
@@ -1963,7 +1963,7 @@ async fn handle_packet(
         (9, 2) => {
             let object_id = r.read_object_id(sizes).unwrap_or(0);
             let count = r.read_u32().unwrap_or(0) as usize;
-            let mut field_ids = Vec::with_capacity(count);
+            let mut field_ids = Vec::new();
             for _ in 0..count {
                 field_ids.push(r.read_id(sizes.field_id).unwrap_or(0));
             }
@@ -2019,7 +2019,7 @@ async fn handle_packet(
             let res = (|| {
                 let object_id = r.read_object_id(sizes)?;
                 let count = r.read_u32()? as usize;
-                let mut values = Vec::with_capacity(count);
+                let mut values = Vec::new();
                 for _ in 0..count {
                     let field_id = r.read_id(sizes.field_id)?;
                     let value = r.read_tagged_value(sizes)?;
@@ -2193,7 +2193,7 @@ async fn handle_packet(
                 let array_id = r.read_object_id(sizes)?;
                 let first_index = r.read_i32()?;
                 let count = r.read_u32()? as usize;
-                let mut values = Vec::with_capacity(count);
+                let mut values = Vec::new();
                 for _ in 0..count {
                     values.push(r.read_tagged_value(sizes)?);
                 }
@@ -2288,7 +2288,7 @@ async fn handle_packet(
             let res = (|| {
                 let class_id = r.read_reference_type_id(sizes)?;
                 let count = r.read_u32()? as usize;
-                let mut values = Vec::with_capacity(count);
+                let mut values = Vec::new();
                 for _ in 0..count {
                     let field_id = r.read_id(sizes.field_id)?;
                     let value = r.read_tagged_value(sizes)?;
@@ -2321,7 +2321,7 @@ async fn handle_packet(
                 let _thread_id = r.read_object_id(sizes)?;
                 let _method_id = r.read_id(sizes.method_id)?;
                 let arg_count = r.read_u32()? as usize;
-                let mut args = Vec::with_capacity(arg_count);
+                let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(r.read_tagged_value(sizes)?);
                 }
@@ -2393,7 +2393,7 @@ async fn handle_packet(
                 let thread = r.read_object_id(sizes)?;
                 let ctor_method = r.read_id(sizes.method_id)?;
                 let arg_count = r.read_u32()? as usize;
-                let mut args = Vec::with_capacity(arg_count);
+                let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(r.read_tagged_value(sizes)?);
                 }
@@ -2433,7 +2433,7 @@ async fn handle_packet(
             match res {
                 Ok((array_type_id, length)) if length >= 0 => {
                     let array_id = state.alloc_object_id();
-                    let mut values = Vec::with_capacity(length as usize);
+                    let mut values = Vec::new();
                     for _ in 0..length {
                         values.push(JdwpValue::Int(0));
                     }
@@ -2465,7 +2465,7 @@ async fn handle_packet(
                 let thread = r.read_object_id(sizes)?;
                 let method_id = r.read_id(sizes.method_id)?;
                 let arg_count = r.read_u32()? as usize;
-                let mut args = Vec::with_capacity(arg_count);
+                let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(r.read_tagged_value(sizes)?);
                 }
@@ -2505,7 +2505,7 @@ async fn handle_packet(
             let mut exception_uncaught = false;
             let mut field_only: Option<(ReferenceTypeId, FieldId)> = None;
             let mut instance_only: Option<ObjectId> = None;
-            let mut modifiers = Vec::with_capacity(modifier_count);
+            let mut modifiers = Vec::new();
             for _ in 0..modifier_count {
                 let mod_kind = r.read_u8().unwrap_or(0);
                 match mod_kind {
