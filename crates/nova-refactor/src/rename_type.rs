@@ -115,6 +115,12 @@ pub fn rename_type(
             target,
             &params.new_name,
         ));
+        edits.extend(collect_method_call_reference_edits(
+            &resolver,
+            file,
+            target,
+            &params.new_name,
+        ));
         edits.extend(collect_qualified_this_super_edits(
             &resolver,
             file,
@@ -227,6 +233,39 @@ impl WorkspaceAnalysis {
             .ancestors()
             .find_map(ast::Name::cast)
             .map(|name| name.syntax().clone());
+
+        // Many type positions are represented by `ast::Type` nodes whose identifier tokens are
+        // direct children rather than an explicit `ast::Name`. Handle that shape so rename can be
+        // invoked from usages like `Outer.Inner` (including when `Outer` is the type being renamed).
+        if segments.is_none() {
+            if let Some(ty) = parent.ancestors().find_map(ast::Type::cast) {
+                if let Some(named) = ty.named() {
+                    let segs = support::child::<ast::Name>(named.syntax())
+                        .map(|name| segments_from_name(&name))
+                        .unwrap_or_else(|| segments_from_syntax(named.syntax()));
+                    if !segs.is_empty() {
+                        segments = Some(segs);
+                        scope_node = Some(ty.syntax().clone());
+                    }
+                }
+            }
+        }
+
+        // `TypeName.Identifier(...)` and related constructs are represented as `NameExpression`s in
+        // some tree shapes (e.g. `Outer.Inner.m()` -> `NameExpression("Outer.Inner.m")`). Allow
+        // rename to be invoked from those qualified-name occurrences as well.
+        //
+        // Restrict this fallback to qualified names to avoid accidentally treating plain identifier
+        // expressions (locals/fields/etc.) as type names.
+        if segments.is_none() {
+            if let Some(expr) = parent.ancestors().find_map(ast::NameExpression::cast) {
+                let segs = segments_from_syntax(expr.syntax());
+                if segs.len() > 1 {
+                    segments = Some(segs);
+                    scope_node = Some(expr.syntax().clone());
+                }
+            }
+        }
 
         if segments.is_none() {
             if let Some(expr) = parent.ancestors().find_map(ast::ThisExpression::cast) {
@@ -392,6 +431,74 @@ fn collect_name_reference_edits(
             &file.file,
             new_name,
         );
+    }
+
+    edits
+}
+
+fn collect_method_call_reference_edits(
+    resolver: &Resolver<'_>,
+    file: &FileAnalysis,
+    target: ItemId,
+    new_name: &str,
+) -> Vec<TextEdit> {
+    let mut edits = Vec::new();
+    let root = file.parse.syntax();
+
+    for call in root.descendants().filter_map(ast::MethodCallExpression::cast) {
+        let Some(callee) = call.callee() else {
+            continue;
+        };
+
+        let scope = scope_for_node(&file.scopes, &file.ast_id_map, call.syntax(), file.db_file);
+
+        match callee {
+            ast::Expression::NameExpression(expr) => {
+                // `NameExpression` in a call position often includes the method name itself, e.g.
+                // `Outer.Inner.m()` -> name tokens `Outer`, `Inner`, `m`. The last segment is a
+                // value-namespace member, not a type, so exclude it from prefix matching.
+                let segments = segments_from_syntax(expr.syntax());
+                if segments.len() <= 1 {
+                    continue;
+                }
+                let qualifier = &segments[..segments.len() - 1];
+                record_qualified_type_prefix_matches(
+                    resolver,
+                    &file.scopes.scopes,
+                    scope,
+                    qualifier,
+                    target,
+                    &mut edits,
+                    &file.file,
+                    new_name,
+                );
+            }
+            ast::Expression::FieldAccessExpression(expr) => {
+                // Some call sites use a `FieldAccessExpression` callee (`Foo.m()` as `Foo` receiver
+                // + `m` name token). Try resolving the receiver as a qualified type name.
+                let Some(recv) = expr.expression() else {
+                    continue;
+                };
+                let ast::Expression::NameExpression(name_expr) = recv else {
+                    continue;
+                };
+                let segments = segments_from_syntax(name_expr.syntax());
+                if segments.is_empty() {
+                    continue;
+                }
+                record_qualified_type_prefix_matches(
+                    resolver,
+                    &file.scopes.scopes,
+                    scope,
+                    &segments,
+                    target,
+                    &mut edits,
+                    &file.file,
+                    new_name,
+                );
+            }
+            _ => {}
+        }
     }
 
     edits

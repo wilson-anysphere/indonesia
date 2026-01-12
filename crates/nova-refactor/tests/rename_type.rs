@@ -130,3 +130,79 @@ class Use { int x = CONST; }
         "expected static import to update: {updated_use}"
     );
 }
+
+#[test]
+fn rename_type_can_be_invoked_from_enclosing_qualifier_in_nested_type_usage() {
+    let outer_file = FileId::new("Outer.java");
+    let use_file = FileId::new("Use.java");
+
+    let outer_src = r#"class Outer { static class Inner {} }
+"#;
+    let use_src = r#"class Use { Outer.Inner x; }
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(outer_file.clone(), outer_src.to_string());
+    files.insert(use_file.clone(), use_src.to_string());
+
+    let offset = use_src.find("Outer.Inner").unwrap() + 1; // within `Outer`
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: use_file.clone(),
+            offset,
+            new_name: "NewOuter".into(),
+        },
+    )
+    .unwrap();
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let updated_outer = out.get(&outer_file).unwrap();
+    let updated_use = out.get(&use_file).unwrap();
+
+    assert!(updated_outer.contains("class NewOuter"), "{updated_outer}");
+    assert!(
+        updated_use.contains("class Use { NewOuter.Inner x; }"),
+        "{updated_use}"
+    );
+}
+
+#[test]
+fn rename_type_can_be_invoked_from_qualified_name_expression_in_static_method_call() {
+    let outer_file = FileId::new("Outer.java");
+    let use_file = FileId::new("Use.java");
+
+    let outer_src = r#"class Outer {
+  static class Inner { static void m() {} }
+}
+"#;
+    let use_src = r#"class Use { void f(){ Outer.Inner.m(); } }
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(outer_file.clone(), outer_src.to_string());
+    files.insert(use_file.clone(), use_src.to_string());
+
+    let offset = use_src.find("Outer.Inner.m").unwrap() + 1; // within `Outer`
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: use_file.clone(),
+            offset,
+            new_name: "NewOuter".into(),
+        },
+    )
+    .unwrap();
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let updated_use = out.get(&use_file).unwrap();
+
+    assert!(
+        updated_use.contains("void f(){ NewOuter.Inner.m(); }"),
+        "{updated_use}"
+    );
+    assert!(
+        !updated_use.contains("void f(){ Outer.Inner.m();"),
+        "{updated_use}"
+    );
+}
