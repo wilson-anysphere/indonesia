@@ -207,8 +207,8 @@ class C {
 
 #[test]
 fn extract_variable_code_actions_only_offer_var_when_explicit_type_inference_fails() {
-    // `x` is a name expression. With only `TextDatabase` available, the parser cannot infer an
-    // explicit type for it, but `var` extraction is still applicable.
+    // `x` is a name expression. With only `TextDatabase` available, explicit type inference falls
+    // back to `Object`, but both `var` and explicit-type extraction are still applicable.
     let fixture = r#"
 class C {
     void m(Object x) {
@@ -225,12 +225,17 @@ class C {
     };
 
     let actions = extract_variable_code_actions(&uri, &source, range);
-    assert_eq!(actions.len(), 1);
-
-    let lsp_types::CodeActionOrCommand::CodeAction(action) = &actions[0] else {
-        panic!("expected code action");
-    };
-    assert_eq!(action.title, "Extract variable…");
+    assert_eq!(actions.len(), 2);
+    assert!(actions.iter().any(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => action.title == "Extract variable…",
+        _ => false,
+    }));
+    assert!(actions.iter().any(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => {
+            action.title == "Extract variable… (explicit type)"
+        }
+        _ => false,
+    }));
 }
 
 #[test]
@@ -286,10 +291,37 @@ class C {
     };
 
     let actions = extract_variable_code_actions(&uri, &source, range);
-    assert!(
-        actions.is_empty(),
-        "expected extract variable to be unavailable for side-effectful expression, got: {actions:?}"
-    );
+    assert_eq!(actions.len(), 1, "got: {actions:?}");
+    let lsp_types::CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+        panic!("expected code action");
+    };
+    assert_eq!(action.title, "Extract variable… (explicit type)");
+}
+
+#[test]
+fn extract_variable_code_action_not_offered_for_null_literal() {
+    let fixture = r#"
+class C {
+    void m() {
+        String x = /*start*/null/*end*/;
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    // `var` is not applicable for `null`, but explicit-type extraction is.
+    assert_eq!(actions.len(), 1, "got: {actions:?}");
+    let lsp_types::CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+        panic!("expected code action");
+    };
+    assert_eq!(action.title, "Extract variable… (explicit type)");
 }
 
 #[test]

@@ -1768,7 +1768,7 @@ fn extract_variable_rejects_var_for_null_initializer() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   void m() {
-    Object x = null;
+    String x = null;
   }
 }
 "#;
@@ -1871,13 +1871,13 @@ fn extract_variable_rejects_var_for_array_initializer() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   void m() {
-    int[] xs = {1, 2};
+    int[] xs = {1,2};
   }
 }
 "#;
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
-    let expr_start = src.find("{1, 2}").unwrap();
-    let expr_end = expr_start + "{1, 2}".len();
+    let expr_start = src.find("{1,2}").unwrap();
+    let expr_end = expr_start + "{1,2}".len();
 
     let err = extract_variable(
         &db,
@@ -1895,6 +1895,43 @@ fn extract_variable_rejects_var_for_array_initializer() {
         err,
         SemanticRefactorError::VarNotAllowedForInitializer
     ));
+}
+
+#[test]
+fn extract_variable_allows_explicit_type_for_array_initializer() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    int[] xs = /*select*/{1,2}/*end*/;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int[] tmp = {1,2};
+    int[] xs = tmp;
+  }
+}
+"#;
+
+    assert_eq!(after, expected);
 }
 
 #[test]
