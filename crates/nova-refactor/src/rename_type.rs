@@ -583,15 +583,15 @@ fn expr_scope_for_offset(
             | Expr::ArrayCreation { range, .. }
             | Expr::ArrayInitializer { range, .. }
             | Expr::Unary { range, .. }
-            | Expr::Binary { range, .. }
-            | Expr::Instanceof { range, .. }
-            | Expr::Assign { range, .. }
-            | Expr::Conditional { range, .. }
-            | Expr::Lambda { range, .. }
-            | Expr::Switch { range, .. }
-            | Expr::Invalid { range, .. }
-            | Expr::Missing { range } => *range,
-        };
+             | Expr::Binary { range, .. }
+             | Expr::Instanceof { range, .. }
+             | Expr::Assign { range, .. }
+             | Expr::Conditional { range, .. }
+             | Expr::Lambda { range, .. }
+             | Expr::Switch { range, .. }
+             | Expr::Invalid { range, .. }
+             | Expr::Missing { range } => *range,
+         };
 
         if !contains(range, offset) {
             return;

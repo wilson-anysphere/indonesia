@@ -6061,30 +6061,6 @@ fn collect_switch_contexts(
                     walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
                 }
             },
-            hir::Expr::Switch {
-                selector,
-                body: switch_body,
-                ..
-            } => {
-                walk_expr(
-                    body,
-                    *selector,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-                walk_stmt(
-                    body,
-                    *switch_body,
-                    owner,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                    out,
-                );
-            }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, owner, scope_result, resolver, item_trees, out);
@@ -7876,7 +7852,7 @@ fn record_lightweight_expr(
             record_lightweight_expr(
                 file,
                 text,
-                &expr.selector,
+                expr.selector.as_ref(),
                 type_scopes,
                 scope_result,
                 resolver,
