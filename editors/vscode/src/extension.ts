@@ -2190,6 +2190,32 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const handleAiCodeEditPolicyError = async (err: unknown): Promise<void> => {
+    const details = formatError(err);
+    const picked = await vscode.window.showErrorMessage(
+      `Nova AI: ${details}`,
+      'Copy Details',
+      'Open Settings (nova.lsp.configPath)',
+      'Open AI docs',
+      'Restart Language Server',
+    );
+    if (picked === 'Copy Details') {
+      try {
+        await vscode.env.clipboard.writeText(details);
+        void vscode.window.showInformationMessage('Nova AI: Copied to clipboard.');
+      } catch (err) {
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova AI: failed to copy to clipboard: ${message}`);
+      }
+    } else if (picked === 'Open Settings (nova.lsp.configPath)') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.lsp.configPath');
+    } else if (picked === 'Open AI docs') {
+      await openAiDocs();
+    } else if (picked === 'Restart Language Server') {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    }
+  };
+
   const handleAiDisabled = async (): Promise<void> => {
     const options: string[] = [];
     if ((vscode.workspace.workspaceFolders ?? []).length > 0) {
@@ -2326,6 +2352,10 @@ export async function activate(context: vscode.ExtensionContext) {
           await handleAiPrivacyExcluded();
           return;
         }
+        if (isAiCodeEditPolicyError(err)) {
+          await handleAiCodeEditPolicyError(err);
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: generate method body failed: ${message}`);
       }
@@ -2375,6 +2405,10 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (isAiPrivacyExcludedError(err)) {
           await handleAiPrivacyExcluded();
+          return;
+        }
+        if (isAiCodeEditPolicyError(err)) {
+          await handleAiCodeEditPolicyError(err);
           return;
         }
         const message = formatError(err);
@@ -3429,6 +3463,18 @@ function isAiPrivacyExcludedError(err: unknown): boolean {
   }
   const message = formatError(err).toLowerCase();
   return message.includes('ai.privacy.excluded_paths');
+}
+
+function isAiCodeEditPolicyError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (code !== -32603) {
+    return false;
+  }
+  const message = formatError(err).toLowerCase();
+  return message.includes('ai code edits are disabled');
 }
 
 function normalizeAiResult(result: unknown): string {
