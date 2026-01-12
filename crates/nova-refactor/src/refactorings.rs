@@ -1202,17 +1202,61 @@ fn collect_simple_name_dependencies(expr: &ast::Expression) -> HashSet<String> {
 
         // Avoid obvious false positives: for `foo(x)` the callee `foo` is a method name, not a
         // variable read.
+        //
+        // However, `obj.foo(x)` *does* read `obj` before evaluating arguments, so when the callee
+        // is qualified (`obj.foo`) we treat the leftmost segment as a dependency.
         if let Some(parent) = node.parent() {
             if let Some(call) = ast::MethodCallExpression::cast(parent.clone()) {
                 if call.callee().is_some_and(|callee| callee.syntax() == &node) {
+                    if !name_expression_has_dot(&name_expr) {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if let Some(name) = leftmost_segment_from_name_expression(&name_expr) {
+            out.insert(name);
+        }
+    }
+
+    // `this.x` / `super.x` are modeled as `FieldAccessExpression` nodes rather than `NameExpression`
+    // nodes, but they still read `x` (a field) at runtime. Include the field name segment as a
+    // dependency so we can detect `x = 1, this.x` style hazards.
+    for node in expr.syntax().descendants() {
+        let Some(field_access) = ast::FieldAccessExpression::cast(node) else {
+            continue;
+        };
+
+        // If this field access is being used as a method callee (`this.foo(...)` / `super.foo(...)`),
+        // its identifier is a method name, not a variable/field read.
+        if let Some(parent) = field_access.syntax().parent() {
+            if let Some(call) = ast::MethodCallExpression::cast(parent) {
+                if call
+                    .callee()
+                    .is_some_and(|callee| callee.syntax() == field_access.syntax())
+                {
                     continue;
                 }
             }
         }
 
-        if let Some(name) = simple_name_from_name_expression(&name_expr) {
-            out.insert(name);
+        let Some(receiver) = field_access.expression() else {
+            continue;
+        };
+
+        if !matches!(
+            receiver,
+            ast::Expression::ThisExpression(_) | ast::Expression::SuperExpression(_)
+        ) {
+            continue;
         }
+
+        let Some(name_tok) = field_access.name_token() else {
+            continue;
+        };
+
+        out.insert(name_tok.text().to_string());
     }
 
     out
@@ -1223,6 +1267,21 @@ fn simple_name_from_expression(expr: &ast::Expression) -> Option<String> {
         ast::Expression::NameExpression(name_expr) => simple_name_from_name_expression(name_expr),
         _ => None,
     }
+}
+
+fn leftmost_segment_from_name_expression(expr: &ast::NameExpression) -> Option<String> {
+    expr.syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| !tok.kind().is_trivia())
+        .find(|tok| tok.kind().is_identifier_like())
+        .map(|tok| tok.text().to_string())
+}
+
+fn name_expression_has_dot(expr: &ast::NameExpression) -> bool {
+    expr.syntax()
+        .descendants_with_tokens()
+        .any(|el| el.kind() == SyntaxKind::Dot)
 }
 
 fn simple_name_from_name_expression(expr: &ast::NameExpression) -> Option<String> {

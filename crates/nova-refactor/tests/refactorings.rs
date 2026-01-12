@@ -751,6 +751,46 @@ fn extract_variable_rejects_dependency_written_earlier_in_same_statement() {
 }
 
 #[test]
+fn extract_variable_rejects_qualified_dependency_written_earlier_in_same_statement() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  static class Box { int value; }
+
+  void m(Box x) {
+    foo(x = new Box(), /*select*/x.value/*end*/);
+  }
+
+  void foo(Box a, int b) {}
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason
+                    == "cannot extract expression that depends on a variable written earlier in the same statement"
+        ),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_allows_selection_inside_assignment_rhs() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
