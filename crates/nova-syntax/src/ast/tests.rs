@@ -2112,3 +2112,125 @@ fn string_template_expression_accessors_no_interpolations() {
     assert_eq!(text_segments, vec!["Hello"]);
     assert_eq!(template.parts().count(), 0);
 }
+
+#[test]
+fn string_template_expression_accessors_text_segment_boundary_cases() {
+    let src = r#"
+        class Foo {
+          void m(String name, String a, String b) {
+            String t1 = STR."Hello \{name}";
+            String t2 = STR."\{name}!";
+            String t3 = STR."\{name}";
+            String t4 = STR."\{a}\{b}";
+            String t5 = STR."";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let exprs: Vec<_> = parse
+        .syntax()
+        .descendants()
+        .filter_map(StringTemplateExpression::cast)
+        .collect();
+    assert_eq!(exprs.len(), 5);
+
+    let assert_template = |expr: &StringTemplateExpression,
+                           expected_child_kinds: Vec<SyntaxKind>,
+                           expected_text: Vec<&str>,
+                           expected_interpolations: Vec<&str>| {
+        let processor = expr.processor().expect("expected processor expression");
+        match processor {
+            Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
+            other => panic!("expected processor NameExpression, got {other:?}"),
+        }
+
+        let template = expr.template().expect("expected string template");
+        assert_eq!(template.start_token().unwrap().text(), "\"");
+        assert_eq!(template.end_token().unwrap().text(), "\"");
+
+        let child_kinds: Vec<_> = template
+            .syntax()
+            .children_with_tokens()
+            .map(|el| el.kind())
+            .collect();
+        assert_eq!(child_kinds, expected_child_kinds);
+
+        let text_segments: Vec<_> = template
+            .syntax()
+            .children_with_tokens()
+            .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+            .filter_map(|el| el.into_token())
+            .map(|tok| tok.text().to_string())
+            .collect();
+        assert_eq!(text_segments, expected_text);
+
+        let interpolations: Vec<_> = template
+            .parts()
+            .map(|interp| interp.expression().expect("expected interpolation expression"))
+            .map(|expr| match expr {
+                Expression::NameExpression(name) => name.syntax().text().to_string(),
+                other => panic!("expected interpolation NameExpression, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(interpolations, expected_interpolations);
+    };
+
+    assert_template(
+        &exprs[0],
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateEnd,
+        ],
+        vec!["Hello "],
+        vec!["name"],
+    );
+
+    assert_template(
+        &exprs[1],
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateText,
+            SyntaxKind::StringTemplateEnd,
+        ],
+        vec!["!"],
+        vec!["name"],
+    );
+
+    assert_template(
+        &exprs[2],
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateEnd,
+        ],
+        Vec::new(),
+        vec!["name"],
+    );
+
+    assert_template(
+        &exprs[3],
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateInterpolation,
+            SyntaxKind::StringTemplateEnd,
+        ],
+        Vec::new(),
+        vec!["a", "b"],
+    );
+
+    assert_template(
+        &exprs[4],
+        vec![
+            SyntaxKind::StringTemplateStart,
+            SyntaxKind::StringTemplateEnd,
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+}
