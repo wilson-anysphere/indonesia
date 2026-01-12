@@ -264,7 +264,12 @@ async function revealUri(uri: vscode.Uri): Promise<void> {
     try {
       await vscode.commands.executeCommand(uri.scheme === 'file' ? 'revealInExplorer' : 'revealFileInOS', uri);
     } catch (err) {
-      void vscode.window.showErrorMessage(`Nova: Failed to reveal file: ${formatError(err)}`);
+      try {
+        // Some contexts (like vscode.dev) don't support reveal-in-OS. As a last resort, open the document.
+        await vscode.commands.executeCommand('vscode.open', uri);
+      } catch {
+        void vscode.window.showErrorMessage(`Nova: Failed to reveal file: ${formatError(err)}`);
+      }
     }
   }
 }
