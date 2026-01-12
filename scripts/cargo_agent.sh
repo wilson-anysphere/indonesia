@@ -45,7 +45,7 @@ Notes:
   - This wrapper enforces RAM caps via RLIMIT_AS (through scripts/run_limited.sh).
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
   - `cargo test` is blocked unless scoped with `-p/--package` or `--manifest-path`.
-    To override (rare): NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 bash scripts/cargo_agent.sh test ...
+    To override (rare): set `NOVA_CARGO_ALLOW_UNSCOPED_TEST=1` and re-run.
   - For faster iteration, further scope tests with --lib, --bin <name>, or --test <name>.
 EOF
 }
@@ -117,8 +117,7 @@ Re-run with an explicit scope selector:
 Example:
   bash scripts/cargo_agent.sh test -p nova-testing --lib
 
-To override (rare):
-  NOVA_CARGO_ALLOW_UNSCOPED_TEST=1 bash scripts/cargo_agent.sh test [...]
+To override (rare): set `NOVA_CARGO_ALLOW_UNSCOPED_TEST=1` and re-run.
 EOF
     return 2
   fi
