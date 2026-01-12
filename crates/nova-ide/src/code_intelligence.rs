@@ -8113,8 +8113,169 @@ fn type_position_context(
 }
 
 fn catch_param_type_position(tokens: &[Token], cur_idx: usize, cursor_offset: usize) -> bool {
-    // Best-effort detection for `catch (<cursor> e)` contexts. We look for a `catch (` pair and
-    // ensure the cursor is within its parentheses (to avoid completing inside the catch body).
+    // Best-effort detection for exception *type* positions inside `catch (...)`.
+    //
+    // We intentionally avoid triggering when the cursor is on the catch parameter *name*:
+    // `catch (IOException e<cursor>)`, so type-position completion doesn't regress identifier
+    // completion behavior.
+
+    fn first_statement_boundary_after(tokens: &[Token], start_idx: usize) -> Option<usize> {
+        tokens
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .find(|(_, t)| {
+                matches!(
+                    t.kind,
+                    TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}')
+                )
+            })
+            .map(|(idx, _)| idx)
+    }
+
+    fn matching_paren_after(tokens: &[Token], open_idx: usize) -> Option<usize> {
+        let mut depth: i32 = 1;
+        let mut i = open_idx + 1;
+        while i < tokens.len() {
+            match tokens[i].kind {
+                TokenKind::Symbol('(') => depth += 1,
+                TokenKind::Symbol(')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn skip_catch_var_modifiers(tokens: &[Token], mut i: usize, end: usize) -> usize {
+        while i < end {
+            let tok = &tokens[i];
+            // `final` and other best-effort modifiers.
+            if tok.kind == TokenKind::Ident && is_decl_modifier(tok.text.as_str()) {
+                i += 1;
+                continue;
+            }
+            // `@Annotation(...)`
+            if tok.kind == TokenKind::Symbol('@') {
+                i += 1;
+                // Qualified annotation name: `foo.bar.Baz`
+                if i < end && tokens[i].kind == TokenKind::Ident {
+                    i += 1;
+                    while i + 1 < end
+                        && tokens[i].kind == TokenKind::Symbol('.')
+                        && tokens[i + 1].kind == TokenKind::Ident
+                    {
+                        i += 2;
+                    }
+                }
+
+                // Skip annotation arguments: `(@Ann(x, y))`
+                if i < end && tokens[i].kind == TokenKind::Symbol('(') {
+                    let mut depth: i32 = 0;
+                    while i < end {
+                        match tokens[i].kind {
+                            TokenKind::Symbol('(') => depth += 1,
+                            TokenKind::Symbol(')') => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    i += 1;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+
+            break;
+        }
+        i
+    }
+
+    fn skip_angle_bracket_args(tokens: &[Token], mut i: usize, end: usize) -> usize {
+        if i >= end || tokens[i].kind != TokenKind::Symbol('<') {
+            return i;
+        }
+        let mut depth: i32 = 0;
+        while i < end {
+            match tokens[i].kind {
+                TokenKind::Symbol('<') => depth += 1,
+                TokenKind::Symbol('>') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        i
+    }
+
+    fn catch_variable_name_token(
+        tokens: &[Token],
+        open_idx: usize,
+        end_idx: usize,
+    ) -> Option<&Token> {
+        // Parse `catch` parameter:
+        //   CatchFormalParameter := {VariableModifier} CatchType Identifier
+        //   CatchType := ClassType { '|' ClassType }
+        // This is a best-effort token walk that identifies the parameter name (if present).
+
+        let mut i = skip_catch_var_modifiers(tokens, open_idx + 1, end_idx);
+
+        // Parse one or more class types (multi-catch).
+        loop {
+            // Qualified class type: `java.io.IOException`
+            let Some(tok) = tokens.get(i) else {
+                return None;
+            };
+            if tok.kind != TokenKind::Ident {
+                return None;
+            }
+            i += 1;
+            while i + 1 < end_idx
+                && tokens[i].kind == TokenKind::Symbol('.')
+                && tokens[i + 1].kind == TokenKind::Ident
+            {
+                i += 2;
+            }
+
+            // Generic args (best-effort; catch types should not be parameterized, but tolerate it).
+            i = skip_angle_bracket_args(tokens, i, end_idx);
+
+            // Array dims (rare, but legal in some positions; be lenient).
+            while i + 1 < end_idx
+                && tokens[i].kind == TokenKind::Symbol('[')
+                && tokens[i + 1].kind == TokenKind::Symbol(']')
+            {
+                i += 2;
+            }
+
+            if i < end_idx && tokens[i].kind == TokenKind::Symbol('|') {
+                i += 1;
+                i = skip_catch_var_modifiers(tokens, i, end_idx);
+                continue;
+            }
+            break;
+        }
+
+        // Parameter name.
+        tokens
+            .get(i)
+            .filter(|t| t.kind == TokenKind::Ident)
+    }
+
     let mut i = cur_idx;
     while i > 0 {
         i -= 1;
@@ -8130,23 +8291,35 @@ fn catch_param_type_position(tokens: &[Token], cur_idx: usize, cursor_offset: us
                 return false;
             }
 
-            let mut j = i + 1;
-            while j < tokens.len() {
-                match tokens[j].kind {
-                    TokenKind::Symbol(')') => {
-                        let close_start = tokens[j].span.start;
-                        return cursor_offset <= close_start;
-                    }
-                    TokenKind::Symbol('{') | TokenKind::Symbol(';') | TokenKind::Symbol('}') => {
-                        break;
-                    }
-                    _ => {}
+            let boundary_idx = first_statement_boundary_after(tokens, i + 1);
+            let close_idx = matching_paren_after(tokens, i);
+            let end_idx = match (close_idx, boundary_idx) {
+                (Some(close), Some(boundary)) => close.min(boundary),
+                (Some(close), None) => close,
+                (None, Some(boundary)) => boundary,
+                (None, None) => tokens.len(),
+            };
+
+            // Cursor must be before the end of the catch parens (or statement boundary, if the
+            // closing paren hasn't been typed yet).
+            if let Some(close) = close_idx {
+                let close_start = tokens[close].span.start;
+                if cursor_offset > close_start {
+                    return false;
                 }
-                j += 1;
+            } else if let Some(boundary) = boundary_idx {
+                if cursor_offset >= tokens[boundary].span.start {
+                    return false;
+                }
             }
 
-            // Unterminated catch clause (incomplete code) - still treat as inside the parameter
-            // list if we're after the opening paren.
+            // If we can identify the catch parameter name, only treat positions *before* it as a
+            // type position.
+            if let Some(name_tok) = catch_variable_name_token(tokens, i, end_idx) {
+                return cursor_offset < name_tok.span.start;
+            }
+
+            // Incomplete catch clause; assume we're still in a type position.
             return true;
         }
 
@@ -8158,6 +8331,7 @@ fn catch_param_type_position(tokens: &[Token], cur_idx: usize, cursor_offset: us
             break;
         }
     }
+
     false
 }
 

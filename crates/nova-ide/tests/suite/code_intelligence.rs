@@ -2088,6 +2088,28 @@ class A { void m() throws <|> {} }
 }
 
 #[test]
+fn completion_in_catch_parameter_name_does_not_trigger_type_position_completion() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    try {
+    } catch (RuntimeException e<|>) {
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"else"),
+        "expected general completion keyword `else` (not type-position completions); got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_type_position_adds_import_edit_for_arraylist_without_imports() {
     let (db, file, pos) = fixture("class A { void m(){ Arr<|> xs; } }");
 

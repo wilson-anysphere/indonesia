@@ -6128,11 +6128,11 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
-        Stmt::Assert(stmt) => {
+        Stmt::Assert(assert_stmt) => {
             record_lightweight_expr(
                 file,
                 text,
-                &stmt.condition,
+                &assert_stmt.condition,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -6140,7 +6140,7 @@ fn record_lightweight_stmt(
                 references,
                 spans,
             );
-            if let Some(message) = &stmt.message {
+            if let Some(message) = &assert_stmt.message {
                 record_lightweight_expr(
                     file,
                     text,
