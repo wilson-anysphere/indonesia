@@ -175,8 +175,12 @@ impl WorkspaceEngine {
             memory,
         } = config;
 
+        let vfs = Vfs::new(LocalFs::new());
+        let open_docs = vfs.open_documents();
+
         let query_db = salsa::Database::new_with_persistence(&workspace_root, persistence);
         query_db.register_salsa_memo_evictor(&memory);
+        query_db.attach_item_tree_store(&memory, open_docs);
         let default_project = ProjectId::from_raw(0);
         // Ensure fundamental project inputs are always initialized so callers can safely
         // start with an empty/in-memory workspace.
@@ -195,7 +199,7 @@ impl WorkspaceEngine {
             Duration::from_millis(1200),
         );
         Self {
-            vfs: Vfs::new(LocalFs::new()),
+            vfs,
             query_db,
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),

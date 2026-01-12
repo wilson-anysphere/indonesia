@@ -11,10 +11,11 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::stats::HasQueryStats;
 use super::syntax::NovaSyntax;
+use super::HasItemTreeStore;
 use super::TrackedSalsaMemo;
 
 #[ra_salsa::query_group(NovaSemanticStorage)]
-pub trait NovaSemantic: NovaSyntax + HasQueryStats {
+pub trait NovaSemantic: NovaSyntax + HasQueryStats + HasItemTreeStore {
     /// Structural, trivia-insensitive per-file summary used by name resolution.
     ///
     /// This is the canonical "early-cutoff" demo: whitespace edits re-run `parse`
@@ -52,6 +53,15 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
     };
     let approx_bytes = text.len() as u64;
 
+    let store = db.item_tree_store();
+    if let Some(store) = store.as_ref() {
+        if let Some(cached) = store.get_if_text_matches(file, &text) {
+            db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
+            db.record_query_stat("item_tree", start.elapsed());
+            return cached;
+        }
+    }
+
     let file_path = db.file_path(file).filter(|p| !p.is_empty());
     let mode = db.persistence().mode();
     let fingerprint = if file_path.is_some() && mode.allows_read() {
@@ -65,22 +75,28 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
             .persistence()
             .load_ast_artifacts(file_path.as_str(), fingerprint)
         {
-            Some(artifacts) => {
-                db.record_disk_cache_hit("item_tree");
-                let result = Arc::new(artifacts.item_tree);
-                db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
-                db.record_query_stat("item_tree", start.elapsed());
-                return result;
-            }
-            None => {
-                db.record_disk_cache_miss("item_tree");
-            }
+                Some(artifacts) => {
+                    db.record_disk_cache_hit("item_tree");
+                    let result = Arc::new(artifacts.item_tree);
+                    if let Some(store) = store.as_ref() {
+                        store.insert(file, text.clone(), result.clone());
+                    }
+                    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
+                    db.record_query_stat("item_tree", start.elapsed());
+                    return result;
+                }
+                None => {
+                    db.record_disk_cache_miss("item_tree");
+                }
         }
     }
 
     let parse = db.parse(file);
     let it = build_item_tree(&parse, text.as_str());
     let result = Arc::new(it);
+    if let Some(store) = store.as_ref() {
+        store.insert(file, text.clone(), result.clone());
+    }
     db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {

@@ -35,6 +35,7 @@ mod flow;
 mod hir;
 mod ide;
 mod indexing;
+mod item_tree_store;
 mod inputs;
 mod resolve;
 mod semantic;
@@ -47,6 +48,7 @@ pub use flow::NovaFlow;
 pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use indexing::NovaIndexing;
+pub use item_tree_store::ItemTreeStore;
 pub use inputs::NovaInputs;
 pub use diagnostics::NovaDiagnostics;
 pub use resolve::NovaResolve;
@@ -71,6 +73,7 @@ use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
+use nova_vfs::OpenDocuments;
 
 use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
 use crate::{FileId, ProjectId, SourceRootId};
@@ -187,6 +190,14 @@ fn with_query_name<R>(
 /// the semantic output of queries (only the ability to warm-start from disk).
 pub trait HasFilePaths {
     fn file_path(&self, file: FileId) -> Option<Arc<String>>;
+}
+
+/// Best-effort in-memory pinning for expensive `item_tree` results for open docs.
+///
+/// This is not tracked by Salsa: it is a pure performance optimization and must
+/// never affect query semantics.
+pub trait HasItemTreeStore {
+    fn item_tree_store(&self) -> Option<Arc<ItemTreeStore>>;
 }
 
 /// File-keyed memoized query results tracked for memory accounting.
@@ -580,6 +591,7 @@ pub struct RootDatabase {
     stats: QueryStatsCollector,
     persistence: Persistence,
     file_paths: Arc<RwLock<HashMap<FileId, Arc<String>>>>,
+    item_tree_store: Option<Arc<ItemTreeStore>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
 }
 
@@ -601,6 +613,7 @@ impl RootDatabase {
             stats: QueryStatsCollector::default(),
             persistence: Persistence::new(&project_root, persistence),
             file_paths: Arc::new(RwLock::new(HashMap::new())),
+            item_tree_store: None,
             memo_footprint: Arc::new(SalsaMemoFootprint::default()),
         };
 
@@ -705,6 +718,12 @@ impl HasFilePaths for RootDatabase {
     }
 }
 
+impl HasItemTreeStore for RootDatabase {
+    fn item_tree_store(&self) -> Option<Arc<ItemTreeStore>> {
+        self.item_tree_store.clone()
+    }
+}
+
 impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
         match event.kind {
@@ -766,6 +785,7 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             stats: self.stats.clone(),
             persistence: self.persistence.clone(),
             file_paths: self.file_paths.clone(),
+            item_tree_store: self.item_tree_store.clone(),
             memo_footprint: self.memo_footprint.clone(),
         })
     }
@@ -835,11 +855,13 @@ impl MemoryEvictor for SalsaMemoEvictor {
             let stats = db.stats.clone();
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
+            let item_tree_store = db.item_tree_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
                 persistence,
                 file_paths,
+                item_tree_store,
                 memo_footprint: self.footprint.clone(),
             };
             inputs.apply_to(&mut fresh);
@@ -1338,17 +1360,39 @@ impl Database {
             let stats = db.stats.clone();
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
+            let item_tree_store = db.item_tree_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
                 persistence,
                 file_paths,
+                item_tree_store,
                 memo_footprint: self.memo_footprint.clone(),
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
         }));
         self.memo_footprint.clear();
+    }
+
+    /// Attach an open-document aware [`ItemTreeStore`] to the database.
+    ///
+    /// The store is non-tracked Salsa state and is cloned into snapshots; this
+    /// allows open documents to reuse expensive `item_tree` results across Salsa
+    /// memo eviction.
+    pub fn attach_item_tree_store(
+        &self,
+        manager: &MemoryManager,
+        open_docs: Arc<OpenDocuments>,
+    ) -> Arc<ItemTreeStore> {
+        // Avoid holding the DB lock while registering with the memory manager.
+        if let Some(existing) = self.inner.lock().item_tree_store.clone() {
+            return existing;
+        }
+
+        let store = ItemTreeStore::new(manager, open_docs);
+        self.inner.lock().item_tree_store = Some(store.clone());
+        store
     }
 
     pub fn salsa_memo_bytes(&self) -> u64 {
@@ -2584,6 +2628,30 @@ class Foo {
 
         // Previously returned results remain valid and the snapshot stays usable.
         assert_eq!(&*parse_from_snapshot, &*snap.parse(file));
+    }
+
+    #[test]
+    fn open_documents_pin_item_tree_across_salsa_memo_eviction() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+
+        let open_docs = Arc::new(OpenDocuments::default());
+        db.attach_item_tree_store(&manager, open_docs.clone());
+
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+        db.set_file_text(file, "class Foo { int x; }");
+
+        let it_before = db.with_snapshot(|snap| snap.item_tree(file));
+
+        // Rebuild the underlying Salsa DB to drop memoized results.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        let it_after = db.with_snapshot(|snap| snap.item_tree(file));
+        assert!(
+            Arc::ptr_eq(&it_before, &it_after),
+            "expected open-document ItemTreeStore to reuse item_tree result across memo eviction"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@ nova-resolve = { path = "../nova-resolve" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 nova-types-bridge = { path = "../nova-types-bridge" }
+nova-vfs = { path = "../nova-vfs" }
 parking_lot = "0.12"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 tracing = "0.1"

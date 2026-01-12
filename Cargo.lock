@@ -3598,6 +3598,7 @@ dependencies = [
  "nova-test-utils",
  "nova-types",
  "nova-types-bridge",
+ "nova-vfs",
  "parking_lot",
  "ra_ap_salsa",
  "rayon",
