@@ -82,11 +82,14 @@ use crate::path::VfsPath;
 
 /// An event produced by a file watcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WatchEvent {
+pub enum WatchEvent {
     /// One or more normalized file changes.
     ///
     /// Backends may batch multiple changes together to reduce overhead.
-    pub changes: Vec<FileChange>,
+    Changes { changes: Vec<FileChange> },
+    /// Indicates the watcher dropped events due to overflow/backpressure and downstream consumers
+    /// should rescan watched roots.
+    Rescan,
 }
 
 impl WatchEvent {
@@ -354,9 +357,126 @@ mod notify_impl {
         out
     }
 
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     #[cfg(feature = "watch-notify")]
+    const RAW_QUEUE_CAPACITY: usize = 4096;
+    #[cfg(feature = "watch-notify")]
+    const EVENTS_QUEUE_CAPACITY: usize = 1024;
+    const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
     fn notify_error_to_io(err: notify::Error) -> io::Error {
         io::Error::other(err)
+    }
+
+    fn try_send_or_overflow<T>(tx: &channel::Sender<T>, overflowed: &AtomicBool, msg: T) {
+        match tx.try_send(msg) {
+            Ok(()) => {}
+            Err(channel::TrySendError::Full(_)) => {
+                overflowed.store(true, Ordering::Release);
+            }
+            Err(channel::TrySendError::Disconnected(_)) => {
+                // The watcher is shutting down; dropping the message is fine.
+            }
+        }
+    }
+
+    fn run_notify_drain_loop(
+        raw_rx: channel::Receiver<notify::Result<notify::Event>>,
+        events_tx: channel::Sender<WatchMessage>,
+        stop_rx: channel::Receiver<()>,
+        overflowed: Arc<AtomicBool>,
+    ) {
+        let mut normalizer = EventNormalizer::new();
+
+        loop {
+            // If we've overflowed either the raw queue (notify callback) or the downstream queue,
+            // the only safe recovery strategy is a full rescan.
+            if overflowed.load(Ordering::Acquire) {
+                normalizer = EventNormalizer::new();
+                while raw_rx.try_recv().is_ok() {}
+
+                match events_tx.try_send(Ok(WatchEvent::Rescan)) {
+                    Ok(()) => {
+                        overflowed.store(false, Ordering::Release);
+                    }
+                    Err(channel::TrySendError::Full(_)) => {
+                        // Keep the flag set so we retry once consumers catch up.
+                        overflowed.store(true, Ordering::Release);
+                    }
+                    Err(channel::TrySendError::Disconnected(_)) => break,
+                }
+            }
+
+            let tick = if overflowed.load(Ordering::Acquire) {
+                channel::after(OVERFLOW_RETRY_INTERVAL)
+            } else {
+                match normalizer.pending_renames.front() {
+                    Some((started_at, _)) => {
+                        let now = Instant::now();
+                        let deadline = *started_at + EventNormalizer::MAX_AGE;
+                        let timeout = deadline.saturating_duration_since(now);
+                        channel::after(timeout)
+                    }
+                    None => channel::after(Duration::from_secs(3600)),
+                }
+            };
+
+            channel::select! {
+                recv(stop_rx) -> _ => {
+                    // Flush any pending rename-froms so they aren't silently dropped when
+                    // shutting down the watcher.
+                    let changes = normalizer.flush(Instant::now());
+                    if !changes.is_empty() {
+                        let _ = events_tx.try_send(Ok(WatchEvent::Changes { changes }));
+                    }
+                    break;
+                },
+                recv(raw_rx) -> msg => {
+                    let Ok(res) = msg else { break };
+                    match res {
+                        Ok(event) => {
+                            let now = Instant::now();
+                            let changes = normalizer.push(event, now);
+                            if !changes.is_empty() {
+                                if let Err(err) = events_tx.try_send(Ok(WatchEvent::Changes { changes })) {
+                                    if matches!(err, channel::TrySendError::Full(_)) {
+                                        overflowed.store(true, Ordering::Release);
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            // Forward the error, but also request a rescan: many notify backends use
+                            // errors to signal lost events.
+                            overflowed.store(true, Ordering::Release);
+                            if let Err(err) = events_tx.try_send(Err(notify_error_to_io(err))) {
+                                if matches!(err, channel::TrySendError::Full(_)) {
+                                    overflowed.store(true, Ordering::Release);
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                recv(tick) -> _ => {
+                    let changes = normalizer.flush(Instant::now());
+                    if !changes.is_empty() {
+                        if let Err(err) = events_tx.try_send(Ok(WatchEvent::Changes { changes })) {
+                            if matches!(err, channel::TrySendError::Full(_)) {
+                                overflowed.store(true, Ordering::Release);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(feature = "watch-notify")]
@@ -370,61 +490,38 @@ mod notify_impl {
     #[cfg(feature = "watch-notify")]
     impl NotifyFileWatcher {
         pub fn new() -> io::Result<Self> {
-            let (raw_tx, raw_rx) = channel::unbounded::<notify::Result<notify::Event>>();
-            let (events_tx, events_rx) = channel::unbounded::<WatchMessage>();
+            Self::new_with_capacities(RAW_QUEUE_CAPACITY, EVENTS_QUEUE_CAPACITY)
+        }
+
+        #[cfg(test)]
+        fn new_with_capacities_for_tests(
+            raw_queue_capacity: usize,
+            events_queue_capacity: usize,
+        ) -> io::Result<Self> {
+            Self::new_with_capacities(raw_queue_capacity, events_queue_capacity)
+        }
+
+        fn new_with_capacities(
+            raw_queue_capacity: usize,
+            events_queue_capacity: usize,
+        ) -> io::Result<Self> {
+            let (raw_tx, raw_rx) =
+                channel::bounded::<notify::Result<notify::Event>>(raw_queue_capacity);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(events_queue_capacity);
             let (stop_tx, stop_rx) = channel::bounded::<()>(0);
 
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let raw_tx_cb = raw_tx.clone();
+            let overflowed_cb = Arc::clone(&overflowed);
             let watcher = notify::recommended_watcher(move |res| {
-                let _ = raw_tx.send(res);
+                try_send_or_overflow(&raw_tx_cb, overflowed_cb.as_ref(), res);
             })
             .map_err(notify_error_to_io)?;
 
+            let thread_overflowed = Arc::clone(&overflowed);
             let thread = std::thread::spawn(move || {
-                let mut normalizer = EventNormalizer::new();
-                loop {
-                    let tick = match normalizer.pending_renames.front() {
-                        Some((started_at, _)) => {
-                            let now = Instant::now();
-                            let deadline = *started_at + EventNormalizer::MAX_AGE;
-                            let timeout = deadline.saturating_duration_since(now);
-                            channel::after(timeout)
-                        }
-                        None => channel::after(Duration::from_secs(3600)),
-                    };
-
-                    channel::select! {
-                        recv(stop_rx) -> _ => {
-                            // Flush any pending rename-froms so they aren't silently dropped when
-                            // shutting down the watcher.
-                            let changes = normalizer.flush(Instant::now());
-                            if !changes.is_empty() {
-                                let _ = events_tx.send(Ok(WatchEvent { changes }));
-                            }
-                            break;
-                        },
-                        recv(raw_rx) -> msg => {
-                            let Ok(res) = msg else { break };
-                            match res {
-                                Ok(event) => {
-                                    let now = Instant::now();
-                                    let changes = normalizer.push(event, now);
-                                    if !changes.is_empty() {
-                                        let _ = events_tx.send(Ok(WatchEvent { changes }));
-                                    }
-                                }
-                                Err(err) => {
-                                    let _ = events_tx.send(Err(notify_error_to_io(err)));
-                                }
-                            }
-                        }
-                        recv(tick) -> _ => {
-                            let changes = normalizer.flush(Instant::now());
-                            if !changes.is_empty() {
-                                let _ = events_tx.send(Ok(WatchEvent { changes }));
-                            }
-                        }
-                    }
-                }
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, thread_overflowed)
             });
 
             Ok(Self {
@@ -470,6 +567,42 @@ mod notify_impl {
         use super::*;
 
         use notify::event::{ModifyKind, RenameMode};
+
+        #[test]
+        fn emits_rescan_when_raw_queue_overflows() {
+            use notify::EventKind;
+
+            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(1);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(16);
+            let (stop_tx, stop_rx) = channel::bounded::<()>(0);
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let event = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Any),
+                paths: vec![PathBuf::from("/tmp/A.java")],
+                attrs: Default::default(),
+            };
+
+            // Fill the raw queue, then overflow it. No background thread is running yet, so this is
+            // deterministic.
+            try_send_or_overflow(&raw_tx, overflowed.as_ref(), Ok(event.clone()));
+            try_send_or_overflow(&raw_tx, overflowed.as_ref(), Ok(event));
+            assert!(overflowed.load(Ordering::Acquire));
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
+
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert_eq!(msg, WatchEvent::Rescan);
+
+            let _ = stop_tx.send(());
+            let _ = thread.join();
+        }
 
         #[test]
         fn emits_deleted_when_rename_from_expires() {
@@ -693,7 +826,7 @@ mod tests {
 
         let path = VfsPath::local(root_b.join("Main.java"));
         watcher
-            .push(WatchEvent {
+            .push(WatchEvent::Changes {
                 changes: vec![FileChange::Created { path: path.clone() }],
             })
             .unwrap();
@@ -706,7 +839,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            WatchEvent {
+            WatchEvent::Changes {
                 changes: vec![FileChange::Created { path }]
             }
         );

@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock, RwLock,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -240,6 +243,16 @@ impl Drop for WatcherHandle {
     }
 }
 
+const RAW_WATCH_QUEUE_CAPACITY: usize = 4096;
+const BATCH_QUEUE_CAPACITY: usize = 256;
+const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatcherMessage {
+    Batch(ChangeCategory, Vec<NormalizedEvent>),
+    Rescan,
+}
+
 pub(crate) struct WorkspaceEngine {
     vfs: Vfs<LocalFs>,
     overlay_docs_memory_registration: MemoryRegistration,
@@ -436,7 +449,7 @@ impl WorkspaceEngine {
             .clone();
 
         let engine = Arc::clone(self);
-        let (batch_tx, batch_rx) = channel::unbounded::<(ChangeCategory, Vec<NormalizedEvent>)>();
+        let (batch_tx, batch_rx) = channel::bounded::<WatcherMessage>(BATCH_QUEUE_CAPACITY);
 
         let (watcher_stop_tx, watcher_stop_rx) = channel::bounded::<()>(0);
         let (command_tx, command_rx) = channel::unbounded::<WatchCommand>();
@@ -503,18 +516,33 @@ impl WorkspaceEngine {
                 publish_watch_root_error(&subscribers, err);
             }
 
+            let mut rescan_pending = false;
+
             loop {
+                if rescan_pending {
+                    match batch_tx.try_send(WatcherMessage::Rescan) {
+                        Ok(()) => rescan_pending = false,
+                        Err(channel::TrySendError::Full(_)) => {
+                            // Downstream is behind; keep the rescan pending and retry soon.
+                        }
+                        Err(channel::TrySendError::Disconnected(_)) => break,
+                    }
+                }
+
                 let now = Instant::now();
-                let deadline = debouncer
+                let mut deadline = debouncer
                     .next_deadline()
                     .unwrap_or(now + Duration::from_secs(3600));
+                if rescan_pending {
+                    deadline = deadline.min(now + OVERFLOW_RETRY_INTERVAL);
+                }
                 let timeout = deadline.saturating_duration_since(now);
                 let tick = channel::after(timeout);
 
                 channel::select! {
                     recv(watcher_stop_rx) -> _ => {
                         for (cat, events) in debouncer.flush_all() {
-                            let _ = batch_tx.send((cat, events));
+                            let _ = batch_tx.try_send(WatcherMessage::Batch(cat, events));
                         }
                         break;
                     }
@@ -544,7 +572,7 @@ impl WorkspaceEngine {
                     recv(watch_rx) -> msg => {
                         let Ok(res) = msg else { break };
                         match res {
-                            Ok(WatchEvent { changes }) => {
+                            Ok(WatchEvent::Changes { changes }) => {
                                 let now = Instant::now();
                                 let config = watch_config
                                     .read()
@@ -558,23 +586,42 @@ impl WorkspaceEngine {
                                     }
                                 }
                                 for (cat, events) in debouncer.flush_due(now) {
-                                    let _ = batch_tx.send((cat, events));
+                                    if let Err(err) = batch_tx.try_send(WatcherMessage::Batch(cat, events)) {
+                                        if matches!(err, channel::TrySendError::Full(_)) {
+                                            rescan_pending = true;
+                                            debouncer = Debouncer::new([
+                                                (ChangeCategory::Source, Duration::from_millis(200)),
+                                                (ChangeCategory::Build, Duration::from_millis(200)),
+                                            ]);
+                                        } else {
+                                            break;
+                                        }
+                                    }
                                 }
                             }
-                            Err(err) => {
-                                publish_to_subscribers(
-                                    &subscribers,
-                                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                                        "File watcher error: {err}"
-                                    ))),
-                                );
+                            Ok(WatchEvent::Rescan) | Err(_) => {
+                                rescan_pending = true;
+                                debouncer = Debouncer::new([
+                                    (ChangeCategory::Source, Duration::from_millis(200)),
+                                    (ChangeCategory::Build, Duration::from_millis(200)),
+                                ]);
                             }
                         }
                     }
                     recv(tick) -> _ => {
                         let now = Instant::now();
                         for (cat, events) in debouncer.flush_due(now) {
-                            let _ = batch_tx.send((cat, events));
+                            if let Err(err) = batch_tx.try_send(WatcherMessage::Batch(cat, events)) {
+                                if matches!(err, channel::TrySendError::Full(_)) {
+                                    rescan_pending = true;
+                                    debouncer = Debouncer::new([
+                                        (ChangeCategory::Source, Duration::from_millis(200)),
+                                        (ChangeCategory::Build, Duration::from_millis(200)),
+                                    ]);
+                                } else {
+                                    break;
+                                }
+                            }
                         }
                     }
                     recv(retry_tick) -> _ => {
@@ -597,7 +644,7 @@ impl WorkspaceEngine {
                         }
 
                         for (cat, events) in debouncer.flush_due(now) {
-                            let _ = batch_tx.send((cat, events));
+                            let _ = batch_tx.try_send(WatcherMessage::Batch(cat, events));
                         }
                     }
                 }
@@ -609,40 +656,53 @@ impl WorkspaceEngine {
             channel::select! {
                 recv(driver_stop_rx) -> _ => break,
                 recv(batch_rx) -> msg => {
-                    let Ok((category, events)) = msg else { break };
-                    match category {
-                        ChangeCategory::Source => engine.apply_filesystem_events(events),
-                        ChangeCategory::Build => {
-                            // Build/config changes normally don't need to flow through the VFS.
-                            //
-                            // However, we currently treat `module-info.java` as a build file so we
-                            // can trigger a project reload to refresh the JPMS graph. We still want
-                            // the VFS + Salsa inputs to see the updated file contents promptly for
-                            // diagnostics and open-document behavior.
-                            let mut java_events = Vec::new();
-                            let mut changed = Vec::new();
-                            for ev in events {
-                                let is_java = ev.paths().any(|path| {
-                                    path.extension().and_then(|ext| ext.to_str()) == Some("java")
-                                });
-                                if is_java {
-                                    java_events.push(ev.clone());
-                                }
+                    let Ok(msg) = msg else { break };
+                    match msg {
+                        WatcherMessage::Batch(category, events) => match category {
+                            ChangeCategory::Source => engine.apply_filesystem_events(events),
+                            ChangeCategory::Build => {
+                                // Build/config changes normally don't need to flow through the VFS.
+                                //
+                                // However, we currently treat `module-info.java` as a build file so we
+                                // can trigger a project reload to refresh the JPMS graph. We still want
+                                // the VFS + Salsa inputs to see the updated file contents promptly for
+                                // diagnostics and open-document behavior.
+                                let mut java_events = Vec::new();
+                                let mut changed = Vec::new();
+                                for ev in events {
+                                    let is_java = ev.paths().any(|path| {
+                                        path.extension().and_then(|ext| ext.to_str()) == Some("java")
+                                    });
+                                    if is_java {
+                                        java_events.push(ev.clone());
+                                    }
 
-                                match ev {
-                                    NormalizedEvent::Created(p)
-                                    | NormalizedEvent::Modified(p)
-                                    | NormalizedEvent::Deleted(p) => changed.push(p),
-                                    NormalizedEvent::Moved { from, to } => {
-                                        changed.push(from);
-                                        changed.push(to);
+                                    match ev {
+                                        NormalizedEvent::Created(p)
+                                        | NormalizedEvent::Modified(p)
+                                        | NormalizedEvent::Deleted(p) => changed.push(p),
+                                        NormalizedEvent::Moved { from, to } => {
+                                            changed.push(from);
+                                            changed.push(to);
+                                        }
                                     }
                                 }
+
+                                if !java_events.is_empty() {
+                                    engine.apply_filesystem_events(java_events);
+                                }
+                                engine.request_project_reload(changed);
                             }
-                            if !java_events.is_empty() {
-                                engine.apply_filesystem_events(java_events);
+                        },
+                        WatcherMessage::Rescan => {
+                            if let Err(err) = engine.reload_project_now(&[]) {
+                                publish_to_subscribers(
+                                    &engine.subscribers,
+                                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                        "Project rescan failed: {err}"
+                                    ))),
+                                );
                             }
-                            engine.request_project_reload(changed);
                         }
                     }
                 }
@@ -1505,7 +1565,6 @@ fn publish_watch_root_error(
         }
     }
 }
-
 fn order_move_events(mut moves: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
     if moves.len() <= 1 {
         return moves;
