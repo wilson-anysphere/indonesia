@@ -1010,6 +1010,7 @@ where
         let mut actions = Vec::new();
 
         let source = self.db.file_content(file);
+        let source_index = TextIndex::new(source);
         let uri: Option<lsp_types::Uri> = self
             .db
             .file_path(file)
@@ -1045,10 +1046,11 @@ where
         }
 
         if let (Some(uri), Some(span)) = (uri, span) {
-            let source_index = TextIndex::new(source);
             let selection = source_index.span_to_lsp_range(span);
 
-            let diagnostics = crate::code_intelligence::core_file_diagnostics(
+            // Quick-fix code actions are latency-sensitive. Avoid running full/workspace-scoped
+            // diagnostics here; compute only the minimal diagnostics needed for quick fixes.
+            let diagnostics = crate::code_intelligence::diagnostics_for_quick_fixes(
                 self.db.as_ref().as_dyn_nova_db(),
                 file,
                 &cancel,
@@ -1128,6 +1130,7 @@ where
         let mut actions = Vec::new();
 
         let source = self.db.file_content(file);
+        let source_index = TextIndex::new(source);
         let uri: Option<lsp_types::Uri> = self
             .db
             .file_path(file)
@@ -1164,7 +1167,6 @@ where
         }
 
         if let (Some(uri), Some(span)) = (uri, span) {
-            let source_index = TextIndex::new(source);
             let selection = source_index.span_to_lsp_range(span);
 
             // Convert LSP diagnostics to Nova diagnostics so we can reuse existing quick-fix logic
@@ -2348,6 +2350,44 @@ class A {
         assert!(
             titles.iter().any(|t| *t == "extra action"),
             "expected extension action; got {titles:?}"
+        );
+    }
+
+    #[test]
+    fn offers_quick_fix_code_action_for_type_mismatch() {
+        use nova_db::InMemoryFileStore;
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/quickfix.java"));
+        let source = r#"
+class A {
+  void m() {
+    int x = "";
+  }
+}
+"#;
+        db.set_file_text(file, source.to_string());
+
+        // Place the cursor inside the string literal so the request span intersects the
+        // `type-mismatch` diagnostic span (which is reported on the initializer expression).
+        let cursor = source.find("\"\"").expect("string literal") + 1;
+        let span = Span::new(cursor, cursor);
+
+        let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+        let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+        let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(span));
+        let has_quick_fix = actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) => {
+                action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                    && action.title == "Cast to int"
+            }
+            _ => false,
+        });
+
+        assert!(
+            has_quick_fix,
+            "expected quick fix action for type mismatch; got {actions:?}"
         );
     }
 

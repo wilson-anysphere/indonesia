@@ -1488,6 +1488,99 @@ pub(crate) fn core_file_diagnostics_cancelable(
     diagnostics
 }
 
+/// Lightweight diagnostics set used for quick-fix code action generation.
+///
+/// This must stay latency-friendly: it should not trigger any workspace-scoped framework
+/// analyzers (Spring DI, JPA, Dagger, Quarkus, Micronaut, ...).
+///
+/// In particular, this intentionally differs from [`file_diagnostics`] (full diagnostics) and from
+/// `IdeExtensions::all_diagnostics` (which includes extension-provided diagnostics).
+pub(crate) fn diagnostics_for_quick_fixes(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &nova_scheduler::CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    // Avoid emitting Java-centric token diagnostics for application config files; those are handled
+    // by the framework layer and aren't useful for quick fixes.
+    if let Some(path) = db.file_path(file) {
+        if is_spring_properties_file(path) || is_spring_yaml_file(path) {
+            return Vec::new();
+        }
+    }
+
+    let text = db.file_content(file);
+    let is_java = db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
+    if !is_java {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+
+    // 1) Syntax errors (optional but cheap).
+    //
+    // Use the lightweight token parser (unterminated literals/comments). Avoid the heavier full
+    // Java grammar parser here; Salsa queries will still surface parse failures as needed.
+    let parse = nova_syntax::parse(text);
+    diagnostics.extend(parse.errors.into_iter().map(|e| {
+        Diagnostic::error(
+            "SYNTAX",
+            e.message,
+            Some(Span::new(e.range.start as usize, e.range.end as usize)),
+        )
+    }));
+
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    // 2) Unused imports (best-effort, cheap).
+    diagnostics.extend(unused_import_diagnostics(text));
+
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    // 3) Demand-driven Salsa diagnostics (type checking + flow + imports).
+    //
+    // This intentionally avoids any framework analyzers and uses the lightweight
+    // `with_salsa_snapshot_for_single_file` harness to keep the query surface minimal.
+    with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+        diagnostics.extend(snap.type_diagnostics(file));
+        diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
+    });
+
+    // 4) Unresolved references (best-effort).
+    //
+    // Keep this enabled: it is local-only and provides a simple substrate for future quick-fixes
+    // (e.g. "create method", "add import") without requiring workspace/framework analysis.
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let analysis = analyze(text);
+    for call in &analysis.calls {
+        if call.receiver.is_some() {
+            continue;
+        }
+        if analysis.methods.iter().any(|m| m.name == call.name) {
+            continue;
+        }
+        diagnostics.push(Diagnostic::error(
+            "UNRESOLVED_REFERENCE",
+            format!("Cannot resolve symbol '{}'", call.name),
+            Some(call.name_span),
+        ));
+    }
+
+    diagnostics
+}
+
 /// Aggregate all diagnostics for a single file, computing semantic diagnostics using `semantic_db`.
 pub fn file_diagnostics_with_semantic_db(
     db: &dyn Database,

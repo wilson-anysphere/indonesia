@@ -6,9 +6,11 @@ use nova_db::InMemoryFileStore;
 use nova_ext::ProjectId;
 use nova_ide::extensions::IdeExtensions;
 
-pub const CARET: &str = crate::text_fixture::CARET;
+mod text_fixture;
 
-pub use crate::text_fixture::offset_to_position;
+pub const CARET: &str = text_fixture::CARET;
+
+pub use text_fixture::offset_to_position;
 
 pub struct Fixture {
     pub db: Arc<InMemoryFileStore>,
