@@ -461,6 +461,36 @@ pub fn inline_variable(
     }
 
     let root = parsed.syntax();
+
+    // Variables declared in `for` headers or as try-with-resources bindings have special lifetime
+    // semantics (loop-init evaluation / resource closing). Conservatively refuse to inline them.
+    if let Some(declarator) = root
+        .descendants()
+        .filter_map(ast::VariableDeclarator::cast)
+        .find(|decl| {
+            decl.name_token()
+                .map(|tok| syntax_token_range(&tok) == def.name_range)
+                .unwrap_or(false)
+        })
+    {
+        if declarator
+            .syntax()
+            .ancestors()
+            .any(|n| matches!(n.kind(), SyntaxKind::ForHeader | SyntaxKind::ForInit))
+        {
+            return Err(RefactorError::InlineNotSupported);
+        }
+
+        if declarator.syntax().ancestors().any(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::ResourceSpecification | SyntaxKind::Resource
+            )
+        }) {
+            return Err(RefactorError::InlineNotSupported);
+        }
+    }
+
     let decl = find_local_variable_declaration(&root, def.name_range)
         .ok_or(RefactorError::InlineNotSupported)?;
 

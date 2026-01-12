@@ -1389,7 +1389,50 @@ impl Lowerer {
             }
             SyntaxKind::ForStatement => Some(self.lower_for_stmt(node)),
             SyntaxKind::SwitchStatement => Some(ast::Stmt::Switch(self.lower_switch_stmt(node))),
-            SyntaxKind::TryStatement => Some(ast::Stmt::Try(self.lower_try_stmt(node))),
+            SyntaxKind::TryStatement => {
+                // `try ( ... ) { ... }` introduces one or more resources. Model this as a
+                // synthetic block so resource bindings behave like regular local variables for
+                // downstream HIR + scope building.
+                //
+                // This is intentionally a best-effort desugaring; resource closing semantics are
+                // handled elsewhere. For refactoring/name resolution it is sufficient that the
+                // binding names are declared in an enclosing scope.
+                if let Some(resource_spec) = node
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::ResourceSpecification)
+                {
+                    let mut statements = Vec::new();
+                    for resource in resource_spec
+                        .children()
+                        .filter(|child| child.kind() == SyntaxKind::Resource)
+                    {
+                        if let Some(local) = self.lower_resource_local_var(&resource) {
+                            statements.push(ast::Stmt::LocalVar(local));
+                            continue;
+                        }
+
+                        // Expression resources (`try (foo) { ... }`) still need to be traversed
+                        // for name resolution, so lower them as a standalone expression statement.
+                        if let Some(expr) = resource
+                            .children()
+                            .find(|child| is_expression_kind(child.kind()))
+                        {
+                            statements.push(ast::Stmt::Expr(ast::ExprStmt {
+                                expr: self.lower_expr(&expr),
+                                range: self.spans.map_node(&resource),
+                            }));
+                        }
+                    }
+
+                    statements.push(ast::Stmt::Try(self.lower_try_stmt(node)));
+                    return Some(ast::Stmt::Block(ast::Block {
+                        statements,
+                        range: self.spans.map_node(node),
+                    }));
+                }
+
+                Some(ast::Stmt::Try(self.lower_try_stmt(node)))
+            }
             SyntaxKind::ThrowStatement => Some(ast::Stmt::Throw(self.lower_throw_stmt(node))),
             SyntaxKind::BreakStatement => Some(ast::Stmt::Break(self.spans.map_node(node))),
             SyntaxKind::ContinueStatement => Some(ast::Stmt::Continue(self.spans.map_node(node))),
@@ -1445,6 +1488,46 @@ impl Lowerer {
             initializer,
             range: self.spans.map_node(node),
         }
+    }
+
+    fn lower_resource_local_var(&self, node: &SyntaxNode) -> Option<ast::LocalVarStmt> {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
+
+        let ty_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Type)?;
+        let ty = self.lower_type_ref(&ty_node);
+
+        // Resource specs allow only a single declarator and are represented directly as a
+        // `VariableDeclarator` node (not a `VariableDeclaratorList`).
+        let declarator = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::VariableDeclarator)?;
+
+        let name_token = self.first_ident_like_token(&declarator);
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+        let initializer = declarator
+            .children()
+            .find(|c| is_expression_kind(c.kind()))
+            .map(|expr| self.lower_expr(&expr));
+
+        Some(ast::LocalVarStmt {
+            modifiers,
+            annotations,
+            ty,
+            name,
+            name_range,
+            initializer,
+            range: self.spans.map_node(node),
+        })
     }
 
     fn lower_local_var_decl_in_range(
