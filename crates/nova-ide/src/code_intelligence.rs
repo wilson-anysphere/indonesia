@@ -4802,11 +4802,17 @@ fn postfix_completions(
 
     // `for` loop (arrays or `Iterable`).
     if is_array || is_iterable {
-        items.push(postfix_completion_item(
-            replace_range,
-            "for",
-            format!("for (var ${{1:item}} : {}) {{\n    $0\n}}", receiver.expr),
-        ));
+        let snippet = match &receiver_ty {
+            Type::Array(elem) if !elem.is_errorish() => {
+                let elem_ty = nova_types::format_type(&types, elem);
+                format!(
+                    "for ({elem_ty} ${{1:item}} : {}) {{\n    $0\n}}",
+                    receiver.expr
+                )
+            }
+            _ => format!("for (var ${{1:item}} : {}) {{\n    $0\n}}", receiver.expr),
+        };
+        items.push(postfix_completion_item(replace_range, "for", snippet));
     }
 
     // Collection-y templates.

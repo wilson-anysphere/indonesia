@@ -125,8 +125,8 @@ class A {
     assert_eq!(edit.range.start, offset_to_position(&text, expr_start));
     assert_eq!(edit.range.end, pos);
     assert!(
-        edit.new_text.contains("for (var"),
-        "expected snippet to contain `for (var`; got {:?}",
+        edit.new_text.contains("for (String"),
+        "expected snippet to contain `for (String`; got {:?}",
         edit.new_text
     );
     assert!(
