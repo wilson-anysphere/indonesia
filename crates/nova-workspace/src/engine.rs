@@ -1976,7 +1976,6 @@ impl WorkspaceEngine {
             .tracker()
             .set_bytes(self.vfs.estimated_bytes() as u64);
     }
-
     fn memory_report_for_work(&self) -> MemoryReport {
         // Keep eviction and degraded settings reasonably fresh without running the
         // (potentially expensive) eviction loop on every diagnostics/completions request.
@@ -2057,6 +2056,10 @@ impl WorkspaceEngine {
         }));
 
         diagnostics
+    }
+
+    pub(crate) fn query_db(&self) -> salsa::Database {
+        self.query_db.clone()
     }
 
     pub(crate) fn vfs(&self) -> &Vfs<LocalFs> {

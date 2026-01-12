@@ -28,6 +28,11 @@ pub struct WorkspaceSnapshot {
     pub all_file_ids: Vec<FileId>,
     /// Reverse lookup for local filesystem paths.
     pub path_to_id: HashMap<PathBuf, FileId>,
+    /// Optional long-lived Salsa query database.
+    ///
+    /// When this snapshot is created from a [`WorkspaceEngine`], this is set to
+    /// the engine's shared query database so higher layers (e.g. `nova-ide`
+    /// diagnostics) can reuse memoized results.
     salsa_db: Option<SalsaDatabase>,
 }
 
@@ -54,13 +59,14 @@ impl WorkspaceSnapshot {
     pub(crate) fn from_engine(engine: &WorkspaceEngine) -> Self {
         let vfs = engine.vfs();
         let all_file_ids = vfs.all_file_ids();
+        let query_db = engine.query_db();
 
         let mut file_paths = HashMap::with_capacity(all_file_ids.len());
         let mut file_contents = HashMap::with_capacity(all_file_ids.len());
         let mut path_to_id = HashMap::with_capacity(all_file_ids.len());
         let empty = Arc::new(String::new());
 
-        engine.query_db.with_snapshot(|snap| {
+        query_db.with_snapshot(|snap| {
             let salsa_file_ids = snap.all_file_ids();
             let salsa_file_ids: &[FileId] = salsa_file_ids.as_ref().as_slice();
             let mut salsa_idx = 0usize;
@@ -112,7 +118,7 @@ impl WorkspaceSnapshot {
             file_contents,
             all_file_ids,
             path_to_id,
-            salsa_db: Some(engine.query_db.clone()),
+            salsa_db: Some(query_db),
         }
     }
 
@@ -378,6 +384,65 @@ mod tests {
         let snapshot = WorkspaceSnapshot::from_engine(engine);
         assert_eq!(snapshot.file_id(&file), Some(file_id));
         assert_eq!(snapshot.file_content(file_id), "class Main { disk }");
+    }
+
+    #[test]
+    fn from_engine_exposes_salsa_db_for_diagnostics_reuse() {
+        let workspace = crate::Workspace::new_in_memory();
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
+
+        let file_id = workspace.open_document(path.clone(), "class Main {}".to_string(), 1);
+        let engine = workspace.engine_for_tests();
+
+        let snapshot = WorkspaceSnapshot::from_engine(engine);
+        assert!(
+            snapshot.salsa_db().is_some(),
+            "engine-backed snapshots should expose a Salsa DB for memoized diagnostics"
+        );
+
+        // Ensure `nova_ide::file_diagnostics_with_semantic_db` can run on the
+        // engine-backed Salsa DB by checking that the DB records memoization
+        // validation across repeated calls.
+        let salsa = snapshot
+            .salsa_db()
+            .expect("snapshot should expose the engine Salsa DB");
+        salsa.clear_query_stats();
+
+        // Force a revision bump so Salsa validates memoized values and emits
+        // `DidValidateMemoizedValue` events.
+        salsa.request_cancellation();
+        let _ = salsa.with_snapshot(|semantic| {
+            nova_ide::file_diagnostics_with_semantic_db(&snapshot, semantic, file_id)
+        });
+        let first = salsa.query_stats();
+        let validated_first: u64 = first
+            .by_query
+            .values()
+            .map(|stat| stat.validated_memoized)
+            .sum();
+        let executed_first: u64 = first.by_query.values().map(|stat| stat.executions).sum();
+        assert!(
+            validated_first > 0 || executed_first > 0,
+            "expected Salsa queries to run on the engine DB when diagnostics are computed"
+        );
+
+        salsa.request_cancellation();
+        let _ = salsa.with_snapshot(|semantic| {
+            nova_ide::file_diagnostics_with_semantic_db(&snapshot, semantic, file_id)
+        });
+        let second = salsa.query_stats();
+        let validated_second: u64 = second
+            .by_query
+            .values()
+            .map(|stat| stat.validated_memoized)
+            .sum();
+        assert!(
+            validated_second > validated_first,
+            "expected memoized Salsa values to be validated on the second diagnostics run"
+        );
     }
 
     #[test]
