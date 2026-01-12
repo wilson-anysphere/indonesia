@@ -28,6 +28,7 @@ mod framework_db_adapter;
 mod framework_db_spring_metadata_from_jars;
 mod framework_extensions;
 mod framework_no_duplicate_diagnostics;
+mod framework_no_duplicate_completions;
 mod hierarchy_workspace;
 mod import_diagnostics;
 mod jpa_intel;
