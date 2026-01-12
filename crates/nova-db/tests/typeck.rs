@@ -7,3 +7,7 @@
 // Core typeck regression tests live in `tests/suite/typeck.rs`.
 #[path = "suite/typeck.rs"]
 mod suite_typeck;
+
+// Demand-driven query regression tests that aren't part of the full suite harness.
+#[path = "typeck/resolve_method_call.rs"]
+mod resolve_method_call;

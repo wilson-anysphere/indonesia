@@ -293,13 +293,27 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
 
 fn resolve_method_call(
     db: &dyn NovaTypeck,
-    _file: FileId,
+    file: FileId,
     call_site: FileExprId,
 ) -> Option<ResolvedMethod> {
-    let body = db.typeck_body(call_site.owner);
-    body.call_resolutions
-        .get(call_site.expr.idx())
-        .and_then(|m| m.clone())
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span =
+        tracing::debug_span!("query", name = "resolve_method_call", ?file, ?call_site).entered();
+
+    cancel::check_cancelled(db);
+
+    // Avoid mismatched keys (shouldn't happen, but this query is used by IDE features).
+    if def_file(call_site.owner) != file {
+        db.record_query_stat("resolve_method_call", start.elapsed());
+        return None;
+    }
+
+    // Demand-driven call resolution: avoid running `typeck_body` for the entire owner.
+    let resolved = db.resolve_method_call_demand(file, call_site);
+    db.record_query_stat("resolve_method_call", start.elapsed());
+    resolved
 }
 
 fn resolve_method_call_demand(
