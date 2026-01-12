@@ -93,6 +93,31 @@ class A {
 }
 
 #[test]
+fn completion_includes_if_snippet_template() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let if_item = items
+        .iter()
+        .find(|i| i.label == "if")
+        .expect("expected if completion item");
+    assert_eq!(if_item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    let insert_text = if_item.insert_text.as_deref().unwrap_or("");
+    assert!(
+        insert_text.contains("if ("),
+        "expected snippet to contain `if (`; got {insert_text:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_includes_arraylist_with_star_import() {
     let (db, file, pos) = fixture(
         r#"

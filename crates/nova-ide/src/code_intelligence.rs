@@ -1637,12 +1637,33 @@ fn general_completions(
         }
     }
 
-    for kw in ["if", "else", "for", "while", "return", "class", "new"] {
-        items.push(CompletionItem {
-            label: kw.to_string(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            ..Default::default()
-        });
+    for (kw, snippet) in [
+        ("if", Some("if (${1:condition}) {\n    $0\n}")),
+        (
+            "for",
+            Some("for (${1:int i = 0}; ${2:i < n}; ${3:i++}) {\n    $0\n}"),
+        ),
+        ("while", Some("while (${1:condition}) {\n    $0\n}")),
+        ("try", Some("try {\n    $0\n} catch (${1:Exception e}) {\n}")),
+        ("else", None),
+        ("return", None),
+        ("class", None),
+        ("new", None),
+    ] {
+        match snippet {
+            Some(snippet) => items.push(CompletionItem {
+                label: kw.to_string(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                insert_text: Some(snippet.to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            }),
+            None => items.push(CompletionItem {
+                label: kw.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                ..Default::default()
+            }),
+        }
     }
 
     let last_used_offsets = last_used_offsets(&analysis, offset);
