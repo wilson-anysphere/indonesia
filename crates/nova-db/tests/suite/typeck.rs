@@ -1453,6 +1453,165 @@ class C {
     );
 }
 
+
+#[test]
+fn resolve_method_call_demand_propagates_expected_return_through_conditional() {
+    let src = r#"
+import java.util.*;
+class C {
+    List<String> m(boolean b) {
+        return b ? Collections.emptyList() : Collections.emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the call expression inside `C.m` (nested in a conditional return expr).
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let return_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Return {
+                expr: Some(expr), ..
+            } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return statement with expression");
+
+    let call_expr = match &body.exprs[return_expr] {
+        nova_hir::hir::Expr::Conditional { then_expr, .. } => *then_expr,
+        other => panic!("expected return expression to be Conditional, got {other:?}"),
+    };
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected then-branch expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected method call resolution");
+
+    assert_eq!(resolved.name, "emptyList");
+
+    // Target typing should infer `T = String`, yielding a `List<String>` return type.
+    let types = TypeStore::with_minimal_jdk();
+    let list = types
+        .class_id("java.util.List")
+        .expect("minimal jdk should define java.util.List");
+    let string = Type::class(types.well_known().string, vec![]);
+    assert_eq!(resolved.inferred_type_args, vec![string.clone()]);
+    assert_eq!(resolved.return_type, Type::class(list, vec![string]));
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn resolve_method_call_demand_uses_assignment_lhs_type_for_target_typed_generic_call() {
+    let src = r#"
+import java.util.*;
+class C {
+    void m(List<String> xs) {
+        xs = Collections.emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the call expression on the RHS of the assignment `xs = Collections.emptyList()`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let assign_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement");
+
+    let call_expr = match &body.exprs[assign_expr] {
+        nova_hir::hir::Expr::Assign {
+            op: nova_hir::hir::AssignOp::Assign,
+            rhs,
+            ..
+        } => *rhs,
+        other => panic!("expected assignment expression, got {other:?}"),
+    };
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected RHS expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected method call resolution");
+
+    assert_eq!(resolved.name, "emptyList");
+
+    // The assignment LHS `xs` has type `List<String>`, which should target-type the call.
+    let types = TypeStore::with_minimal_jdk();
+    let list = types
+        .class_id("java.util.List")
+        .expect("minimal jdk should define java.util.List");
+    let string = Type::class(types.well_known().string, vec![]);
+    assert_eq!(resolved.inferred_type_args, vec![string.clone()]);
+    assert_eq!(resolved.return_type, Type::class(list, vec![string]));
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
 #[test]
 fn resolve_method_call_demand_resolves_static_import_from_other_file() {
     let mut db = SalsaRootDatabase::default();

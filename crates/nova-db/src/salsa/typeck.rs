@@ -932,36 +932,174 @@ fn resolve_method_call_demand(
         checker.local_types[idx] = ty;
     }
 
-    // Best-effort: propagate an expected type for this expression when it appears in a "simple"
-    // target-typed context (return statement / explicitly typed local initializer). This improves
-    // generic method inference without requiring full-body typeck.
-    let expected = {
-        fn returned_from_method_body(
+    // Best-effort: infer a *minimal enclosing expression* that still propagates target typing.
+    //
+    // This allows demand-driven method resolution to benefit from expected-type propagation through
+    // expressions like `return cond ? foo() : bar();` or `x = cond ? foo() : bar();` without running
+    // full-body typeck.
+    let (root_expr, expected) = {
+        let mut parent_expr: Vec<Option<HirExprId>> = vec![None; body.exprs.len()];
+        let mut visited_expr: Vec<bool> = vec![false; body.exprs.len()];
+
+        fn visit_expr(
+            body: &HirBody,
+            expr: HirExprId,
+            parent_expr: &mut [Option<HirExprId>],
+            visited_expr: &mut [bool],
+        ) {
+            if visited_expr.get(expr.idx()).copied().unwrap_or(false) {
+                return;
+            }
+            if let Some(slot) = visited_expr.get_mut(expr.idx()) {
+                *slot = true;
+            }
+
+            let set_parent = |parent_expr: &mut [Option<HirExprId>], child: HirExprId| {
+                if child.idx() < parent_expr.len() && parent_expr[child.idx()].is_none() {
+                    parent_expr[child.idx()] = Some(expr);
+                }
+            };
+
+            match &body.exprs[expr] {
+                HirExpr::Invalid { children, .. } => {
+                    for child in children {
+                        set_parent(parent_expr, *child);
+                        visit_expr(body, *child, parent_expr, visited_expr);
+                    }
+                }
+                HirExpr::FieldAccess { receiver, .. }
+                | HirExpr::MethodReference { receiver, .. }
+                | HirExpr::ConstructorReference { receiver, .. } => {
+                    set_parent(parent_expr, *receiver);
+                    visit_expr(body, *receiver, parent_expr, visited_expr);
+                }
+                HirExpr::ClassLiteral { ty, .. } => {
+                    set_parent(parent_expr, *ty);
+                    visit_expr(body, *ty, parent_expr, visited_expr);
+                }
+                HirExpr::Call { callee, args, .. } => {
+                    set_parent(parent_expr, *callee);
+                    visit_expr(body, *callee, parent_expr, visited_expr);
+                    for arg in args {
+                        set_parent(parent_expr, *arg);
+                        visit_expr(body, *arg, parent_expr, visited_expr);
+                    }
+                }
+                HirExpr::New { args, .. } => {
+                    for arg in args {
+                        set_parent(parent_expr, *arg);
+                        visit_expr(body, *arg, parent_expr, visited_expr);
+                    }
+                }
+                HirExpr::Unary { expr: inner, .. } => {
+                    set_parent(parent_expr, *inner);
+                    visit_expr(body, *inner, parent_expr, visited_expr);
+                }
+                HirExpr::Binary { lhs, rhs, .. } | HirExpr::Assign { lhs, rhs, .. } => {
+                    set_parent(parent_expr, *lhs);
+                    set_parent(parent_expr, *rhs);
+                    visit_expr(body, *lhs, parent_expr, visited_expr);
+                    visit_expr(body, *rhs, parent_expr, visited_expr);
+                }
+                HirExpr::Conditional {
+                    condition,
+                    then_expr,
+                    else_expr,
+                    ..
+                } => {
+                    set_parent(parent_expr, *condition);
+                    set_parent(parent_expr, *then_expr);
+                    set_parent(parent_expr, *else_expr);
+                    visit_expr(body, *condition, parent_expr, visited_expr);
+                    visit_expr(body, *then_expr, parent_expr, visited_expr);
+                    visit_expr(body, *else_expr, parent_expr, visited_expr);
+                }
+                HirExpr::Lambda { body: b, .. } => match b {
+                    LambdaBody::Expr(expr_id) => {
+                        set_parent(parent_expr, *expr_id);
+                        visit_expr(body, *expr_id, parent_expr, visited_expr);
+                    }
+                    LambdaBody::Block(stmt_id) => {
+                        visit_stmt(body, *stmt_id, parent_expr, visited_expr);
+                    }
+                },
+                HirExpr::Name { .. }
+                | HirExpr::Literal { .. }
+                | HirExpr::Null { .. }
+                | HirExpr::This { .. }
+                | HirExpr::Super { .. }
+                | HirExpr::Missing { .. } => {}
+            }
+        }
+
+        fn visit_stmt(
             body: &HirBody,
             stmt: nova_hir::hir::StmtId,
-            expr: HirExprId,
-        ) -> bool {
+            parent_expr: &mut [Option<HirExprId>],
+            visited_expr: &mut [bool],
+        ) {
             match &body.stmts[stmt] {
-                HirStmt::Return { expr: Some(e), .. } => *e == expr,
-                HirStmt::Return { expr: None, .. } => false,
-                HirStmt::Block { statements, .. } => statements
-                    .iter()
-                    .any(|s| returned_from_method_body(body, *s, expr)),
+                HirStmt::Block { statements, .. } => {
+                    for stmt in statements {
+                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                    }
+                }
+                HirStmt::Let { initializer, .. } => {
+                    if let Some(expr) = initializer {
+                        visit_expr(body, *expr, parent_expr, visited_expr);
+                    }
+                }
+                HirStmt::Expr { expr, .. } => visit_expr(body, *expr, parent_expr, visited_expr),
+                HirStmt::Return { expr, .. } => {
+                    if let Some(expr) = expr {
+                        visit_expr(body, *expr, parent_expr, visited_expr);
+                    }
+                }
                 HirStmt::If {
+                    condition,
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    returned_from_method_body(body, *then_branch, expr)
-                        || else_branch.is_some_and(|s| returned_from_method_body(body, s, expr))
+                    visit_expr(body, *condition, parent_expr, visited_expr);
+                    visit_stmt(body, *then_branch, parent_expr, visited_expr);
+                    if let Some(stmt) = else_branch {
+                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                    }
                 }
-                HirStmt::While { body: b, .. }
-                | HirStmt::Switch { body: b, .. }
-                | HirStmt::ForEach { body: b, .. } => returned_from_method_body(body, *b, expr),
-                HirStmt::For { init, body: b, .. } => {
-                    init.iter()
-                        .any(|s| returned_from_method_body(body, *s, expr))
-                        || returned_from_method_body(body, *b, expr)
+                HirStmt::While {
+                    condition, body: b, ..
+                } => {
+                    visit_expr(body, *condition, parent_expr, visited_expr);
+                    visit_stmt(body, *b, parent_expr, visited_expr);
+                }
+                HirStmt::For {
+                    init,
+                    condition,
+                    update,
+                    body: b,
+                    ..
+                } => {
+                    for stmt in init {
+                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                    }
+                    if let Some(expr) = condition {
+                        visit_expr(body, *expr, parent_expr, visited_expr);
+                    }
+                    for expr in update {
+                        visit_expr(body, *expr, parent_expr, visited_expr);
+                    }
+                    visit_stmt(body, *b, parent_expr, visited_expr);
+                }
+                HirStmt::ForEach {
+                    iterable, body: b, ..
+                } => {
+                    visit_expr(body, *iterable, parent_expr, visited_expr);
+                    visit_stmt(body, *b, parent_expr, visited_expr);
+                }
+                HirStmt::Switch { selector, body: b, .. } => {
+                    visit_expr(body, *selector, parent_expr, visited_expr);
+                    visit_stmt(body, *b, parent_expr, visited_expr);
                 }
                 HirStmt::Try {
                     body: b,
@@ -969,40 +1107,153 @@ fn resolve_method_call_demand(
                     finally,
                     ..
                 } => {
-                    returned_from_method_body(body, *b, expr)
-                        || catches
-                            .iter()
-                            .any(|c| returned_from_method_body(body, c.body, expr))
-                        || finally.is_some_and(|s| returned_from_method_body(body, s, expr))
+                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    for catch in catches {
+                        visit_stmt(body, catch.body, parent_expr, visited_expr);
+                    }
+                    if let Some(stmt) = finally {
+                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                    }
                 }
-                HirStmt::Let { .. }
+                HirStmt::Throw { expr, .. } => visit_expr(body, *expr, parent_expr, visited_expr),
+                HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
+            }
+        }
+
+        visit_stmt(&body, body.root, &mut parent_expr, &mut visited_expr);
+
+        // Map "expected types" for expression roots that are directly target-typed by a statement.
+        let mut expected_roots: Vec<Option<Type>> = vec![None; body.exprs.len()];
+        fn collect_expected_roots(
+            body: &HirBody,
+            stmt: nova_hir::hir::StmtId,
+            expected_return: &Type,
+            local_types: &[Type],
+            expected_roots: &mut [Option<Type>],
+        ) {
+            match &body.stmts[stmt] {
+                HirStmt::Return { expr: Some(expr), .. } => {
+                    if !expected_return.is_errorish() && expr.idx() < expected_roots.len() {
+                        expected_roots[expr.idx()] = Some(expected_return.clone());
+                    }
+                }
+                HirStmt::Block { statements, .. } => {
+                    for stmt in statements {
+                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                    }
+                }
+                HirStmt::Let {
+                    local,
+                    initializer: Some(expr),
+                    ..
+                } => {
+                    if expr.idx() < expected_roots.len() {
+                        if let Some(ty) = local_types.get(local.idx()).filter(|ty| !ty.is_errorish()) {
+                            expected_roots[expr.idx()] = Some(ty.clone());
+                        }
+                    }
+                }
+                HirStmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    collect_expected_roots(body, *then_branch, expected_return, local_types, expected_roots);
+                    if let Some(stmt) = else_branch {
+                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                    }
+                }
+                HirStmt::While { body: b, .. }
+                | HirStmt::Switch { body: b, .. }
+                | HirStmt::ForEach { body: b, .. } => {
+                    collect_expected_roots(body, *b, expected_return, local_types, expected_roots);
+                }
+                HirStmt::For { init, body: b, .. } => {
+                    for stmt in init {
+                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                    }
+                    collect_expected_roots(body, *b, expected_return, local_types, expected_roots);
+                }
+                HirStmt::Try {
+                    body: b,
+                    catches,
+                    finally,
+                    ..
+                } => {
+                    collect_expected_roots(body, *b, expected_return, local_types, expected_roots);
+                    for catch in catches {
+                        collect_expected_roots(body, catch.body, expected_return, local_types, expected_roots);
+                    }
+                    if let Some(stmt) = finally {
+                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                    }
+                }
+                HirStmt::Return { expr: None, .. }
+                | HirStmt::Let { .. }
                 | HirStmt::Expr { .. }
                 | HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
-                | HirStmt::Empty { .. } => false,
+                | HirStmt::Empty { .. } => {}
             }
         }
 
-        if returned_from_method_body(&body, body.root, call_site.expr) {
-            (!checker.expected_return.is_errorish()).then_some(checker.expected_return.clone())
-        } else {
-            body.stmts.iter().find_map(|(_, stmt)| match stmt {
-                HirStmt::Let {
-                    local,
-                    initializer: Some(init),
+        let expected_return = checker.expected_return.clone();
+        let local_types = &checker.local_types;
+        collect_expected_roots(
+            &body,
+            body.root,
+            &expected_return,
+            local_types,
+            &mut expected_roots,
+        );
+
+        // Choose a root expression to infer:
+        // - If this call is nested inside a return expr / typed initializer expr, infer that root
+        //   with the appropriate expected type.
+        // - Otherwise, if it's within the RHS of an assignment, infer the assignment expr so it can
+        //   propagate the LHS type to the RHS.
+        let mut root = call_site.expr;
+        let mut expected: Option<Type> = None;
+        let mut fallback_assignment: Option<HirExprId> = None;
+
+        let mut current = call_site.expr;
+        loop {
+            if let Some(ty) = expected_roots.get(current.idx()).and_then(|t| t.clone()) {
+                root = current;
+                expected = Some(ty);
+                break;
+            }
+            let Some(parent) = parent_expr.get(current.idx()).and_then(|p| *p) else {
+                break;
+            };
+
+            if fallback_assignment.is_none() {
+                if let HirExpr::Assign {
+                    rhs,
+                    op: AssignOp::Assign,
                     ..
-                } if *init == call_site.expr => checker
-                    .local_types
-                    .get(local.idx())
-                    .filter(|ty| !ty.is_errorish())
-                    .cloned(),
-                _ => None,
-            })
+                } = &body.exprs[parent]
+                {
+                    if *rhs == current {
+                        fallback_assignment = Some(parent);
+                    }
+                }
+            }
+
+            current = parent;
         }
+
+        if expected.is_none() {
+            if let Some(assign) = fallback_assignment {
+                root = assign;
+            }
+        }
+
+        (root, expected)
     };
 
-    let _ = checker.infer_expr_with_expected(&mut loader, call_site.expr, expected.as_ref());
+    let _ = checker.infer_expr_with_expected(&mut loader, root_expr, expected.as_ref());
 
     // `typeck_body` treats ambiguous calls as "best-effort" and still records the first candidate
     // for downstream type inference. For IDE features (signature help, hover, etc.) we instead
