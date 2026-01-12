@@ -47,7 +47,8 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
 - **ADR 0002 (Rowan syntax trees)**:
   - `crates/nova-syntax/` — parser/lexer + `rowan` integration (`syntax_kind.rs`, `parser.rs`, `ast.rs`)
 - **ADR 0003 (LSP/DAP transport)**:
-  - `crates/nova-lsp/` — current LSP binary + JSON-RPC framing helpers
+  - `crates/nova-lsp/src/main.rs` — shipped LSP stdio server (`lsp_server::Connection::stdio()` + Nova-owned dispatch/cancellation)
+  - `crates/nova-lsp/src/codec.rs` — Content-Length framing helpers (used by unit tests/harnesses)
   - `crates/nova-dap/src/dap/codec.rs` — DAP `Content-Length` framing
 - **ADR 0004 (Concurrency model)**:
   - `crates/nova-scheduler/` — Tokio + Rayon orchestration patterns and cancellation primitives
