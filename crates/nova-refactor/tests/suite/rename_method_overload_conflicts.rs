@@ -78,3 +78,38 @@ fn rename_method_rejects_duplicate_signature_in_same_type() {
         "expected NameCollision conflict: {conflicts:?}"
     );
 }
+
+#[test]
+fn rename_method_rejects_when_any_overload_would_collide() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void foo(int x) {}
+  void foo(String s) {}
+  void bar(String t) {}
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("void foo(int").unwrap() + "void ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "bar")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}

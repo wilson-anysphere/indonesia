@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
 use nova_format::NewlineStyle;
+use nova_index::normalize_type_signature;
 use nova_syntax::ast::{self, AstNode};
 use nova_syntax::{parse_java, SyntaxKind};
 use thiserror::Error;
@@ -445,26 +446,53 @@ fn check_rename_conflicts(
     match db.symbol_kind(symbol) {
         Some(JavaSymbolKind::Method) => {
             // Overload-aware collision detection:
-            // Renaming a method to an existing name is OK as long as it doesn't create a duplicate
-            // signature (same parameter type list) in the same owning type.
-            let Some(owner_scope) = db.symbol_scope(symbol) else {
-                return conflicts;
-            };
-            let Some(sig) = db.method_signature(symbol) else {
-                return conflicts;
-            };
+            // Renaming a method to an existing name is OK as long as it doesn't create any
+            // duplicate signatures (same parameter type list) in the same owning type.
+            //
+            // Note: Nova models overloaded methods as a single "method group" symbol (one per
+            // `(declaring type, method name)`). So renaming a method symbol renames *all* overloads
+            // in the group, and we must check each overload signature for conflicts.
+            if new_name != def.name {
+                let Some(text) = db.file_text(&def.file) else {
+                    return conflicts;
+                };
 
-            for existing in db.resolve_methods_in_scope(owner_scope, new_name) {
-                if existing == symbol {
-                    continue;
-                }
-                if db.method_signature(existing).as_ref() == Some(&sig) {
+                let parsed = parse_java(text);
+                let root = parsed.syntax();
+
+                let Some(rep_decl) = root
+                    .descendants()
+                    .filter_map(ast::MethodDeclaration::cast)
+                    .find(|method| {
+                        method.name_token().is_some_and(|tok| {
+                            syntax_token_range(&tok) == def.name_range && tok.text() == def.name
+                        })
+                    })
+                else {
+                    return conflicts;
+                };
+
+                let Some(type_body) = find_enclosing_type_body(rep_decl.syntax()) else {
+                    return conflicts;
+                };
+
+                let old_overloads = method_overload_signatures(text, &type_body, &def.name);
+                let new_overloads = method_overload_signatures(text, &type_body, new_name);
+
+                if method_overload_sets_overlap(&old_overloads, &new_overloads) {
+                    let existing_symbol = db
+                        .resolve_methods_in_scope(def.scope, new_name)
+                        .into_iter()
+                        .find(|sym| *sym != symbol)
+                        // Best-effort: we should always be able to find the existing symbol in this
+                        // scope when the signature overlap came from declarations in the same type,
+                        // but fall back to a sentinel if not.
+                        .unwrap_or_else(|| SymbolId::new(u32::MAX));
                     conflicts.push(Conflict::NameCollision {
                         file: def.file.clone(),
                         name: new_name.to_string(),
-                        existing_symbol: existing,
+                        existing_symbol,
                     });
-                    break;
                 }
             }
         }
@@ -537,6 +565,158 @@ fn check_rename_conflicts(
     }
 
     conflicts
+}
+
+#[derive(Debug, Clone)]
+enum EnclosingTypeBody {
+    Class(ast::ClassBody),
+    Interface(ast::InterfaceBody),
+    Enum(ast::EnumBody),
+    Record(ast::RecordBody),
+    Annotation(ast::AnnotationBody),
+}
+
+impl EnclosingTypeBody {
+    fn syntax(&self) -> &nova_syntax::SyntaxNode {
+        match self {
+            EnclosingTypeBody::Class(body) => body.syntax(),
+            EnclosingTypeBody::Interface(body) => body.syntax(),
+            EnclosingTypeBody::Enum(body) => body.syntax(),
+            EnclosingTypeBody::Record(body) => body.syntax(),
+            EnclosingTypeBody::Annotation(body) => body.syntax(),
+        }
+    }
+}
+
+fn find_enclosing_type_body(node: &nova_syntax::SyntaxNode) -> Option<EnclosingTypeBody> {
+    node.ancestors().find_map(|ancestor| {
+        if let Some(class_decl) = ast::ClassDeclaration::cast(ancestor.clone()) {
+            return class_decl.body().map(EnclosingTypeBody::Class);
+        }
+        if let Some(intf_decl) = ast::InterfaceDeclaration::cast(ancestor.clone()) {
+            return intf_decl.body().map(EnclosingTypeBody::Interface);
+        }
+        if let Some(enum_decl) = ast::EnumDeclaration::cast(ancestor.clone()) {
+            return enum_decl.body().map(EnclosingTypeBody::Enum);
+        }
+        if let Some(record_decl) = ast::RecordDeclaration::cast(ancestor.clone()) {
+            return record_decl.body().map(EnclosingTypeBody::Record);
+        }
+        if let Some(annot_decl) = ast::AnnotationTypeDeclaration::cast(ancestor.clone()) {
+            return annot_decl.body().map(EnclosingTypeBody::Annotation);
+        }
+        None
+    })
+}
+
+#[derive(Debug, Clone)]
+struct OverloadSig {
+    arity: usize,
+    param_types: Option<Vec<String>>,
+}
+
+fn method_overload_signatures(
+    source: &str,
+    type_body: &EnclosingTypeBody,
+    name: &str,
+) -> Vec<OverloadSig> {
+    let mut out = Vec::new();
+    for member in type_body
+        .syntax()
+        .children()
+        .filter_map(ast::ClassMember::cast)
+    {
+        let ast::ClassMember::MethodDeclaration(method) = member else {
+            continue;
+        };
+        let Some(name_tok) = method.name_token() else {
+            continue;
+        };
+        if name_tok.text() != name {
+            continue;
+        }
+
+        let (arity, param_types) = method_parameter_types(source, &method);
+        let param_types = param_types.map(|types| {
+            types
+                .into_iter()
+                .map(|ty| normalize_type_signature(&ty))
+                .collect()
+        });
+        out.push(OverloadSig { arity, param_types });
+    }
+    out
+}
+
+fn method_overload_sets_overlap(old: &[OverloadSig], new: &[OverloadSig]) -> bool {
+    for old_sig in old {
+        for new_sig in new {
+            if old_sig.arity != new_sig.arity {
+                continue;
+            }
+
+            match (&old_sig.param_types, &new_sig.param_types) {
+                (Some(a), Some(b)) => {
+                    if a == b {
+                        return true;
+                    }
+                }
+                // Conservative fallback: if we can't recover parameter types for either overload,
+                // treat name+arity as a collision so we don't generate uncompilable code.
+                _ => return true,
+            }
+        }
+    }
+    false
+}
+
+fn method_parameter_types(
+    source: &str,
+    method: &ast::MethodDeclaration,
+) -> (usize, Option<Vec<String>>) {
+    let Some(param_list) = method.parameter_list() else {
+        return (0, Some(Vec::new()));
+    };
+
+    let mut arity = 0usize;
+    let mut types = Vec::new();
+    let mut unknown = false;
+    for param in param_list.parameters() {
+        arity += 1;
+        if unknown {
+            continue;
+        }
+        match parameter_type_text(source, &param) {
+            Some(ty) => types.push(ty),
+            None => unknown = true,
+        }
+    }
+
+    if unknown {
+        (arity, None)
+    } else {
+        (arity, Some(types))
+    }
+}
+
+fn parameter_type_text(source: &str, param: &ast::Parameter) -> Option<String> {
+    let ty = param.ty()?;
+    let ty_range = syntax_range(ty.syntax());
+    let mut text = source.get(ty_range.start..ty_range.end)?.trim().to_string();
+
+    // Varargs: include the ellipsis token (`...`) as part of the type text so we can distinguish
+    // `foo(String...)` from `foo(String)`.
+    let ellipsis_after_type = param
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| tok.kind() == SyntaxKind::Ellipsis)
+        .is_some_and(|tok| (u32::from(tok.text_range().start()) as usize) >= ty_range.end);
+    if ellipsis_after_type && !text.ends_with("...") {
+        text.push_str("...");
+    }
+
+    Some(text)
 }
 
 fn type_file_rename_candidate(
