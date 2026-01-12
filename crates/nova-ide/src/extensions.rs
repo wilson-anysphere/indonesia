@@ -1334,9 +1334,6 @@ fn type_mismatch_quick_fixes(
     }
 
     let mut actions = Vec::new();
-    if cancel.is_cancelled() {
-        return actions;
-    }
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
         if cancel.is_cancelled() {

@@ -3924,6 +3924,7 @@ dependencies = [
  "futures",
  "lsp-types",
  "nova-ai",
+ "nova-cache",
  "nova-classpath",
  "nova-config",
  "nova-config-metadata",
