@@ -77,6 +77,63 @@ fn project_indexes_warm_start_and_invalidation() {
 }
 
 #[test]
+fn project_indexes_warm_start_avoids_file_fingerprint_for_unchanged_disk_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    std::fs::write(project_root.join("A.java"), "class A {}").unwrap();
+    std::fs::write(project_root.join("B.java"), "class B {}").unwrap();
+
+    let cache_root = tmp.path().join("cache-root");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let persistence = PersistenceConfig {
+        mode: PersistenceMode::ReadWrite,
+        cache: CacheConfig {
+            cache_root_override: Some(cache_root),
+        },
+    };
+
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+    let b = FileId::from_raw(2);
+
+    // First run: build indexes from scratch and persist.
+    let db1 = SalsaDatabase::new_with_persistence(&project_root, persistence.clone());
+    db1.set_project_files(project, Arc::new(vec![a, b]));
+    db1.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db1.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db1.set_file_text(a, "class A {}".to_string());
+    db1.set_file_text(b, "class B {}".to_string());
+
+    let indexes_v1 = db1.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
+    assert!(indexes_v1.symbols.symbols.contains_key("A"));
+    assert!(indexes_v1.symbols.symbols.contains_key("B"));
+    db1.persist_project_indexes(project).unwrap();
+
+    // Second run: warm-start should be able to validate the cache without hashing full contents
+    // for unchanged on-disk files.
+    let db2 = SalsaDatabase::new_with_persistence(&project_root, persistence);
+    db2.set_project_files(project, Arc::new(vec![a, b]));
+    db2.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db2.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db2.set_file_text(a, "class A {}".to_string());
+    db2.set_file_text(b, "class B {}".to_string());
+
+    db2.clear_query_stats();
+    let indexes_v2 = db2.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
+
+    assert_eq!(indexes_v2, indexes_v1);
+    assert_eq!(executions(&db2, "file_index_delta"), 0);
+    assert_eq!(executions(&db2, "parse_java"), 0);
+    assert_eq!(
+        executions(&db2, "file_fingerprint"),
+        0,
+        "warm-start should validate unchanged on-disk files via metadata fingerprints"
+    );
+}
+
+#[test]
 fn project_indexes_early_cutoff_on_whitespace_edit() {
     let project = ProjectId::from_raw(0);
     let file = FileId::from_raw(1);
