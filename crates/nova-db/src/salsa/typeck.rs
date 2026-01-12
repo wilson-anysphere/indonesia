@@ -215,11 +215,13 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             match (*op, inner) {
                 (UnaryOp::Plus, v) => Some(v),
                 (UnaryOp::Minus, nova_types::ConstValue::Int(v)) => {
-                    Some(nova_types::ConstValue::Int(-v))
+                    // Java integer constants use 32-bit two's complement arithmetic (JLS 4.2.2).
+                    let v32 = i32::try_from(v).ok()?;
+                    Some(nova_types::ConstValue::Int(i64::from(v32.wrapping_neg())))
                 }
                 (UnaryOp::BitNot, nova_types::ConstValue::Int(v)) => {
                     // Java bitwise operators on `int` operate on 32-bit two's complement values.
-                    let v32 = v as i32;
+                    let v32 = i32::try_from(v).ok()?;
                     Some(nova_types::ConstValue::Int(i64::from(!v32)))
                 }
                 (UnaryOp::Not, nova_types::ConstValue::Boolean(v)) => {
@@ -228,6 +230,165 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
                 _ => None,
             }
         }
+        HirExpr::Binary { op, lhs, rhs, .. } => match op {
+            // Short-circuit boolean operators.
+            BinaryOp::AndAnd => match const_value_for_expr(body, *lhs)? {
+                ConstValue::Boolean(false) => Some(ConstValue::Boolean(false)),
+                ConstValue::Boolean(true) => match const_value_for_expr(body, *rhs)? {
+                    ConstValue::Boolean(v) => Some(ConstValue::Boolean(v)),
+                    _ => None,
+                },
+                _ => None,
+            },
+            BinaryOp::OrOr => match const_value_for_expr(body, *lhs)? {
+                ConstValue::Boolean(true) => Some(ConstValue::Boolean(true)),
+                ConstValue::Boolean(false) => match const_value_for_expr(body, *rhs)? {
+                    ConstValue::Boolean(v) => Some(ConstValue::Boolean(v)),
+                    _ => None,
+                },
+                _ => None,
+            },
+            // Non-short-circuit ops: evaluate both sides.
+            _ => {
+                let lhs = const_value_for_expr(body, *lhs)?;
+                let rhs = const_value_for_expr(body, *rhs)?;
+                match (*op, lhs, rhs) {
+                    (BinaryOp::Add, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Int(i64::from(a32.wrapping_add(b32))))
+                    }
+                    (BinaryOp::Sub, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Int(i64::from(a32.wrapping_sub(b32))))
+                    }
+                    (BinaryOp::Mul, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Int(i64::from(a32.wrapping_mul(b32))))
+                    }
+                    (BinaryOp::Div, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        if b32 == 0 {
+                            return None;
+                        }
+                        // Java defines `Integer.MIN_VALUE / -1 == Integer.MIN_VALUE` (overflow wraps).
+                        let out = if a32 == i32::MIN && b32 == -1 {
+                            i32::MIN
+                        } else {
+                            a32 / b32
+                        };
+                        Some(ConstValue::Int(i64::from(out)))
+                    }
+                    (BinaryOp::Rem, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        if b32 == 0 {
+                            return None;
+                        }
+                        // Java defines `Integer.MIN_VALUE % -1 == 0` (overflow wraps).
+                        let out = if a32 == i32::MIN && b32 == -1 {
+                            0
+                        } else {
+                            a32 % b32
+                        };
+                        Some(ConstValue::Int(i64::from(out)))
+                    }
+                    (BinaryOp::BitAnd, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Int(i64::from(a32 & b32)))
+                    }
+                    (BinaryOp::BitOr, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Int(i64::from(a32 | b32)))
+                    }
+                    (BinaryOp::BitXor, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Int(i64::from(a32 ^ b32)))
+                    }
+                    (BinaryOp::BitAnd, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
+                        Some(ConstValue::Boolean(a & b))
+                    }
+                    (BinaryOp::BitOr, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
+                        Some(ConstValue::Boolean(a | b))
+                    }
+                    (BinaryOp::BitXor, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
+                        Some(ConstValue::Boolean(a ^ b))
+                    }
+                    (BinaryOp::Shl, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        let shift = (b32 as u32) & 0x1f;
+                        Some(ConstValue::Int(i64::from(a32.wrapping_shl(shift))))
+                    }
+                    (BinaryOp::Shr, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        let shift = (b32 as u32) & 0x1f;
+                        Some(ConstValue::Int(i64::from(a32 >> shift)))
+                    }
+                    (BinaryOp::UShr, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        let shift = (b32 as u32) & 0x1f;
+                        let out = ((a32 as u32) >> shift) as i32;
+                        Some(ConstValue::Int(i64::from(out)))
+                    }
+                    (BinaryOp::EqEq, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Boolean(a32 == b32))
+                    }
+                    (BinaryOp::NotEq, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Boolean(a32 != b32))
+                    }
+                    (BinaryOp::EqEq, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
+                        Some(ConstValue::Boolean(a == b))
+                    }
+                    (BinaryOp::NotEq, ConstValue::Boolean(a), ConstValue::Boolean(b)) => {
+                        Some(ConstValue::Boolean(a != b))
+                    }
+                    (BinaryOp::Less, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Boolean(a32 < b32))
+                    }
+                    (BinaryOp::LessEq, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Boolean(a32 <= b32))
+                    }
+                    (BinaryOp::Greater, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Boolean(a32 > b32))
+                    }
+                    (BinaryOp::GreaterEq, ConstValue::Int(a), ConstValue::Int(b)) => {
+                        let a32 = i32::try_from(a).ok()?;
+                        let b32 = i32::try_from(b).ok()?;
+                        Some(ConstValue::Boolean(a32 >= b32))
+                    }
+                    _ => None,
+                }
+            }
+        },
+        HirExpr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+            ..
+        } => match const_value_for_expr(body, *condition)? {
+            ConstValue::Boolean(true) => const_value_for_expr(body, *then_expr),
+            ConstValue::Boolean(false) => const_value_for_expr(body, *else_expr),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -9301,24 +9462,60 @@ fn is_java_lang_string(store: &TypeStore, ty: &Type) -> bool {
 
 fn parse_java_int_literal(text: &str) -> Option<i64> {
     let mut s = text.trim();
-    if let Some(stripped) = s.strip_suffix('l').or_else(|| s.strip_suffix('L')) {
+    let has_long_suffix = if let Some(stripped) = s.strip_suffix('l').or_else(|| s.strip_suffix('L'))
+    {
         s = stripped;
-    }
+        true
+    } else {
+        false
+    };
     let s: String = s.chars().filter(|c| *c != '_').collect();
     let s = s.as_str();
 
-    let (radix, digits) = if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
-    {
-        (16, rest)
-    } else if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-        (2, rest)
-    } else if s.starts_with('0') && s.len() > 1 {
-        (8, &s[1..])
-    } else {
-        (10, s)
-    };
+    let (radix, digits) =
+        if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            (16, rest)
+        } else if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+            (2, rest)
+        } else if s.starts_with('0') && s.len() > 1 {
+            (8, &s[1..])
+        } else {
+            (10, s)
+        };
 
-    i64::from_str_radix(digits, radix).ok()
+    if has_long_suffix {
+        // Best-effort support for long literals. Note that the syntax layer may not lower long
+        // literals precisely yet, so this is mostly defensive.
+        if radix == 10 {
+            let value = u64::from_str_radix(digits, radix).ok()?;
+            if value == (i64::MAX as u64) + 1 {
+                // `-9223372036854775808L`
+                return Some(i64::MIN);
+            }
+            return i64::try_from(value).ok();
+        }
+        // For non-decimal, Java long literals are interpreted as signed 64-bit two's complement.
+        let value = u64::from_str_radix(digits, radix).ok()?;
+        return Some(value as i64);
+    }
+
+    // Java int literals are 32-bit two's complement values.
+    if radix == 10 {
+        let value = u64::from_str_radix(digits, radix).ok()?;
+        if value == (i32::MAX as u64) + 1 {
+            // `-2147483648` is the only valid use of this literal.
+            return Some(i64::from(i32::MIN));
+        }
+        return i32::try_from(value).ok().map(i64::from);
+    }
+
+    // Non-decimal integer literals without `L` must fit in 32 bits and are interpreted as signed
+    // two's complement (e.g. `0xffffffff == -1`).
+    let value = u64::from_str_radix(digits, radix).ok()?;
+    if value > u64::from(u32::MAX) {
+        return None;
+    }
+    Some(i64::from(value as u32 as i32))
 }
 
 fn is_diamond_type_ref_text(text: &str) -> bool {

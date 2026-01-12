@@ -708,6 +708,34 @@ class C { void m(){ byte b = 0x7f; } }
 }
 
 #[test]
+fn byte_initializer_allows_hex_twos_complement_int_constant() {
+    let src = r#"
+class C { void m(){ byte b = 0xffffffff; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn byte_initializer_allows_constant_expression() {
+    let src = r#"
+class C { void m(){ byte b = 1 + 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn reports_type_mismatch_for_bad_assignment() {
     let src = r#"
 class C {
