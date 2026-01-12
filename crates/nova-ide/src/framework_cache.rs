@@ -114,7 +114,24 @@ pub fn to_classpath_entry(
             Some(nova_classpath::ClasspathEntry::ClassDir(entry.path.clone()))
         }
         nova_project::ClasspathEntryKind::Jar => {
-            Some(nova_classpath::ClasspathEntry::Jar(entry.path.clone()))
+            // `nova_project::ClasspathEntryKind` doesn't distinguish `.jar` vs `.jmod`, and some
+            // build tooling can surface archives as exploded directories (often still ending with
+            // `.jar`). Preserve on-disk semantics and infer `.jmod` entries from the file
+            // extension.
+            if entry.path.is_dir() {
+                return Some(nova_classpath::ClasspathEntry::ClassDir(entry.path.clone()));
+            }
+
+            let ext = entry
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("");
+            if ext.eq_ignore_ascii_case("jmod") {
+                Some(nova_classpath::ClasspathEntry::Jmod(entry.path.clone()))
+            } else {
+                Some(nova_classpath::ClasspathEntry::Jar(entry.path.clone()))
+            }
         }
         #[allow(unreachable_patterns)]
         _ => None,
@@ -554,7 +571,9 @@ impl FrameworkWorkspaceCache {
                     .chain(config.module_path.iter())
                     .filter(|entry| match entry.kind {
                         nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
-                        nova_project::ClasspathEntryKind::Jar => entry.path.is_file(),
+                        nova_project::ClasspathEntryKind::Jar => {
+                            entry.path.is_file() || entry.path.is_dir()
+                        }
                         #[allow(unreachable_patterns)]
                         _ => false,
                     })
