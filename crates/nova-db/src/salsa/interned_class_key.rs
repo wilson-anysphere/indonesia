@@ -144,11 +144,11 @@ pub trait NovaInternedClassKeys: ra_salsa::Database {
 
 #[cfg(test)]
 mod tests {
-    use nova_memory::MemoryPressure;
+    use nova_memory::{MemoryBudget, MemoryManager, MemoryPressure};
     use ra_salsa::InternKey;
 
     use super::*;
-    use crate::SalsaDatabase;
+    use crate::{NovaSyntax as _, SalsaDatabase};
 
     #[test]
     fn interned_key_is_stable_within_a_single_storage() {
@@ -307,5 +307,44 @@ mod tests {
         // has been rebuilt from scratch.
         assert_eq!(snap.lookup_intern_class_key(id_before), key);
         assert_eq!(snap.intern_class_key(key.clone()), id_before);
+    }
+
+    #[test]
+    fn interned_ids_survive_memory_manager_driven_memo_eviction() {
+        // Use a tiny query-cache budget to force the memory manager to evict Salsa memo tables via
+        // `SalsaMemoEvictor::evict`, while keeping overall pressure low.
+        let total = 1_000_000_000_000_u64;
+        let manager = MemoryManager::new(MemoryBudget {
+            total,
+            categories: nova_memory::MemoryBreakdown {
+                query_cache: 1,
+                syntax_trees: total / 2,
+                indexes: 0,
+                type_info: 0,
+                other: total - (total / 2) - 1,
+            },
+        });
+
+        let db = SalsaDatabase::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+
+        // Ensure there is something in the memo footprint so eviction actually triggers.
+        let file = crate::FileId::from_raw(1);
+        db.set_file_text(file, "class Foo { int x; }");
+        let _ = db.snapshot().parse(file);
+        assert!(db.salsa_memo_bytes() > 0);
+
+        let key = InternedClassKey {
+            project,
+            binary_name: "Foo".to_string(),
+        };
+        let id_before = db.with_write(|db| db.intern_class_key(key.clone()));
+
+        manager.enforce();
+        assert_eq!(db.salsa_memo_bytes(), 0);
+
+        let id_after = db.with_write(|db| db.intern_class_key(key.clone()));
+        assert_eq!(id_before, id_after);
+        assert_eq!(db.with_write(|db| db.lookup_intern_class_key(id_before)), key);
     }
 }
