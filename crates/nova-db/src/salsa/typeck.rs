@@ -1678,7 +1678,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 else_expr,
                 ..
             } => {
-                let _ = self.infer_expr(loader, *condition);
+                let condition_ty = self.infer_expr(loader, *condition).ty;
+                if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "condition-not-boolean",
+                        "condition must be boolean",
+                        Some(self.body.exprs[*condition].range()),
+                    ));
+                }
                 let then_ty = self
                     .infer_expr_with_expected(loader, *then_expr, expected)
                     .ty;

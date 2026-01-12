@@ -247,6 +247,26 @@ class C {
 }
 
 #[test]
+fn reports_condition_not_boolean_for_ternary() {
+    let src = r#"
+class C {
+    int m() {
+        return 1 ? 2 : 3;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "condition-not-boolean"),
+        "expected condition-not-boolean diagnostic for ternary condition, got {diags:?}"
+    );
+}
+
+#[test]
 fn type_at_offset_shows_string_for_substring_call() {
     let src = r#"
 class C {
