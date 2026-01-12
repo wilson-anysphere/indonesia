@@ -419,6 +419,54 @@ fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
 }
 
 #[test]
+fn nested_binary_guess_resolves_from_env_when_owner_resolves() {
+    // This exercises the "safe" `$`-nesting fallback in `type_ref`: if the first
+    // segment resolves to a type in scope (e.g. via imports) but the remaining
+    // nested type does not resolve via the classpath/module index, we still
+    // attempt to resolve the binary nested name (`Outer$Inner`) from the `TypeEnv`.
+    //
+    // This fallback is intentionally limited to `$`-style guesses derived from a
+    // resolver-confirmed owner, so it does not bypass JPMS/module-access checks.
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("com.example", "Outer");
+    // Intentionally omit `Outer$Inner` so resolver/index-based resolution fails.
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let file = FileId::from_raw(0);
+    let mut db = TestDb::default();
+    db.set_file_text(file, "import com.example.Outer;\nclass C {}\n");
+    let result = build_scopes(&db, file);
+
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let inner_id = env.add_class(ClassDef {
+        name: "com.example.Outer$Inner".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let type_vars = HashMap::new();
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &result.scopes,
+        result.file_scope,
+        &env,
+        &type_vars,
+        "Outer.Inner",
+        None,
+    );
+
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::class(inner_id, vec![]));
+}
+
+#[test]
 fn does_not_fallback_to_env_for_unresolved_qualified_name() {
     // Regression test: type_ref parsing previously fell back to `TypeEnv::lookup_class`
     // for unresolved qualified names, which can bypass JPMS/module-access restrictions
