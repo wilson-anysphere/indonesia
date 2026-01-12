@@ -13,7 +13,7 @@ fn write(path: &Path, contents: &str) {
 }
 
 #[test]
-fn maven_project_omits_missing_dependency_jars_from_classpath() {
+fn maven_project_omits_missing_dependency_jars_until_present_on_disk() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -85,7 +85,7 @@ fn maven_project_omits_missing_dependency_jars_from_classpath() {
 }
 
 #[test]
-fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
+fn maven_workspace_model_omits_missing_dependency_jars_until_present_on_disk() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
