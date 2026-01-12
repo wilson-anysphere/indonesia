@@ -871,6 +871,28 @@ class B {
     }
 
     #[test]
+    fn extract_variable_not_offered_for_expression_bodied_lambda() {
+        let uri = test_uri("Test.java");
+        let source = r#"
+import java.util.function.Function;
+class C {
+  void m() {
+    Function<Integer,Integer> f = x -> x + 1;
+  }
+}
+"#;
+        let start = source.find("x + 1").expect("selection exists");
+        let end = start + "x + 1".len();
+        let selection = Range::new(position_utf16(source, start), position_utf16(source, end));
+
+        let actions = extract_variable_code_actions(&uri, source, selection);
+        assert!(
+            actions.is_empty(),
+            "expected no extract-variable action for expression-bodied lambda, got: {actions:?}"
+        );
+    }
+
+    #[test]
     fn move_static_member_request_returns_workspace_edit() {
         let uri_a = test_uri("A.java");
         let uri_b = test_uri("B.java");

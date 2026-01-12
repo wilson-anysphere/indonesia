@@ -4274,11 +4274,21 @@ fn handle_rename(
         if ident_range_at(&source, offset).is_some() {
             return Err((
                 -32602,
-                SemanticRefactorError::RenameNotSupported { kind: None }.to_string(),
+                "rename is only supported for local variables and parameters".to_string(),
             ));
         }
         return Err((-32602, "no symbol at cursor".to_string()));
     };
+
+    if !matches!(
+        db.symbol_kind(symbol),
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+    ) {
+        return Err((
+            -32602,
+            "rename is only supported for local variables and parameters".to_string(),
+        ));
+    }
 
     let edit = semantic_rename(
         &db,

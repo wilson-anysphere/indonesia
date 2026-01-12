@@ -173,10 +173,24 @@ pub fn extract_variable(
     let expr =
         find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
 
+    // `extract_variable` inserts the new declaration before the enclosing statement. For
+    // expression-bodied lambdas (`x -> x + 1`), there is no statement inside the lambda body,
+    // so extraction would hoist the declaration outside the lambda (breaking compilation when
+    // referencing parameters and/or changing evaluation timing). Reject this case.
+    let in_expression_bodied_lambda = expr
+        .syntax()
+        .ancestors()
+        .filter_map(ast::LambdaBody::cast)
+        .any(|body| body.expression().is_some());
+    if in_expression_bodied_lambda {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract from expression-bodied lambda body",
+        });
+    }
+
     if let Some(reason) = constant_expression_only_context_reason(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
     }
-
     let expr_range = syntax_range(expr.syntax());
     let expr_text = text
         .get(selection.start..selection.end)

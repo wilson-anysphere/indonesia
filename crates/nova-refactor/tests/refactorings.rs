@@ -458,6 +458,78 @@ fn extract_variable_trims_whitespace_in_selection_range() {
 }
 
 #[test]
+fn extract_variable_rejects_expression_bodied_lambda() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"import java.util.function.Function;
+class C {
+  void m() {
+    Function<Integer,Integer> f = x -> /*start*/x + 1/*end*/;
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from expression-bodied lambda body"
+        ),
+        "expected expression-bodied lambda rejection, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_block_bodied_lambda() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    Runnable r = () -> {
+      System.out.println(/*start*/1 + 2/*end*/);
+    };
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    Runnable r = () -> {
+      var sum = 1 + 2;
+      System.out.println(sum);
+    };
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_while_condition_extraction() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

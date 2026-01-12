@@ -87,7 +87,11 @@ impl Default for ExtensionRegistryOptions {
     fn default() -> Self {
         Self {
             diagnostic_timeout: Duration::from_millis(50),
-            completion_timeout: Duration::from_millis(50),
+            // Completions are latency-sensitive but also invoked frequently, including from test
+            // suites that run many extension calls in parallel. A slightly larger default makes the
+            // extension watchdog robust against short-lived thread-pool contention without meaningfully
+            // impacting end-user responsiveness.
+            completion_timeout: Duration::from_millis(100),
             code_action_timeout: Duration::from_millis(50),
             navigation_timeout: Duration::from_millis(50),
             inlay_hint_timeout: Duration::from_millis(50),

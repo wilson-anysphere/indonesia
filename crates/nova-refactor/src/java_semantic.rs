@@ -1025,9 +1025,11 @@ fn record_body_references(
                 if call_callees.contains(&expr_id) {
                     return;
                 }
-                let Some(resolved) =
-                    resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))
-                else {
+                let name = Name::from(name.as_str());
+                let resolved = resolver
+                    .resolve_name(&scope_result.scopes, scope, &name)
+                    .or_else(|| resolver.resolve_method_name(&scope_result.scopes, scope, &name));
+                let Some(resolved) = resolved else {
                     return;
                 };
 
