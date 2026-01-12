@@ -9,6 +9,7 @@ mod extract_method_additional;
 mod extract_method_fixtures;
 mod inline_variable_field_shadowing;
 mod inline_method;
+mod inline_variable_field_shadowing;
 mod java_member_selection_rename;
 mod java_semantic_missing_hir;
 mod java_semantic_rename;

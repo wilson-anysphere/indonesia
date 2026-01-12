@@ -1,4 +1,5 @@
-// Part of the consolidated `nova-dap` integration test harness (`tests/real_jvm.rs`).
+// Part of the consolidated `nova-dap` integration test harness (`tests/real_jvm.rs`,
+// invoked via `--test tests`).
 use std::{path::Path, time::Duration};
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
