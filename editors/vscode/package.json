@@ -27,6 +27,9 @@
     "onCommand:nova.useLocalDebugAdapterBinary",
     "onCommand:nova.showDebugAdapterVersion",
     "onCommand:nova.organizeImports",
+    "onCommand:nova.ai.showExplainError",
+    "onCommand:nova.ai.showGenerateMethodBody",
+    "onCommand:nova.ai.showGenerateTests",
     "onCommand:nova.bugReport",
     "onCommand:nova.buildProject",
     "onCommand:nova.showRequestMetrics",
@@ -82,6 +85,18 @@
       {
         "command": "nova.organizeImports",
         "title": "Nova: Organize Imports"
+      },
+      {
+        "command": "nova.ai.showExplainError",
+        "title": "Nova AI: Explain Error"
+      },
+      {
+        "command": "nova.ai.showGenerateMethodBody",
+        "title": "Nova AI: Generate Method Body"
+      },
+      {
+        "command": "nova.ai.showGenerateTests",
+        "title": "Nova AI: Generate Tests"
       },
       {
         "command": "nova.bugReport",
