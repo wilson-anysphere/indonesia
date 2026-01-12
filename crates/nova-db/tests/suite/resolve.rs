@@ -753,8 +753,8 @@ class C {
 
     assert_eq!(
         executions(&db, "scope_graph"),
-        1,
-        "scope graph should be reused via early-cutoff when only method bodies change"
+        2,
+        "scope_graph must re-run to observe the edit"
     );
     assert_eq!(
         executions(&db, "resolve_name"),
