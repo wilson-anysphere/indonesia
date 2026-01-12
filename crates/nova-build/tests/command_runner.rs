@@ -83,6 +83,47 @@ impl CommandRunner for RoutingCommandRunner {
     }
 }
 
+#[derive(Debug)]
+struct MavenExpressionCommandRunner {
+    invocations: Mutex<Vec<Invocation>>,
+    outputs: HashMap<String, CommandOutput>,
+    default_output: CommandOutput,
+}
+
+impl MavenExpressionCommandRunner {
+    fn new(outputs: HashMap<String, CommandOutput>, default_output: CommandOutput) -> Self {
+        Self {
+            invocations: Mutex::new(Vec::new()),
+            outputs,
+            default_output,
+        }
+    }
+
+    fn invocations(&self) -> Vec<Invocation> {
+        self.invocations.lock().unwrap().clone()
+    }
+}
+
+impl CommandRunner for MavenExpressionCommandRunner {
+    fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
+        self.invocations.lock().unwrap().push(Invocation {
+            cwd: cwd.to_path_buf(),
+            program: program.to_path_buf(),
+            args: args.to_vec(),
+        });
+
+        let expr = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("-Dexpression="))
+            .unwrap_or_default();
+        Ok(self
+            .outputs
+            .get(expr)
+            .cloned()
+            .unwrap_or_else(|| self.default_output.clone()))
+    }
+}
+
 fn success_status() -> ExitStatus {
     #[cfg(unix)]
     {
@@ -93,6 +134,19 @@ fn success_status() -> ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatus::from_raw(0)
+    }
+}
+
+fn failure_status() -> ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(1 << 8)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(1)
     }
 }
 
@@ -187,6 +241,161 @@ fn gradle_classpath_caches_result() {
 
     let invocations = runner.invocations();
     assert_eq!(invocations.len(), 1);
+}
+
+#[test]
+fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(root.join("src/main/java")).unwrap();
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main/java/module-info.java"),
+        "module com.example.test {}",
+    )
+    .unwrap();
+
+    std::fs::write(root.join("dep.jar"), "").unwrap();
+
+    let mut outputs = HashMap::new();
+    outputs.insert(
+        "project.compileClasspathElements".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: "[dep.jar]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+    outputs.insert(
+        // Fail the module-path expression to ensure the heuristic kicks in and the
+        // request still succeeds.
+        "project.compileModulePathElements".to_string(),
+        CommandOutput {
+            status: failure_status(),
+            stdout: String::new(),
+            stderr: "Invalid expression".to_string(),
+            truncated: false,
+        },
+    );
+    outputs.insert(
+        "project.compileModulepathElements".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: "[]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+    outputs.insert(
+        "project.testCompileModulePathElements".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: "[]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+
+    let runner = Arc::new(MavenExpressionCommandRunner::new(
+        outputs,
+        CommandOutput {
+            status: success_status(),
+            stdout: "[]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    ));
+
+    let cache_dir = tmp.path().join("cache");
+    let cache = BuildCache::new(&cache_dir);
+    let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+
+    let cfg = build.java_compile_config(&root, None, &cache).unwrap();
+    assert_eq!(cfg.module_path, cfg.compile_classpath);
+    assert!(cfg
+        .module_path
+        .iter()
+        .any(|p| p.ends_with(Path::new("target/classes"))));
+
+    let invocations = runner.invocations();
+    assert!(invocations.iter().any(|inv| {
+        inv.args
+            .iter()
+            .any(|arg| arg == "-Dexpression=project.compileModulePathElements")
+    }));
+}
+
+#[test]
+fn maven_java_compile_config_uses_evaluated_module_path_when_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    std::fs::write(root.join("mods.jar"), "").unwrap();
+
+    let mut outputs = HashMap::new();
+    outputs.insert(
+        "project.compileClasspathElements".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: "[]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+    outputs.insert(
+        "project.compileModulePathElements".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: "[mods.jar]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+    outputs.insert(
+        "project.testCompileModulePathElements".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: "[]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+
+    let runner = Arc::new(MavenExpressionCommandRunner::new(
+        outputs,
+        CommandOutput {
+            status: success_status(),
+            stdout: "[]".to_string(),
+            stderr: String::new(),
+            truncated: false,
+        },
+    ));
+
+    let cache_dir = tmp.path().join("cache");
+    let cache = BuildCache::new(&cache_dir);
+    let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+
+    let cfg = build.java_compile_config(&root, None, &cache).unwrap();
+    assert!(cfg.module_path.contains(&root.join("mods.jar")));
+    assert_eq!(cfg.module_path, vec![root.join("mods.jar")]);
+
+    let invocations = runner.invocations();
+    assert!(invocations.iter().any(|inv| {
+        inv.args
+            .iter()
+            .any(|arg| arg == "-Dexpression=project.compileModulePathElements")
+    }));
 }
 
 #[test]

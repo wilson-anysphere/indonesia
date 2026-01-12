@@ -307,10 +307,69 @@ impl MavenBuild {
             }
         }
 
+        let module_path = {
+            // Best-effort JPMS module-path extraction. Maven computes these properties when
+            // configured for module-path compilation; however, older versions and some
+            // plugin configurations may not expose them. We never fail the overall request
+            // if these expressions are unsupported.
+            let mut main_module_path = self.evaluate_path_list_best_effort(
+                project_root,
+                module_relative,
+                "project.compileModulePathElements",
+            )?;
+            if main_module_path.is_empty() {
+                // Some Maven versions expose `compileModulepathElements` (lowercase "p").
+                main_module_path = self.evaluate_path_list_best_effort(
+                    project_root,
+                    module_relative,
+                    "project.compileModulepathElements",
+                )?;
+            }
+
+            let test_module_path = self.evaluate_path_list_best_effort(
+                project_root,
+                module_relative,
+                "project.testCompileModulePathElements",
+            )?;
+
+            let mut module_path = Vec::new();
+            module_path.extend(absolutize_paths(&module_dir, main_module_path));
+            module_path.extend(absolutize_paths(&module_dir, test_module_path));
+
+            // Dedupe while preserving order.
+            let mut seen = std::collections::HashSet::new();
+            module_path.retain(|p| seen.insert(p.clone()));
+
+            if module_path.is_empty() {
+                // Fallback heuristic: if the module looks like it uses JPMS, approximate by
+                // placing the entire compile classpath on the module-path.
+                let has_module_info = module_dir
+                    .join("src")
+                    .join("main")
+                    .join("java")
+                    .join("module-info.java")
+                    .is_file()
+                    || main_source_roots
+                        .iter()
+                        .any(|root| root.join("module-info.java").is_file());
+
+                if has_module_info {
+                    let mut module_path = compile_classpath.clone();
+                    let mut seen = std::collections::HashSet::new();
+                    module_path.retain(|p| seen.insert(p.clone()));
+                    module_path
+                } else {
+                    Vec::new()
+                }
+            } else {
+                module_path
+            }
+        };
+
         let cfg = JavaCompileConfig {
             compile_classpath,
             test_classpath,
-            module_path: Vec::new(),
+            module_path,
             main_source_roots,
             test_source_roots,
             main_output_dir,
@@ -541,6 +600,19 @@ impl MavenBuild {
     ) -> Result<Vec<PathBuf>> {
         let output = self.run_help_evaluate_raw(project_root, module_relative, expression)?;
         Ok(parse_maven_classpath_output(&output))
+    }
+
+    fn evaluate_path_list_best_effort(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        expression: &str,
+    ) -> Result<Vec<PathBuf>> {
+        match self.run_help_evaluate_raw(project_root, module_relative, expression) {
+            Ok(output) => Ok(parse_maven_classpath_output(&output)),
+            Err(BuildError::CommandFailed { .. }) => Ok(Vec::new()),
+            Err(err) => Err(err),
+        }
     }
 
     fn evaluate_scalar_best_effort(
