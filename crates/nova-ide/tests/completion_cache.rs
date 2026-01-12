@@ -76,5 +76,20 @@ class Main {
         Arc::ptr_eq(&env1, &env2),
         "expected completion env to be reused (cache hit)"
     );
-}
 
+    // Mutating any workspace file should invalidate the fingerprint and rebuild the env.
+    // Keep the semantic content the same so completion results remain stable.
+    let mut updated = db.file_text(file_a).expect("file exists").to_string();
+    updated.push('\n');
+    db.set_file_text(file_a, updated);
+
+    let env3 = completion_cache::completion_env_for_file(&db, file_b).expect("env");
+    assert!(
+        !Arc::ptr_eq(&env2, &env3),
+        "expected completion env to be rebuilt after workspace change"
+    );
+
+    let items3 = completions(&db, file_b, pos);
+    let labels3: Vec<_> = items3.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels1, labels3, "expected deterministic completions after rebuild");
+}
