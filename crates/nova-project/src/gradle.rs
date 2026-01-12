@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use nova_build_model::{
-    collect_gradle_build_files, BuildFileFingerprint, GradleSnapshotFile,
+    collect_gradle_build_files, is_gradle_marker_root, BuildFileFingerprint, GradleSnapshotFile,
     GradleSnapshotJavaCompileConfig, GRADLE_SNAPSHOT_REL_PATH, GRADLE_SNAPSHOT_SCHEMA_VERSION,
 };
 use regex::Regex;
@@ -39,13 +39,6 @@ fn root_project_has_sources(root: &Path) -> bool {
         };
         src_dir.join(source_set).join("java").is_dir()
     })
-}
-
-fn is_gradle_marker_root(root: &Path) -> bool {
-    root.join("settings.gradle").is_file()
-        || root.join("settings.gradle.kts").is_file()
-        || root.join("build.gradle").is_file()
-        || root.join("build.gradle.kts").is_file()
 }
 
 /// Stable synthetic project path for Gradle's special `buildSrc/` build.

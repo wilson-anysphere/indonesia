@@ -104,7 +104,7 @@ pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn is_gradle_marker_root(root: &Path) -> bool {
+pub fn is_gradle_marker_root(root: &Path) -> bool {
     root.join("settings.gradle").is_file()
         || root.join("settings.gradle.kts").is_file()
         || root.join("build.gradle").is_file()
