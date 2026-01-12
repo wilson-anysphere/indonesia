@@ -247,6 +247,10 @@ export async function activate(context: vscode.ExtensionContext) {
   bugReportOutput = vscode.window.createOutputChannel('Nova Bug Report');
   context.subscriptions.push(bugReportOutput);
 
+  // Tracks whether Nova is currently in safe mode. This drives the Frameworks view "welcome" state.
+  // (We avoid introspection requests while safe mode is active.)
+  let frameworksSafeMode = false;
+
   // Initialize Frameworks view context keys so `contributes.viewsWelcome` can render predictable
   // content even before the language client starts.
   void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', false);
@@ -272,6 +276,7 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaMetricsCommands(context, sendNovaRequest);
   const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest, {
     isServerRunning: () => Boolean(client),
+    isSafeMode: () => frameworksSafeMode,
   });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
     isServerRunning: () => Boolean(client),
@@ -1562,6 +1567,13 @@ export async function activate(context: vscode.ExtensionContext) {
     // Keep Frameworks view welcome content in sync with server safe-mode status.
     // (Used by `contributes.viewsWelcome`.)
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.safeMode', enabled);
+
+    if (frameworksSafeMode !== enabled) {
+      frameworksSafeMode = enabled;
+      // Clear/collapse the Frameworks view while safe-mode is active so the view's welcome
+      // message can direct users to bug report generation.
+      frameworksView.refresh();
+    }
 
     if (!enabled) {
       safeModeReason = undefined;

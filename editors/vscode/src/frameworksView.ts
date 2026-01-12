@@ -111,7 +111,7 @@ export type NovaFrameworksViewController = {
 export function registerNovaFrameworksView(
   context: vscode.ExtensionContext,
   request: NovaRequest,
-  opts?: { isServerRunning?: () => boolean },
+  opts?: { isServerRunning?: () => boolean; isSafeMode?: () => boolean },
 ): NovaFrameworksViewController {
   const provider = new NovaFrameworksTreeDataProvider(request, opts);
   const view = vscode.window.createTreeView('novaFrameworks', {
@@ -140,12 +140,14 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   private cacheEpoch = 0;
 
   private readonly isServerRunning: () => boolean;
+  private readonly isSafeMode: () => boolean;
 
   constructor(
     private readonly sendRequest: NovaRequest,
-    opts?: { isServerRunning?: () => boolean },
+    opts?: { isServerRunning?: () => boolean; isSafeMode?: () => boolean },
   ) {
     this.isServerRunning = opts?.isServerRunning ?? (() => true);
+    this.isSafeMode = opts?.isSafeMode ?? (() => false);
   }
 
   attachTreeView(view: vscode.TreeView<FrameworkNode>): void {
@@ -270,6 +272,11 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
       // When the language server is not running, keep the view empty so `contributes.viewsWelcome`
       // can show contextual guidance rather than surfacing errors on expansion.
       if (!this.isServerRunning()) {
+        return [];
+      }
+
+      // Same for safe-mode: the view's `viewsWelcome` copy points users at bug report collection.
+      if (this.isSafeMode()) {
         return [];
       }
 

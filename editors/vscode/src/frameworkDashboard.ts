@@ -469,7 +469,7 @@ function utf8SpanToRange(document: vscode.TextDocument, span: { start: number; e
 export function registerNovaFrameworkDashboard(
   context: vscode.ExtensionContext,
   request: NovaRequest,
-  opts?: { isServerRunning?: () => boolean },
+  opts?: { isServerRunning?: () => boolean; isSafeMode?: () => boolean },
 ): NovaFrameworksViewController {
   registerFrameworkDashboardCommands(context);
 
