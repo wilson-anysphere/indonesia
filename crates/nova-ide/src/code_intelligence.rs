@@ -15539,6 +15539,7 @@ pub fn prepare_call_hierarchy(
 ) -> Option<Vec<CallHierarchyItem>> {
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
+    let line_index = text_index.line_index();
     let offset = text_index.position_to_offset(position)?;
     let analysis = analyze(text);
     let uri = file_uri(db, file);
@@ -15549,7 +15550,7 @@ pub fn prepare_call_hierarchy(
         .iter()
         .find(|m| span_contains(m.name_span, offset))
     {
-        return Some(vec![call_hierarchy_item(&uri, &text_index, method)]);
+        return Some(vec![call_hierarchy_item(&uri, line_index, text, method)]);
     }
 
     // Next try call sites (prefer resolving the *called* method when the cursor
@@ -15562,7 +15563,7 @@ pub fn prepare_call_hierarchy(
         // Fast-path: receiverless calls can often be resolved within the file.
         if call.receiver.is_none() {
             if let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) {
-                return Some(vec![call_hierarchy_item(&uri, &text_index, target)]);
+                return Some(vec![call_hierarchy_item(&uri, line_index, text, target)]);
             }
         }
 
@@ -15616,7 +15617,7 @@ pub fn prepare_call_hierarchy(
         .iter()
         .find(|m| span_contains(m.body_span, offset))?;
 
-    Some(vec![call_hierarchy_item(&uri, &text_index, method)])
+    Some(vec![call_hierarchy_item(&uri, line_index, text, method)])
 }
 
 pub fn call_hierarchy_outgoing_calls(
@@ -15632,10 +15633,27 @@ pub fn call_hierarchy_outgoing_calls_for_item(
     file: FileId,
     item: &CallHierarchyItem,
 ) -> Vec<CallHierarchyOutgoingCall> {
-    let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let start = text_index.position_to_offset(item.selection_range.start);
-    let end = text_index.position_to_offset(item.selection_range.end);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
+    let parsed = index.file(file);
+    let text = parsed.map(|p| p.text.as_str()).unwrap_or_else(|| db.file_content(file));
+    let start = parsed
+        .and_then(|p| {
+            crate::text::position_to_offset_with_index(
+                &p.line_index,
+                &p.text,
+                item.selection_range.start,
+            )
+        })
+        .or_else(|| crate::text::position_to_offset(text, item.selection_range.start));
+    let end = parsed
+        .and_then(|p| {
+            crate::text::position_to_offset_with_index(
+                &p.line_index,
+                &p.text,
+                item.selection_range.end,
+            )
+        })
+        .or_else(|| crate::text::position_to_offset(text, item.selection_range.end));
     let name_span = match (start, end) {
         (Some(start), Some(end)) => Some(Span::new(start, end)),
         _ => None,
@@ -15650,8 +15668,16 @@ fn call_hierarchy_outgoing_calls_impl(
     method_name: &str,
     owner_name_span: Option<Span>,
 ) -> Vec<CallHierarchyOutgoingCall> {
-    let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
+    let parsed = index.file(file);
+    let text = parsed.map(|p| p.text.as_str()).unwrap_or_else(|| db.file_content(file));
+    let owned_line_index = parsed.is_none().then(|| nova_core::LineIndex::new(text));
+    let line_index: &nova_core::LineIndex = match parsed {
+        Some(parsed) => &parsed.line_index,
+        None => owned_line_index
+            .as_ref()
+            .expect("owned line index is set when parsed file is missing"),
+    };
     let uri = file_uri(db, file);
 
     // 1) Same-file, no-receiver calls (`bar()`), preserving the original behavior.
@@ -15687,16 +15713,15 @@ fn call_hierarchy_outgoing_calls_impl(
         };
         spans.sort_by_key(|s| s.start);
         outgoing.push(CallHierarchyOutgoingCall {
-            to: call_hierarchy_item(&uri, &text_index, target),
+            to: call_hierarchy_item(&uri, line_index, text, target),
             from_ranges: spans
                 .into_iter()
-                .map(|span| text_index.span_to_lsp_range(span))
+                .map(|span| crate::text::span_to_lsp_range_with_index(line_index, text, span))
                 .collect(),
         });
     }
 
     // 2) Workspace-aware resolution for receiver calls (`a.bar()`).
-    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
     let Some(parsed) = index.file(file) else {
         outgoing.sort_by(|a, b| {
             a.to.name
@@ -15786,7 +15811,7 @@ fn call_hierarchy_outgoing_calls_impl(
             ),
             from_ranges: spans
                 .into_iter()
-                .map(|span| text_index.span_to_lsp_range(span))
+                .map(|span| crate::text::span_to_lsp_range_with_index(line_index, text, span))
                 .collect(),
         });
     }
@@ -15862,10 +15887,27 @@ pub fn call_hierarchy_incoming_calls_for_item(
     file: FileId,
     item: &CallHierarchyItem,
 ) -> Vec<CallHierarchyIncomingCall> {
-    let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let start = text_index.position_to_offset(item.selection_range.start);
-    let end = text_index.position_to_offset(item.selection_range.end);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
+    let parsed = index.file(file);
+    let text = parsed.map(|p| p.text.as_str()).unwrap_or_else(|| db.file_content(file));
+    let start = parsed
+        .and_then(|p| {
+            crate::text::position_to_offset_with_index(
+                &p.line_index,
+                &p.text,
+                item.selection_range.start,
+            )
+        })
+        .or_else(|| crate::text::position_to_offset(text, item.selection_range.start));
+    let end = parsed
+        .and_then(|p| {
+            crate::text::position_to_offset_with_index(
+                &p.line_index,
+                &p.text,
+                item.selection_range.end,
+            )
+        })
+        .or_else(|| crate::text::position_to_offset(text, item.selection_range.end));
     let name_span = match (start, end) {
         (Some(start), Some(end)) => Some(Span::new(start, end)),
         _ => None,
@@ -16086,7 +16128,8 @@ fn call_hierarchy_incoming_calls_impl(
 
 fn call_hierarchy_item(
     uri: &lsp_types::Uri,
-    text_index: &TextIndex<'_>,
+    line_index: &nova_core::LineIndex,
+    text: &str,
     method: &MethodDecl,
 ) -> CallHierarchyItem {
     CallHierarchyItem {
@@ -16095,8 +16138,12 @@ fn call_hierarchy_item(
         tags: None,
         detail: Some(format_method_signature(method)),
         uri: uri.clone(),
-        range: text_index.span_to_lsp_range(method.body_span),
-        selection_range: text_index.span_to_lsp_range(method.name_span),
+        range: crate::text::span_to_lsp_range_with_index(line_index, text, method.body_span),
+        selection_range: crate::text::span_to_lsp_range_with_index(
+            line_index,
+            text,
+            method.name_span,
+        ),
         data: None,
     }
 }
