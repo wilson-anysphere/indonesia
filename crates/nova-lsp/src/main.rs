@@ -8614,13 +8614,6 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     rpc_out: &O,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
-    let GenerateTestsArgs {
-        target,
-        context,
-        uri,
-        range,
-    } = args;
-
     let ai = state
         .ai
         .as_ref()
@@ -8630,6 +8623,12 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    let GenerateTestsArgs {
+        target,
+        context,
+        uri,
+        range,
+    } = args;
     let uri_string = uri
         .as_deref()
         .ok_or_else(|| (-32602, "missing uri".to_string()))?;
@@ -8660,37 +8659,53 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     };
 
     let selection = range.ok_or_else(|| (-32602, "missing range".to_string()))?;
-    let insert_range =
+    let selection_range =
         insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
 
-    let source_snippet = byte_range_for_ide_range(&source, selection)
-        .and_then(|bytes| source.get(bytes).map(ToString::to_string))
+    let source_snippet = nova_lsp::text_pos::byte_range(&source, selection_range)
+        .and_then(|bytes| source.get(bytes).map(str::to_string))
         .filter(|snippet| !snippet.trim().is_empty());
 
-    let derived_test_file = derive_test_file_path(&source, &abs_path);
+    // Prefer writing tests into a derived `src/test/java/...` file when the selected source file
+    // comes from a standard Maven/Gradle layout.
+    let (action_file, insert_range, workspace) = if file_rel.starts_with("src/main/java/") {
+        if let Some(test_file) = derive_test_file_path(&source, &abs_path) {
+            let insert_range =
+                lsp_types::Range::new(lsp_types::Position::new(0, 0), lsp_types::Position::new(0, 0));
 
-    let file = file_rel;
-    let source_file = Some(file.clone());
-
-    let mut workspace_files = vec![(file.clone(), source)];
-    if let (Some(project_root), Some(test_file)) =
-        (state.project_root.as_deref(), derived_test_file)
-    {
-        if test_file != file {
-            let test_abs_path = project_root.join(Path::new(&test_file));
-            if test_abs_path.is_file() {
-                if let Ok(test_source) = std::fs::read_to_string(&test_abs_path) {
-                    workspace_files.push((test_file, test_source));
+            let mut workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
+            // Best-effort: include existing test file contents so the model can append new tests.
+            if let Some(root_path) = path_from_uri(root_uri.as_str()) {
+                if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
+                    workspace.insert(test_file.clone(), existing);
                 }
             }
+            (test_file, insert_range, workspace)
+        } else {
+            (
+                file_rel.clone(),
+                selection_range,
+                VirtualWorkspace::new([(file_rel.clone(), source)]),
+            )
         }
-    }
-    let workspace = VirtualWorkspace::new(workspace_files);
+    } else {
+        (
+            file_rel.clone(),
+            selection_range,
+            VirtualWorkspace::new([(file_rel.clone(), source)]),
+        )
+    };
 
     let llm = ai.llm();
     let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
     let mut config = CodeGenerationConfig::default();
     config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
+    // If we derived a concrete test file, restrict edits to that single file (and allow creating it
+    // when it doesn't yet exist).
+    if action_file != file_rel {
+        config.safety.allowed_path_prefixes = vec![action_file.clone()];
+        config.safety.allow_new_files = true;
+    }
 
     let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 
@@ -8706,10 +8721,10 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     let outcome = runtime
         .block_on(executor.execute(
             AiCodeAction::GenerateTest {
-                file,
+                file: action_file,
                 insert_range,
                 target: Some(target),
-                source_file,
+                source_file: Some(file_rel),
                 source_snippet,
                 context,
             },
