@@ -211,7 +211,10 @@ This list is meant to be kept accurate as new components integrate.
 - Registration: via `Database::register_salsa_memo_evictor(&MemoryManager)`
   - Also registers additional trackers as a side effect (see below).
 - Tracked bytes:
-  - Approximation via `SalsaMemoFootprint` for selected file-keyed memo tables (`TrackedSalsaMemo`).
+  - Approximation via `SalsaMemoFootprint` for selected file-keyed memo tables (`TrackedSalsaMemo`), currently:
+    - `TrackedSalsaMemo::Parse` / `TrackedSalsaMemo::ParseJava`
+    - `TrackedSalsaMemo::ItemTree`
+    - `TrackedSalsaMemo::FileIndexDelta` (recorded by `NovaIndexing::file_index_delta` in `crates/nova-db/src/salsa/indexing.rs`)
 - `evict(request)`:
   - Best-effort rebuild: clones `SalsaInputs` and rebuilds `RootDatabase` behind a mutex, dropping memoized results.
   - Clears the memo footprint tracker; memos will be re-recorded as queries re-run.
@@ -256,6 +259,18 @@ This list is meant to be kept accurate as new components integrate.
   - Must only reuse entries when the `Arc<String>` text matches by pointer identity.
 
 ### `Indexes` category
+
+#### `workspace_project_indexes` (workspace-held `nova_index::ProjectIndexes`)
+
+- Code: `crates/nova-workspace/src/engine.rs` (`WorkspaceProjectIndexesEvictor`)
+- Category: `MemoryCategory::Indexes`
+- Registration: `MemoryManager::register_evictor("workspace_project_indexes", …)`
+- Tracked bytes: `ProjectIndexes::estimated_bytes()`
+- `evict(request)`:
+  - Current semantics: if asked to shrink (i.e. `target_bytes < current`) or under `Critical`, drops the in-memory indexes entirely (`ProjectIndexes::default()`).
+  - Indexes will be rebuilt lazily by the next indexing/search operation.
+- `flush_to_disk()`:
+  - Not implemented (default no-op).
 
 #### `nova_index::WorkspaceSymbolSearcher`
 
@@ -303,75 +318,63 @@ This list is meant to be kept accurate as new components integrate.
 - Tracked bytes: sum of open document text lengths (from LSP analysis state)
 - Eviction: none (trackers only)
 
+#### Tracker: `vfs_overlay_documents` (workspace VFS overlay)
+
+- Code: `crates/nova-workspace/src/engine.rs` (`overlay_docs_memory_registration`, `sync_overlay_documents_memory`)
+- Category: `MemoryCategory::Other`
+- Tracked bytes: `Vfs::overlay().estimated_bytes()`
+- Eviction: none (trackers only)
+
 ---
 
 ## Known gaps (tracked vs untracked) and follow-up work
 
 This section is intentionally written as **worker-ready tasks** (clear entrypoints + acceptance criteria).
 
-### Gap: project/workspace indexes are not a first-class memory participant
+### Gap: Salsa indexing memo tracking is incomplete (project-level memos)
 
 Symptoms:
 
-- `nova_index::ProjectIndexes` can be large (`estimated_bytes()` exists), but the live in-memory index held by the workspace is not registered as a `MemoryEvictor`.
-- Some indexing artifacts are computed via Salsa (`project_index_shards`, `file_index_delta`) but are not included in the `TrackedSalsaMemo` footprint approximation.
+- The workspace-held `ProjectIndexes` are now registered as `workspace_project_indexes` (see above), and Salsa tracks `file_index_delta` via `TrackedSalsaMemo::FileIndexDelta`:
+  - Definition: `crates/nova-db/src/salsa/mod.rs` (`TrackedSalsaMemo::FileIndexDelta`)
+  - Recording site: `crates/nova-db/src/salsa/indexing.rs` (`NovaIndexing::file_index_delta`)
+- However, project-level indexing memos such as `NovaIndexing::project_index_shards` are **project-keyed** and are not currently included in the `SalsaMemoFootprint` approximation (which is file-keyed today), so `QueryCache` usage can still be undercounted for large workspaces.
 
-#### Follow-up task 1: Track + evict workspace-held `ProjectIndexes`
+#### Follow-up task 1: Track project-level indexing memos (e.g. `project_index_shards`)
 
-- Owner: `nova-workspace` / `nova-index`
+- Owner: `nova-db` / `nova-index`
 - Entry points:
-  - `crates/nova-workspace/src/engine.rs` (field `indexes: Arc<Mutex<ProjectIndexes>>`)
-  - `crates/nova-index/src/indexes.rs` (`ProjectIndexes::estimated_bytes`)
-- Approach:
-  1. Introduce a `ProjectIndexesEvictor` that:
-     - registers under `MemoryCategory::Indexes`
-     - updates its tracker from `ProjectIndexes::estimated_bytes()`
-     - under `High` shrinks/clears optional caches; under `Critical` clears aggressively
-  2. Ensure reads remain snapshot-safe (consider storing indexes behind `Arc` and swapping atomically rather than mutating in-place).
-- Acceptance criteria:
-  - Memory status (`nova_lsp::MEMORY_STATUS_METHOD`) reports the new component.
-  - Under forced pressure, indexes are dropped and later rebuilt on demand.
-  - Add/extend tests in `nova-workspace` verifying eviction doesn’t panic and doesn’t corrupt results (e.g. symbol search still works after rebuild).
-
-#### Follow-up task 2: Track Salsa-derived indexing memo sizes (beyond parse/item_tree)
-
-- Owner: `nova-db`
-- Entry points:
+  - `crates/nova-db/src/salsa/indexing.rs` (`NovaIndexing::project_index_shards`)
   - `crates/nova-db/src/salsa/mod.rs` (`TrackedSalsaMemo`, `SalsaMemoFootprint`)
-  - indexing query group in `crates/nova-db/src/salsa/indexing.rs` (for query names)
 - Approach:
-  1. Expand `TrackedSalsaMemo` (or introduce a new tracker) to include index-heavy memo tables, e.g. `file_index_delta` / `project_index_shards`.
-  2. Ensure accounting remains best-effort and avoids double-counting with any workspace-level caches.
+  1. Extend memory accounting to include project-scoped indexing memos (most notably `project_index_shards`) without requiring them to be file-keyed.
+     - Options include: adding a new tracking path parallel to `SalsaMemoFootprint`, or expanding it to support project keys.
+  2. Ensure accounting remains best-effort and avoids double-counting with any workspace-level caches (e.g. `workspace_project_indexes`).
 - Acceptance criteria:
   - `MemoryManager::report_detailed()` shows meaningful query_cache usage for indexing memos.
   - Under eviction, large memo tables drop and are recomputed correctly.
 
-### Gap: VFS overlays / virtual document store are only partially tracked and not evictable
+### Gap: VFS overlay + virtual document store are only partially tracked and not evictable
 
 Symptoms:
 
-- LSP tracks open document text length as `open_documents`, but this does not cover:
-  - VFS internal storage overhead (path maps, versions, snapshots)
-  - any additional overlay stores used by refactoring / analysis
-- There is no memory-manager-driven eviction strategy for overlays (e.g. dropping closed doc history, compressing snapshots).
+- We track the workspace overlay text under `vfs_overlay_documents`, but this does not cover all VFS-related allocations, notably:
+  - the `VirtualDocumentStore` used for decompiled sources (`crates/nova-vfs/src/virtual_documents.rs`)
+  - VFS internal overhead (path maps, versions, snapshots)
+- There is no memory-manager-driven eviction strategy for overlays or virtual documents (beyond any fixed internal LRU/budgeting).
 
-#### Follow-up task 3: Make VFS overlays a bounded cache + memory participant
+#### Follow-up task 2: Track + evict `VirtualDocumentStore` bytes under memory pressure
 
-- Owner: `nova-vfs` / `nova-lsp` / `nova-workspace`
+- Owner: `nova-vfs` (plus integration in `nova-lsp` / `nova-workspace` as needed)
 - Entry points:
-  - `crates/nova-vfs` overlay storage types
-  - `crates/nova-lsp/src/main.rs` (`refresh_document_memory`)
+  - `crates/nova-vfs/src/virtual_documents.rs` (`VirtualDocumentStore`)
+  - `crates/nova-vfs/src/vfs.rs` (where the store is constructed/owned)
 - Approach:
-  1. Decide policy:
-     - bounded internal cache (LRU by closed docs / historical versions), **and/or**
-     - implement a `MemoryEvictor` to allow dropping non-essential overlay data under pressure
-  2. Ensure invariants:
-     - open docs are never dropped
-     - `file_is_dirty` remains accurate
-     - eviction never changes semantic results (only performance)
+  1. Add a best-effort size estimate API (e.g. `estimated_bytes()`) and register a `MemoryTracker` so this store shows up in memory status.
+  2. Optionally implement a `MemoryEvictor` that clears the LRU (or lowers its internal byte budget) under `High/Critical`.
 - Acceptance criteria:
-  - Measurable reduction in RSS when many documents are opened/closed repeatedly.
-  - A regression test demonstrating closed-doc overlay data is evicted under `Critical` pressure.
+  - `MemoryManager::report_detailed()` includes a component for virtual documents.
+  - Under forced `Critical` pressure, virtual documents are dropped and later regenerated on demand.
 
 ### Gap: ensure all disk flushes under pressure persist only “safe” artifacts
 
@@ -382,7 +385,7 @@ Symptoms:
   - they never serialize content derived from dirty overlays (or they must include overlay fingerprints in the cache key)
   - failures are treated as cache misses (never correctness)
 
-#### Follow-up task 4: Standardize “safe persistence” guardrails for `flush_to_disk()`
+#### Follow-up task 3: Standardize “safe persistence” guardrails for `flush_to_disk()`
 
 - Owner: all crates implementing `MemoryEvictor` + persistence (`nova-db`, `nova-index`, etc.)
 - Entry points:
@@ -397,4 +400,3 @@ Symptoms:
 - Acceptance criteria:
   - Disk caches never contain artifacts derived from dirty overlays.
   - Warm-start correctness is preserved across restarts.
-
