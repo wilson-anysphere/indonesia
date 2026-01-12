@@ -4031,6 +4031,37 @@ mod cancellation_tests {
     use std::path::PathBuf;
 
     #[test]
+    fn core_file_diagnostics_cancelable_matches_core_file_diagnostics_when_not_cancelled() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        db.set_file_text(
+            file,
+            r#"
+class A {
+  void m() {
+    baz();
+  }
+}
+"#
+            .to_string(),
+        );
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        let mut expected = core_file_diagnostics(&db, file, &cancel);
+        let mut actual = core_file_diagnostics_cancelable(&db, file, &cancel);
+
+        // The Salsa type-checker uses hash maps internally, so diagnostic ordering may differ across
+        // separate snapshots. Compare a canonicalized ordering instead of relying on raw Vec order.
+        sort_and_dedupe_diagnostics(&mut expected);
+        sort_and_dedupe_diagnostics(&mut actual);
+
+        assert_eq!(
+            expected, actual,
+            "cancelable diagnostics should match core_file_diagnostics"
+        );
+    }
+
+    #[test]
     fn core_file_diagnostics_returns_empty_when_cancelled() {
         let mut db = InMemoryFileStore::new();
         let file = db.file_id_for_path(PathBuf::from("/test.java"));
