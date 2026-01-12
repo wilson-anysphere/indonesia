@@ -1920,39 +1920,112 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let lhs_ty = self.infer_expr(loader, lhs).ty;
         let rhs_ty = self.infer_expr(loader, rhs).ty;
 
-        let env_ro: &dyn TypeEnv = &*loader.store;
         let string_ty = Type::class(loader.store.well_known().string, vec![]);
-        if op == BinaryOp::Add && (lhs_ty == string_ty || rhs_ty == string_ty) {
-            return ExprInfo {
-                ty: string_ty,
-                is_type_ref: false,
-            };
-        }
+        let ty = match op {
+            // Java operators that always produce boolean results.
+            BinaryOp::EqEq
+            | BinaryOp::NotEq
+            | BinaryOp::Less
+            | BinaryOp::LessEq
+            | BinaryOp::Greater
+            | BinaryOp::GreaterEq
+            | BinaryOp::AndAnd
+            | BinaryOp::OrOr => Type::boolean(),
 
-        match (&lhs_ty, &rhs_ty) {
-            (Type::Primitive(a), Type::Primitive(b)) => {
-                if let Some(result) = binary_numeric_promotion(*a, *b) {
-                    return ExprInfo {
-                        ty: Type::Primitive(result),
-                        is_type_ref: false,
-                    };
+            // `+` is special: numeric addition or string concatenation.
+            BinaryOp::Add => {
+                if lhs_ty == string_ty || rhs_ty == string_ty {
+                    string_ty.clone()
+                } else if let (Type::Primitive(a), Type::Primitive(b)) = (&lhs_ty, &rhs_ty) {
+                    binary_numeric_promotion(*a, *b)
+                        .map(Type::Primitive)
+                        .unwrap_or(Type::Unknown)
+                } else if lhs_ty.is_reference() || rhs_ty.is_reference() {
+                    // Best-effort fallback: if either operand is a reference type, assume string
+                    // concatenation (e.g. `"" + obj`).
+                    string_ty.clone()
+                } else {
+                    Type::Unknown
                 }
             }
-            _ => {}
-        }
 
-        // Best-effort fallback: if both operands are reference types and we're adding, assume string
-        // concatenation (e.g. `"" + obj`).
-        if op == BinaryOp::Add && (lhs_ty.is_reference() || rhs_ty.is_reference()) {
-            return ExprInfo {
-                ty: string_ty,
-                is_type_ref: false,
-            };
-        }
+            // Numeric operators.
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+                if let (Type::Primitive(a), Type::Primitive(b)) = (&lhs_ty, &rhs_ty) {
+                    binary_numeric_promotion(*a, *b)
+                        .map(Type::Primitive)
+                        .unwrap_or(Type::Unknown)
+                } else {
+                    Type::Unknown
+                }
+            }
 
-        let _ = env_ro;
+            // Bitwise operators.
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => match (&lhs_ty, &rhs_ty) {
+                (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::Boolean)) => {
+                    Type::boolean()
+                }
+                (Type::Primitive(a), Type::Primitive(b))
+                    if matches!(
+                        a,
+                        PrimitiveType::Byte
+                            | PrimitiveType::Short
+                            | PrimitiveType::Char
+                            | PrimitiveType::Int
+                            | PrimitiveType::Long
+                    ) && matches!(
+                        b,
+                        PrimitiveType::Byte
+                            | PrimitiveType::Short
+                            | PrimitiveType::Char
+                            | PrimitiveType::Int
+                            | PrimitiveType::Long
+                    ) =>
+                {
+                    binary_numeric_promotion(*a, *b)
+                        .map(Type::Primitive)
+                        .unwrap_or(Type::Unknown)
+                }
+                _ => Type::Unknown,
+            },
+
+            // Shift operators.
+            BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr => match (&lhs_ty, &rhs_ty) {
+                (Type::Primitive(a), Type::Primitive(b))
+                    if matches!(
+                        a,
+                        PrimitiveType::Byte
+                            | PrimitiveType::Short
+                            | PrimitiveType::Char
+                            | PrimitiveType::Int
+                            | PrimitiveType::Long
+                    ) && matches!(
+                        b,
+                        PrimitiveType::Byte
+                            | PrimitiveType::Short
+                            | PrimitiveType::Char
+                            | PrimitiveType::Int
+                            | PrimitiveType::Long
+                    ) =>
+                {
+                    match a {
+                        // Unary numeric promotion for shift operations.
+                        PrimitiveType::Long => Type::Primitive(PrimitiveType::Long),
+                        PrimitiveType::Byte
+                        | PrimitiveType::Short
+                        | PrimitiveType::Char
+                        | PrimitiveType::Int => Type::Primitive(PrimitiveType::Int),
+                        PrimitiveType::Float | PrimitiveType::Double | PrimitiveType::Boolean => {
+                            Type::Unknown
+                        }
+                    }
+                }
+                _ => Type::Unknown,
+            },
+        };
+
         ExprInfo {
-            ty: Type::Unknown,
+            ty,
             is_type_ref: false,
         }
     }

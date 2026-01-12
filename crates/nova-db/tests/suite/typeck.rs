@@ -1,11 +1,13 @@
-use std::sync::Arc;
-
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
 use tempfile::TempDir;
+
+#[path = "../typeck/diagnostics.rs"]
+mod diagnostics;
 
 fn base_project_config(root: PathBuf) -> ProjectConfig {
     ProjectConfig {
