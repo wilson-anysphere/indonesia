@@ -4985,7 +4985,7 @@ class C {
 #[test]
 fn target_typing_infers_generic_method_return_from_call_argument() {
     let src = r#"
- import java.util.*;
+import java.util.*;
 class C {
     static void take(List<String> xs) {}
     void m() {
@@ -5004,9 +5004,52 @@ class C {
 }
 
 #[test]
+fn target_typing_infers_generic_method_return_from_call_argument_with_null_arg() {
+    let src = r#"
+import java.util.*;
+class C {
+    static void take(List<String> xs) {}
+    void m() {
+        take(Collections.singletonList(null));
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "type-mismatch"),
+        "expected target typing through invocation context to work for singletonList(null), got {diags:?}"
+    );
+}
+
+#[test]
+fn non_generic_no_arg_call_argument_allows_overload_resolution() {
+    let src = r#"
+class C {
+    int foo() { return 1; }
+    static void take(int x) {}
+    static void take(String s) {}
+    void m() {
+        C.take(foo());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "ambiguous-call"
+            && d.code.as_ref() != "unresolved-method"),
+        "expected overload resolution to use foo() argument type; got {diags:?}"
+    );
+}
+
+#[test]
 fn target_typing_infers_diamond_new_expr_from_call_argument() {
     let src = r#"
- import java.util.*;
+import java.util.*;
 class C {
     static void take(List<String> xs) {}
     void m() {

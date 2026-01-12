@@ -7651,20 +7651,113 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let _ = this.infer_expr(loader, *receiver);
                         Type::Unknown
                     }
-                    // Best-effort poly-expression support: some expressions (notably generic
+                    // Best-effort poly-expression support: certain expressions (notably generic
                     // invocations like `Collections.emptyList()` and diamond class instance
                     // creation like `new ArrayList<>()`) can depend on the *target type* for
                     // inference. When they appear as arguments, we don't yet know the parameter
                     // target type until overload resolution succeeds.
                     //
-                    // Represent these as `<unknown>` for the initial applicability check (so
-                    // loose-phase resolution can proceed), then re-infer them once we have the
-                    // selected parameter types.
+                    // To avoid caching a non-target-typed result (e.g. `List<Object>`), we:
+                    // - treat diamond `new` as `<unknown>` up-front
+                    // - treat *generic* method invocations with placeholder arguments (`null`,
+                    //   unknown/error) as `<unknown>` so we can later re-infer them once we know the
+                    //   selected parameter type.
                     HirExpr::Call {
+                        callee,
                         args: inner_args,
                         explicit_type_args: inner_type_args,
                         ..
-                    } if inner_args.is_empty() && inner_type_args.is_empty() => Type::Unknown,
+                    } if inner_type_args.is_empty() => {
+                        // Fast path: only bother with the poly-expression heuristic when the call's
+                        // arguments provide weak/no constraints (no args or placeholder-ish args).
+                        //
+                        // Otherwise, generic inference from the arguments alone is usually
+                        // sufficient and we can infer the call normally to help disambiguate
+                        // overloads (e.g. `take(singletonList(\"x\"))`).
+                        let mut inner_arg_tys = Vec::with_capacity(inner_args.len());
+                        let mut has_placeholder_arg = inner_args.is_empty();
+                        for inner_arg in inner_args {
+                            let ty = match &this.body.exprs[*inner_arg] {
+                                HirExpr::Lambda { .. } => {
+                                    has_placeholder_arg = true;
+                                    Type::Unknown
+                                }
+                                HirExpr::MethodReference { receiver, .. }
+                                | HirExpr::ConstructorReference { receiver, .. } => {
+                                    has_placeholder_arg = true;
+                                    let _ = this.infer_expr(loader, *receiver);
+                                    Type::Unknown
+                                }
+                                HirExpr::Null { .. } => {
+                                    has_placeholder_arg = true;
+                                    Type::Null
+                                }
+                                HirExpr::Missing { .. } => {
+                                    has_placeholder_arg = true;
+                                    Type::Unknown
+                                }
+                                HirExpr::New { class, .. }
+                                    if is_diamond_type_ref_text(class.as_str()) =>
+                                {
+                                    has_placeholder_arg = true;
+                                    Type::Unknown
+                                }
+                                _ => {
+                                    let ty = this.infer_expr(loader, *inner_arg).ty;
+                                    if ty.is_errorish() || ty == Type::Null {
+                                        has_placeholder_arg = true;
+                                    }
+                                    ty
+                                }
+                            };
+                            inner_arg_tys.push(ty);
+                        }
+
+                        if !has_placeholder_arg {
+                            return this.infer_expr(loader, *arg).ty;
+                        }
+
+                        // For now, restrict the generic/poly heuristic to qualified calls like
+                        // `Collections.emptyList()` where we can cheaply recover the receiver type
+                        // and check whether the invoked method is actually generic.
+                        let HirExpr::FieldAccess { receiver, name, .. } = &this.body.exprs[*callee]
+                        else {
+                            return this.infer_expr(loader, *arg).ty;
+                        };
+
+                        let recv_info = this.infer_expr(loader, *receiver);
+                        let recv_ty = recv_info.ty.clone();
+                        if recv_ty.is_errorish() {
+                            return Type::Unknown;
+                        }
+                        this.ensure_type_loaded(loader, &recv_ty);
+
+                        let call_kind = if recv_info.is_type_ref {
+                            CallKind::Static
+                        } else {
+                            CallKind::Instance
+                        };
+
+                        let call = MethodCall {
+                            receiver: recv_ty,
+                            call_kind,
+                            name: name.as_str(),
+                            args: inner_arg_tys,
+                            expected_return: None,
+                            explicit_type_args: Vec::new(),
+                        };
+
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        let mut ctx = TyContext::new(env_ro);
+                        match nova_types::resolve_method_call(&mut ctx, &call) {
+                            MethodResolution::Found(method)
+                                if !method.inferred_type_args.is_empty() =>
+                            {
+                                Type::Unknown
+                            }
+                            _ => this.infer_expr(loader, *arg).ty,
+                        }
+                    }
                     // Diamond class instance creation is also target-typed: inferring it without a
                     // target type will default type arguments (often to `Object`) which can cause
                     // overload resolution to fail in common code like:
