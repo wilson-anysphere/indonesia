@@ -258,6 +258,56 @@ fn analyze_dotted_expr(
                     break;
                 }
             }
+            "iterate" if idx > 0 && matches!(arg_count, 2 | 3) => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                let kind = if class_expr.ends_with("IntStream") {
+                    Some(StreamValueKind::IntStream)
+                } else if class_expr.ends_with("LongStream") {
+                    Some(StreamValueKind::LongStream)
+                } else if class_expr.ends_with("DoubleStream") {
+                    Some(StreamValueKind::DoubleStream)
+                } else if class_expr.ends_with("Stream") {
+                    Some(StreamValueKind::Stream)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
+                    source_end = Some(idx);
+                    source = Some(StreamSource::StaticFactory {
+                        class_expr,
+                        stream_expr: dotted.prefix_source(idx),
+                        method: name.to_string(),
+                    });
+                    stream_kind = kind;
+                    break;
+                }
+            }
+            "generate" if idx > 0 && arg_count == 1 => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                let kind = if class_expr.ends_with("IntStream") {
+                    Some(StreamValueKind::IntStream)
+                } else if class_expr.ends_with("LongStream") {
+                    Some(StreamValueKind::LongStream)
+                } else if class_expr.ends_with("DoubleStream") {
+                    Some(StreamValueKind::DoubleStream)
+                } else if class_expr.ends_with("Stream") {
+                    Some(StreamValueKind::Stream)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
+                    source_end = Some(idx);
+                    source = Some(StreamSource::StaticFactory {
+                        class_expr,
+                        stream_expr: dotted.prefix_source(idx),
+                        method: name.to_string(),
+                    });
+                    stream_kind = kind;
+                    break;
+                }
+            }
             _ => {}
         }
     }
@@ -754,9 +804,7 @@ fn wrap_void_expression(expr: &str) -> String {
     //
     // This is intentionally fully-qualified to avoid relying on imports in the
     // evaluator's compilation context.
-    format!(
-        "((java.util.function.Supplier<Object>)(() -> {{{expr};return null;}})).get()"
-    )
+    format!("((java.util.function.Supplier<Object>)(() -> {{{expr};return null;}})).get()")
 }
 
 fn infer_element_type(sample: &[JdwpValue]) -> Option<String> {
@@ -1206,6 +1254,33 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_long_stream_iterate_chain() {
+        let expr = "LongStream.iterate(0, x -> x + 1).limit(10).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "LongStream");
+                assert_eq!(stream_expr, "LongStream.iterate(0, x -> x + 1)");
+                assert_eq!(method, "iterate");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::LongStream);
+        assert_eq!(chain.intermediates.len(), 1);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Limit);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
     fn recognizes_int_stream_sorted_chain() {
         let expr = "IntStream.range(0, 10).sorted().count()";
         let chain = analyze_stream_expression(expr).unwrap();
@@ -1240,6 +1315,33 @@ mod tests {
         assert_eq!(chain.stream_kind, StreamValueKind::DoubleStream);
         assert_eq!(chain.intermediates.len(), 1);
         assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Map);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
+    fn recognizes_double_stream_generate_chain() {
+        let expr = "DoubleStream.generate(() -> 1.0).limit(10).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "DoubleStream");
+                assert_eq!(stream_expr, "DoubleStream.generate(() -> 1.0)");
+                assert_eq!(method, "generate");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::DoubleStream);
+        assert_eq!(chain.intermediates.len(), 1);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Limit);
         assert_eq!(
             chain.terminal.as_ref().unwrap().kind,
             StreamOperationKind::Count
