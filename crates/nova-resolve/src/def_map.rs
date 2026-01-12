@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use nova_core::{FileId, Name, PackageName, QualifiedName, TypeName};
 use nova_hir::ids::{ConstructorId, FieldId, InitializerId, ItemId, MethodId};
-use nova_hir::item_tree::{Import as HirImport, Item, ItemTree, Member, Modifiers};
+use nova_hir::item_tree::{FieldKind, Import as HirImport, Item, ItemTree, Member, Modifiers};
 
 use crate::types::{FieldDef, MethodDef, TypeDef, TypeKind};
 
@@ -385,7 +385,15 @@ impl DefMap {
 
                     let field = tree.field(*field_id);
                     let field_name = Name::from(field.name.as_str());
-                    let is_static = (field.modifiers.raw & Modifiers::STATIC) != 0;
+                    // Fields in interfaces/annotations are implicitly `public static final` and
+                    // enum constants are implicitly `public static final` (JLS 8.9.3 / 9.3).
+                    //
+                    // Preserve this here so workspace-aware static-import resolution can treat
+                    // these members as static even when the source omits the `static` modifier.
+                    let is_implicitly_static = matches!(kind, TypeKind::Interface | TypeKind::Annotation)
+                        || field.kind == FieldKind::EnumConstant;
+                    let is_static =
+                        is_implicitly_static || (field.modifiers.raw & Modifiers::STATIC) != 0;
                     match type_def.fields.entry(field_name.clone()) {
                         Entry::Vacant(entry) => {
                             entry.insert(FieldDef {
