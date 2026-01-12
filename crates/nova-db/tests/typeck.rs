@@ -1,0 +1,11 @@
+//! Standalone type-checking integration test binary for `nova-db`.
+//!
+//! The main `tests/harness.rs` consolidates most integration tests into a single crate to reduce
+//! compile time for `cargo test -p nova-db --tests`. This wrapper exists so CI and developers can
+//! run only the type-checking suite via:
+//!
+//!   cargo test -p nova-db --test typeck
+
+#[path = "suite/typeck.rs"]
+mod suite_typeck;
+

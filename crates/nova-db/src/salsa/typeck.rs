@@ -486,7 +486,7 @@ fn type_of_expr_demand_result(
                                 data.ty_text.as_str(),
                                 Some(data.ty_range),
                             );
-                            if !decl_ty.is_errorish() {
+                            if !decl_ty.is_errorish() && decl_ty != Type::Void {
                                 expected_ty = Some(decl_ty);
                             }
                         }
@@ -507,7 +507,7 @@ fn type_of_expr_demand_result(
                                     data.ty_text.as_str(),
                                     Some(data.ty_range),
                                 );
-                                if !decl_ty.is_errorish() {
+                                if !decl_ty.is_errorish() && decl_ty != Type::Void {
                                     seed_lambda_params_from_target(
                                         &mut checker,
                                         &mut loader,
@@ -521,7 +521,10 @@ fn type_of_expr_demand_result(
                 }
                 HirStmt::Return { expr, .. } => {
                     if let Some(ret) = expr {
-                        if *ret == target_expr && !checker.expected_return.is_errorish() {
+                        if *ret == target_expr
+                            && !checker.expected_return.is_errorish()
+                            && checker.expected_return != Type::Void
+                        {
                             expected_ty = Some(checker.expected_return.clone());
                         }
                     }
@@ -3015,6 +3018,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ));
                     return;
                 };
+                // Returning a value from a `void` method is always an error, but we still type the
+                // expression for IDE features. Don't propagate `void` as an "expected type" into
+                // call/generic inference: Java doesn't allow `void` as a type argument and using it
+                // as a target type can lead to nonsensical inferred return types (e.g. `T = void`).
                 let expected =
                     (!expected_return.is_errorish() && expected_return != &Type::Void)
                         .then_some(expected_return);

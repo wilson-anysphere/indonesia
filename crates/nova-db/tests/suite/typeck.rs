@@ -3227,6 +3227,28 @@ class C { int m(){ return; } }
 }
 
 #[test]
+fn returning_value_from_void_method_does_not_target_type_expression() {
+    let src = r#"
+class C {
+    static <T> T id(T t) { return t; }
+    void m() {
+        return id("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .rfind("id(\"x\"")
+        .expect("snippet should contain id call")
+        + "id".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn comparison_expression_has_boolean_type() {
     let src = r#"
 class C { boolean m(){ return 1 < 2; } }
