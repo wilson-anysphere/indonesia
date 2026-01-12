@@ -396,17 +396,44 @@ impl Workspace {
 
         let mut shards = match &loaded_view {
             Some(view) => {
+                let invalidated_set: std::collections::HashSet<&str> =
+                    invalidated_files.iter().map(|path| path.as_str()).collect();
+
+                // If every existing file is invalidated, we will rebuild all shards from scratch,
+                // so there's no need to materialize any persisted shard archives.
+                let indexing_all_files = stamp_snapshot
+                    .file_fingerprints()
+                    .keys()
+                    .all(|path| invalidated_set.contains(path.as_str()));
+
+                // Only shards that contain at least one unchanged file need to be loaded from disk.
+                // Shards where all files are invalidated can be rebuilt from scratch.
+                let mut shard_has_unchanged = vec![false; shard_count as usize];
+                if !indexing_all_files {
+                    for path in stamp_snapshot.file_fingerprints().keys() {
+                        if invalidated_set.contains(path.as_str()) {
+                            continue;
+                        }
+                        let shard_id = shard_id_for_path(path, shard_count) as usize;
+                        shard_has_unchanged[shard_id] = true;
+                    }
+                }
+
                 let mut shards = Vec::with_capacity(shard_count as usize);
                 for shard_id in 0..shard_count {
                     Cancelled::check(cancel)?;
-                    let indexes = match view.shard(shard_id) {
-                        Some(archives) => ProjectIndexes {
-                            symbols: archives.symbols.to_owned()?,
-                            references: archives.references.to_owned()?,
-                            inheritance: archives.inheritance.to_owned()?,
-                            annotations: archives.annotations.to_owned()?,
-                        },
-                        None => ProjectIndexes::default(),
+                    let indexes = if indexing_all_files || !shard_has_unchanged[shard_id as usize] {
+                        ProjectIndexes::default()
+                    } else {
+                        match view.shard(shard_id) {
+                            Some(archives) => ProjectIndexes {
+                                symbols: archives.symbols.to_owned()?,
+                                references: archives.references.to_owned()?,
+                                inheritance: archives.inheritance.to_owned()?,
+                                annotations: archives.annotations.to_owned()?,
+                            },
+                            None => ProjectIndexes::default(),
+                        }
                     };
                     shards.push(indexes);
                 }
