@@ -181,7 +181,7 @@ fn is_within_any(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 pub fn is_build_file(path: &Path) -> bool {
-    if path.ends_with(Path::new(".nova/queries/gradle.json")) {
+    if path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH) {
         return true;
     }
 
@@ -508,13 +508,16 @@ mod tests {
 
     #[test]
     fn gradle_snapshot_file_is_a_build_file() {
-        assert!(is_build_file(Path::new("/x/.nova/queries/gradle.json")));
+        let path = Path::new("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH);
+        assert!(is_build_file(&path));
     }
 
     #[test]
     fn gradle_snapshot_file_change_is_categorized_as_build() {
         let config = WatchConfig::new(PathBuf::from("/x"));
-        let event = NormalizedEvent::Modified(PathBuf::from("/x/.nova/queries/gradle.json"));
+        let event = NormalizedEvent::Modified(
+            PathBuf::from("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH),
+        );
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Build)

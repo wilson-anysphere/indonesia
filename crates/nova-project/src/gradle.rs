@@ -3,10 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml::Value;
 use walkdir::WalkDir;
+
+use nova_build_model::{
+    GradleSnapshotFile, GradleSnapshotJavaCompileConfig, GRADLE_SNAPSHOT_REL_PATH,
+    GRADLE_SNAPSHOT_SCHEMA_VERSION,
+};
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -78,9 +82,6 @@ fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, work
         },
     );
 }
-
-const GRADLE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BuildFileFingerprint {
     digest: String,
@@ -244,58 +245,14 @@ fn gradle_build_fingerprint(project_root: &Path) -> std::io::Result<BuildFileFin
     BuildFileFingerprint::from_files(project_root, build_files)
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GradleSnapshotV1 {
-    schema_version: u32,
-    build_fingerprint: String,
-    #[serde(default)]
-    projects: Vec<GradleSnapshotProject>,
-    #[serde(default)]
-    java_compile_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GradleSnapshotProject {
-    path: String,
-    project_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GradleSnapshotJavaCompileConfig {
-    project_dir: PathBuf,
-    #[serde(default)]
-    compile_classpath: Vec<PathBuf>,
-    #[serde(default)]
-    test_classpath: Vec<PathBuf>,
-    #[serde(default)]
-    module_path: Vec<PathBuf>,
-    #[serde(default)]
-    main_source_roots: Vec<PathBuf>,
-    #[serde(default)]
-    test_source_roots: Vec<PathBuf>,
-    main_output_dir: Option<PathBuf>,
-    test_output_dir: Option<PathBuf>,
-    source: Option<String>,
-    target: Option<String>,
-    release: Option<String>,
-    #[serde(default)]
-    enable_preview: bool,
-}
-
 fn gradle_snapshot_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".nova")
-        .join("queries")
-        .join("gradle.json")
+    workspace_root.join(GRADLE_SNAPSHOT_REL_PATH)
 }
 
-fn load_gradle_snapshot(workspace_root: &Path) -> Option<GradleSnapshotV1> {
+fn load_gradle_snapshot(workspace_root: &Path) -> Option<GradleSnapshotFile> {
     let path = gradle_snapshot_path(workspace_root);
     let bytes = std::fs::read(&path).ok()?;
-    let snapshot: GradleSnapshotV1 = serde_json::from_slice(&bytes).ok()?;
+    let snapshot: GradleSnapshotFile = serde_json::from_slice(&bytes).ok()?;
     if snapshot.schema_version != GRADLE_SNAPSHOT_SCHEMA_VERSION {
         return None;
     }
@@ -339,7 +296,7 @@ fn java_language_level_from_snapshot(cfg: &GradleSnapshotJavaCompileConfig) -> J
     }
 }
 
-fn java_config_from_snapshot(snapshot: &GradleSnapshotV1) -> Option<JavaConfig> {
+fn java_config_from_snapshot(snapshot: &GradleSnapshotFile) -> Option<JavaConfig> {
     let mut source: Option<JavaVersion> = None;
     let mut target: Option<JavaVersion> = None;
     let mut enable_preview = false;

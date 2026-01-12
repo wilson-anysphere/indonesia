@@ -18,7 +18,7 @@ fn reload_project_reloads_on_gradle_snapshot_handoff_change() {
     )
     .expect("build.gradle");
 
-    let snapshot_path = root.join(".nova").join("queries").join("gradle.json");
+    let snapshot_path = root.join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH);
     fs::create_dir_all(snapshot_path.parent().expect("snapshot parent")).expect("create .nova dir");
     fs::write(&snapshot_path, "{}").expect("write gradle snapshot");
 

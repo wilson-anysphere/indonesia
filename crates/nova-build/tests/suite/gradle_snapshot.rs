@@ -2,6 +2,7 @@ use nova_build::{
     collect_gradle_build_files, BuildCache, BuildFileFingerprint, CommandOutput, CommandRunner,
     GradleBuild, GradleConfig,
 };
+use nova_build_model::{GRADLE_SNAPSHOT_REL_PATH, GRADLE_SNAPSHOT_SCHEMA_VERSION};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -137,7 +138,7 @@ NOVA_JSON_END
         .java_compile_config(&project_root, Some(":app"), &cache)
         .expect("java compile config");
 
-    let snapshot_path = project_root.join(".nova/queries/gradle.json");
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
     assert!(snapshot_path.is_file(), "snapshot file should be created");
 
     let build_files = collect_gradle_build_files(&project_root).expect("collect build files");
@@ -154,7 +155,7 @@ NOVA_JSON_END
 
     let bytes = std::fs::read(&snapshot_path).unwrap();
     let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(snapshot.schema_version, 1);
+    assert_eq!(snapshot.schema_version, GRADLE_SNAPSHOT_SCHEMA_VERSION);
     assert_eq!(snapshot.build_fingerprint, expected_fingerprint.digest);
 
     let cfg = snapshot
@@ -245,7 +246,7 @@ fn writes_gradle_snapshot_after_java_compile_configs_all() {
         .java_compile_configs_all(&project_root, &cache)
         .expect("java compile configs all");
 
-    let snapshot_path = project_root.join(".nova/queries/gradle.json");
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
     assert!(snapshot_path.is_file(), "snapshot file should be created");
 
     let build_files = collect_gradle_build_files(&project_root).expect("collect build files");
@@ -254,7 +255,7 @@ fn writes_gradle_snapshot_after_java_compile_configs_all() {
 
     let bytes = std::fs::read(&snapshot_path).unwrap();
     let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(snapshot.schema_version, 1);
+    assert_eq!(snapshot.schema_version, GRADLE_SNAPSHOT_SCHEMA_VERSION);
     assert_eq!(snapshot.build_fingerprint, expected_fingerprint.digest);
 
     assert!(
@@ -323,7 +324,7 @@ NOVA_JSON_END
         .java_compile_config(&project_root, None, &cache)
         .expect("java compile config");
 
-    let snapshot_path = project_root.join(".nova/queries/gradle.json");
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
     assert!(snapshot_path.is_file(), "snapshot file should be created");
 
     let bytes = std::fs::read(&snapshot_path).unwrap();
@@ -412,7 +413,7 @@ fn writes_gradle_snapshot_for_aggregator_root_union_config() {
         .java_compile_config(&project_root, None, &cache)
         .expect("java compile config");
 
-    let snapshot_path = project_root.join(".nova/queries/gradle.json");
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
     assert!(snapshot_path.is_file(), "snapshot file should be created");
 
     let bytes = std::fs::read(&snapshot_path).unwrap();

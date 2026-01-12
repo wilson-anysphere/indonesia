@@ -7,8 +7,12 @@ use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, GradleBuildTask, JavaCompileConfig, Result,
 };
-use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
-use serde::{Deserialize, Serialize};
+use nova_build_model::{
+    AnnotationProcessing, AnnotationProcessingConfig, GradleSnapshotFile,
+    GradleSnapshotJavaCompileConfig, GradleSnapshotProject, GRADLE_SNAPSHOT_REL_PATH,
+    GRADLE_SNAPSHOT_SCHEMA_VERSION,
+};
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -2526,44 +2530,8 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
 
 static GRADLE_SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct GradleSnapshotV1 {
-    schema_version: u32,
-    build_fingerprint: String,
-    projects: Vec<GradleSnapshotProject>,
-    java_compile_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct GradleSnapshotProject {
-    path: String,
-    project_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct GradleSnapshotJavaCompileConfig {
-    project_dir: PathBuf,
-    compile_classpath: Vec<PathBuf>,
-    test_classpath: Vec<PathBuf>,
-    module_path: Vec<PathBuf>,
-    main_source_roots: Vec<PathBuf>,
-    test_source_roots: Vec<PathBuf>,
-    main_output_dir: Option<PathBuf>,
-    test_output_dir: Option<PathBuf>,
-    source: Option<String>,
-    target: Option<String>,
-    release: Option<String>,
-    enable_preview: bool,
-}
-
 fn gradle_snapshot_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(".nova")
-        .join("queries")
-        .join("gradle.json")
+    project_root.join(GRADLE_SNAPSHOT_REL_PATH)
 }
 
 fn update_gradle_snapshot_projects(
@@ -2636,16 +2604,15 @@ fn update_gradle_snapshot_java_compile_config(
 fn update_gradle_snapshot(
     project_root: &Path,
     fingerprint: &BuildFileFingerprint,
-    update: impl FnOnce(&mut GradleSnapshotV1),
+    update: impl FnOnce(&mut GradleSnapshotFile),
 ) -> std::io::Result<()> {
-    const SCHEMA_VERSION: u32 = 1;
-
     let path = gradle_snapshot_path(project_root);
     let mut snapshot = read_gradle_snapshot_file(&path).unwrap_or_default();
-    if snapshot.schema_version != SCHEMA_VERSION || snapshot.build_fingerprint != fingerprint.digest
+    if snapshot.schema_version != GRADLE_SNAPSHOT_SCHEMA_VERSION
+        || snapshot.build_fingerprint != fingerprint.digest
     {
-        snapshot = GradleSnapshotV1 {
-            schema_version: SCHEMA_VERSION,
+        snapshot = GradleSnapshotFile {
+            schema_version: GRADLE_SNAPSHOT_SCHEMA_VERSION,
             build_fingerprint: fingerprint.digest.clone(),
             projects: Vec::new(),
             java_compile_configs: BTreeMap::new(),
@@ -2653,7 +2620,7 @@ fn update_gradle_snapshot(
     }
 
     update(&mut snapshot);
-    snapshot.schema_version = SCHEMA_VERSION;
+    snapshot.schema_version = GRADLE_SNAPSHOT_SCHEMA_VERSION;
     snapshot.build_fingerprint = fingerprint.digest.clone();
 
     // Best-effort determinism: stable sort + dedup for any path lists.
@@ -2672,7 +2639,7 @@ fn update_gradle_snapshot(
     write_file_atomic(&path, &json)
 }
 
-fn read_gradle_snapshot_file(path: &Path) -> Option<GradleSnapshotV1> {
+fn read_gradle_snapshot_file(path: &Path) -> Option<GradleSnapshotFile> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }

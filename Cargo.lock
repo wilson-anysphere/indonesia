@@ -4418,6 +4418,7 @@ dependencies = [
  "crossbeam-channel",
  "lsp-types",
  "nova-build",
+ "nova-build-model",
  "nova-cache",
  "nova-classpath",
  "nova-config",

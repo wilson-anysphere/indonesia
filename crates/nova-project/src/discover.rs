@@ -502,8 +502,6 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
         return false;
     };
 
-    const GRADLE_SNAPSHOT_PATH: &str = ".nova/queries/gradle.json";
-
     match build_system {
         BuildSystem::Maven => {
             if matches!(name, "pom.xml" | "mvnw" | "mvnw.cmd") {
@@ -527,7 +525,7 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             //
             // Treat it as a build file so project reloads are triggered immediately when the
             // snapshot is updated.
-            if path.ends_with(GRADLE_SNAPSHOT_PATH) {
+            if path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH) {
                 return true;
             }
 

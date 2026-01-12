@@ -26,6 +26,7 @@ nova-types = { path = "../nova-types" }
 nova-vfs = { path = "../nova-vfs", features = ["watch-notify"] }
 nova-jdk = { path = "../nova-jdk" }
 nova-classpath = { path = "../nova-classpath" }
+nova-build-model = { path = "../nova-build-model" }
 rowan = "0.15.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
