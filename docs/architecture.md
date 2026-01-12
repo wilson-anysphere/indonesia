@@ -11,7 +11,7 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 - Incremental query engine: Salsa via `ra_ap_salsa` (`ra_salsa`) ([ADR 0001](adr/0001-incremental-query-engine.md))
 - Syntax trees: `rowan` red/green trees + typed AST wrappers ([ADR 0002](adr/0002-syntax-tree-rowan.md))
 - Protocol transport:
-  - LSP: target `lsp-server` message loop ([ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md))
+  - LSP: `lsp-server` IO framing + explicit message loop ([ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md))
   - DAP: Nova-owned message loop + codec ([ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md))
 - Concurrency: snapshot reads + single-writer updates; Tokio orchestration + Rayon for CPU work ([ADR 0004](adr/0004-concurrency-model.md))
 - Persistence:
