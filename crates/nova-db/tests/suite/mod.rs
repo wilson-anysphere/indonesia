@@ -2,6 +2,7 @@ mod class_id_registry;
 mod class_id_stability;
 mod class_ids;
 mod hir_lowering;
+mod parse_java_incremental;
 mod java_parse_no_reparse;
 mod parse_java_incremental;
 mod line_index;
