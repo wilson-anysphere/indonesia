@@ -148,17 +148,23 @@ async fn wire_stream_debug_allows_arrays_stream_expressions() {
         "unexpected response: {resp}"
     );
 
-    let source_elements: Vec<_> = resp
-        .pointer("/body/runtime/sourceSample/elements")
-        .and_then(|v| v.as_array())
-        .expect("missing runtime.sourceSample.elements")
-        .iter()
-        .map(|v| v.as_str().expect("expected string element"))
-        .collect();
-    // The wire stream-debug runtime is implemented via compile+inject evaluation. The mock JDWP
-    // server currently echoes the maxSampleSize argument back as the return value for the
-    // placeholder invocation.
-    assert_eq!(source_elements, vec!["3"]);
+    // Ensure we did not reject call-based `ExistingStream` sources (the safety guard is meant
+    // to block only *existing stream values*, like a `Stream` local variable).
+    assert_eq!(
+        resp.pointer("/body/analysis/source/kind")
+            .and_then(|v| v.as_str()),
+        Some("existingStream"),
+        "unexpected analysis source: {resp}"
+    );
+    let stream_expr = resp
+        .pointer("/body/analysis/source/stream_expr")
+        .or_else(|| resp.pointer("/body/analysis/source/streamExpr"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        stream_expr.contains("Arrays.stream"),
+        "expected analysis source stream_expr to include Arrays.stream(...): {resp}"
+    );
 
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
