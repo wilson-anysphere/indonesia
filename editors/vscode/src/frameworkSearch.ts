@@ -114,7 +114,13 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
 
       const projectRoot = workspaceFolder.uri.fsPath;
       if (isFrameworkSearchKindUnsupported(workspaceKey, kind)) {
-        void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
+        const method =
+          kind === 'web-endpoints'
+            ? 'nova/web/endpoints'
+            : kind === 'micronaut-endpoints'
+              ? 'nova/micronaut/endpoints'
+              : 'nova/micronaut/beans';
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
         return;
       }
 
@@ -243,7 +249,7 @@ async function fetchItemsForKind(
     case 'micronaut-endpoints': {
       const method = 'nova/micronaut/endpoints';
       if (isNovaRequestSupported(workspaceKey, method) === false) {
-        void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
         return undefined;
       }
 
@@ -305,7 +311,7 @@ async function fetchItemsForKind(
     case 'micronaut-beans': {
       const method = 'nova/micronaut/beans';
       if (isNovaRequestSupported(workspaceKey, method) === false) {
-        void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
         return undefined;
       }
 
@@ -380,7 +386,7 @@ async function fetchWebEndpoints(
   const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
 
   if (ordered.length === 0) {
-    void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
+    void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
     return undefined;
   }
 
