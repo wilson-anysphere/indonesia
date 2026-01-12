@@ -45,6 +45,19 @@ fi
 # Keep duplicated fuzz corpora in sync (Java seed inputs shared across multiple fuzz targets).
 bash "${ROOT_DIR}/scripts/check-fuzz-java-corpus-sync.sh"
 
+# Guard the crate-boundary refactor that removed the `nova-build -> nova-project` dependency.
+#
+# `nova-project` is the workspace loader crate; `nova-build` should consume the shared semantic
+# model types from `nova-build-model` without depending on the loader.
+#
+# This prevents accidental reintroduction of the dependency edge (which risks dependency cycles and
+# heavier builds).
+if git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- crates/nova-build/Cargo.toml >/dev/null; then
+  echo "repo invariant failed: nova-build must not depend on nova-project (use nova-build-model instead)" >&2
+  git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- crates/nova-build/Cargo.toml >&2
+  exit 1
+fi
+
 # Enforce the AGENTS.md integration test harness pattern for `nova-dap`.
 #
 # Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive
