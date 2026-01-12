@@ -1919,6 +1919,25 @@ class C {
 }
 
 #[test]
+fn static_context_allows_unqualified_static_field_access() {
+    let src = r#"
+class C {
+    static int x;
+    static void m() {
+        x = 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected implicit-this access to a static field to be allowed, got {diags:?}"
+    );
+}
+
+#[test]
 fn static_context_rejects_unqualified_instance_field_access_in_static_initializer() {
     let src = r#"
 class C {
