@@ -6,6 +6,9 @@
 # This allowlist is a temporary escape hatch for crates that still exceed the limit (so repo
 # invariants can pass while we consolidate test harnesses incrementally).
 #
+# If a crate becomes compliant (<=2 root `tests/*.rs` files), remove it from this list to avoid
+# `stale-test-layout-allowlist-entry` warnings.
+#
 # One crate name per line. `#` comments and blank lines are ignored.
 
 nova-refactor
