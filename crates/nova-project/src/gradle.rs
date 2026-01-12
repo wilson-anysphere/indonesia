@@ -3897,9 +3897,22 @@ includeBuild("build-logic")
  includeBuild(
      "build-logic"
  )
- "#;
+  "#;
         let builds = parse_gradle_settings_included_builds(settings);
         assert_eq!(builds, vec!["build-logic".to_string()]);
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_parses_triple_quoted_arguments() {
+        let settings = r#"
+includeBuild("""build-logic""")
+includeBuild '''build-logic2'''
+"#;
+        let builds = parse_gradle_settings_included_builds(settings);
+        assert_eq!(
+            builds,
+            vec!["build-logic".to_string(), "build-logic2".to_string()]
+        );
     }
 
     #[test]
