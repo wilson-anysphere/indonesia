@@ -1,4 +1,4 @@
-use nova_core::{Name, PackageName, QualifiedName};
+use nova_core::{Name, QualifiedName};
 use nova_hir::item_tree;
 use nova_types::Span;
 
@@ -35,7 +35,7 @@ impl ImportMap {
                 }
                 (false, true) => {
                     out.type_star.push(TypeStarImport {
-                        package: PackageName::from_dotted(&import.path),
+                        path: QualifiedName::from_dotted(&import.path),
                         range: import.range,
                     });
                 }
@@ -87,7 +87,15 @@ pub struct TypeSingleImport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeStarImport {
-    pub package: PackageName,
+    /// `import X.*;` where `X` is a `PackageOrTypeName` (JLS 7.5.2).
+    ///
+    /// `X` can refer to either:
+    /// - a package (`import java.util.*;`), or
+    /// - a type (`import java.util.Map.*;`), in which case member types can be imported.
+    ///
+    /// The resolver decides which interpretation applies by consulting the available type
+    /// indices and package set.
+    pub path: QualifiedName,
     pub range: Span,
 }
 

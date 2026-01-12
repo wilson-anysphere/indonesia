@@ -491,16 +491,20 @@ impl<'a> Resolver<'a> {
         }
 
         for import in &imports.type_star {
-            if self.package_exists(&import.package) {
+            let prefix = import.path.to_dotted();
+            let package = PackageName::from_dotted(&prefix);
+
+            // `import X.*;` is valid if `X` names either:
+            // - a package (importing all types declared in that package), or
+            // - a type (importing all member types declared in that type).
+            if self.package_exists(&package) {
                 continue;
             }
 
-            let prefix = import.package.to_dotted();
-            let prefix_ty = self.resolve_type_in_index(&QualifiedName::from_dotted(&prefix));
-            if prefix_ty.is_none() {
+            if self.resolve_type_in_index(&import.path).is_none() {
                 diags.push(unresolved_import_diagnostic(
                     import.range,
-                    &format!("{}.*", import.package),
+                    &format!("{prefix}.*"),
                 ));
             }
         }
@@ -1073,15 +1077,14 @@ impl<'a> Resolver<'a> {
         let mut candidates = Vec::<TypeName>::new();
 
         for import in &imports.type_star {
-            // JLS 7.5.2: `import p.*;` imports all public types in package `p`.
-            // Java also allows `import TypeName.*;`, which imports the public member types
-            // of `TypeName` (e.g. `import java.util.Map.*;` makes `Entry` visible).
-            //
-            // Our `ImportMap` currently represents non-static star imports as a `PackageName`
-            // prefix. Prefer package semantics when the prefix is a real package, otherwise
-            // fall back to treating it as a type name and attempt to resolve a member type.
-            if self.package_exists(&import.package) {
-                if let Some(ty) = self.resolve_type_in_package_index(&import.package, name) {
+            // JLS 7.5.2: `import X.*;` imports from either:
+            // - package `X` (all accessible types declared in the package), or
+            // - type `X` (all accessible member types declared in the type).
+            let prefix = import.path.to_dotted();
+            let package = PackageName::from_dotted(&prefix);
+
+            if self.package_exists(&package) {
+                if let Some(ty) = self.resolve_type_in_package_index(&package, name) {
                     if seen.insert(ty.clone()) {
                         candidates.push(ty);
                     }
@@ -1089,13 +1092,9 @@ impl<'a> Resolver<'a> {
                 continue;
             }
 
-            let prefix = import.package.to_dotted();
             // Only treat the prefix as a type-import-on-demand if the prefix itself resolves to
             // a type name.
-            if self
-                .resolve_type_in_index(&QualifiedName::from_dotted(&prefix))
-                .is_none()
-            {
+            if self.resolve_type_in_index(&import.path).is_none() {
                 continue;
             }
 
