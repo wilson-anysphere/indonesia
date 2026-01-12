@@ -396,6 +396,7 @@ fn fingerprint_changes_on_applied_gradle_script_plugin_edit() {
     assert_ne!(fp1.digest, fp2.digest);
 }
 
+#[test]
 fn parses_maven_classpath_bracket_list() {
     let out = r#"[/a/b/c.jar, /d/e/f.jar]"#;
     let cp = parse_maven_classpath_output(out);
