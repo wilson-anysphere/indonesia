@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
 use tokio::time::{sleep, Instant};
@@ -42,6 +43,19 @@ pub(crate) struct FunctionBreakpointSpec {
     pub condition: Option<String>,
     pub hit_condition: Option<String>,
     pub log_message: Option<String>,
+}
+
+/// Internal representation of a DAP `DataBreakpoint` (watchpoint).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DataBreakpointSpec {
+    pub data_id: String,
+    #[serde(default)]
+    pub access_type: Option<String>,
+    #[serde(default)]
+    pub hit_condition: Option<String>,
+    #[serde(default)]
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,6 +270,7 @@ pub struct Debugger {
     breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
     class_prepare_request: Option<i32>,
     exception_requests: Vec<i32>,
+    watchpoint_requests: Vec<(u8, i32)>,
     active_step_requests: HashMap<ThreadId, ActiveStepRequest>,
     active_method_exit_requests: HashMap<ThreadId, i32>,
     pending_return_values: HashMap<ThreadId, JdwpValue>,
@@ -332,6 +347,7 @@ impl Debugger {
             breakpoint_metadata: HashMap::new(),
             class_prepare_request: None,
             exception_requests: Vec::new(),
+            watchpoint_requests: Vec::new(),
             active_step_requests: HashMap::new(),
             active_method_exit_requests: HashMap::new(),
             pending_return_values: HashMap::new(),
@@ -1470,6 +1486,342 @@ impl Debugger {
         Ok(())
     }
 
+    /// DAP `dataBreakpointInfo` request implementation.
+    ///
+    /// This currently supports watchpoints on:
+    /// - instance fields of object handles surfaced via the variables UI
+    /// - static fields in the `Static` scope
+    ///
+    /// Other targets (locals, array elements, synthetic children) return a response
+    /// without a `dataId`, signalling that data breakpoints are not available.
+    pub(crate) async fn data_breakpoint_info(
+        &mut self,
+        cancel: &CancellationToken,
+        variables_reference: i64,
+        name: &str,
+    ) -> Result<serde_json::Value> {
+        check_cancel(cancel)?;
+
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DebuggerError::InvalidRequest(
+                "dataBreakpointInfo.name is required".to_string(),
+            ));
+        }
+
+        let caps = self.jdwp.capabilities().await;
+        let access_types = if caps.can_watch_field_access && caps.can_watch_field_modification {
+            vec!["read", "write", "readWrite"]
+        } else if caps.can_watch_field_access {
+            vec!["read"]
+        } else if caps.can_watch_field_modification {
+            vec!["write"]
+        } else {
+            Vec::new()
+        };
+
+        // --- Instance fields (object handles) ---------------------------------------------
+        if let Some(handle) = self.objects.handle_from_variables_reference(variables_reference) {
+            if self.objects.is_invalid(handle) {
+                return Ok(json!({
+                    "description": "<collected>",
+                    "accessTypes": access_types,
+                    "canPersist": false,
+                }));
+            }
+
+            let runtime_type = self.objects.runtime_type(handle).unwrap_or_default();
+            if runtime_type.ends_with("[]") {
+                // Arrays don't have fields; only "length" and indexed elements are surfaced.
+                return Ok(json!({
+                    "description": format!("{name} (array element)"),
+                    "accessTypes": access_types,
+                    "canPersist": false,
+                }));
+            }
+
+            let Some(object_id) = self.objects.object_id(handle) else {
+                return Ok(json!({
+                    "description": name,
+                    "accessTypes": access_types,
+                    "canPersist": false,
+                }));
+            };
+            if object_id == 0 {
+                return Ok(json!({
+                    "description": name,
+                    "accessTypes": access_types,
+                    "canPersist": false,
+                }));
+            }
+
+            let Some((class_id, field_id)) =
+                self.resolve_instance_field(cancel, object_id, name).await?
+            else {
+                return Ok(json!({
+                    "description": format!("{name} (not a field)"),
+                    "accessTypes": access_types,
+                    "canPersist": false,
+                }));
+            };
+
+            let data_id = encode_field_data_id(class_id, field_id, Some(object_id));
+            let description = self
+                .objects
+                .evaluate_name(handle)
+                .map(|base| format!("{base}.{name}"))
+                .unwrap_or_else(|| name.to_string());
+
+            return Ok(json!({
+                "dataId": data_id,
+                "description": description,
+                "accessTypes": access_types,
+                "canPersist": false,
+            }));
+        }
+
+        // --- Static fields (Static scope) ------------------------------------------------
+        let Some(var_ref) = self.var_handles.get(variables_reference).cloned() else {
+            return Ok(json!({
+                "description": name,
+                "accessTypes": access_types,
+                "canPersist": false,
+            }));
+        };
+
+        match var_ref {
+            VarRef::StaticFields(class_id) => {
+                let Some(field_id) = self.resolve_static_field(cancel, class_id, name).await?
+                else {
+                    return Ok(json!({
+                        "description": format!("{name} (not a static field)"),
+                        "accessTypes": access_types,
+                        "canPersist": false,
+                    }));
+                };
+
+                let class_sig = match self.signature(cancel, class_id).await {
+                    Ok(sig) => sig,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_) => String::new(),
+                };
+                let class_name = signature_to_type_name(&class_sig);
+                let data_id = encode_field_data_id(class_id, field_id, None);
+
+                Ok(json!({
+                    "dataId": data_id,
+                    "description": format!("{class_name}.{name}"),
+                    "accessTypes": access_types,
+                    "canPersist": false,
+                }))
+            }
+            VarRef::FrameLocals(_) => Ok(json!({
+                "description": format!("{name} (locals are not supported)"),
+                "accessTypes": access_types,
+                "canPersist": false,
+            })),
+        }
+    }
+
+    /// DAP `setDataBreakpoints` request implementation.
+    pub(crate) async fn set_data_breakpoints(
+        &mut self,
+        cancel: &CancellationToken,
+        breakpoints: Vec<DataBreakpointSpec>,
+    ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
+
+        // Clear prior watchpoint requests.
+        let existing = std::mem::take(&mut self.watchpoint_requests);
+        for (event_kind, request_id) in existing {
+            match cancellable_jdwp(cancel, self.jdwp.event_request_clear(event_kind, request_id)).await
+            {
+                Ok(()) => {}
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => {}
+            }
+        }
+
+        let caps = self.jdwp.capabilities().await;
+
+        let mut out = Vec::with_capacity(breakpoints.len());
+        for spec in breakpoints {
+            check_cancel(cancel)?;
+
+            let access_type = spec
+                .access_type
+                .as_deref()
+                .unwrap_or("write")
+                .trim()
+                .to_string();
+
+            let hit_condition = normalize_breakpoint_string(spec.hit_condition);
+            let count_modifier = hit_condition
+                .as_deref()
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .filter(|count| *count > 1);
+
+            let Some(target) = decode_field_data_id(&spec.data_id) else {
+                out.push(json!({
+                    "verified": false,
+                    "message": "unsupported dataId (expected a field watchpoint)",
+                }));
+                continue;
+            };
+
+            let needs_read = matches!(access_type.as_str(), "read" | "readWrite");
+            let needs_write = matches!(access_type.as_str(), "write" | "readWrite");
+
+            if needs_read && !caps.can_watch_field_access {
+                out.push(json!({
+                    "verified": false,
+                    "message": "target VM does not support field access watchpoints (JDWP canWatchFieldAccess=false)",
+                }));
+                continue;
+            }
+            if needs_write && !caps.can_watch_field_modification {
+                out.push(json!({
+                    "verified": false,
+                    "message": "target VM does not support field modification watchpoints (JDWP canWatchFieldModification=false)",
+                }));
+                continue;
+            }
+
+            let event_kinds: Vec<u8> = match access_type.as_str() {
+                "read" => vec![20],
+                "write" => vec![21],
+                "readWrite" => vec![20, 21],
+                other => {
+                    out.push(json!({
+                        "verified": false,
+                        "message": format!("unsupported accessType {other:?} (expected \"read\", \"write\", or \"readWrite\")"),
+                    }));
+                    continue;
+                }
+            };
+
+            let mut installed: Vec<(u8, i32)> = Vec::new();
+            let mut last_error: Option<String> = None;
+
+            for event_kind in &event_kinds {
+                match self
+                    .install_watchpoint_request(cancel, *event_kind, &target, count_modifier)
+                    .await
+                {
+                    Ok(id) => installed.push((*event_kind, id)),
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(err) => {
+                        last_error = Some(err.to_string());
+                        break;
+                    }
+                }
+            }
+
+            if installed.len() != event_kinds.len() {
+                // Best-effort rollback for partial installs (e.g. readWrite where one of the two
+                // JDWP requests failed).
+                for (event_kind, request_id) in installed {
+                    let _ = cancellable_jdwp(
+                        cancel,
+                        self.jdwp.event_request_clear(event_kind, request_id),
+                    )
+                    .await;
+                }
+                out.push(json!({
+                    "verified": false,
+                    "message": last_error.unwrap_or_else(|| "failed to set watchpoint".to_string()),
+                }));
+                continue;
+            }
+
+            // Persist installed requests so the next `setDataBreakpoints` call can clear them.
+            self.watchpoint_requests.extend(installed.iter().copied());
+
+            let mut bp = serde_json::Map::new();
+            bp.insert("verified".to_string(), json!(true));
+            // DAP breakpoint IDs are opaque; expose the first JDWP request id for UX/debugging.
+            bp.insert("id".to_string(), json!(installed[0].1));
+            out.push(Value::Object(bp));
+        }
+
+        Ok(out)
+    }
+
+    async fn install_watchpoint_request(
+        &mut self,
+        cancel: &CancellationToken,
+        event_kind: u8,
+        target: &FieldDataId,
+        count_modifier: Option<u32>,
+    ) -> std::result::Result<i32, JdwpError> {
+        let mut modifiers = vec![EventModifier::FieldOnly {
+            class_id: target.class_id,
+            field_id: target.field_id,
+        }];
+        if let Some(object_id) = target.object_id {
+            modifiers.push(EventModifier::InstanceOnly { object_id });
+        }
+        if let Some(count) = count_modifier {
+            modifiers.push(EventModifier::Count { count });
+        }
+        cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .event_request_set(event_kind, JDWP_SUSPEND_POLICY_EVENT_THREAD, modifiers),
+        )
+        .await
+    }
+
+    async fn resolve_instance_field(
+        &mut self,
+        cancel: &CancellationToken,
+        object_id: ObjectId,
+        field_name: &str,
+    ) -> Result<Option<(ReferenceTypeId, u64)>> {
+        check_cancel(cancel)?;
+
+        const MODIFIER_STATIC: u32 = 0x0008;
+
+        let (_ref_type_tag, mut type_id) =
+            cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
+
+        let mut seen_types = std::collections::HashSet::new();
+        while type_id != 0 && seen_types.insert(type_id) {
+            let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(type_id)).await?;
+            if let Some(field) = fields
+                .into_iter()
+                .find(|f| f.name == field_name && (f.mod_bits & MODIFIER_STATIC == 0))
+            {
+                return Ok(Some((type_id, field.field_id)));
+            }
+
+            type_id = match cancellable_jdwp(cancel, self.jdwp.class_type_superclass(type_id)).await
+            {
+                Ok(id) => id,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => break,
+            };
+        }
+
+        Ok(None)
+    }
+
+    async fn resolve_static_field(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+        field_name: &str,
+    ) -> Result<Option<u64>> {
+        check_cancel(cancel)?;
+        const MODIFIER_STATIC: u32 = 0x0008;
+
+        let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(class_id)).await?;
+        Ok(fields
+            .into_iter()
+            .find(|f| f.name == field_name && (f.mod_bits & MODIFIER_STATIC != 0))
+            .map(|f| f.field_id))
+    }
+
     pub async fn handle_vm_event(&mut self, event: &JdwpEvent) {
         match event {
             JdwpEvent::ClassPrepare {
@@ -1518,6 +1870,12 @@ impl Debugger {
                         catch_location: *catch_location,
                     },
                 );
+            }
+            JdwpEvent::FieldAccess { thread, .. } | JdwpEvent::FieldModification { thread, .. } => {
+                self.invalidate_handles();
+                self.last_stop_reason
+                    .insert(*thread, StopReason::Breakpoint);
+                self.exception_stop_context.remove(thread);
             }
             _ => {}
         }
@@ -3897,6 +4255,43 @@ fn normalize_breakpoint_string(value: Option<String>) -> Option<String> {
     value.and_then(|v| {
         let trimmed = v.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FieldDataId {
+    class_id: ReferenceTypeId,
+    field_id: u64,
+    object_id: Option<ObjectId>,
+}
+
+fn encode_field_data_id(
+    class_id: ReferenceTypeId,
+    field_id: u64,
+    object_id: Option<ObjectId>,
+) -> String {
+    let object_id = object_id.unwrap_or(0);
+    format!("nova:field:{class_id}:{field_id}:{object_id}")
+}
+
+fn decode_field_data_id(data_id: &str) -> Option<FieldDataId> {
+    let mut parts = data_id.split(':');
+    if parts.next()? != "nova" {
+        return None;
+    }
+    if parts.next()? != "field" {
+        return None;
+    }
+    let class_id: ReferenceTypeId = parts.next()?.parse().ok()?;
+    let field_id: u64 = parts.next()?.parse().ok()?;
+    let object_id_raw: ObjectId = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(FieldDataId {
+        class_id,
+        field_id,
+        object_id: (object_id_raw != 0).then_some(object_id_raw),
     })
 }
 

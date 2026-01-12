@@ -340,30 +340,31 @@ async fn handle_request_inner(
                 *pending = PendingConfiguration::default();
             }
 
-             let body = json!({
-                 "supportsConfigurationDoneRequest": true,
-                 "supportsEvaluateForHovers": true,
-                 "supportsPauseRequest": true,
-                 "supportsCancelRequest": true,
-                 "supportsTerminateRequest": true,
-                 "supportsRestartRequest": false,
-                 "supportsSetVariable": true,
-                 "supportsStepInTargetsRequest": true,
-                 "supportsStepBack": false,
-                 "supportsFunctionBreakpoints": true,
-                 "supportsVariablePaging": true,
-                 "supportsExceptionBreakpoints": true,
-                 "supportsExceptionInfoRequest": true,
-                 "supportsBreakpointLocationsRequest": true,
-                 "exceptionBreakpointFilters": [
-                     { "filter": "caught", "label": "Caught Exceptions", "default": false },
-                     { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
-                     { "filter": "all", "label": "All Exceptions", "default": false },
-                 ],
-                 "supportsConditionalBreakpoints": true,
-                 "supportsHitConditionalBreakpoints": true,
-                 "supportsLogPoints": true,
-             });
+            let body = json!({
+                "supportsConfigurationDoneRequest": true,
+                "supportsEvaluateForHovers": true,
+                "supportsPauseRequest": true,
+                "supportsCancelRequest": true,
+                "supportsTerminateRequest": true,
+                "supportsRestartRequest": false,
+                "supportsSetVariable": true,
+                "supportsStepInTargetsRequest": true,
+                "supportsStepBack": false,
+                "supportsFunctionBreakpoints": true,
+                "supportsVariablePaging": true,
+                "supportsExceptionBreakpoints": true,
+                "supportsExceptionInfoRequest": true,
+                "supportsBreakpointLocationsRequest": true,
+                "supportsDataBreakpoints": true,
+                "exceptionBreakpointFilters": [
+                    { "filter": "caught", "label": "Caught Exceptions", "default": false },
+                    { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
+                    { "filter": "all", "label": "All Exceptions", "default": false },
+                ],
+                "supportsConditionalBreakpoints": true,
+                "supportsHitConditionalBreakpoints": true,
+                "supportsLogPoints": true,
+            });
             send_response(out_tx, seq, request, true, Some(body), None);
 
             if !*initialized_rx.borrow() {
@@ -2498,7 +2499,16 @@ async fn handle_request_inner(
             }
         }
         // Data breakpoints / watchpoints (requires JDWP canWatchField* capabilities).
-        "dataBreakpointInfo" | "setDataBreakpoints" => {
+        "dataBreakpointInfo" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DataBreakpointInfoArguments {
+                variables_reference: i64,
+                name: String,
+                #[serde(default)]
+                frame_id: Option<i64>,
+            }
+
             if cancel.is_cancelled() {
                 send_response(
                     out_tx,
@@ -2511,7 +2521,7 @@ async fn handle_request_inner(
                 return;
             }
 
-            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
                     send_response(
@@ -2526,7 +2536,7 @@ async fn handle_request_inner(
                 }
             };
 
-            let Some(dbg) = guard.as_ref() else {
+            let Some(dbg) = guard.as_mut() else {
                 send_response(
                     out_tx,
                     seq,
@@ -2554,16 +2564,156 @@ async fn handle_request_inner(
                 return;
             }
 
-            // The wire adapter doesn't implement watchpoint event requests yet, but we can still
-            // provide a capability-accurate error message for better UX.
-            send_response(
-                out_tx,
-                seq,
-                request,
-                false,
-                None,
-                Some("watchpoints are not implemented in the wire adapter yet".to_string()),
-            );
+            let args: DataBreakpointInfoArguments = match serde_json::from_value(request.arguments.clone())
+            {
+                Ok(args) => args,
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid dataBreakpointInfo arguments: {err}")),
+                    );
+                    return;
+                }
+            };
+
+            // `frameId` is optional in the DAP spec; the debugger can resolve the field based on
+            // the variables reference alone.
+            let _ = args.frame_id;
+
+            match dbg
+                .data_breakpoint_info(cancel, args.variables_reference, &args.name)
+                .await
+            {
+                Ok(body) if cancel.is_cancelled() => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Ok(body) => send_response(out_tx, seq, request, true, Some(body), None),
+                Err(err) if is_cancelled_error(&err) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "setDataBreakpoints" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct SetDataBreakpointsArguments {
+                #[serde(default)]
+                breakpoints: Vec<crate::wire_debugger::DataBreakpointSpec>,
+            }
+
+            if cancel.is_cancelled() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
+                return;
+            }
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                    return;
+                }
+            };
+
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
+                return;
+            };
+
+            let caps = dbg.capabilities().await;
+            if !caps.supports_watchpoints() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!(
+                        "watchpoints are not supported by the target VM (JDWP canWatchFieldModification={}, canWatchFieldAccess={})",
+                        caps.can_watch_field_modification, caps.can_watch_field_access
+                    )),
+                );
+                return;
+            }
+
+            let args: SetDataBreakpointsArguments =
+                match serde_json::from_value(request.arguments.clone()) {
+                    Ok(args) => args,
+                    Err(err) => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("invalid setDataBreakpoints arguments: {err}")),
+                        );
+                        return;
+                    }
+                };
+
+            match dbg.set_data_breakpoints(cancel, args.breakpoints).await {
+                Ok(bps) if cancel.is_cancelled() => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Ok(bps) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "breakpoints": bps })),
+                    None,
+                ),
+                Err(err) if is_cancelled_error(&err) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
         }
         // Hot swap support (class redefinition).
         "redefineClasses" | "hotCodeReplace" | "nova/hotSwap" => {
@@ -4094,6 +4244,46 @@ fn spawn_event_task(
                     if let Some(text) = exception_text {
                         body.insert("text".to_string(), json!(text));
                     }
+                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
+                }
+                nova_jdwp::wire::JdwpEvent::FieldAccess {
+                    thread,
+                    field_id,
+                    object,
+                    value,
+                    ..
+                } => {
+                    let mut body = serde_json::Map::new();
+                    body.insert("reason".to_string(), json!("data breakpoint"));
+                    body.insert("threadId".to_string(), json!(thread as i64));
+                    body.insert("allThreadsStopped".to_string(), json!(false));
+                    body.insert(
+                        "text".to_string(),
+                        json!(format!(
+                            "Read field 0x{field_id:x} on object@0x{object:x}: {}",
+                            format_value(&value)
+                        )),
+                    );
+                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
+                }
+                nova_jdwp::wire::JdwpEvent::FieldModification {
+                    thread,
+                    field_id,
+                    object,
+                    value_to_be,
+                    ..
+                } => {
+                    let mut body = serde_json::Map::new();
+                    body.insert("reason".to_string(), json!("data breakpoint"));
+                    body.insert("threadId".to_string(), json!(thread as i64));
+                    body.insert("allThreadsStopped".to_string(), json!(false));
+                    body.insert(
+                        "text".to_string(),
+                        json!(format!(
+                            "Wrote field 0x{field_id:x} on object@0x{object:x}: {}",
+                            format_value(&value_to_be)
+                        )),
+                    );
                     send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadStart { thread, .. } => {
