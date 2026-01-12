@@ -78,7 +78,7 @@ async fn delayed_cached_index_does_not_overwrite_newer_index() -> Result<()> {
         // Mark this worker as having a cached index so the router will accept CachedIndex
         // notifications and run the post-handshake refresh path.
         cached_index_info: Some(CachedIndexInfo {
-            revision: 1,
+            revision: 0,
             index_generation: 1,
             symbol_count: 1,
         }),
@@ -97,6 +97,10 @@ async fn delayed_cached_index_does_not_overwrite_newer_index() -> Result<()> {
     let stale_symbol = Symbol {
         name: "StaleSymbol".into(),
         path: "stale.java".into(),
+    };
+    let stale_symbol_generation = Symbol {
+        name: "StaleSymbolGeneration".into(),
+        path: "stale_gen.java".into(),
     };
 
     worker_conn.set_request_handler({
@@ -133,15 +137,27 @@ async fn delayed_cached_index_does_not_overwrite_newer_index() -> Result<()> {
     worker_conn
         .notify(Notification::CachedIndex(ShardIndex {
             shard_id: 0,
-            revision: 1,
-            index_generation: 1,
+            // Stale by revision (even if a buggy implementation looked only at generation).
+            revision: 0,
+            index_generation: 999,
             symbols: vec![stale_symbol],
         }))
         .await
-        .context("send CachedIndex notification")?;
+        .context("send CachedIndex notification (stale by revision)")?;
 
-    // Ensure the router has an opportunity to process the notification. On the buggy behavior this
-    // should quickly flip workspace symbols to `stale_symbol`.
+    // Also validate the generation tie-breaker for the same revision.
+    worker_conn
+        .notify(Notification::CachedIndex(ShardIndex {
+            shard_id: 0,
+            revision: 1,
+            index_generation: 1,
+            symbols: vec![stale_symbol_generation],
+        }))
+        .await
+        .context("send CachedIndex notification (stale by generation)")?;
+
+    // Ensure the router has an opportunity to process the notifications. On the buggy behavior
+    // this should quickly flip workspace symbols to one of the stale symbols.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     while tokio::time::Instant::now() < deadline {
         assert_eq!(
