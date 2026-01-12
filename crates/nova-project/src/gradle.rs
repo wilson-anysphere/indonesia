@@ -2037,6 +2037,14 @@ fn parse_gradle_dependencies_from_text(
     contents: &str,
     version_catalog: Option<&GradleVersionCatalog>,
 ) -> Vec<Dependency> {
+    // Strip comments before running dependency regexes so commented-out dependency lines don't
+    // end up polluting the extracted dependency list.
+    //
+    // This is best-effort but preserves quoted strings, so typical Gradle/Maven coordinate literals
+    // are unaffected.
+    let contents = strip_gradle_comments(contents);
+    let contents = contents.as_str();
+
     let mut deps = Vec::new();
 
     // `implementation "g:a:v"` and similar (string notation).
@@ -2602,6 +2610,48 @@ dependencies {
             "auto-service".to_string(),
             Some("1.1.1".to_string())
         )));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_ignores_commented_out_dependencies() {
+        let script = r#"
+dependencies {
+    // implementation "com.example:ignored:1"
+    /* testImplementation("com.example:ignored2:2") */
+    implementation("com.example:kept:3")
+}
+"#;
+
+        let deps = parse_gradle_dependencies_from_text(script, None);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version))
+            .collect();
+
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored".to_string(),
+                Some("1".to_string())
+            )),
+            "commented-out dependency should not be extracted"
+        );
+        assert!(
+            !got.contains(&(
+                "com.example".to_string(),
+                "ignored2".to_string(),
+                Some("2".to_string())
+            )),
+            "block-commented dependency should not be extracted"
+        );
+        assert!(
+            got.contains(&(
+                "com.example".to_string(),
+                "kept".to_string(),
+                Some("3".to_string())
+            )),
+            "expected non-commented dependency to be extracted"
+        );
     }
 
     #[test]
