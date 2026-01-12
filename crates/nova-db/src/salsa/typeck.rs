@@ -387,14 +387,7 @@ fn resolve_method_call_demand(
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types in this file so `Type::Class` ids are stable within this query.
-    let SourceTypes {
-        field_types,
-        method_types,
-        field_owners,
-        method_owners,
-        source_type_vars,
-    } = define_source_types(&resolver, &scopes, &tree, &mut loader);
-
+    let source_types = define_source_types(&resolver, &scopes, &tree, &mut loader);
     let type_vars = type_vars_for_owner(
         &resolver,
         owner,
@@ -402,8 +395,15 @@ fn resolve_method_call_demand(
         &scopes.scopes,
         &tree,
         &mut loader,
-        &source_type_vars,
+        &source_types.source_type_vars,
     );
+    let SourceTypes {
+        field_types,
+        method_types,
+        field_owners,
+        method_owners,
+        ..
+    } = source_types;
 
     let (expected_return, _) = resolve_expected_return_type(
         &resolver,
