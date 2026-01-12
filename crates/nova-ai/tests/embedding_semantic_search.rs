@@ -105,3 +105,47 @@ fn context_builder_can_include_embedding_related_code() {
     assert!(ctx.text.contains("## Related code"));
     assert!(ctx.text.contains("helloWorld"));
 }
+
+#[test]
+fn embedding_search_supports_incremental_indexing() {
+    let mut search = EmbeddingSemanticSearch::new(HashEmbedder::default());
+    let path = PathBuf::from("src/Hello.java");
+
+    search.index_file(
+        path.clone(),
+        r#"
+            public class Hello {
+                public String helloWorld() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    );
+
+    let first = search.search("hello world");
+    assert!(!first.is_empty());
+    assert_eq!(first[0].path, path);
+    assert!(first[0].snippet.contains("helloWorld"));
+
+    search.index_file(
+        path.clone(),
+        r#"
+            public class Hello {
+                public String greetings() {
+                    return "hello world";
+                }
+            }
+        "#
+        .to_string(),
+    );
+
+    let second = search.search("hello world");
+    assert!(!second.is_empty());
+    assert_eq!(second[0].path, path);
+    assert!(second[0].snippet.contains("greetings"));
+    assert_ne!(first[0].snippet, second[0].snippet);
+
+    search.remove_file(path.as_path());
+    assert!(search.search("hello world").is_empty());
+}
