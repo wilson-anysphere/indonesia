@@ -1,0 +1,1 @@
+class CrNewlines {  void m() {    // CR-only newlines are rare but supported by NewlineStyle::detect    if (true) {      System.out.println("x");    }  }}
