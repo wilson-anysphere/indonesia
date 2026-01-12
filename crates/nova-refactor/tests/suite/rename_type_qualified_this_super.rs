@@ -119,3 +119,139 @@ class Outer extends Base {
     assert!(after.contains("class Renamed extends Base"));
     assert!(after.contains("Renamed.super.toString()"));
 }
+
+#[test]
+fn rename_type_updates_nested_qualified_this_outer_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  class Inner {
+    class Deep {
+      void m(){ Outer.Inner.this.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("class Outer").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "Renamed".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Renamed"));
+    assert!(after.contains("Renamed.Inner.this.toString()"));
+    assert!(!after.contains("Outer.Inner.this"));
+}
+
+#[test]
+fn rename_type_can_be_invoked_from_nested_qualified_this_outer_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  class Inner {
+    class Deep {
+      void m(){ Outer.Inner.this.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("Outer.Inner.this").unwrap() + 1; // on `Outer`
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "Renamed".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Renamed"));
+    assert!(after.contains("Renamed.Inner.this.toString()"));
+}
+
+#[test]
+fn rename_type_updates_nested_qualified_super_outer_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class BaseInner {}
+class Outer {
+  class Inner extends BaseInner {
+    class Deep {
+      void m(){ Outer.Inner.super.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("class Outer").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "Renamed".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Renamed"));
+    assert!(after.contains("Renamed.Inner.super.toString()"));
+    assert!(!after.contains("Outer.Inner.super"));
+}
+
+#[test]
+fn rename_type_can_be_invoked_from_nested_qualified_super_outer_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class BaseInner {}
+class Outer {
+  class Inner extends BaseInner {
+    class Deep {
+      void m(){ Outer.Inner.super.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("Outer.Inner.super").unwrap() + 1; // on `Outer`
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "Renamed".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Renamed"));
+    assert!(after.contains("Renamed.Inner.super.toString()"));
+}
