@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
+    fmt,
     fs,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
@@ -45,6 +46,38 @@ const CORE_BAZEL_CONFIG_FILES: [&str; 8] = [
     ".bazelversion",
     "bazelisk.rc",
 ];
+
+#[derive(Debug, Clone)]
+struct WorkspacePathOutsideRootError {
+    path: PathBuf,
+    root: PathBuf,
+}
+
+impl fmt::Display for WorkspacePathOutsideRootError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "path {} is outside the Bazel workspace root {}",
+            self.path.display(),
+            self.root.display()
+        )
+    }
+}
+
+impl std::error::Error for WorkspacePathOutsideRootError {}
+
+#[derive(Debug, Clone)]
+struct WorkspacePathEscapesRootError {
+    path: PathBuf,
+}
+
+impl fmt::Display for WorkspacePathEscapesRootError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "path escapes workspace root: {}", self.path.display())
+    }
+}
+
+impl std::error::Error for WorkspacePathEscapesRootError {}
 
 fn compile_info_expr_version_hex() -> String {
     // Keep this in sync with the query expressions above; changes should invalidate cached compile
@@ -351,9 +384,14 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 // This is intentionally more forgiving than `workspace_file_label`, which treats
                 // outside-workspace paths as an error.
                 let message = err.to_string();
-                if message.contains("outside the Bazel workspace root")
-                    || message.contains("path escapes workspace root")
-                    || message.contains("failed to canonicalize file path")
+                if err.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<WorkspacePathOutsideRootError>()
+                        .is_some()
+                        || cause
+                            .downcast_ref::<WorkspacePathEscapesRootError>()
+                            .is_some()
+                }) || message.contains("failed to canonicalize file path")
                 {
                     return Ok(None);
                 }
@@ -802,12 +840,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     file_canon
                         .strip_prefix(root_canon)
                         .map(|rel| rel.to_path_buf())
-                        .with_context(|| {
-                            format!(
-                                "path {} is outside the Bazel workspace root {}",
-                                abs_file.display(),
-                                self.root.display()
-                            )
+                        .map_err(|_| WorkspacePathOutsideRootError {
+                            path: abs_file.clone(),
+                            root: self.root.clone(),
                         })?
                 }
             }
@@ -1622,7 +1657,9 @@ fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf> {
             Component::Normal(part) => out.push(part),
             Component::ParentDir => {
                 if !out.pop() {
-                    bail!("path escapes workspace root: {}", path.display());
+                    bail!(WorkspacePathEscapesRootError {
+                        path: path.to_path_buf()
+                    });
                 }
             }
             other => {
