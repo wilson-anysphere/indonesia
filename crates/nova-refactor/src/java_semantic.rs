@@ -2181,6 +2181,54 @@ fn record_non_body_type_references_in_item(
             }
             Member::Constructor(ctor_id) => {
                 let ctor = tree.constructor(*ctor_id);
+
+                // Canonical record constructors (including compact constructors) declare the record
+                // component names as parameters. When renaming a record component, we want to
+                // update the corresponding parameter name tokens as well.
+                if let ItemId::Record(record_id) = item {
+                    let record = tree.record(record_id);
+                    if ctor.params.len() == record.components.len()
+                        && ctor
+                            .params
+                            .iter()
+                            .zip(record.components.iter())
+                            .all(|(p, c)| p.name == c.name && p.ty == c.ty)
+                    {
+                        let component_fields: Vec<_> = record
+                            .members
+                            .iter()
+                            .filter_map(|member| match member {
+                                Member::Field(field_id) => {
+                                    let field = tree.field(*field_id);
+                                    matches!(
+                                        field.kind,
+                                        nova_hir::item_tree::FieldKind::RecordComponent
+                                    )
+                                    .then_some(*field_id)
+                                }
+                                _ => None,
+                            })
+                            .collect();
+
+                        if component_fields.len() == ctor.params.len() {
+                            for (idx, param) in ctor.params.iter().enumerate() {
+                                let field_id = component_fields[idx];
+                                let Some(&symbol) =
+                                    resolution_to_symbol.get(&ResolutionKey::Field(field_id))
+                                else {
+                                    continue;
+                                };
+                                let range = TextRange::new(param.name_range.start, param.name_range.end);
+                                references[symbol.as_usize()].push(Reference {
+                                    file: file.clone(),
+                                    range,
+                                });
+                                spans.push((file.clone(), range, symbol));
+                            }
+                        }
+                    }
+                }
+
                 record_annotations(
                     file,
                     file_text,
@@ -2566,7 +2614,66 @@ fn record_body_references(
                 if let Some(resolved) = resolved {
                     let key = match resolved {
                         Resolution::Local(local) => ResolutionKey::Local(local),
-                        Resolution::Parameter(param) => ResolutionKey::Param(param),
+                        Resolution::Parameter(param) => {
+                            // In record canonical constructors (including compact constructors),
+                            // component names are available as constructor parameters. Nova models
+                            // these as regular constructor params (so name resolution yields
+                            // `Resolution::Parameter`), but for refactoring purposes we want
+                            // renaming a record component to also rename uses of the corresponding
+                            // constructor parameter.
+                            //
+                            // We detect this case by checking whether the resolved constructor param
+                            // is part of the record's canonical constructor parameter list.
+                            let record_component_field = (|| {
+                                let ParamOwner::Constructor(ctor) = param.owner else {
+                                    return None;
+                                };
+                                let enclosing_item = enclosing_class(&scope_result.scopes, scope)?;
+                                let ItemId::Record(record_id) = enclosing_item else {
+                                    return None;
+                                };
+
+                                // Only treat canonical constructor parameters (including compact
+                                // constructors) as record component references.
+                                let record_data = tree.record(record_id);
+                                let ctor_data = tree.constructor(ctor);
+                                if ctor_data.params.len() != record_data.components.len() {
+                                    return None;
+                                }
+                                if !ctor_data
+                                    .params
+                                    .iter()
+                                    .zip(record_data.components.iter())
+                                    .all(|(p, c)| p.name == c.name && p.ty == c.ty)
+                                {
+                                    return None;
+                                }
+
+                                let def = workspace_def_map.type_def(enclosing_item)?;
+                                if !matches!(def.kind, TypeKind::Record) {
+                                    return None;
+                                }
+                                let field = def.fields.get(&name).map(|f| f.id)?;
+                                let field_tree = item_trees
+                                    .get(&field.file)
+                                    .map(|t| t.as_ref())
+                                    .unwrap_or(tree);
+                                if !matches!(
+                                    field_tree.field(field).kind,
+                                    nova_hir::item_tree::FieldKind::RecordComponent
+                                ) {
+                                    return None;
+                                }
+
+                                Some(field)
+                            })();
+
+                            if let Some(field) = record_component_field {
+                                ResolutionKey::Field(field)
+                            } else {
+                                ResolutionKey::Param(param)
+                            }
+                        }
                         Resolution::Field(field) => ResolutionKey::Field(field),
                         Resolution::Type(TypeResolution::Source(item)) => ResolutionKey::Type(item),
                         Resolution::Type(TypeResolution::External(_)) => return,
