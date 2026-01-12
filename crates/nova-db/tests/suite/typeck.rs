@@ -3215,7 +3215,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "var-not-allowed"),
-        "expected var-not-allowed diagnostic; got {diags:?}"
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        "expected unresolved-type diagnostic for `var` catch parameter; got {diags:?}"
     );
 }

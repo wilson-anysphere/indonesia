@@ -2714,50 +2714,31 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 self.check_stmt(loader, *body, expected_return);
                 for catch in catches {
                     let data = &self.body.locals[catch.param];
-                    let catch_ty = if data.ty_text.trim() == "var" {
-                        let diag_span = if data.ty_range.is_empty() {
-                            data.range
-                        } else {
-                            data.ty_range
-                        };
-                        self.diagnostics.push(Diagnostic::error(
-                            "var-not-allowed",
-                            "`var` is not allowed in catch parameters",
-                            Some(diag_span),
-                        ));
-                        self.local_types[catch.param.idx()] = Type::Error;
-                        self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
-                        Type::Error
-                    } else {
-                        let catch_ty = self.resolve_source_type(
-                            loader,
-                            data.ty_text.as_str(),
-                            Some(data.ty_range),
-                        );
-                        self.local_types[catch.param.idx()] = catch_ty.clone();
-                        self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
-                        catch_ty
-                    };
+                    let catch_ty = self.resolve_source_type(
+                        loader,
+                        data.ty_text.as_str(),
+                        Some(data.ty_range),
+                    );
+                    self.local_types[catch.param.idx()] = catch_ty.clone();
+                    self.local_ty_states[catch.param.idx()] = LocalTyState::Computed;
 
                     if !catch_ty.is_errorish() {
-                        let Some(throwable_id) = loader.store.lookup_class("java.lang.Throwable")
-                        else {
-                            // Minimal JDK may not have Throwable (best-effort recovery).
-                            self.check_stmt(loader, catch.body, expected_return);
-                            continue;
-                        };
-                        let throwable_ty = Type::class(throwable_id, vec![]);
+                        // Best-effort: some minimal environments may not define Throwable.
+                        if let Some(throwable_id) = loader.store.lookup_class("java.lang.Throwable")
+                        {
+                            let throwable_ty = Type::class(throwable_id, vec![]);
 
-                        let env_ro: &dyn TypeEnv = &*loader.store;
-                        if !is_subtype(env_ro, &catch_ty, &throwable_ty) {
-                            let found = format_type(env_ro, &catch_ty);
-                            self.diagnostics.push(Diagnostic::error(
-                                "catch-non-throwable",
-                                format!(
-                                    "catch parameter type must be a subtype of Throwable; found {found}"
-                                ),
-                                Some(data.ty_range),
-                            ));
+                            let env_ro: &dyn TypeEnv = &*loader.store;
+                            if !is_subtype(env_ro, &catch_ty, &throwable_ty) {
+                                let found = format_type(env_ro, &catch_ty);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "catch-non-throwable",
+                                    format!(
+                                        "catch parameter type must be a subtype of Throwable; found {found}"
+                                    ),
+                                    Some(data.ty_range),
+                                ));
+                            }
                         }
                     }
                     self.check_stmt(loader, catch.body, expected_return);
