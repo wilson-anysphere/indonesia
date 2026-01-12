@@ -610,7 +610,11 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     }
 
     fn rest(&self) -> &str {
-        &self.text[self.pos..]
+        // `self.pos` is maintained as a byte offset into `self.text`, and should always stay on a
+        // UTF-8 char boundary. However, this parser is used in best-effort IDE paths and should
+        // never panic if a stale/corrupted offset slips through (e.g. due to parse recovery or
+        // mismatched memoization).
+        self.text.get(self.pos..).unwrap_or("")
     }
 
     fn peek_char(&self) -> Option<char> {
@@ -620,7 +624,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     fn peek_non_ws_char(&self) -> Option<char> {
         let mut idx = self.pos;
         while idx < self.text.len() {
-            let ch = self.text[idx..].chars().next()?;
+            let ch = self.text.get(idx..).and_then(|s| s.chars().next())?;
             if !ch.is_whitespace() {
                 return Some(ch);
             }
@@ -790,7 +794,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         let mut pos = self.pos;
 
         // First segment.
-        let mut chars = self.text[pos..].char_indices();
+        let mut chars = self.text.get(pos..).unwrap_or("").char_indices();
         let Some((_, first)) = chars.next() else {
             return pos;
         };
@@ -825,7 +829,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             pos += 1;
             pos += next.len_utf8();
             while pos < self.text.len() {
-                let ch = self.text[pos..].chars().next().unwrap();
+                let Some(ch) = self.text.get(pos..).and_then(|s| s.chars().next()) else {
+                    break;
+                };
                 if is_ident_part(ch) {
                     pos += ch.len_utf8();
                 } else {
@@ -840,7 +846,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     fn annotation_follow_is_ok(&self, ctx: AnnotationSkipContext) -> bool {
         let mut idx = self.pos;
         while idx < self.text.len() {
-            let ch = self.text[idx..].chars().next().unwrap();
+            let Some(ch) = self.text.get(idx..).and_then(|s| s.chars().next()) else {
+                break;
+            };
             if ch.is_whitespace() {
                 idx += ch.len_utf8();
             } else {
@@ -885,7 +893,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         let mut seen_any_ident = false;
 
         while idx < greedy_end {
-            let ch = self.text[idx..].chars().next().unwrap();
+            let Some(ch) = self.text.get(idx..).and_then(|s| s.chars().next()) else {
+                break;
+            };
             let next_idx = idx + ch.len_utf8();
 
             if at_segment_start {
@@ -1188,4 +1198,50 @@ fn reconcile_class_args(
     out.extend(std::iter::repeat(Type::Unknown).take(missing));
     out.extend(flattened);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scopes::build_scopes_for_item_tree;
+    use nova_core::FileId;
+    use nova_hir::item_tree::ItemTree;
+    use nova_jdk::JdkIndex;
+    use nova_types::TypeStore;
+
+    #[test]
+    fn parser_helpers_are_panic_free_on_non_char_boundary_offsets() {
+        let jdk = JdkIndex::new();
+        let resolver = Resolver::new(&jdk);
+        let tree = ItemTree::default();
+        let scope_result = build_scopes_for_item_tree(FileId::new(0), &tree);
+        let env = TypeStore::default();
+        let type_vars: HashMap<String, TypeVarId> = HashMap::new();
+
+        // `Ā` is a 2-byte UTF-8 character. Force `pos` onto a non-char boundary to ensure helper
+        // routines never panic on corrupted offsets.
+        let text = "Ā.B";
+        let mut parser = Parser::new(
+            &resolver,
+            &scope_result.scopes,
+            scope_result.file_scope,
+            &env,
+            &type_vars,
+            text,
+            None,
+        );
+        parser.pos = 1;
+
+        assert_eq!(parser.rest(), "");
+        assert_eq!(parser.peek_char(), None);
+        assert_eq!(parser.peek_non_ws_char(), None);
+
+        let _ = parser.scan_greedy_qualified_ident_end();
+        let _ = parser.annotation_follow_is_ok(AnnotationSkipContext::BeforeType);
+        let _ = parser.find_best_annotation_name_end(
+            parser.pos,
+            text.len(),
+            AnnotationSkipContext::BeforeType,
+        );
+    }
 }
