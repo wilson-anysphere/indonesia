@@ -2506,6 +2506,7 @@ impl<'a> Parser<'a> {
                     | SyntaxKind::Colon
                     | SyntaxKind::Comma
                     | SyntaxKind::RParen
+                    | SyntaxKind::StringTemplateExprEnd
                     | SyntaxKind::Eof
             ) {
                 self.bump_any();
@@ -2519,6 +2520,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Colon
                 | SyntaxKind::Comma
                 | SyntaxKind::RParen
+                | SyntaxKind::StringTemplateExprEnd
                 | SyntaxKind::Eof
         ) {
             self.error_here("expected binding identifier");
@@ -2560,6 +2562,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::CaseKw
                 | SyntaxKind::DefaultKw
                 | SyntaxKind::RBrace
+                | SyntaxKind::StringTemplateExprEnd
                 | SyntaxKind::Eof
         ) {
             if self.at(SyntaxKind::Comma) {
@@ -2576,7 +2579,10 @@ impl<'a> Parser<'a> {
                 // Ensure progress without consuming the list terminator.
                 if !matches!(
                     self.current(),
-                    SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Eof
+                    SyntaxKind::Comma
+                        | SyntaxKind::RParen
+                        | SyntaxKind::StringTemplateExprEnd
+                        | SyntaxKind::Eof
                 ) {
                     self.bump_any();
                 }
@@ -3649,7 +3655,11 @@ impl<'a> Parser<'a> {
             // Ensure progress without swallowing expression terminators.
             if !matches!(
                 self.current(),
-                SyntaxKind::RParen | SyntaxKind::Semicolon | SyntaxKind::Comma | SyntaxKind::Eof
+                SyntaxKind::RParen
+                    | SyntaxKind::Semicolon
+                    | SyntaxKind::Comma
+                    | SyntaxKind::StringTemplateExprEnd
+                    | SyntaxKind::Eof
             ) {
                 self.bump_any();
             }
@@ -3886,7 +3896,10 @@ impl<'a> Parser<'a> {
         if !self.at(SyntaxKind::Arrow) {
             self.builder.start_node(SyntaxKind::Error.into());
             self.error_here("expected `->` in lambda");
-            while !matches!(self.current(), SyntaxKind::Arrow | SyntaxKind::Eof) {
+            while !matches!(
+                self.current(),
+                SyntaxKind::Arrow | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
+            ) {
                 self.bump_any();
             }
             self.builder.finish_node(); // Error
@@ -3914,7 +3927,7 @@ impl<'a> Parser<'a> {
 
         while !matches!(
             self.current(),
-            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
         ) {
             self.eat_trivia();
             if self.at(SyntaxKind::Comma) {
@@ -3935,13 +3948,16 @@ impl<'a> Parser<'a> {
 
         if !matches!(
             self.current(),
-            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
         ) {
             self.builder.start_node(SyntaxKind::Error.into());
             self.error_here("expected `)` in lambda parameters");
             while !matches!(
                 self.current(),
-                SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+                SyntaxKind::RParen
+                    | SyntaxKind::Arrow
+                    | SyntaxKind::StringTemplateExprEnd
+                    | SyntaxKind::Eof
             ) {
                 self.bump_any();
             }
@@ -3980,7 +3996,11 @@ impl<'a> Parser<'a> {
                 // Ensure progress without swallowing the lambda arrow.
                 if !matches!(
                     self.current(),
-                    SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+                    SyntaxKind::Comma
+                        | SyntaxKind::RParen
+                        | SyntaxKind::Arrow
+                        | SyntaxKind::StringTemplateExprEnd
+                        | SyntaxKind::Eof
                 ) {
                     self.bump_any();
                 }

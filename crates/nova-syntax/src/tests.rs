@@ -1418,6 +1418,40 @@ fn parser_does_not_consume_string_template_expr_end_during_statement_recovery() 
 }
 
 #[test]
+fn parser_does_not_consume_string_template_expr_end_during_record_pattern_recovery() {
+    // Regression test: unterminated record patterns (e.g. after `instanceof`) should not consume
+    // the string-template interpolation delimiter during error recovery.
+    //
+    // Without treating `StringTemplateExprEnd` as a boundary in pattern parsing, the parser can
+    // end up bumping it as an "unexpected token", which then prevents `parse_string_template`
+    // from consuming the delimiter.
+    let input = r#"STR."x \{ x instanceof Point( }""#;
+    let parsed = parse_java_expression(input);
+
+    let interp = parsed
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::StringTemplateInterpolation)
+        .expect("expected StringTemplateInterpolation node");
+
+    let last_non_trivia_token = interp
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !t.kind().is_trivia())
+        .last()
+        .expect("expected at least one non-trivia token in interpolation node");
+
+    assert_eq!(
+        last_non_trivia_token.kind(),
+        SyntaxKind::StringTemplateExprEnd,
+        "expected StringTemplateExprEnd to be consumed by string template parsing, got {:?} `{}`\nerrors: {:?}",
+        last_non_trivia_token.kind(),
+        last_non_trivia_token.text(),
+        parsed.errors
+    );
+}
+
+#[test]
 fn cache_parse_coalesces_nested_string_templates() {
     let input = r#"class Foo { String s = STR."outer \{ STR."inner \{name}" }"; }"#;
     let parsed = crate::parse(input);
