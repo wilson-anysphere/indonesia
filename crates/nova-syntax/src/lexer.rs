@@ -172,22 +172,16 @@ impl<'a> Lexer<'a> {
             // tokens intact and surfacing a zero-length `Error` sentinel at EOF.
             if !self.mode_stack.is_empty() {
                 let mut delimiter = None;
-                let mut template_start = None;
                 for mode in self.mode_stack.iter().rev() {
                     match *mode {
-                        LexMode::Template {
-                            delimiter: d,
-                            start,
-                        } => {
+                        LexMode::Template { delimiter: d, .. } => {
                             delimiter = Some(d);
-                            template_start = Some(start);
                             break;
                         }
                         LexMode::TemplateInterpolation { .. } => {}
                     }
                 }
                 let delimiter = delimiter.unwrap_or(TemplateDelimiter::Quote);
-                let template_start = template_start.unwrap_or(self.pos);
                 let in_expr = self
                     .mode_stack
                     .iter()
@@ -203,7 +197,10 @@ impl<'a> Lexer<'a> {
                         "unterminated text block template interpolation"
                     }
                 };
-                self.push_error(message, template_start, self.pos);
+                // Report the diagnostic at EOF: unterminated templates are missing their closing
+                // delimiter, so the error position should be the point where the lexer expected to
+                // find it (end-of-file), not the start of the template.
+                self.push_error(message, self.pos, self.pos);
                 self.mode_stack.clear();
                 return SyntaxKind::Error;
             }
