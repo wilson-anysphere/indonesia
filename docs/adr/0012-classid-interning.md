@@ -101,16 +101,30 @@ inputs**:
 This is purity-safe and remains correct under `evict_salsa_memos`, because rebuilding `Storage`
 recomputes the same mapping from the same tracked inputs.
 
-**Implementation note (current repo):** Nova currently applies this pattern for **workspace source
-types** by making the mapping a **host-managed Salsa input**:
+**Implementation note (current repo):** Nova currently applies a **host-managed identity registry**
+via a Salsa input:
 
-- `crates/nova-db/src/salsa/workspace.rs:WorkspaceLoader::apply_project_class_ids` enumerates source
-  type binary names deterministically and assigns stable `ClassId`s.
+- `crates/nova-db/src/salsa/workspace.rs:WorkspaceLoader::apply_project_class_ids` enumerates class
+  binary names deterministically and assigns stable `ClassId`s.
 - The mapping is stored in the input `crates/nova-db/src/salsa/inputs.rs:NovaInputs::project_class_ids`.
 - Lookups are provided by the derived queries `class_id_for_name` / `class_name_for_id`.
 
-This keeps `ClassId` identity stable across workspace reloads and across `evict_salsa_memos`, as long
-as the same `WorkspaceLoader` instance is reused by the host.
+Today, the registry covers:
+
+- workspace/source types discovered from `def_map`,
+- external classpath types present in the project's `ClasspathIndex` (skipping `java.*` entries to
+  mirror name resolution semantics), and
+- a small stable set of core JDK types (to avoid requiring a full on-disk JDK index for basic
+  semantic features).
+
+This keeps `ClassId` identity stable across workspace reloads and across `evict_salsa_memos`, as
+long as the same `WorkspaceLoader` instance is reused by the host.
+
+Limitations (current repo):
+
+- The registry is keyed by *binary name*; it does not encode an origin component or JPMS defining
+  module, so it cannot disambiguate duplicate names across those dimensions. Treat it as a
+  short-term stepping stone toward a proper `ClassKey` (see ADR 0011 / “Follow-ups” below).
 
 Regression coverage for this behavior lives in `crates/nova-db/tests/suite/class_id_registry.rs`.
 
