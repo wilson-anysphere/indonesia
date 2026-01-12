@@ -6957,6 +6957,74 @@ fn var_decl_scope_end_offset(tokens: &[Token], var_name_offset: usize) -> Option
     }
 }
 
+fn token_index_at_or_after_offset(tokens: &[Token], offset: usize) -> Option<usize> {
+    tokens.iter().position(|t| t.span.start >= offset)
+}
+
+fn statement_end_offset(tokens: &[Token], start_idx: usize) -> Option<usize> {
+    let tok = tokens.get(start_idx)?;
+    match tok.kind {
+        TokenKind::Symbol('{') => find_matching_brace(tokens, start_idx).map(|(_, span)| span.end),
+        TokenKind::Symbol(';') => Some(tok.span.end),
+        TokenKind::Ident => match tok.text.as_str() {
+            "if" => if_statement_end_offset(tokens, start_idx),
+            "for" => for_statement_end_offset(tokens, start_idx),
+            "while" => while_statement_end_offset(tokens, start_idx),
+            "do" => do_statement_end_offset(tokens, start_idx),
+            "try" => try_statement_end_offset(tokens, start_idx),
+            "switch" => switch_statement_end_offset(tokens, start_idx),
+            _ => expression_statement_end_offset(tokens, start_idx),
+        },
+        _ => expression_statement_end_offset(tokens, start_idx),
+    }
+}
+
+fn expression_statement_end_offset(tokens: &[Token], start_idx: usize) -> Option<usize> {
+    let mut paren_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
+
+    for tok in tokens.iter().skip(start_idx) {
+        match tok.kind {
+            TokenKind::Symbol('(') => paren_depth += 1,
+            TokenKind::Symbol(')') => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => brace_depth = brace_depth.saturating_sub(1),
+            TokenKind::Symbol('[') => bracket_depth += 1,
+            TokenKind::Symbol(']') => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::Symbol(';')
+                if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 =>
+            {
+                return Some(tok.span.end);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn if_statement_end_offset(tokens: &[Token], if_idx: usize) -> Option<usize> {
+    let open_paren_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(if_idx + 1)
+        .find(|(_, t)| t.kind == TokenKind::Symbol('('))
+        .map(|(idx, _)| idx)?;
+    let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+    let then_start = close_paren_idx + 1;
+    let then_end = statement_end_offset(tokens, then_start)?;
+
+    let Some(else_idx) = token_index_at_or_after_offset(tokens, then_end) else {
+        return Some(then_end);
+    };
+    let else_tok = tokens.get(else_idx)?;
+    if else_tok.kind == TokenKind::Ident && else_tok.text == "else" {
+        let else_start = else_idx + 1;
+        return statement_end_offset(tokens, else_start);
+    }
+    Some(then_end)
+}
+
 fn for_statement_end_offset(tokens: &[Token], for_idx: usize) -> Option<usize> {
     let mut open_paren_idx = None;
     for i in (for_idx + 1)..tokens.len() {
@@ -6968,9 +7036,55 @@ fn for_statement_end_offset(tokens: &[Token], for_idx: usize) -> Option<usize> {
     let open_paren_idx = open_paren_idx?;
     let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
     let body_idx = close_paren_idx + 1;
-    let body_tok = tokens.get(body_idx)?;
-    if body_tok.kind != TokenKind::Symbol('{') {
-        // Best-effort: only handle braced `for (...) { ... }` bodies today.
+    statement_end_offset(tokens, body_idx)
+}
+
+fn while_statement_end_offset(tokens: &[Token], while_idx: usize) -> Option<usize> {
+    let open_paren_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(while_idx + 1)
+        .find(|(_, t)| t.kind == TokenKind::Symbol('('))
+        .map(|(idx, _)| idx)?;
+    let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+    statement_end_offset(tokens, close_paren_idx + 1)
+}
+
+fn do_statement_end_offset(tokens: &[Token], do_idx: usize) -> Option<usize> {
+    let body_start = do_idx + 1;
+    let body_end = statement_end_offset(tokens, body_start)?;
+    let while_idx = token_index_at_or_after_offset(tokens, body_end)?;
+    let while_tok = tokens.get(while_idx)?;
+    if while_tok.kind != TokenKind::Ident || while_tok.text != "while" {
+        return None;
+    }
+    let open_paren_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(while_idx + 1)
+        .find(|(_, t)| t.kind == TokenKind::Symbol('('))
+        .map(|(idx, _)| idx)?;
+    let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+    let semi_tok = tokens.get(close_paren_idx + 1)?;
+    if semi_tok.kind != TokenKind::Symbol(';') {
+        return None;
+    }
+    Some(semi_tok.span.end)
+}
+
+fn switch_statement_end_offset(tokens: &[Token], switch_idx: usize) -> Option<usize> {
+    let open_paren_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(switch_idx + 1)
+        .find(|(_, t)| t.kind == TokenKind::Symbol('('))
+        .map(|(idx, _)| idx)?;
+    let (close_paren_idx, _) = find_matching_paren(tokens, open_paren_idx)?;
+    let body_idx = close_paren_idx + 1;
+    if tokens
+        .get(body_idx)
+        .map_or(true, |t| t.kind != TokenKind::Symbol('{'))
+    {
         return None;
     }
     let (_, body_span) = find_matching_brace(tokens, body_idx)?;

@@ -3163,6 +3163,28 @@ class A {
 }
 
 #[test]
+fn completion_scope_excludes_for_loop_variable_after_unbraced_loop() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    for (int i = 0; i < 10; i++)
+      System.out.println(i);
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"i"),
+        "expected `i` (for-loop variable) to be out of scope after unbraced loop; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_scope_excludes_try_resource_after_try() {
     let (db, file, pos) = fixture(
         r#"
