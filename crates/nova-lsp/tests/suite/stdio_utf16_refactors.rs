@@ -176,6 +176,184 @@ fn stdio_server_rename_package_declaration_dispatches_to_move_package() {
 }
 
 #[test]
+fn stdio_server_rename_type_emits_file_rename_and_updates_references() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let foo_uri = Uri::from_str("file:///workspace/src/main/java/p/Foo.java").unwrap();
+    let use_uri = Uri::from_str("file:///workspace/src/main/java/p/Use.java").unwrap();
+    let bar_uri = Uri::from_str("file:///workspace/src/main/java/p/Bar.java").unwrap();
+
+    let foo_source = "package p; public class Foo { Foo() {} }";
+    let use_source = "package p; class Use { Foo f; void m(){ new Foo(); } }";
+
+    let foo_start = foo_source
+        .find("class Foo")
+        .expect("class declaration")
+        + "class ".len();
+    let foo_end = foo_start + "Foo".len();
+    let foo_position = lsp_position_utf16(foo_source, foo_start + 1);
+    let foo_range = lsp_range_utf16(foo_source, foo_start, foo_end);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) open documents (overlays only; no real files)
+    for (uri, source) in [(foo_uri.clone(), foo_source), (use_uri.clone(), use_source)] {
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "java",
+                        "version": 1,
+                        "text": source,
+                    }
+                }
+            }),
+        );
+    }
+
+    // 3) prepareRename on the type name => identifier range only.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareRename",
+            "params": {
+                "textDocument": { "uri": foo_uri },
+                "position": foo_position,
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("prepareRename result");
+    let range: Range = serde_json::from_value(result).expect("decode prepareRename range");
+    assert_eq!(range, foo_range);
+
+    // 4) rename Foo -> Bar => should include a file rename op + text edits for Bar.java and Use.java.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": foo_uri },
+                "position": foo_position,
+                "newName": "Bar"
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 3);
+    let result = resp.get("result").cloned().expect("rename result");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+
+    assert!(
+        edit.changes.is_none(),
+        "expected rename edits with file ops to use documentChanges only, got: {edit:?}"
+    );
+
+    let Some(document_changes) = edit.document_changes else {
+        panic!("expected documentChanges for type rename with file rename");
+    };
+    let DocumentChanges::Operations(ops) = document_changes else {
+        panic!("expected documentChanges as Operations");
+    };
+
+    let rename_op = ops.iter().find_map(|op| match op {
+        DocumentChangeOperation::Op(ResourceOp::Rename(op)) => Some(op),
+        _ => None,
+    });
+    let rename_op = rename_op.expect("expected ResourceOp::Rename");
+    assert_eq!(rename_op.old_uri.as_str(), foo_uri.as_str());
+    assert_eq!(rename_op.new_uri.as_str(), bar_uri.as_str());
+
+    fn flatten_text_edits(
+        edits: &[OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>],
+    ) -> Vec<lsp_types::TextEdit> {
+        edits
+            .iter()
+            .map(|e| match e {
+                OneOf::Left(e) => e.clone(),
+                OneOf::Right(e) => e.text_edit.clone(),
+            })
+            .collect()
+    }
+
+    let mut bar_edits: Vec<lsp_types::TextEdit> = Vec::new();
+    let mut use_edits: Vec<lsp_types::TextEdit> = Vec::new();
+    for op in ops {
+        let DocumentChangeOperation::Edit(edit) = op else {
+            continue;
+        };
+        if edit.text_document.uri.as_str() == bar_uri.as_str() {
+            bar_edits.extend(flatten_text_edits(&edit.edits));
+        } else if edit.text_document.uri.as_str() == use_uri.as_str() {
+            use_edits.extend(flatten_text_edits(&edit.edits));
+        }
+    }
+
+    assert!(
+        !bar_edits.is_empty(),
+        "expected TextDocumentEdit operations for {}",
+        bar_uri.as_str()
+    );
+    assert!(
+        !use_edits.is_empty(),
+        "expected TextDocumentEdit operations for {}",
+        use_uri.as_str()
+    );
+
+    let bar_actual = apply_lsp_text_edits(foo_source, &bar_edits);
+    let bar_expected = "package p; public class Bar { Bar() {} }";
+    assert_eq!(bar_actual, bar_expected);
+
+    let use_actual = apply_lsp_text_edits(use_source, &use_edits);
+    let use_expected = "package p; class Use { Bar f; void m(){ new Bar(); } }";
+    assert_eq!(use_actual, use_expected);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_rename_is_utf16_correct_with_crlf() {
     let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
