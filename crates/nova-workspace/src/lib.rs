@@ -4,7 +4,7 @@ use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_db::{FileId, NovaIndexing, SalsaDatabase};
 use nova_index::{
     load_sharded_index_view_lazy_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
-    CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
+    CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
 use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryManager};
@@ -1034,10 +1034,10 @@ fn fuzzy_rank_workspace_symbols(
     if query.is_empty() {
         let mut ranked = Vec::new();
         for (name, locations) in &symbols.symbols {
-            for loc in locations {
+            for sym in locations {
                 ranked.push(WorkspaceSymbol {
                     name: name.clone(),
-                    locations: vec![loc.clone()],
+                    locations: vec![sym.location.clone()],
                 });
                 if ranked.len() >= limit {
                     break;
@@ -1061,8 +1061,9 @@ fn fuzzy_rank_workspace_symbols(
     let mut ranked = Vec::new();
     for res in results {
         let name = res.symbol.name;
-        if let Some(locations) = symbols.symbols.get(name.as_str()) {
-            let mut locations = locations.clone();
+        if let Some(symbols) = symbols.symbols.get(name.as_str()) {
+            let mut locations: Vec<SymbolLocation> =
+                symbols.iter().map(|sym| sym.location.clone()).collect();
             locations.sort_by(|a, b| {
                 a.file
                     .cmp(&b.file)
@@ -1099,9 +1100,9 @@ fn fuzzy_rank_workspace_symbols_sharded(
         use std::collections::BinaryHeap;
 
         struct ShardEntryIter<'a> {
-            map_iter: std::collections::btree_map::Iter<'a, String, Vec<SymbolLocation>>,
+            map_iter: std::collections::btree_map::Iter<'a, String, Vec<IndexedSymbol>>,
             current_name: Option<&'a str>,
-            current_locations: &'a [SymbolLocation],
+            current_locations: &'a [IndexedSymbol],
             loc_idx: usize,
         }
 
@@ -1130,7 +1131,7 @@ fn fuzzy_rank_workspace_symbols_sharded(
                     let name = self.current_name?;
                     if self.loc_idx < self.current_locations.len() {
                         let idx = self.loc_idx;
-                        let loc = &self.current_locations[idx];
+                        let loc = &self.current_locations[idx].location;
                         self.loc_idx += 1;
                         return Some((name, loc, idx));
                     }
@@ -1247,17 +1248,17 @@ fn fuzzy_rank_workspace_symbols_sharded(
 
     let (results, stats) = searcher.search_with_stats_cached(query, limit);
 
-    let mut ranked = Vec::new();
-    for res in results {
-        let name = res.symbol.name;
-        let mut locations: Vec<SymbolLocation> = Vec::new();
-        for shard in shards {
-            if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
-                locations.extend(found.iter().cloned());
+        let mut ranked = Vec::new();
+        for res in results {
+            let name = res.symbol.name;
+            let mut locations: Vec<SymbolLocation> = Vec::new();
+            for shard in shards {
+                if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
+                    locations.extend(found.iter().map(|sym| sym.location.clone()));
+                }
             }
-        }
-        locations.sort_by(|a, b| {
-            a.file
+            locations.sort_by(|a, b| {
+                a.file
                 .cmp(&b.file)
                 .then_with(|| a.line.cmp(&b.line))
                 .then_with(|| a.column.cmp(&b.column))
@@ -1283,6 +1284,16 @@ fn fuzzy_rank_workspace_symbols_sharded(
 mod fuzzy_symbol_tests {
     use super::*;
 
+    fn indexed(name: &str, location: SymbolLocation) -> nova_index::IndexedSymbol {
+        nova_index::IndexedSymbol {
+            qualified_name: name.to_string(),
+            kind: nova_index::IndexSymbolKind::Class,
+            container_name: None,
+            location,
+            ast_id: 0,
+        }
+    }
+
     #[test]
     fn workspace_symbol_search_uses_trigram_candidate_filtering() {
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
@@ -1290,27 +1301,36 @@ mod fuzzy_symbol_tests {
         let mut symbols = nova_index::SymbolIndex::default();
         symbols.insert(
             "HashMap",
-            SymbolLocation {
-                file: "A.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "HashMap",
+                SymbolLocation {
+                    file: "A.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
         symbols.insert(
             "HashSet",
-            SymbolLocation {
-                file: "B.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "HashSet",
+                SymbolLocation {
+                    file: "B.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
         symbols.insert(
             "FooBar",
-            SymbolLocation {
-                file: "C.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "FooBar",
+                SymbolLocation {
+                    file: "C.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
 
         let (_results, stats) =
@@ -1326,11 +1346,14 @@ mod fuzzy_symbol_tests {
         let mut symbols = nova_index::SymbolIndex::default();
         symbols.insert(
             "FooBar",
-            SymbolLocation {
-                file: "A.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "FooBar",
+                SymbolLocation {
+                    file: "A.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
 
         let (results, _stats) =
@@ -1376,19 +1399,25 @@ mod fuzzy_symbol_tests {
         let mut shard0 = ProjectIndexes::default();
         shard0.symbols.insert(
             "Alpha",
-            SymbolLocation {
-                file: "pkg/Alpha.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "Alpha",
+                SymbolLocation {
+                    file: "pkg/Alpha.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
         shard0.symbols.insert(
             "Dup",
-            SymbolLocation {
-                file: "com/foo/Dup.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "Dup",
+                SymbolLocation {
+                    file: "com/foo/Dup.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
 
         let shard1 = ProjectIndexes::default(); // empty shard should not panic
@@ -1396,19 +1425,25 @@ mod fuzzy_symbol_tests {
         let mut shard2 = ProjectIndexes::default();
         shard2.symbols.insert(
             "Dup",
-            SymbolLocation {
-                file: "com/bar/Dup.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "Dup",
+                SymbolLocation {
+                    file: "com/bar/Dup.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
         shard2.symbols.insert(
             "Zulu",
-            SymbolLocation {
-                file: "pkg/Zulu.java".into(),
-                line: 1,
-                column: 1,
-            },
+            indexed(
+                "Zulu",
+                SymbolLocation {
+                    file: "pkg/Zulu.java".into(),
+                    line: 1,
+                    column: 1,
+                },
+            ),
         );
 
         let shards = vec![shard0, shard1, shard2];
