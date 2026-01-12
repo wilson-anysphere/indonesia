@@ -1,5 +1,6 @@
 use nova_db::salsa::{NovaFlow, NovaHir};
 use nova_db::{FileId, SalsaRootDatabase};
+use nova_hir::body::{Body as FlowBody, ExprKind as FlowExprKind, StmtKind as FlowStmtKind};
 use nova_hir::hir::{Body, Expr, ExprId};
 
 fn expr_path(body: &Body, expr: ExprId) -> Option<String> {
@@ -119,6 +120,51 @@ class Foo {
         }
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
+}
+
+#[test]
+fn flow_constructor_body_lowers_explicit_constructor_invocation() {
+    let source = r#"
+class C {
+    C() { this(1); }
+    C(int x) {}
+}
+"#;
+
+    let mut db = SalsaRootDatabase::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, source);
+
+    let snap = db.snapshot();
+    let tree = snap.hir_item_tree(file);
+    let (&ctor_ast_id, _) = tree
+        .constructors
+        .iter()
+        .find(|(_, ctor)| ctor.params.is_empty())
+        .expect("expected a no-arg constructor");
+    let ctor_id = nova_hir::ids::ConstructorId::new(file, ctor_ast_id);
+
+    let body: std::sync::Arc<FlowBody> = snap.flow_body_constructor(ctor_id);
+    let FlowStmtKind::Block(stmts) = &body.stmt(body.root()).kind else {
+        panic!("expected flow body root to be a block");
+    };
+
+    let mut saw_invocation = false;
+    for stmt in stmts {
+        if let FlowStmtKind::Expr(expr) = &body.stmt(*stmt).kind {
+            if let FlowExprKind::Call { args, .. } = &body.expr(*expr).kind {
+                if args.len() == 1 && matches!(body.expr(args[0]).kind, FlowExprKind::Int(1)) {
+                    saw_invocation = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_invocation,
+        "expected flow body to contain a call expression statement for `this(1);`"
+    );
 }
 
 fn flow_diagnostics_for_method(source: &str, method_name: &str) -> Vec<nova_types::Diagnostic> {
