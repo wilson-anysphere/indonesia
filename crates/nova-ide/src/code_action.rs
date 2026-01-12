@@ -349,6 +349,24 @@ fn type_mismatch_quick_fixes(
     selection: &Range,
     diagnostic: &Diagnostic,
 ) -> Vec<CodeAction> {
+    fn cast_replacement(expected: &str, expr: &str) -> String {
+        // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
+        // `((T) a) + b` and does not cast the whole expression.
+        let needs_parens = expr.chars().any(|c| c.is_whitespace())
+            || [
+                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=", "&",
+                "|", "^",
+            ]
+            .into_iter()
+            .any(|op| expr.contains(op));
+
+        if needs_parens {
+            format!("({expected}) ({expr})")
+        } else {
+            format!("({expected}) {expr}")
+        }
+    }
+
     if diagnostic_code(diagnostic) != Some("type-mismatch") {
         return Vec::new();
     }
@@ -412,11 +430,7 @@ fn type_mismatch_quick_fixes(
     actions.push(CodeAction {
         title: format!("Cast to {expected}"),
         kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(single_replace_edit(
-            uri,
-            range,
-            format!("({expected}) {expr}"),
-        )),
+        edit: Some(single_replace_edit(uri, range, cast_replacement(&expected, expr))),
         diagnostics: Some(vec![diagnostic.clone()]),
         is_preferred: Some(expected != "String"),
         ..CodeAction::default()

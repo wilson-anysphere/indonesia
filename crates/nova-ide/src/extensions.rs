@@ -1341,7 +1341,8 @@ fn type_mismatch_quick_fixes(
         // `((T) a) + b` and does not cast the whole expression.
         let needs_parens = expr.chars().any(|c| c.is_whitespace())
             || [
-                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=",
+                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=", "&",
+                "|", "^",
             ]
             .into_iter()
             .any(|op| expr.contains(op));
@@ -1446,7 +1447,8 @@ fn type_mismatch_quick_fixes_from_context(
         // `((T) a) + b` and does not cast the whole expression.
         let needs_parens = expr.chars().any(|c| c.is_whitespace())
             || [
-                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=",
+                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=", "&",
+                "|", "^",
             ]
             .into_iter()
             .any(|op| expr.contains(op));

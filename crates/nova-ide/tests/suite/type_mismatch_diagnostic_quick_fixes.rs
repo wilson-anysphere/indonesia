@@ -60,3 +60,52 @@ class A {
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].new_text, "(String) o");
 }
+
+#[test]
+fn type_mismatch_diagnostic_quick_fixes_cast_wraps_bitwise_expression_in_parentheses() {
+    let source = r#"
+class A {
+  void m() {
+    int a = 1;
+    int b = 2;
+    byte c = a|b;
+  }
+}
+"#;
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let needle = "byte c = a|b;";
+    let stmt_start = source
+        .find(needle)
+        .expect("expected assignment with bitwise expression in fixture");
+    let expr_start = stmt_start + "byte c = ".len();
+    let expr_end = expr_start + "a|b".len();
+
+    let range = Range::new(
+        offset_to_position(source, expr_start),
+        offset_to_position(source, expr_end),
+    );
+
+    let selection = range.clone();
+    let diagnostic = Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("type-mismatch".to_string())),
+        message: "type mismatch: expected byte, found int".to_string(),
+        ..Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), selection, &[diagnostic]);
+
+    let cast = actions
+        .iter()
+        .find(|action| action.title == "Cast to byte")
+        .expect("expected Cast to byte quickfix");
+    assert_eq!(cast.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edit = cast.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes");
+    let edits = changes.get(&uri).expect("expected edits for uri");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "(byte) (a|b)");
+}
