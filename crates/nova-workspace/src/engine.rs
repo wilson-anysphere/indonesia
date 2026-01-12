@@ -1572,6 +1572,18 @@ fn reload_project_and_sync(
         }
     }
 
+    // JPMS-only updates (i.e. `module-info.java` edits) do not affect workspace source roots or
+    // membership, so we can avoid a full rescan of Java files. The file watcher already
+    // propagates the on-disk edit into the VFS/Salsa file inputs.
+    if !changed_files.is_empty()
+        && changed_files.iter().all(|path| {
+            path.file_name()
+                .is_some_and(|name| name == "module-info.java")
+        })
+    {
+        return Ok(());
+    }
+
     // Snapshot previous project files so we can mark removed ones as non-existent.
     let previous_files: Vec<FileId> =
         query_db.with_snapshot(|snap| snap.project_files(project).as_ref().clone());
