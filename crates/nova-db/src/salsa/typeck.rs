@@ -1632,6 +1632,26 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
             HirStmt::Expr { expr, .. } => {
                 let _ = self.infer_expr(loader, *expr);
+                match &self.body.exprs[*expr] {
+                    HirExpr::Assign { .. }
+                    | HirExpr::Call { .. }
+                    | HirExpr::New { .. }
+                    | HirExpr::Unary {
+                        op: UnaryOp::PreInc
+                        | UnaryOp::PreDec
+                        | UnaryOp::PostInc
+                        | UnaryOp::PostDec,
+                        ..
+                    } => {}
+                    HirExpr::Missing { .. } => {}
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-statement-expression",
+                            "invalid expression statement",
+                            Some(self.body.exprs[*expr].range()),
+                        ));
+                    }
+                }
             }
             HirStmt::Return { expr, range } => {
                 if matches!(self.owner, DefWithBodyId::Initializer(_)) {
