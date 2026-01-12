@@ -6,6 +6,8 @@ use pretty_assertions::assert_eq;
 use std::fs;
 use std::path::Path;
 
+mod suite;
+
 fn format_with_config(input: &str, config: &FormatConfig) -> String {
     let tree = parse(input);
     format_java(&tree, input, config)

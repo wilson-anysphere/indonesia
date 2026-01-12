@@ -110,7 +110,7 @@ class Foo {
 
 #[test]
 fn canonical_document_formatting_is_idempotent_on_generics_fixture() {
-    let input = include_str!("fixtures/generics.java");
+    let input = include_str!("../fixtures/generics.java");
     let config = FormatConfig::default();
     let edits = edits_for_document_formatting(input, &config);
     let formatted = apply_text_edits(input, &edits).unwrap();
@@ -123,7 +123,7 @@ fn canonical_document_formatting_is_idempotent_on_generics_fixture() {
 
 #[test]
 fn canonical_document_formatting_is_idempotent_on_broken_fixture() {
-    let input = include_str!("fixtures/broken_code.java");
+    let input = include_str!("../fixtures/broken_code.java");
     let config = FormatConfig::default();
     let edits = edits_for_document_formatting(input, &config);
     let formatted = apply_text_edits(input, &edits).unwrap();
@@ -671,11 +671,11 @@ fn ast_formatting_is_idempotent_on_selected_fixtures() {
     // These fixtures exercise generics-heavy real-world patterns. The AST formatter is still
     // best-effort, but it must be stable across repeated passes.
     let fixtures = [
-        include_str!("fixtures/generics.java"),
-        include_str!("fixtures/method_reference_type_args.java"),
-        include_str!("fixtures/wildcards_and_varargs.java"),
-        include_str!("fixtures/qualified_generics.java"),
-        include_str!("fixtures/diamond_operator.java"),
+        include_str!("../fixtures/generics.java"),
+        include_str!("../fixtures/method_reference_type_args.java"),
+        include_str!("../fixtures/wildcards_and_varargs.java"),
+        include_str!("../fixtures/qualified_generics.java"),
+        include_str!("../fixtures/diamond_operator.java"),
     ];
 
     for fixture in fixtures {
@@ -685,7 +685,7 @@ fn ast_formatting_is_idempotent_on_selected_fixtures() {
 
 #[test]
 fn ast_formatting_is_idempotent_on_broken_fixture() {
-    assert_ast_idempotent(include_str!("fixtures/broken_code.java"));
+    assert_ast_idempotent(include_str!("../fixtures/broken_code.java"));
 }
 
 #[test]
