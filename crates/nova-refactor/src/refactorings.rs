@@ -1705,6 +1705,26 @@ fn contains_unknown_name_expression(
     let root = parsed.syntax();
 
     for name_expr in root.descendants().filter_map(ast::NameExpression::cast) {
+        // Avoid false positives for unqualified method calls like `foo(x)`: the callee `foo` is a
+        // method name, not a variable reference.
+        //
+        // This matters in unindexed contexts (for example anonymous class bodies) where
+        // `symbol_at` may return `None` for unrelated identifiers.
+        //
+        // NOTE: Do *not* skip qualified callees like `a.b(x)` because the leftmost segment `a`
+        // can still be a variable reference.
+        if let Some(parent) = name_expr.syntax().parent() {
+            if let Some(call) = ast::MethodCallExpression::cast(parent.clone()) {
+                if call
+                    .callee()
+                    .is_some_and(|callee| callee.syntax() == name_expr.syntax())
+                    && simple_name_from_name_expression(&name_expr).is_some()
+                {
+                    continue;
+                }
+            }
+        }
+
         // `NameExpression` nodes cover both simple names (`a`) and qualified names (`a.b.c`).
         //
         // For local variables, any reference must start with the variable name as the leftmost

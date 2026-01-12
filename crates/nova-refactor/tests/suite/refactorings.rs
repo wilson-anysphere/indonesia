@@ -6311,6 +6311,56 @@ fn inline_variable_all_usages_succeeds_when_only_usage_is_qualified() {
 }
 
 #[test]
+fn inline_variable_all_usages_ignores_unindexed_method_call_named_like_variable() {
+    // Some syntax occurrences of the variable name are not variable references (e.g. method-call
+    // callees). In unindexed contexts (anonymous class bodies), `symbol_at` can fail for these too,
+    // so the "unknown occurrence" scan must avoid false positives that would incorrectly reject
+    // `inline_all`.
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m() {
+    int a = 1 + 2;
+    Runnable r = new Runnable() {
+      public void run() {
+        a();
+      }
+      void a() {}
+    };
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        !after.contains("int a"),
+        "expected declaration to be removed: {after}"
+    );
+    assert!(
+        after.contains("System.out.println((1 + 2));"),
+        "expected usage to be inlined: {after}"
+    );
+    assert!(
+        after.contains("a();"),
+        "expected unrelated method call to remain: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializer_has_side_effects(
 ) {
     // If `find_references` does not report all textual occurrences, `inline_all=false` must keep the
