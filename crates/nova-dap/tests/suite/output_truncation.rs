@@ -1,10 +1,9 @@
 use std::time::Duration;
 
+use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;
 use tempfile::TempDir;
-
-use crate::harness::spawn_wire_server;
 
 #[tokio::test]
 async fn launch_truncates_very_long_stdout_lines() {

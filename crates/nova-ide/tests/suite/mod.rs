@@ -7,6 +7,7 @@ mod code_actions_unresolved_type;
 mod code_actions_with_context;
 mod code_intelligence;
 mod code_intelligence_postfix;
+mod code_intelligence_workspace_annotations;
 mod completion_cache;
 mod create_class_quick_fix;
 mod create_symbol_quick_fixes;

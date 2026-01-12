@@ -5,8 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use crate::support;
-use support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
+use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::canonicalize(path).expect("abs path");

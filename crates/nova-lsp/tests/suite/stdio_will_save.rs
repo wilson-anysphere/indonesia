@@ -2,12 +2,11 @@ use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use crate::support;
-use support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_handles_will_save_notification() {
-    let _lock = support::stdio_server_lock();
+    let _lock = stdio_server_lock();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")

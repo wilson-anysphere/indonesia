@@ -12,6 +12,7 @@ mod ide_extensions_completion;
 mod ide_extensions_navigation;
 mod mapstruct_completions;
 mod mapstruct_goto_definition;
+mod mapstruct_implementation;
 mod metrics;
 mod micronaut_extensions;
 mod navigation;
