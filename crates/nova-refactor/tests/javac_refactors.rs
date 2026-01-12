@@ -276,3 +276,57 @@ fn javac_refactor_inline_variable_compiles_before_after() {
     let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
     assert_javac_ok(&updated, "after inline variable");
 }
+
+#[test]
+#[ignore]
+fn javac_refactor_rename_type_compiles_before_after() {
+    if !javac_available() {
+        eprintln!("javac not available; skipping test");
+        return;
+    }
+
+    let foo_file = FileId::new("Foo.java");
+    let use_file = FileId::new("UseFoo.java");
+
+    let foo_src = r#"class Foo {
+  Foo() {}
+
+  int value() {
+    return 1;
+  }
+}
+"#;
+
+    let use_src = r#"class UseFoo {
+  int v = new Foo().value();
+}
+"#;
+
+    let files = BTreeMap::from([
+        (foo_file.clone(), foo_src.to_string()),
+        (use_file.clone(), use_src.to_string()),
+    ]);
+    assert_javac_ok(&files, "before rename type");
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), foo_src.to_string()),
+        (use_file.clone(), use_src.to_string()),
+    ]);
+    let offset = foo_src
+        .find("class Foo")
+        .expect("class declaration")
+        + "class ".len();
+    let symbol = db.symbol_at(&foo_file, offset).expect("symbol at Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Baz".into(),
+        },
+    )
+    .expect("rename should succeed");
+
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
+    assert_javac_ok(&updated, "after rename type");
+}
