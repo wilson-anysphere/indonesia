@@ -430,6 +430,13 @@ pub fn edits_for_on_type_formatting(
         .offset_of_position(source, position)
         .ok_or(FormatError::InvalidPosition)?;
 
+    // On-type formatting is a structural indentation adjustment. Avoid applying it inside
+    // comments and string/char literals where trimming/reindenting would corrupt the literal
+    // contents (text blocks, string templates, etc.).
+    if is_inside_non_code_token(tree, offset) {
+        return Ok(Vec::new());
+    }
+
     let should_format = match ch {
         '}' | ';' => true,
         ')' | ',' => is_inside_argument_list(tree, source, offset),
@@ -469,6 +476,41 @@ pub fn edits_for_on_type_formatting(
 
     let range = TextRange::new(line_start, line_end);
     Ok(vec![TextEdit::new(range, new_line)])
+}
+
+fn is_inside_non_code_token(tree: &SyntaxTree, offset: TextSize) -> bool {
+    let offset = u32::from(offset);
+    // LSP on-type formatting positions are typically *after* the typed character, but keep this
+    // robust across editor implementations by checking both the current offset and the previous
+    // byte.
+    let probes = [offset, offset.saturating_sub(1)];
+    for probe in probes {
+        if let Some(kind) = token_kind_covering_offset(tree, probe) {
+            if matches!(
+                kind,
+                SyntaxKind::StringLiteral
+                    | SyntaxKind::CharLiteral
+                    | SyntaxKind::LineComment
+                    | SyntaxKind::BlockComment
+                    | SyntaxKind::DocComment
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn token_kind_covering_offset(tree: &SyntaxTree, offset: u32) -> Option<SyntaxKind> {
+    for tok in tree.tokens() {
+        if tok.range.end > offset {
+            if tok.range.start <= offset && offset < tok.range.end {
+                return Some(tok.kind);
+            }
+            break;
+        }
+    }
+    None
 }
 
 fn is_inside_argument_list(tree: &SyntaxTree, source: &str, offset: TextSize) -> bool {

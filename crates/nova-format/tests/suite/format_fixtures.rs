@@ -1,4 +1,4 @@
-use nova_core::{apply_text_edits, Position};
+use nova_core::{apply_text_edits, LineIndex, Position, TextSize};
 use nova_format::{edits_for_on_type_formatting, format_java, FormatConfig};
 use nova_syntax::parse;
 use pretty_assertions::assert_eq;
@@ -274,6 +274,19 @@ fn on_type_formatting_triggers_inside_argument_lists() {
     assert_eq!(edits.len(), 1);
     let out = apply_text_edits(input, &edits).unwrap();
     assert!(out.contains("        foo(1,2);"));
+}
+
+#[test]
+fn on_type_formatting_is_noop_inside_text_block_templates() {
+    let input = "class Foo {\n    void m() {\n        String t = STR.\"\"\"\n            hello }\n            \"\"\";\n    }\n}\n";
+    let tree = parse(input);
+    let idx = LineIndex::new(input);
+
+    let brace_offset = input.find("hello }").unwrap() + "hello ".len();
+    let position = idx.position(input, TextSize::from((brace_offset + 1) as u32));
+    let edits =
+        edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default()).unwrap();
+    assert!(edits.is_empty());
 }
 
 #[test]
