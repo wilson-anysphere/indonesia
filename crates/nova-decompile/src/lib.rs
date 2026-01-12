@@ -792,7 +792,12 @@ pub fn canonicalize_decompiled_uri(uri: &str, classfile_bytes: &[u8]) -> Option<
         ));
     }
     let internal = class_internal_name_from_uri(uri)?;
-    Some(decompiled_uri_for_classfile(classfile_bytes, &internal))
+    let upgraded = decompiled_uri_for_classfile(classfile_bytes, &internal);
+    let parsed = parse_decompiled_uri(&upgraded)?;
+    Some(format!(
+        "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{}/{}.java",
+        parsed.content_hash, parsed.binary_name
+    ))
 }
 
 // Access flag constants (subset used by the stub generator).
