@@ -533,25 +533,60 @@ export function registerNovaServerCommands(
 
   const extractMethod = async (...args: unknown[]): Promise<void> => {
     try {
-      const edit = await opts.novaRequest<unknown>('workspace/executeCommand', {
-        command: 'nova.extractMethod',
-        arguments: args,
-      });
-      if (!edit) {
-        void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
-        return;
-      }
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Nova: Extracting method…',
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          if (token.isCancellationRequested) {
+            return;
+          }
 
-      const client = await opts.requireClient();
-      const vsEdit = await client.protocol2CodeConverter.asWorkspaceEdit(edit as never);
-      if (!vsEdit) {
-        void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
-        return;
-      }
-      const applied = await vscode.workspace.applyEdit(vsEdit);
-      if (!applied) {
-        void vscode.window.showErrorMessage('Nova: Failed to apply extract method edits.');
-      }
+          const edit = await opts.novaRequest<unknown>(
+            'workspace/executeCommand',
+            {
+              command: 'nova.extractMethod',
+              arguments: args,
+            },
+            { token },
+          );
+          if (!edit) {
+            if (token.isCancellationRequested) {
+              return;
+            }
+            void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
+            return;
+          }
+
+          if (token.isCancellationRequested) {
+            return;
+          }
+
+          const client = await opts.requireClient();
+          const vsEdit = await client.protocol2CodeConverter.asWorkspaceEdit(edit as never);
+          if (!vsEdit) {
+            if (token.isCancellationRequested) {
+              return;
+            }
+            void vscode.window.showErrorMessage('Nova: Extract method returned no workspace edit.');
+            return;
+          }
+
+          if (token.isCancellationRequested) {
+            return;
+          }
+
+          const applied = await vscode.workspace.applyEdit(vsEdit);
+          if (!applied) {
+            if (token.isCancellationRequested) {
+              return;
+            }
+            void vscode.window.showErrorMessage('Nova: Failed to apply extract method edits.');
+          }
+        },
+      );
     } catch (err) {
       const message = formatError(err);
       void vscode.window.showErrorMessage(`Nova: extract method failed: ${message}`);
