@@ -2381,14 +2381,57 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        const c = await requireClient();
-        await c.sendRequest('workspace/executeCommand', {
-          command: 'nova.safeDelete',
-          arguments: [{ target: targetId, mode: 'deleteAnyway' }],
-        });
-        // `nova.safeDelete` is guarded by the server's safe-mode check; a successful response
-        // implies safe-mode is not active.
-        setSafeModeEnabled?.(false);
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Nova: Safe deleting ${targetName}…`,
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            if (token.isCancellationRequested) {
+              return;
+            }
+
+            let c: LanguageClient;
+            try {
+              c = await requireClient({ token });
+            } catch (err) {
+              if (token.isCancellationRequested || isRequestCancelledError(err)) {
+                return;
+              }
+              throw err;
+            }
+
+            if (token.isCancellationRequested) {
+              return;
+            }
+
+            try {
+              // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
+              await c.sendRequest(
+                'workspace/executeCommand',
+                {
+                  command: 'nova.safeDelete',
+                  arguments: [{ target: targetId, mode: 'deleteAnyway' }],
+                },
+                token,
+              );
+            } catch (err) {
+              if (token.isCancellationRequested || isRequestCancelledError(err)) {
+                return;
+              }
+              throw err;
+            }
+
+            if (token.isCancellationRequested) {
+              return;
+            }
+
+            // `nova.safeDelete` is guarded by the server's safe-mode check; a successful response
+            // implies safe-mode is not active.
+            setSafeModeEnabled?.(false);
+          },
+        );
       } catch (err) {
         if (isSafeModeError(err)) {
           setSafeModeEnabled?.(true);
