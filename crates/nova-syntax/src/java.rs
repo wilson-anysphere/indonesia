@@ -1456,18 +1456,40 @@ impl Lowerer {
     fn lower_block(&self, node: &SyntaxNode) -> ast::Block {
         let mut statements = Vec::new();
         for child in node.children() {
-            if child.kind() == SyntaxKind::LocalVariableDeclarationStatement {
-                statements.extend(self.lower_local_var_stmts(&child));
-                continue;
-            }
-            if let Some(stmt) = self.lower_stmt(&child) {
-                statements.push(stmt);
-            }
+            statements.extend(self.lower_stmt_list_item(&child));
         }
 
         ast::Block {
             statements,
             range: self.spans.map_node(node),
+        }
+    }
+
+    fn lower_stmt_list_item(&self, node: &SyntaxNode) -> Vec<ast::Stmt> {
+        match node.kind() {
+            SyntaxKind::LocalVariableDeclarationStatement => self.lower_local_var_stmts(node),
+            // Labels are not modeled in the lightweight AST, but we still want the labeled
+            // statement's contents to show up in statement lists. This is especially important
+            // for local variable declarations, where we may need to split multi-declarator
+            // statements into multiple `LocalVar` items.
+            SyntaxKind::LabeledStatement => {
+                let mut inner = node.clone();
+                loop {
+                    let Some(stmt) = inner
+                        .children()
+                        .find(|child| is_statement_kind(child.kind()))
+                    else {
+                        return vec![ast::Stmt::Empty(self.spans.map_node(&inner))];
+                    };
+                    inner = stmt;
+                    if inner.kind() != SyntaxKind::LabeledStatement {
+                        break;
+                    }
+                }
+
+                self.lower_stmt_list_item(&inner)
+            }
+            _ => self.lower_stmt(node).into_iter().collect(),
         }
     }
 
@@ -2071,11 +2093,7 @@ impl Lowerer {
                 continue;
             }
 
-            if child.kind() == SyntaxKind::LocalVariableDeclarationStatement {
-                statements.extend(self.lower_local_var_stmts(&child));
-            } else if let Some(stmt) = self.lower_stmt(&child) {
-                statements.push(stmt);
-            }
+            statements.extend(self.lower_stmt_list_item(&child));
         }
 
         ast::Block {
@@ -3598,6 +3616,23 @@ mod tests {
                 .any(|stmt| matches!(stmt, ast::Stmt::LocalVar(_))),
             "expected labeled inner block to contain local variable statement"
         );
+    }
+
+    #[test]
+    fn parse_block_lowers_labeled_statement_local_var_declarators() {
+        let text = "{ label: int x = 0, y = 1; }";
+        let block = parse_block(text, 0);
+        assert_eq!(block.statements.len(), 2);
+
+        let ast::Stmt::LocalVar(x) = &block.statements[0] else {
+            panic!("expected first lowered statement to be a local variable");
+        };
+        let ast::Stmt::LocalVar(y) = &block.statements[1] else {
+            panic!("expected second lowered statement to be a local variable");
+        };
+
+        assert_eq!(x.name, "x");
+        assert_eq!(y.name, "y");
     }
 
     #[test]
