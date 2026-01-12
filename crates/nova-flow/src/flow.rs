@@ -1601,10 +1601,23 @@ fn check_expr_null_deref(
                 // The RHS is only evaluated when the LHS is true, so we can narrow based on any
                 // null-checks found in the LHS (e.g. `x != null && x.foo()`).
                 let (on_true, _) = null_constraints(body, *lhs);
+                // If we already know the LHS can never be true (based on the current null-state),
+                // then the RHS is unreachable and we should not emit diagnostics from it.
+                for (local, required) in &on_true {
+                    if *required == NullState::Unknown {
+                        continue;
+                    }
+                    let current = state.get(local.index()).copied().unwrap_or(NullState::Unknown);
+                    if current != NullState::Unknown && current != *required {
+                        return NullState::NonNull;
+                    }
+                }
                 let mut rhs_state = state.to_vec();
                 for (local, value) in on_true {
                     if local.index() < rhs_state.len() {
-                        rhs_state[local.index()] = value;
+                        if value != NullState::Unknown {
+                            rhs_state[local.index()] = value;
+                        }
                     }
                 }
                 let _ = check_expr_null_deref(body, *rhs, &mut rhs_state, diags);
@@ -1620,10 +1633,23 @@ fn check_expr_null_deref(
                 // The RHS is only evaluated when the LHS is false, so we can narrow based on any
                 // null-checks found in the LHS (e.g. `x == null || x.foo()`).
                 let (_, on_false) = null_constraints(body, *lhs);
+                // If we already know the LHS can never be false (based on the current null-state),
+                // then the RHS is unreachable and we should not emit diagnostics from it.
+                for (local, required) in &on_false {
+                    if *required == NullState::Unknown {
+                        continue;
+                    }
+                    let current = state.get(local.index()).copied().unwrap_or(NullState::Unknown);
+                    if current != NullState::Unknown && current != *required {
+                        return NullState::NonNull;
+                    }
+                }
                 let mut rhs_state = state.to_vec();
                 for (local, value) in on_false {
                     if local.index() < rhs_state.len() {
-                        rhs_state[local.index()] = value;
+                        if value != NullState::Unknown {
+                            rhs_state[local.index()] = value;
+                        }
                     }
                 }
                 let _ = check_expr_null_deref(body, *rhs, &mut rhs_state, diags);

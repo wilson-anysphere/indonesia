@@ -1038,3 +1038,59 @@ class A {
         "expected no use-before-assignment diagnostic for short-circuited rhs; got {diags:#?}"
     );
 }
+
+#[test]
+fn diagnostics_do_not_warn_null_deref_when_and_and_lhs_is_known_false() {
+    let text = r#"
+class A {
+  void m() {
+    String s = new String();
+    if (s == null && s.length() == 0) {
+      return;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "s.length()";
+    let start = text.find(needle).expect("expected s.length in fixture");
+    let end = start + needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_NULL_DEREF"
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
+        "expected no null-dereference diagnostic when rhs is unreachable; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_warn_null_deref_when_or_or_lhs_is_known_true() {
+    let text = r#"
+class A {
+  void m() {
+    String s = new String();
+    if (s != null || s.length() == 0) {
+      return;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "s.length()";
+    let start = text.find(needle).expect("expected s.length in fixture");
+    let end = start + needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_NULL_DEREF"
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
+        "expected no null-dereference diagnostic when rhs is unreachable; got {diags:#?}"
+    );
+}
