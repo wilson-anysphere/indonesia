@@ -87,25 +87,27 @@ where
 
     fn ensure_applicability(
         &self,
-        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+        db: &dyn FrameworkDatabase,
+        project: ProjectId,
+        cancel: &CancellationToken,
     ) -> bool {
-        if let Some(value) = self.cached_applicability(ctx.project) {
+        if let Some(value) = self.cached_applicability(project) {
             return value;
         }
 
-        if ctx.cancel.is_cancelled() {
+        if cancel.is_cancelled() {
             return false;
         }
 
         let applicable = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+            self.analyzer.applies_to(db, project)
         }))
         .unwrap_or(false);
 
         self.applicability_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(ctx.project, applicable);
+            .insert(project, applicable);
 
         applicable
     }
@@ -143,7 +145,10 @@ where
         &self.id
     }
 
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+    fn is_applicable(
+        &self,
+        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+    ) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -156,7 +161,40 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
-        if !self.ensure_applicability(&ctx) {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        self.analyzer
+            .diagnostics_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
+    }
+}
+
+impl<A, DB> DiagnosticProvider<DB> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: FrameworkDatabase + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<DB>) -> bool {
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
+    }
+
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
@@ -175,7 +213,10 @@ where
         &self.id
     }
 
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+    fn is_applicable(
+        &self,
+        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+    ) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -188,7 +229,45 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
-        if !self.ensure_applicability(&ctx) {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let completion_ctx = FrameworkCompletionContext {
+            project: ctx.project,
+            file: params.file,
+            offset: params.offset,
+        };
+        self.analyzer
+            .completions_with_cancel(ctx.db.as_ref(), &completion_ctx, &ctx.cancel)
+    }
+}
+
+impl<A, DB> CompletionProvider<DB> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: FrameworkDatabase + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<DB>) -> bool {
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
+    }
+
+    fn provide_completions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
@@ -212,7 +291,10 @@ where
         &self.id
     }
 
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+    fn is_applicable(
+        &self,
+        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+    ) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -225,7 +307,52 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
-        if !self.ensure_applicability(&ctx) {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let symbol = match params.symbol {
+            Symbol::File(file) => FrameworkSymbol::File(file),
+            Symbol::Class(class) => FrameworkSymbol::Class(class),
+        };
+
+        self.analyzer
+            .navigation_with_cancel(ctx.db.as_ref(), &symbol, &ctx.cancel)
+            .into_iter()
+            .map(|target| NavigationTarget {
+                file: target.file,
+                span: target.span,
+                label: target.label,
+            })
+            .collect()
+    }
+}
+
+impl<A, DB> NavigationProvider<DB> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: FrameworkDatabase + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<DB>) -> bool {
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
+    }
+
+    fn provide_navigation(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: NavigationParams,
+    ) -> Vec<NavigationTarget> {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
@@ -256,7 +383,10 @@ where
         &self.id
     }
 
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+    fn is_applicable(
+        &self,
+        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+    ) -> bool {
         if ctx.cancel.is_cancelled() {
             return false;
         }
@@ -269,7 +399,46 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
-        if !self.ensure_applicability(&ctx) {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        self.analyzer
+            .inlay_hints_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
+            .into_iter()
+            .map(|hint| InlayHint {
+                span: hint.span,
+                label: hint.label,
+            })
+            .collect()
+    }
+}
+
+impl<A, DB> InlayHintProvider<DB> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+    DB: FrameworkDatabase + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<DB>) -> bool {
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
+    }
+
+    fn provide_inlay_hints(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: InlayHintParams,
+    ) -> Vec<InlayHint> {
+        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {

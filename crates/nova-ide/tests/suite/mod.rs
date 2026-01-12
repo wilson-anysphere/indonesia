@@ -8,6 +8,7 @@ mod create_class_quick_fix;
 mod dagger_intel;
 mod decompile;
 mod file_navigation;
+mod framework_analyzer_adapter_on_framework_ide_database;
 mod framework_analyzer_per_analyzer_adapter;
 mod framework_analyzer_registry;
 mod framework_cache;
