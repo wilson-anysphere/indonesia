@@ -8,6 +8,15 @@ use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName};
 
 use crate::{ClasspathEntry, JpmsModuleRoot, JpmsWorkspace, Module};
 
+const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
+    "module-info.class",
+    "META-INF/versions/9/module-info.class",
+    "classes/module-info.class",
+    "classes/META-INF/versions/9/module-info.class",
+];
+
+const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
+
 pub(crate) fn discover_jpms_modules(modules: &[Module]) -> Vec<JpmsModuleRoot> {
     let mut out = Vec::new();
     for module in modules {
@@ -195,17 +204,7 @@ fn insert_candidate(
 fn module_candidate_from_module_path_entry(path: &Path) -> Option<ModuleCandidate> {
     let archive = Archive::new(path.to_path_buf());
 
-    if let Some(bytes) = archive
-        .read("module-info.class")
-        .ok()
-        .flatten()
-        .or_else(|| {
-            archive
-                .read("META-INF/versions/9/module-info.class")
-                .ok()
-                .flatten()
-        })
-        .or_else(|| archive.read("classes/module-info.class").ok().flatten())
+    if let Some(bytes) = read_first_matching_archive_entry(&archive, &MODULE_INFO_CLASS_CANDIDATES)
     {
         if let Ok(info) = parse_module_info_class(&bytes) {
             return Some(ModuleCandidate {
@@ -216,7 +215,7 @@ fn module_candidate_from_module_path_entry(path: &Path) -> Option<ModuleCandidat
         }
     }
 
-    if let Some(bytes) = archive.read("META-INF/MANIFEST.MF").ok().flatten() {
+    if let Some(bytes) = read_first_matching_archive_entry(&archive, &MANIFEST_CANDIDATES) {
         if let Some(name) = automatic_module_name_from_manifest(&bytes) {
             return Some(ModuleCandidate {
                 info: empty_module_info(name),
@@ -246,28 +245,24 @@ fn is_stable_named_module(path: &Path) -> bool {
 
     let archive = Archive::new(path.to_path_buf());
 
-    let has_module_info = archive
-        .read("module-info.class")
-        .ok()
-        .flatten()
-        .or_else(|| {
-            archive
-                .read("META-INF/versions/9/module-info.class")
-                .ok()
-                .flatten()
-        })
-        .or_else(|| archive.read("classes/module-info.class").ok().flatten())
-        .is_some();
+    let has_module_info =
+        read_first_matching_archive_entry(&archive, &MODULE_INFO_CLASS_CANDIDATES).is_some();
 
     if has_module_info {
         return true;
     }
 
-    if let Some(bytes) = archive.read("META-INF/MANIFEST.MF").ok().flatten() {
+    if let Some(bytes) = read_first_matching_archive_entry(&archive, &MANIFEST_CANDIDATES) {
         return automatic_module_name_from_manifest(&bytes).is_some();
     }
 
     false
+}
+
+fn read_first_matching_archive_entry(archive: &Archive, candidates: &[&str]) -> Option<Vec<u8>> {
+    candidates
+        .iter()
+        .find_map(|candidate| archive.read(candidate).ok().flatten())
 }
 
 fn empty_module_info(name: ModuleName) -> ModuleInfo {
@@ -516,6 +511,40 @@ mod tests {
             module_candidate_from_module_path_entry(&dep_dir).expect("module candidate");
         assert_eq!(candidate.kind, ModuleCandidateKind::Explicit);
         assert_eq!(candidate.info.name.as_str(), "mod.b");
+    }
+
+    #[test]
+    fn module_candidate_detects_exploded_jmod_multi_release_module_info() {
+        let tmp = tempdir().expect("tempdir");
+        let dep_dir = tmp.path().join("exploded-jmod-mr-dep");
+        std::fs::create_dir_all(dep_dir.join("classes/META-INF/versions/9")).expect("mkdir");
+        std::fs::write(
+            dep_dir.join("classes/META-INF/versions/9/module-info.class"),
+            make_module_info_class(),
+        )
+        .expect("write module-info.class");
+
+        let candidate =
+            module_candidate_from_module_path_entry(&dep_dir).expect("module candidate");
+        assert_eq!(candidate.kind, ModuleCandidateKind::Explicit);
+        assert_eq!(candidate.info.name.as_str(), "mod.b");
+    }
+
+    #[test]
+    fn stable_named_module_detects_exploded_jmod_manifest() {
+        let tmp = tempdir().expect("tempdir");
+        let dep_dir = tmp.path().join("exploded-jmod-manifest");
+        std::fs::create_dir_all(dep_dir.join("classes/META-INF")).expect("mkdir");
+        std::fs::write(
+            dep_dir.join("classes/META-INF/MANIFEST.MF"),
+            b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n",
+        )
+        .expect("write MANIFEST.MF");
+
+        assert!(
+            is_stable_named_module(&dep_dir),
+            "expected exploded-jmod manifest to be treated as stable module"
+        );
     }
 
     #[test]
