@@ -53,7 +53,7 @@ class MockFileSystemWatcher {
 }
 
 describe('buildFileWatch', () => {
-  it('auto-reload triggers a build diagnostics refresh (debounced)', async () => {
+  it('auto-reload triggers a build diagnostics refresh (debounced) and forwards build.buildTool', async () => {
     vi.useFakeTimers();
 
     const watchers: MockFileSystemWatcher[] = [];
@@ -86,7 +86,14 @@ describe('buildFileWatch', () => {
       'vscode',
       () => ({
         workspace: {
-          getConfiguration: () => ({ get: (_key: string, defaultValue: unknown) => defaultValue }),
+          getConfiguration: () => ({
+            get: (key: string, defaultValue: unknown) => {
+              if (key === 'build.buildTool') {
+                return 'maven';
+              }
+              return defaultValue;
+            },
+          }),
           getWorkspaceFolder: () => workspaceFolder,
           createFileSystemWatcher: () => {
             const watcher = new MockFileSystemWatcher();
@@ -120,7 +127,7 @@ describe('buildFileWatch', () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith(
       'nova/reloadProject',
-      { projectRoot: '/workspace', buildTool: 'auto' },
+      { projectRoot: '/workspace', buildTool: 'maven' },
       { allowMethodFallback: true },
     );
 
@@ -129,4 +136,3 @@ describe('buildFileWatch', () => {
     vi.useRealTimers();
   });
 });
-
