@@ -937,6 +937,17 @@ impl EffectivePom {
 
             dep.group_id = resolve_placeholders(&dep.group_id, &properties);
             dep.artifact_id = resolve_placeholders(&dep.artifact_id, &properties);
+            dep.exclusions = dep
+                .exclusions
+                .iter()
+                .map(|(group_id, artifact_id)| {
+                    (
+                        resolve_placeholders(group_id, &properties),
+                        resolve_placeholders(artifact_id, &properties),
+                    )
+                })
+                .filter(|(group_id, artifact_id)| !group_id.is_empty() && !artifact_id.is_empty())
+                .collect();
             dep.scope = dep
                 .scope
                 .as_deref()
@@ -977,6 +988,21 @@ impl EffectivePom {
                 dep.type_ = managed
                     .and_then(|managed| managed.type_.as_deref())
                     .map(|v| resolve_placeholders(v, &properties));
+            }
+
+            if let Some(managed) = managed {
+                dep.optional |= managed.optional;
+                dep.exclusions.extend(managed.exclusions.iter().filter_map(
+                    |(group_id, artifact_id)| {
+                        let group_id = resolve_placeholders(group_id, &properties);
+                        let artifact_id = resolve_placeholders(artifact_id, &properties);
+                        if group_id.is_empty() || artifact_id.is_empty() {
+                            None
+                        } else {
+                            Some((group_id, artifact_id))
+                        }
+                    },
+                ));
             }
             dependencies.push(dep);
         }

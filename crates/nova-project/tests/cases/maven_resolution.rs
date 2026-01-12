@@ -429,3 +429,92 @@ fn resolves_dependency_exclusions_transitively() {
     assert!(deps.contains(&("com.example".to_string(), "dep-a".to_string())));
     assert!(!deps.contains(&("com.example".to_string(), "dep-b".to_string())));
 }
+
+#[test]
+fn resolves_dependency_management_exclusions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let workspace_root = temp.path().join("workspace");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&workspace_root).expect("create workspace dir");
+    fs::create_dir_all(&repo).expect("create repo dir");
+
+    // dependencyManagement provides exclusions for dep-a; workspace depends on dep-a without
+    // specifying exclusions inline.
+    write_file(
+        &workspace_root.join("pom.xml"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>workspace</artifactId>
+  <version>1.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>dep-a</artifactId>
+        <version>1.0</version>
+        <exclusions>
+          <exclusion>
+            <groupId>com.example</groupId>
+            <artifactId>dep-b</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-a", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-a</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-b</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-b", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-b</artifactId>
+  <version>1.0</version>
+</project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(repo.clone()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&workspace_root, &options).expect("load project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone()))
+        .collect();
+    assert!(deps.contains(&("com.example".to_string(), "dep-a".to_string())));
+    assert!(!deps.contains(&("com.example".to_string(), "dep-b".to_string())));
+}
