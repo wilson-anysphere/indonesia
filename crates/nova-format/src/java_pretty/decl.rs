@@ -225,6 +225,13 @@ impl<'a> JavaPrettyFormatter<'a> {
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
                     }
+
+                    if tok.kind() == SyntaxKind::LineComment && has_content && pending_ws.is_none() {
+                        // Ensure we don't glue `//` to the previous token when the source omits
+                        // whitespace (`int x;// comment`).
+                        parts.push(Doc::text(" "));
+                    }
+
                     let token_doc = match tok.kind() {
                         SyntaxKind::BlockComment | SyntaxKind::DocComment => {
                             let text = self
