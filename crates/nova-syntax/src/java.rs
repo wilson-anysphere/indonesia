@@ -291,6 +291,7 @@ pub mod ast {
         LocalVar(LocalVarStmt),
         Expr(ExprStmt),
         Assert(AssertStmt),
+        Yield(YieldStmt),
         Return(ReturnStmt),
         Block(Block),
         If(IfStmt),
@@ -327,6 +328,12 @@ pub mod ast {
     pub struct AssertStmt {
         pub condition: Expr,
         pub message: Option<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct YieldStmt {
+        pub expr: Option<Expr>,
         pub range: Span,
     }
 
@@ -414,6 +421,13 @@ pub mod ast {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SwitchExpr {
+        pub selector: Box<Expr>,
+        pub body: Block,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Expr {
         Name(NameExpr),
         IntLiteral(LiteralExpr),
@@ -442,6 +456,7 @@ pub mod ast {
         Assign(AssignExpr),
         Conditional(ConditionalExpr),
         Lambda(LambdaExpr),
+        Switch(SwitchExpr),
         Cast(CastExpr),
         /// A syntactically valid expression kind that we don't lower precisely yet.
         ///
@@ -483,6 +498,7 @@ pub mod ast {
                 Expr::Assign(expr) => expr.range,
                 Expr::Conditional(expr) => expr.range,
                 Expr::Lambda(expr) => expr.range,
+                Expr::Switch(expr) => expr.range,
                 Expr::Cast(expr) => expr.range,
                 Expr::Invalid { range, .. } => *range,
                 Expr::Missing(range) => *range,
@@ -1520,6 +1536,7 @@ impl Lowerer {
                 Some(ast::Stmt::LocalVar(self.lower_local_var_stmt(node)))
             }
             SyntaxKind::ExpressionStatement => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
+            SyntaxKind::YieldStatement => Some(ast::Stmt::Yield(self.lower_yield_stmt(node))),
             // Treat `this(...);` / `super(...);` as an expression statement.
             //
             // The Java grammar restricts explicit constructor invocations to constructors, but
@@ -1668,6 +1685,17 @@ impl Lowerer {
             condition,
             message,
             range,
+        }
+    }
+
+    fn lower_yield_stmt(&self, node: &SyntaxNode) -> ast::YieldStmt {
+        let expr = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr));
+        ast::YieldStmt {
+            expr,
+            range: self.spans.map_node(node),
         }
     }
 
@@ -2304,6 +2332,7 @@ impl Lowerer {
             SyntaxKind::AssignmentExpression => self.lower_assign_expr(node),
             SyntaxKind::ConditionalExpression => self.lower_conditional_expr(node),
             SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
+            SyntaxKind::SwitchExpression => self.lower_switch_expr(node),
             SyntaxKind::ArrayInitializer => self.lower_array_initializer_expr(node),
             SyntaxKind::ParenthesizedExpression => node
                 .children()
@@ -2396,6 +2425,32 @@ impl Lowerer {
             expr: Box::new(lhs),
             ty,
             range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_switch_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let range = self.spans.map_node(node);
+        let selector = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let switch_block = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::SwitchBlock);
+        let body = switch_block
+            .as_ref()
+            .map(|block| self.lower_switch_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range: Span::new(range.end, range.end),
+            });
+
+        ast::Expr::Switch(ast::SwitchExpr {
+            selector: Box::new(selector),
+            body,
+            range,
         })
     }
 
@@ -3314,6 +3369,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
         kind,
         SyntaxKind::LocalVariableDeclarationStatement
             | SyntaxKind::ExpressionStatement
+            | SyntaxKind::YieldStatement
             | SyntaxKind::ExplicitConstructorInvocation
             | SyntaxKind::AssertStatement
             | SyntaxKind::ReturnStatement
@@ -3817,5 +3873,32 @@ mod tests {
         };
         assert!(matches!(first.items.first(), Some(ast::Expr::IntLiteral(_))));
         assert!(matches!(second.items.first(), Some(ast::Expr::IntLiteral(_))));
+    }
+
+    #[test]
+    fn parse_block_lowers_switch_expression_and_yield() {
+        let text = "{ int x = switch (n) { default -> { yield 1; } }; }";
+        let block = parse_block(text, 0);
+
+        let ast::Stmt::LocalVar(local) = &block.statements[0] else {
+            panic!("expected local variable statement");
+        };
+
+        let Some(ast::Expr::Switch(switch_expr)) = &local.initializer else {
+            panic!("expected switch expression initializer");
+        };
+
+        // The switch block should preserve the rule body block and its yield statement.
+        let ast::Stmt::Block(rule_body) = &switch_expr.body.statements[0] else {
+            panic!("expected switch rule body to lower to a block statement");
+        };
+
+        assert!(
+            rule_body
+                .statements
+                .iter()
+                .any(|stmt| matches!(stmt, ast::Stmt::Yield(_))),
+            "expected rule body block to contain a yield statement"
+        );
     }
 }

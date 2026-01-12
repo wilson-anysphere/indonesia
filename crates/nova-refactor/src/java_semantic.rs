@@ -4962,6 +4962,11 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                     walk_expr(body, *expr, f);
                 }
             }
+            hir::Stmt::Yield { expr, .. } => {
+                if let Some(expr) = expr {
+                    walk_expr(body, *expr, f);
+                }
+            }
             hir::Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     walk_expr(body, *expr, f);
@@ -5114,6 +5119,14 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 hir::LambdaBody::Expr(expr) => walk_expr(body, *expr, f),
                 hir::LambdaBody::Block(stmt) => walk_stmt(body, *stmt, f),
             },
+            hir::Expr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                walk_expr(body, *selector, f);
+                walk_stmt(body, *switch_body, f);
+            }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, f);

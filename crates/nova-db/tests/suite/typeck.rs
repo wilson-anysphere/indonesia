@@ -10318,3 +10318,39 @@ class C {
         .expect("expected a type at offset");
     assert_eq!(ty, "ArrayList<String>");
 }
+
+#[test]
+fn switch_expression_type_is_lub_of_yields() {
+    let src = r#"
+class C {
+    int m(int n) {
+        return switch(n) { default -> { yield 1; } };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("switch").expect("snippet should contain switch");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn yield_outside_switch_expression_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        yield 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-yield"),
+        "expected invalid-yield diagnostic; got {diags:?}"
+    );
+}

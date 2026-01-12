@@ -232,6 +232,13 @@ impl Builder {
                 }
                 scope
             }
+            Stmt::Yield { expr, .. } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                if let Some(expr) = expr {
+                    self.visit_expr(body, *expr, scope);
+                }
+                scope
+            }
             Stmt::Return { expr, .. } => {
                 self.stmt_scopes.insert(stmt_id, scope);
                 if let Some(expr) = expr {
@@ -473,6 +480,11 @@ impl Builder {
                         let _ = self.visit_stmt(body, *stmt, lambda_scope);
                     }
                 }
+            }
+            Expr::Switch { selector, body: b, .. } => {
+                self.visit_expr(body, *selector, scope);
+                let switch_scope = self.alloc_scope(Some(scope));
+                let _ = self.visit_stmt(body, *b, switch_scope);
             }
             Expr::Invalid { children, .. } => {
                 for &child in children {

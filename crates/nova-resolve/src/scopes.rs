@@ -545,6 +545,13 @@ impl<'a> ScopeBuilder<'a> {
                 }
                 parent
             }
+            hir::Stmt::Yield { expr, .. } => {
+                self.stmt_scopes.insert((owner, stmt_id), parent);
+                if let Some(expr) = expr {
+                    self.record_expr_scopes(parent, owner, body, *expr);
+                }
+                parent
+            }
             hir::Stmt::Return { expr, .. } => {
                 self.stmt_scopes.insert((owner, stmt_id), parent);
                 if let Some(expr) = expr {
@@ -826,6 +833,16 @@ impl<'a> ScopeBuilder<'a> {
                         self.build_stmt_scopes(lambda_scope, owner, body, *stmt);
                     }
                 }
+            }
+            hir::Expr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                self.record_expr_scopes(scope, owner, body, *selector);
+
+                let switch_scope = self.alloc_block_scope(scope, owner, *switch_body);
+                self.build_stmt_scopes(switch_scope, owner, body, *switch_body);
             }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {

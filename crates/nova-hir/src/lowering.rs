@@ -1040,6 +1040,16 @@ impl<'a> BodyLower<'a> {
                     range: expr_stmt.range,
                 }))
             }
+            syntax::Stmt::Yield(yield_stmt) => {
+                let expr = yield_stmt
+                    .expr
+                    .as_ref()
+                    .map(|expr| self.lower_expr(expr));
+                Some(self.alloc_stmt(Stmt::Yield {
+                    expr,
+                    range: yield_stmt.range,
+                }))
+            }
             syntax::Stmt::Return(ret) => {
                 let expr = ret.expr.as_ref().map(|expr| self.lower_expr(expr));
                 Some(self.alloc_stmt(Stmt::Return {
@@ -1496,6 +1506,15 @@ impl<'a> BodyLower<'a> {
                     ty_range: cast.ty.range,
                     expr: inner,
                     range: cast.range,
+                })
+            }
+            syntax::Expr::Switch(switch_expr) => {
+                let selector = self.lower_expr(switch_expr.selector.as_ref());
+                let body = self.lower_block(&switch_expr.body);
+                self.alloc_expr(Expr::Switch {
+                    selector,
+                    body,
+                    range: switch_expr.range,
                 })
             }
             syntax::Expr::Invalid { children, range } => {

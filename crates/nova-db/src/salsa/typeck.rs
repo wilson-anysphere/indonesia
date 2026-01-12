@@ -17,7 +17,7 @@ use nova_syntax::{lex, unescape_char_literal, JavaLanguageLevel, SyntaxKind, Tok
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
-    CallKind, ClassDef, ClassId, ClassKind, ConstValue, ConstructorDef, Diagnostic, FieldDef,
+    lub, CallKind, ClassDef, ClassId, ClassKind, ConstValue, ConstructorDef, Diagnostic, FieldDef,
     MethodCall, MethodCandidateFailureReason, MethodDef, MethodNotFound, MethodResolution,
     PrimitiveType, ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef, TypeProvider,
     TypeStore, TypeVarId, TypeWarning, UncheckedReason, WildcardBound,
@@ -1094,7 +1094,10 @@ fn type_of_expr_demand_result(
                             update_inference_root(*expr, None);
                         }
                     }
-                    HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
+                    HirStmt::Yield { .. }
+                    | HirStmt::Break { .. }
+                    | HirStmt::Continue { .. }
+                    | HirStmt::Empty { .. } => {}
                 }
             }
         }
@@ -1646,6 +1649,15 @@ fn resolve_method_call_demand(
                         visit_stmt(body, *stmt_id, Some(expr), parent_expr, visited_expr);
                     }
                 },
+                HirExpr::Switch {
+                    selector,
+                    body: switch_body,
+                    ..
+                } => {
+                    set_parent(parent_expr, *selector);
+                    visit_expr(body, *selector, parent_expr, visited_expr);
+                    visit_stmt(body, *switch_body, Some(expr), parent_expr, visited_expr);
+                }
                 HirExpr::Name { .. }
                 | HirExpr::Literal { .. }
                 | HirExpr::Null { .. }
@@ -1695,6 +1707,12 @@ fn resolve_method_call_demand(
                     set_expr_parent(parent_expr, enclosing_expr, *condition);
                     visit_expr(body, *condition, parent_expr, visited_expr);
                     if let Some(expr) = message {
+                        set_expr_parent(parent_expr, enclosing_expr, *expr);
+                        visit_expr(body, *expr, parent_expr, visited_expr);
+                    }
+                }
+                HirStmt::Yield { expr, .. } => {
+                    if let Some(expr) = expr {
                         set_expr_parent(parent_expr, enclosing_expr, *expr);
                         visit_expr(body, *expr, parent_expr, visited_expr);
                     }
@@ -1905,6 +1923,7 @@ fn resolve_method_call_demand(
                 | HirStmt::Let { .. }
                 | HirStmt::Expr { .. }
                 | HirStmt::Assert { .. }
+                | HirStmt::Yield { .. }
                 | HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
@@ -3621,6 +3640,7 @@ struct BodyChecker<'a, 'idx> {
     expr_scopes: ArcEq<ExprScopes>,
     type_vars: HashMap<String, TypeVarId>,
     expected_return: Type,
+    current_expected_return: Type,
     local_types: Vec<Type>,
     local_ty_states: Vec<LocalTyState>,
     local_is_catch_param: Vec<bool>,
@@ -3635,10 +3655,29 @@ struct BodyChecker<'a, 'idx> {
     expr_info: Vec<Option<ExprInfo>>,
     call_resolutions: Vec<Option<ResolvedMethod>>,
     diagnostics: Vec<Diagnostic>,
+    switch_yield_stack: Vec<Vec<Type>>,
     workspace_in_progress: HashSet<String>,
     workspace_loaded: HashSet<String>,
     java_level: JavaLanguageLevel,
     steps: u32,
+}
+
+struct RestoreTypeOnDrop {
+    slot: *mut Type,
+    prev: Option<Type>,
+}
+
+impl Drop for RestoreTypeOnDrop {
+    fn drop(&mut self) {
+        let Some(prev) = self.prev.take() else {
+            return;
+        };
+        // SAFETY: `slot` is created from a mutable reference to a `BodyChecker` field and the
+        // guard does not outlive that borrow. We only write back the previous value on drop.
+        unsafe {
+            *self.slot = prev;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3733,6 +3772,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             body,
             expr_scopes,
             type_vars,
+            current_expected_return: expected_return.clone(),
             expected_return,
             local_types,
             local_ty_states,
@@ -3748,6 +3788,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             expr_info,
             call_resolutions,
             diagnostics: Vec::new(),
+            switch_yield_stack: Vec::new(),
             java_level,
             workspace_in_progress: HashSet::new(),
             workspace_loaded: HashSet::new(),
@@ -3861,6 +3902,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
                 HirStmt::Let { .. }
                 | HirStmt::Expr { .. }
+                | HirStmt::Yield { .. }
                 | HirStmt::Return { .. }
                 | HirStmt::Assert { .. }
                 | HirStmt::Throw { .. }
@@ -3892,6 +3934,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             | HirStmt::Let { range, .. }
             | HirStmt::Expr { range, .. }
             | HirStmt::Assert { range, .. }
+            | HirStmt::Yield { range, .. }
             | HirStmt::Return { range, .. }
             | HirStmt::If { range, .. }
             | HirStmt::While { range, .. }
@@ -4576,6 +4619,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         expected_return: &Type,
     ) {
         self.tick();
+        let slot: *mut Type = &mut self.current_expected_return;
+        let prev =
+            std::mem::replace(&mut self.current_expected_return, expected_return.clone());
+        let _restore = RestoreTypeOnDrop {
+            slot,
+            prev: Some(prev),
+        };
         match &self.body.stmts[stmt] {
             HirStmt::Block { statements, .. } => {
                 for &stmt in statements {
@@ -4752,6 +4802,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirStmt::Expr { expr, .. } => {
+                // Heuristic: `yield` is a restricted identifier in Java, but `yield <expr>;` is
+                // only valid as a statement inside a switch *expression*. Outside of that
+                // context, the parser may recover by producing a bare `yield` name expression
+                // statement (e.g. `yield 1;` becomes `yield; 1;` with a missing semicolon).
+                //
+                // Report a dedicated diagnostic so IDE users get a clearer error than the
+                // generic `unresolved-name`.
+                if matches!(&self.body.exprs[*expr], HirExpr::Name { name, .. } if name == "yield")
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-yield",
+                        "`yield` is only valid inside a switch expression",
+                        Some(self.body.exprs[*expr].range()),
+                    ));
+                }
                 let _ = self.infer_expr(loader, *expr);
                 self.validate_statement_expression(*expr);
             }
@@ -4773,6 +4838,23 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if let Some(expr) = message {
                     let _ = self.infer_expr(loader, *expr);
                 }
+            }
+            HirStmt::Yield { expr, range } => {
+                let ty = expr
+                    .as_ref()
+                    .map(|expr| self.infer_expr(loader, *expr).ty)
+                    .unwrap_or(Type::Unknown);
+
+                let Some(yields) = self.switch_yield_stack.last_mut() else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-yield",
+                        "`yield` is only valid inside a switch expression",
+                        Some(*range),
+                    ));
+                    return;
+                };
+
+                yields.push(ty);
             }
             HirStmt::Return { expr, range } => {
                 if matches!(self.owner, DefWithBodyId::Initializer(_)) {
@@ -6410,6 +6492,38 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
+            HirExpr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                let _ = self.infer_expr(loader, *selector);
+
+                self.switch_yield_stack.push(Vec::new());
+                let expected_return = self.current_expected_return.clone();
+                self.check_stmt(loader, *switch_body, &expected_return);
+                let yields = self.switch_yield_stack.pop().unwrap_or_default();
+
+                let mut acc: Option<Type> = None;
+                for ty in yields {
+                    if ty.is_errorish() {
+                        continue;
+                    }
+                    self.ensure_type_loaded(loader, &ty);
+                    acc = Some(match acc {
+                        None => ty,
+                        Some(prev) => {
+                            self.ensure_type_loaded(loader, &prev);
+                            lub(&*loader.store, &prev, &ty)
+                        }
+                    });
+                }
+
+                ExprInfo {
+                    ty: acc.unwrap_or(Type::Unknown),
+                    is_type_ref: false,
+                }
+            }
             HirExpr::Lambda { params, body, .. } => {
                 let mut sam_return = Type::Unknown;
                 let ty = if let Some(target) = expected {
@@ -6442,6 +6556,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     Type::Unknown
                 };
 
+                let prev_expected_return = self.current_expected_return.clone();
+                self.current_expected_return = sam_return.clone();
                 match body {
                     LambdaBody::Expr(expr_id) => {
                         // Expression-bodied lambdas:
@@ -6515,6 +6631,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         self.check_stmt(loader, *stmt, &expected_return);
                     }
                 }
+                self.current_expected_return = prev_expected_return;
                 ExprInfo {
                     ty,
                     is_type_ref: false,
@@ -9944,6 +10061,7 @@ fn find_best_expr_in_stmt(
         HirStmt::Block { range, .. }
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
+        | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
@@ -9983,6 +10101,11 @@ fn find_best_expr_in_stmt(
         } => {
             find_best_expr_in_expr(body, *condition, offset, owner, best);
             if let Some(expr) = message {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
+        HirStmt::Yield { expr, .. } => {
+            if let Some(expr) = expr {
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
             }
         }
@@ -10093,6 +10216,9 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
                     .as_ref()
                     .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
         }
+        HirStmt::Yield { expr, .. } => expr
+            .as_ref()
+            .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
         HirStmt::If {
             condition,
             then_branch,
@@ -10225,6 +10351,14 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
             LambdaBody::Expr(expr) => contains_expr_in_expr(body, *expr, target),
             LambdaBody::Block(stmt) => contains_expr_in_stmt(body, *stmt, target),
         },
+        HirExpr::Switch {
+            selector,
+            body: switch_body,
+            ..
+        } => {
+            contains_expr_in_expr(body, *selector, target)
+                || contains_expr_in_stmt(body, *switch_body, target)
+        }
         HirExpr::Invalid { children, .. } => children
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
@@ -10259,6 +10393,7 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
         | HirStmt::Assert { range, .. }
+        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -10300,6 +10435,11 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
             }
         }
         HirStmt::Return { expr, .. } => {
+            if let Some(expr) = expr {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::Yield { expr, .. } => {
             if let Some(expr) = expr {
                 find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
             }
@@ -10518,6 +10658,20 @@ fn find_enclosing_call_with_arg_in_expr(
                 find_enclosing_call_with_arg_in_stmt_inner(body, *stmt, target, target_range, best);
             }
         },
+        HirExpr::Switch {
+            selector,
+            body: switch_body,
+            ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *selector, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(
+                body,
+                *switch_body,
+                target,
+                target_range,
+                best,
+            );
+        }
         HirExpr::Invalid { children, .. } => {
             for child in children {
                 find_enclosing_call_with_arg_in_expr(body, *child, target, target_range, best);
@@ -10639,6 +10793,14 @@ fn find_best_expr_in_expr(
             LambdaBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
             LambdaBody::Block(stmt) => find_best_expr_in_stmt(body, *stmt, offset, owner, best),
         },
+        HirExpr::Switch {
+            selector,
+            body: switch_body,
+            ..
+        } => {
+            find_best_expr_in_expr(body, *selector, offset, owner, best);
+            find_best_expr_in_stmt(body, *switch_body, offset, owner, best);
+        }
         HirExpr::Name { .. }
         | HirExpr::Literal { .. }
         | HirExpr::Null { .. }

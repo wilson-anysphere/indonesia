@@ -167,6 +167,10 @@ pub enum Stmt {
         expr: ExprId,
         range: Span,
     },
+    Yield {
+        expr: Option<ExprId>,
+        range: Span,
+    },
     Return {
         expr: Option<ExprId>,
         range: Span,
@@ -359,6 +363,11 @@ pub enum Expr {
         body: LambdaBody,
         range: Span,
     },
+    Switch {
+        selector: ExprId,
+        body: StmtId,
+        range: Span,
+    },
     /// An expression we don't lower precisely yet, but for which we still preserve
     /// child expressions so downstream passes can visit nested names.
     Invalid {
@@ -406,6 +415,7 @@ impl Expr {
             | Expr::Assign { range, .. }
             | Expr::Conditional { range, .. }
             | Expr::Lambda { range, .. }
+            | Expr::Switch { range, .. }
             | Expr::Invalid { range, .. }
             | Expr::Missing { range } => *range,
         }
