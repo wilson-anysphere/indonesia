@@ -48,6 +48,18 @@ fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider
         })
 }
 
+fn provider_for_server_with_privacy(
+    server: &MockServer,
+    privacy: PrivacyMode,
+) -> CloudMultiTokenCompletionProvider {
+    let cfg = http_config(server);
+    let client = Arc::new(AiClient::from_config(&cfg).unwrap());
+    CloudMultiTokenCompletionProvider::new(client)
+        .with_max_output_tokens(50)
+        .with_temperature(0.1)
+        .with_privacy_mode(privacy)
+}
+
 #[tokio::test]
 async fn sends_prompt_with_context_and_parses_raw_json() {
     let server = MockServer::start();
@@ -86,6 +98,48 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
     assert_eq!(out[0].insert_text, "filter(x -> true)");
     assert_eq!(out[0].format, MultiTokenInsertTextFormat::PlainText);
     assert!((out[0].confidence - 0.9).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
+async fn cloud_multi_token_is_disabled_when_identifier_anonymization_is_enabled() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "{\"completions\":[]}" }));
+    });
+
+    let ctx = MultiTokenCompletionContext {
+        receiver_type: Some("Stream<Person>".into()),
+        expected_type: Some("List<String>".into()),
+        surrounding_code: "people.stream().".into(),
+        available_methods: vec!["filter".into(), "getSecretToken".into(), "collect".into()],
+        importable_paths: vec!["com.example.SecretTokenProvider".into()],
+    };
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 3);
+
+    let provider = provider_for_server_with_privacy(
+        &server,
+        PrivacyMode {
+            anonymize_identifiers: true,
+            include_file_paths: false,
+            ..PrivacyMode::default()
+        },
+    );
+
+    let out = provider
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 3,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
+        .await
+        .expect("provider call succeeds");
+
+    // Privacy gate: no network calls, empty suggestions.
+    assert!(out.is_empty());
+    mock.assert_hits(0);
 }
 
 #[tokio::test]
@@ -180,12 +234,12 @@ impl LlmClient for CapturingLlm {
 }
 
 #[tokio::test]
-async fn anonymization_respects_comment_redaction_flag() {
+async fn sanitization_respects_comment_redaction_flag() {
     let llm = Arc::new(CapturingLlm::default());
 
     let provider =
         CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(PrivacyMode {
-            anonymize_identifiers: true,
+            anonymize_identifiers: false,
             include_file_paths: false,
             redaction: RedactionConfig {
                 redact_string_literals: false,

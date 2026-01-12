@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct CloudMultiTokenCompletionProvider {
@@ -81,6 +81,20 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
         Box::pin(async move {
             let max_items = request.max_items.clamp(0, 32);
             if max_items == 0 {
+                return Ok(Vec::new());
+            }
+
+            // Privacy policy: cloud multi-token completion prompts include project-specific
+            // identifier lists (available methods + importable symbols). These cannot be
+            // anonymized/reversed safely today, so refuse in this mode to avoid leaking raw
+            // identifiers when `ai.privacy.anonymize_identifiers=true` (the default in cloud
+            // mode).
+            if self.privacy.anonymize_identifiers {
+                warn!(
+                    "cloud multi-token completions are disabled when identifier anonymization is enabled \
+                     (ai.privacy.anonymize_identifiers=true). \
+                     To enable cloud multi-token completions, set ai.privacy.anonymize_identifiers=false."
+                );
                 return Ok(Vec::new());
             }
 

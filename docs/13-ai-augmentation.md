@@ -484,6 +484,28 @@ Depending on the editor integration, these may be surfaced as settings prefixed 
 
 Explain-only actions are always allowed regardless of these settings.
 
+### Cloud multi-token completion policy (method-chain suggestions)
+
+Nova's **multi-token completions** (suggesting short method chains / templates) build prompts that
+include **identifier-heavy lists** like:
+
+- `Available methods:` (often contains project-specific APIs)
+- `Importable symbols:` (fully-qualified project class names)
+
+When `ai.privacy.anonymize_identifiers=true` (the default in cloud mode), Nova **does not send**
+these prompts to a cloud model. This avoids leaking raw project identifiers through these lists.
+
+To enable cloud multi-token completions, you must **explicitly opt in** by disabling identifier
+anonymization:
+
+```toml
+[ai.privacy]
+local_only = false
+anonymize_identifiers = false # required for cloud multi-token completions
+```
+
+Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never leaves the machine.
+
 ---
 
 ### Excluding files from AI (`ai.privacy.excluded_paths`)
