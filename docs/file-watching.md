@@ -47,6 +47,14 @@ Downstream of the watcher, `nova-workspace` also uses bounded channels for its o
 watcher/driver pipeline and for the external workspace event stream returned by
 `Workspace::subscribe()`. If a subscriber does not keep up, workspace events may be dropped.
 
+In addition, `nova-workspace` may treat certain watcher conditions as a **rescan trigger** and fall
+back to a full project reload, for example:
+
+- when it receives `WatchEvent::Rescan` (backend overflow/backpressure),
+- when its own internal watcher batching pipeline overflows, and
+- when the OS watcher reports a **directory-level** operation (directory rename/move/delete), which
+  is difficult to map safely into per-file VFS operations.
+
 ## Watch paths and modes (`WatchMode`)
 
 `nova_vfs::FileWatcher` is defined in terms of watching **paths**, not just “workspace roots”.
