@@ -3244,7 +3244,7 @@ fn reload_project_and_sync(
         // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
         let gradle_snapshot_changed = changed_files
             .iter()
-            .any(|path| path.ends_with(Path::new(".nova/queries/gradle.json")));
+            .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
 
         if refresh_build {
             let cache_dir = build_cache_dir(workspace_root, query_db);
@@ -6023,11 +6023,11 @@ mod tests {
         let build_files = nova_build::collect_gradle_build_files(&root).unwrap();
         let fingerprint = nova_build::BuildFileFingerprint::from_files(&root, build_files).unwrap();
 
-        let snapshot_path = root.join(".nova").join("queries").join("gradle.json");
+        let snapshot_path = root.join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH);
         fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
 
         let snapshot_json = serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": nova_build_model::GRADLE_SNAPSHOT_SCHEMA_VERSION,
             "buildFingerprint": fingerprint.digest,
             "projects": [{
                 "path": ":",
