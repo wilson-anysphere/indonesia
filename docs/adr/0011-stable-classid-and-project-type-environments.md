@@ -89,7 +89,7 @@ Concrete shape:
   that:
   - seeds well-known JDK types (today: `TypeStore::with_minimal_jdk()`),
   - **pre-interns** class ids for a deterministic set of binary names:
-    - workspace source types (from item trees / project index),
+    - workspace/source types (from `def_map` / `workspace_def_map`),
     - types referenced from signatures and bodies (so “body-only” dependencies are stable too),
     - classpath types (from `ClasspathIndex` / `TypeProvider` as available),
     - and optionally the JDK index.
