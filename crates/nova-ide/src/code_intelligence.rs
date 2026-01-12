@@ -6002,48 +6002,60 @@ pub fn semantic_tokens(db: &dyn Database, file: FileId) -> Vec<SemanticToken> {
     let text_index = TextIndex::new(text);
     let analysis = analyze(text);
 
+    // Precompute a fast lookup table for token classification. The previous
+    // implementation did repeated `.iter().any(...)` scans over each declaration
+    // collection for every identifier token, leading to O(tokens × decls)
+    // behavior on every request.
+    //
+    // NOTE: We preserve the existing precedence order:
+    // class > method > field > local var > parameter.
+    let class_idx = semantic_token_type_index(&SemanticTokenType::CLASS);
+    let method_idx = semantic_token_type_index(&SemanticTokenType::METHOD);
+    let property_idx = semantic_token_type_index(&SemanticTokenType::PROPERTY);
+    let variable_idx = semantic_token_type_index(&SemanticTokenType::VARIABLE);
+    let parameter_idx = semantic_token_type_index(&SemanticTokenType::PARAMETER);
+
+    let mut decls: HashMap<Span, (&str, u32)> = HashMap::new();
+    for c in &analysis.classes {
+        decls.entry(c.name_span).or_insert((c.name.as_str(), class_idx));
+    }
+    for m in &analysis.methods {
+        decls
+            .entry(m.name_span)
+            .or_insert((m.name.as_str(), method_idx));
+    }
+    for f in &analysis.fields {
+        decls
+            .entry(f.name_span)
+            .or_insert((f.name.as_str(), property_idx));
+    }
+    for v in &analysis.vars {
+        decls
+            .entry(v.name_span)
+            .or_insert((v.name.as_str(), variable_idx));
+    }
+    for m in &analysis.methods {
+        for p in &m.params {
+            decls
+                .entry(p.name_span)
+                .or_insert((p.name.as_str(), parameter_idx));
+        }
+    }
+
     let mut classified: Vec<(Span, u32)> = Vec::new();
     for token in &analysis.tokens {
         if token.kind != TokenKind::Ident {
             continue;
         }
 
-        let token_type = if analysis
-            .classes
-            .iter()
-            .any(|c| c.name_span == token.span && c.name == token.text)
-        {
-            SemanticTokenType::CLASS
-        } else if analysis
-            .methods
-            .iter()
-            .any(|m| m.name_span == token.span && m.name == token.text)
-        {
-            SemanticTokenType::METHOD
-        } else if analysis
-            .fields
-            .iter()
-            .any(|f| f.name_span == token.span && f.name == token.text)
-        {
-            SemanticTokenType::PROPERTY
-        } else if analysis
-            .vars
-            .iter()
-            .any(|v| v.name_span == token.span && v.name == token.text)
-        {
-            SemanticTokenType::VARIABLE
-        } else if analysis
-            .methods
-            .iter()
-            .flat_map(|m| m.params.iter())
-            .any(|p| p.name_span == token.span && p.name == token.text)
-        {
-            SemanticTokenType::PARAMETER
-        } else {
+        let Some((name, token_type)) = decls.get(&token.span) else {
             continue;
         };
-
-        classified.push((token.span, semantic_token_type_index(&token_type)));
+        // Preserve the previous implementation's additional name check.
+        if token.text != *name {
+            continue;
+        }
+        classified.push((token.span, *token_type));
     }
 
     classified.sort_by_key(|(span, _)| span.start);
@@ -6578,9 +6590,48 @@ fn is_ident_continue(ch: char) -> bool {
 }
 
 fn token_at_offset(tokens: &[Token], offset: usize) -> Option<&Token> {
-    tokens
-        .iter()
-        .find(|t| t.span.start <= offset && offset <= t.span.end)
+    // Tokens are produced in source order with monotonically increasing
+    // `span.start` (and `span.end`). Use binary search to avoid O(n) scans on
+    // every hover/completion/navigation request.
+    //
+    // Boundary semantics are intentionally inclusive (`offset <= span.end`) to
+    // match legacy behavior. This means an offset at the boundary between two
+    // adjacent tokens can match both; we must return the *left* token (the first
+    // match), consistent with the previous `.iter().find(...)` implementation.
+    if tokens.is_empty() {
+        return None;
+    }
+
+    // Find the insertion point for the first token whose start is > offset.
+    // This yields the last token with start <= offset, which is the most likely
+    // candidate.
+    let mut lo = 0usize;
+    let mut hi = tokens.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if tokens[mid].span.start <= offset {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    let idx = lo;
+
+    // Candidate token is the one that starts at or before `offset`.
+    let cand_idx = idx.saturating_sub(1);
+    let cand = tokens.get(cand_idx)?;
+
+    // If the cursor is exactly at the start of `cand`, the previous token may
+    // still match due to the inclusive-end rule. Prefer the previous token to
+    // preserve left-biased boundary behavior.
+    if cand.span.start == offset && cand_idx > 0 {
+        let prev = &tokens[cand_idx - 1];
+        if prev.span.start <= offset && offset <= prev.span.end {
+            return Some(prev);
+        }
+    }
+
+    (cand.span.start <= offset && offset <= cand.span.end).then_some(cand)
 }
 
 fn find_matching_paren(tokens: &[Token], open_idx: usize) -> Option<(usize, usize)> {
@@ -6881,4 +6932,92 @@ pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
         }
     }
     text[start..end].trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_tokens_classifies_decls_and_is_sorted() {
+        let java = r#"
+class Foo {
+  int field;
+
+  void method(int param) {
+    int local = 1;
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let tokens = semantic_tokens(&db, file);
+        assert!(!tokens.is_empty(), "expected at least one semantic token");
+
+        let class_idx = semantic_token_type_index(&SemanticTokenType::CLASS);
+        let method_idx = semantic_token_type_index(&SemanticTokenType::METHOD);
+        let property_idx = semantic_token_type_index(&SemanticTokenType::PROPERTY);
+        let variable_idx = semantic_token_type_index(&SemanticTokenType::VARIABLE);
+        let parameter_idx = semantic_token_type_index(&SemanticTokenType::PARAMETER);
+
+        let mut seen_class = false;
+        let mut seen_method = false;
+        let mut seen_property = false;
+        let mut seen_variable = false;
+        let mut seen_parameter = false;
+
+        // Decode the relative (delta) stream to absolute positions and ensure it
+        // is monotonically increasing.
+        let mut abs_line: u32 = 0;
+        let mut abs_col: u32 = 0;
+        let mut prev_pos: Option<(u32, u32)> = None;
+
+        for tok in &tokens {
+            abs_line += tok.delta_line;
+            if tok.delta_line == 0 {
+                abs_col += tok.delta_start;
+            } else {
+                abs_col = tok.delta_start;
+            }
+
+            let pos = (abs_line, abs_col);
+            if let Some(prev) = prev_pos {
+                assert!(
+                    pos > prev,
+                    "semantic token stream must be strictly increasing: prev={prev:?} pos={pos:?}"
+                );
+            }
+            prev_pos = Some(pos);
+
+            match tok.token_type {
+                t if t == class_idx => seen_class = true,
+                t if t == method_idx => seen_method = true,
+                t if t == property_idx => seen_property = true,
+                t if t == variable_idx => seen_variable = true,
+                t if t == parameter_idx => seen_parameter = true,
+                _ => {}
+            }
+        }
+
+        assert!(seen_class, "expected at least one CLASS semantic token");
+        assert!(seen_method, "expected at least one METHOD semantic token");
+        assert!(seen_property, "expected at least one PROPERTY semantic token");
+        assert!(seen_variable, "expected at least one VARIABLE semantic token");
+        assert!(seen_parameter, "expected at least one PARAMETER semantic token");
+    }
+
+    #[test]
+    fn token_at_offset_is_left_biased_on_boundaries() {
+        // `foo` ends at offset 3 and `(` starts at offset 3.
+        let tokens = tokenize("foo(");
+        let t = token_at_offset(&tokens, 3).expect("token at offset");
+        assert_eq!(t.text, "foo");
+
+        // Still inside the paren token (inclusive end).
+        let t = token_at_offset(&tokens, 4).expect("token at offset");
+        assert_eq!(t.text, "(");
+    }
 }
