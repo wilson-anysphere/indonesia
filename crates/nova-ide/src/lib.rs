@@ -81,6 +81,7 @@ mod nav_core;
 mod navigation;
 mod nav_resolve;
 mod parse;
+mod workspace_hierarchy;
 mod text;
 
 pub use crate::db::{Database, DatabaseSnapshot};

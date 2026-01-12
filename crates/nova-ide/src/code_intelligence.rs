@@ -468,6 +468,7 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         let salsa = SalsaDatabase::new();
         salsa.set_jdk_index(project, jdk);
         salsa.set_classpath_index(project, None);
+        salsa.set_project_files(project, Arc::new(vec![file]));
         salsa.set_file_text(file, text.to_string());
         // `nova-db` type checking consults the workspace definition map, which in turn
         // requires a minimal project file list + relative path for determinism.
@@ -557,6 +558,7 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         let salsa = SalsaDatabase::new();
         salsa.set_jdk_index(project, jdk);
         salsa.set_classpath_index(project, None);
+        salsa.set_project_files(project, Arc::new(vec![file]));
         salsa.set_file_text(file, text.to_string());
         salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
         salsa.set_project_files(project, Arc::new(vec![file]));
@@ -3017,44 +3019,194 @@ pub fn call_hierarchy_outgoing_calls(
 ) -> Vec<CallHierarchyOutgoingCall> {
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
-    let analysis = analyze(text);
     let uri = file_uri(db, file);
 
+    // 1) Same-file, no-receiver calls (`bar()`), preserving the original behavior.
+    let analysis = analyze(text);
     let Some(owner) = analysis.methods.iter().find(|m| m.name == method_name) else {
         return Vec::new();
     };
 
-    let mut spans_by_target: HashMap<String, Vec<Span>> = HashMap::new();
+    let mut outgoing: Vec<CallHierarchyOutgoingCall> = Vec::new();
+
+    let mut spans_by_local_target: HashMap<String, Vec<Span>> = HashMap::new();
     for call in analysis
         .calls
         .iter()
-        .filter(|c| span_within(c.name_span, owner.body_span))
+        .filter(|c| c.receiver.is_none() && span_within(c.name_span, owner.body_span))
     {
         if analysis.methods.iter().any(|m| m.name == call.name) {
-            spans_by_target
+            spans_by_local_target
                 .entry(call.name.clone())
                 .or_default()
                 .push(call.name_span);
         }
     }
 
-    let mut targets: Vec<_> = spans_by_target.into_iter().collect();
-    targets.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut local_targets: Vec<_> = spans_by_local_target.into_iter().collect();
+    local_targets.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (target_name, mut spans) in local_targets {
+        let Some(target) = analysis.methods.iter().find(|m| m.name == target_name) else {
+            continue;
+        };
+        spans.sort_by_key(|s| s.start);
+        outgoing.push(CallHierarchyOutgoingCall {
+            to: call_hierarchy_item(&uri, &text_index, target),
+            from_ranges: spans
+                .into_iter()
+                .map(|span| text_index.span_to_lsp_range(span))
+                .collect(),
+        });
+    }
 
-    targets
-        .into_iter()
-        .filter_map(|(target_name, mut spans)| {
-            let target = analysis.methods.iter().find(|m| m.name == target_name)?;
-            spans.sort_by_key(|s| s.start);
-            Some(CallHierarchyOutgoingCall {
-                to: call_hierarchy_item(&uri, &text_index, target),
-                from_ranges: spans
-                    .into_iter()
-                    .map(|span| text_index.span_to_lsp_range(span))
-                    .collect(),
+    // 2) Workspace-aware resolution for receiver calls (`a.bar()`).
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+    let Some(parsed) = index.file(file) else {
+        outgoing.sort_by(|a, b| {
+            a.to.name
+                .cmp(&b.to.name)
+                .then_with(|| a.to.uri.to_string().cmp(&b.to.uri.to_string()))
+        });
+        return outgoing;
+    };
+
+    let Some((owner_type, owner_method)) = parsed_method_by_name(parsed, method_name) else {
+        outgoing.sort_by(|a, b| {
+            a.to.name
+                .cmp(&b.to.name)
+                .then_with(|| a.to.uri.to_string().cmp(&b.to.uri.to_string()))
+        });
+        return outgoing;
+    };
+
+    let Some(owner_body) = owner_method.body_span else {
+        outgoing.sort_by(|a, b| {
+            a.to.name
+                .cmp(&b.to.name)
+                .then_with(|| a.to.uri.to_string().cmp(&b.to.uri.to_string()))
+        });
+        return outgoing;
+    };
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct TargetKey {
+        file_id: FileId,
+        name_span: Span,
+    }
+
+    let mut resolved: HashMap<TargetKey, (crate::workspace_hierarchy::MethodInfo, Vec<Span>)> =
+        HashMap::new();
+
+    for call in parsed
+        .calls
+        .iter()
+        .filter(|c| span_within(c.method_span, owner_body))
+    {
+        let Some(receiver_ty) =
+            resolve_receiver_type_for_call(&index, owner_type, owner_method, call)
+        else {
+            continue;
+        };
+
+        let Some(target) = index.resolve_method_definition(&receiver_ty, &call.method) else {
+            continue;
+        };
+
+        resolved
+            .entry(TargetKey {
+                file_id: target.file_id,
+                name_span: target.name_span,
             })
-        })
-        .collect()
+            .and_modify(|(_, spans)| spans.push(call.method_span))
+            .or_insert_with(|| (target, vec![call.method_span]));
+    }
+
+    let mut resolved_targets: Vec<_> = resolved.into_values().collect();
+    resolved_targets.sort_by(|(a, _), (b, _)| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.uri.to_string().cmp(&b.uri.to_string()))
+            .then(a.name_span.start.cmp(&b.name_span.start))
+    });
+
+    for (target, mut spans) in resolved_targets {
+        let Some(target_file) = index.file(target.file_id) else {
+            continue;
+        };
+        let target_text_index = TextIndex::new(&target_file.text);
+        spans.sort_by_key(|s| s.start);
+
+        outgoing.push(CallHierarchyOutgoingCall {
+            to: call_hierarchy_item_from_parsed_method(
+                &target.uri,
+                &target_text_index,
+                &target.name,
+                target.name_span,
+                target.body_span,
+            ),
+            from_ranges: spans
+                .into_iter()
+                .map(|span| text_index.span_to_lsp_range(span))
+                .collect(),
+        });
+    }
+
+    // Deduplicate targets that can be discovered via both the local (analysis) and
+    // workspace (parse-based) paths, e.g. receiverless calls (`bar()`) that
+    // `parse.rs` records as `this.bar()`.
+    outgoing.sort_by(|a, b| {
+        (
+            a.to.uri.to_string(),
+            a.to.name.clone(),
+            a.to.selection_range.start.line,
+            a.to.selection_range.start.character,
+            a.to.selection_range.end.line,
+            a.to.selection_range.end.character,
+        )
+            .cmp(&(
+                b.to.uri.to_string(),
+                b.to.name.clone(),
+                b.to.selection_range.start.line,
+                b.to.selection_range.start.character,
+                b.to.selection_range.end.line,
+                b.to.selection_range.end.character,
+            ))
+    });
+
+    let mut deduped: Vec<CallHierarchyOutgoingCall> = Vec::new();
+    for mut call in outgoing {
+        let Some(prev) = deduped.last_mut() else {
+            deduped.push(call);
+            continue;
+        };
+
+        let same_target = prev.to.uri == call.to.uri
+            && prev.to.name == call.to.name
+            && prev.to.selection_range == call.to.selection_range;
+
+        if !same_target {
+            deduped.push(call);
+            continue;
+        }
+
+        if prev.to.detail.is_none() && call.to.detail.is_some() {
+            prev.to = call.to;
+        }
+
+        prev.from_ranges.append(&mut call.from_ranges);
+        prev.from_ranges.sort_by(|a, b| {
+            (a.start.line, a.start.character, a.end.line, a.end.character).cmp(&(
+                b.start.line,
+                b.start.character,
+                b.end.line,
+                b.end.character,
+            ))
+        });
+        prev.from_ranges
+            .dedup_by(|a, b| a.start == b.start && a.end == b.end);
+    }
+
+    deduped
 }
 
 pub fn call_hierarchy_incoming_calls(
@@ -3062,45 +3214,160 @@ pub fn call_hierarchy_incoming_calls(
     file: FileId,
     method_name: &str,
 ) -> Vec<CallHierarchyIncomingCall> {
-    let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let analysis = analyze(text);
-    let uri = file_uri(db, file);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
 
-    let mut spans_by_caller: HashMap<Span, (MethodDecl, Vec<Span>)> = HashMap::new();
+    // Resolve the target method's definition (file + name span).
+    let Some(target_parsed) = index.file(file) else {
+        return Vec::new();
+    };
 
-    for call in analysis.calls.iter().filter(|c| c.name == method_name) {
-        let Some(caller) = analysis
-            .methods
-            .iter()
-            .find(|m| span_within(call.name_span, m.body_span))
+    let target_name_span = target_parsed
+        .types
+        .iter()
+        .find_map(|ty| ty.methods.iter().find(|m| m.name == method_name))
+        .map(|m| m.name_span);
+    let Some(target_name_span) = target_name_span else {
+        return Vec::new();
+    };
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct CallerKey {
+        file_id: FileId,
+        name_span: Span,
+    }
+
+    #[derive(Clone, Debug)]
+    struct CallerMethod {
+        file_id: FileId,
+        uri: lsp_types::Uri,
+        name: String,
+        name_span: Span,
+        body_span: Option<Span>,
+    }
+
+    let mut spans_by_caller: HashMap<CallerKey, (CallerMethod, Vec<Span>)> = HashMap::new();
+
+    for &caller_file_id in index.file_ids() {
+        let Some(parsed) = index.file(caller_file_id) else {
+            continue;
+        };
+
+        for call in &parsed.calls {
+            // Identify the caller method so we can resolve locals/fields and group results.
+            let Some((caller_type, caller_method)) =
+                parsed_method_containing_span(parsed, call.method_span)
+            else {
+                continue;
+            };
+
+            let Some(receiver_ty) =
+                resolve_receiver_type_for_call(&index, caller_type, caller_method, call)
+            else {
+                continue;
+            };
+
+            let Some(resolved) = index.resolve_method_definition(&receiver_ty, &call.method) else {
+                continue;
+            };
+
+            if resolved.file_id != file || resolved.name_span != target_name_span {
+                continue;
+            }
+
+            spans_by_caller
+                .entry(CallerKey {
+                    file_id: caller_file_id,
+                    name_span: caller_method.name_span,
+                })
+                .and_modify(|(_, spans)| spans.push(call.method_span))
+                .or_insert_with(|| {
+                    (
+                        CallerMethod {
+                            file_id: caller_file_id,
+                            uri: parsed.uri.clone(),
+                            name: caller_method.name.clone(),
+                            name_span: caller_method.name_span,
+                            body_span: caller_method.body_span,
+                        },
+                        vec![call.method_span],
+                    )
+                });
+        }
+    }
+
+    // Best-effort support for bare calls (`bar()`) when the call site is in the
+    // same file as the target method definition.
+    let analysis = analyze(&target_parsed.text);
+    for call in analysis
+        .calls
+        .iter()
+        .filter(|c| c.receiver.is_none() && c.name == method_name)
+    {
+        let Some((_caller_type, caller_method)) =
+            parsed_method_containing_span(target_parsed, call.name_span)
         else {
             continue;
         };
 
         spans_by_caller
-            .entry(caller.name_span)
+            .entry(CallerKey {
+                file_id: file,
+                name_span: caller_method.name_span,
+            })
             .and_modify(|(_, spans)| spans.push(call.name_span))
-            .or_insert_with(|| (caller.clone(), vec![call.name_span]));
+            .or_insert_with(|| {
+                (
+                    CallerMethod {
+                        file_id: file,
+                        uri: target_parsed.uri.clone(),
+                        name: caller_method.name.clone(),
+                        name_span: caller_method.name_span,
+                        body_span: caller_method.body_span,
+                    },
+                    vec![call.name_span],
+                )
+            });
     }
 
     let mut callers: Vec<_> = spans_by_caller.into_values().collect();
-    callers.sort_by_key(|(method, _)| method.name_span.start);
+    callers.sort_by(|(a, _), (b, _)| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.uri.to_string().cmp(&b.uri.to_string()))
+    });
 
-    callers
-        .into_iter()
-        .map(|(method, mut spans)| {
-            spans.sort_by_key(|s| s.start);
-            CallHierarchyIncomingCall {
-                from: call_hierarchy_item(&uri, &text_index, &method),
-                from_ranges: spans
-                    .into_iter()
-                    .map(|span| text_index.span_to_lsp_range(span))
-                    .collect(),
-            }
-        })
-        .collect()
+    let mut incoming = Vec::new();
+    for (caller, mut spans) in callers {
+        let Some(caller_parsed) = index.file(caller.file_id) else {
+            continue;
+        };
+        let caller_text_index = TextIndex::new(&caller_parsed.text);
+        spans.sort_by_key(|s| s.start);
+        incoming.push(CallHierarchyIncomingCall {
+            from: call_hierarchy_item_from_parsed_method(
+                &caller.uri,
+                &caller_text_index,
+                &caller.name,
+                caller.name_span,
+                caller.body_span,
+            ),
+            from_ranges: spans
+                .into_iter()
+                .map(|span| caller_text_index.span_to_lsp_range(span))
+                .collect(),
+        });
+    }
+
+    // Keep output stable.
+    incoming.sort_by(|a, b| {
+        a.from
+            .name
+            .cmp(&b.from.name)
+            .then_with(|| a.from.uri.to_string().cmp(&b.from.uri.to_string()))
+    });
+    incoming
 }
+
 fn call_hierarchy_item(
     uri: &lsp_types::Uri,
     text_index: &TextIndex<'_>,
@@ -3118,6 +3385,115 @@ fn call_hierarchy_item(
     }
 }
 
+fn call_hierarchy_item_from_parsed_method(
+    uri: &lsp_types::Uri,
+    text_index: &TextIndex<'_>,
+    name: &str,
+    name_span: Span,
+    body_span: Option<Span>,
+) -> CallHierarchyItem {
+    let range_span = body_span.unwrap_or(name_span);
+    CallHierarchyItem {
+        name: name.to_string(),
+        kind: SymbolKind::METHOD,
+        tags: None,
+        detail: None,
+        uri: uri.clone(),
+        range: text_index.span_to_lsp_range(range_span),
+        selection_range: text_index.span_to_lsp_range(name_span),
+        data: None,
+    }
+}
+
+fn parsed_method_by_name<'a>(
+    parsed: &'a crate::parse::ParsedFile,
+    method_name: &str,
+) -> Option<(&'a crate::parse::TypeDef, &'a crate::parse::MethodDef)> {
+    for ty in &parsed.types {
+        for method in &ty.methods {
+            if method.name == method_name {
+                return Some((ty, method));
+            }
+        }
+    }
+    None
+}
+
+fn parsed_method_containing_span<'a>(
+    parsed: &'a crate::parse::ParsedFile,
+    span: Span,
+) -> Option<(&'a crate::parse::TypeDef, &'a crate::parse::MethodDef)> {
+    for ty in &parsed.types {
+        for method in &ty.methods {
+            let Some(body) = method.body_span else {
+                continue;
+            };
+            if span_within(span, body) {
+                return Some((ty, method));
+            }
+        }
+    }
+    None
+}
+
+fn resolve_receiver_type_for_call(
+    index: &crate::workspace_hierarchy::WorkspaceHierarchyIndex,
+    containing_type: &crate::parse::TypeDef,
+    containing_method: &crate::parse::MethodDef,
+    call: &crate::parse::CallSite,
+) -> Option<String> {
+    match call.receiver.as_str() {
+        "this" => Some(containing_type.name.clone()),
+        "super" => containing_type.super_class.clone(),
+        receiver => {
+            if let Some(local) = containing_method.locals.iter().find(|v| v.name == receiver) {
+                return Some(local.ty.clone());
+            }
+            if let Some(field) = containing_type.fields.iter().find(|f| f.name == receiver) {
+                return Some(field.ty.clone());
+            }
+            // Best-effort: treat the receiver as a type name for static calls (`A.foo()`).
+            if index.type_info(receiver).is_some() {
+                return Some(receiver.to_string());
+            }
+            None
+        }
+    }
+}
+
+fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)> {
+    if offset > text.len() {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut start = offset;
+    while start > 0 {
+        let ch = bytes[start - 1] as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut end = offset;
+    while end < bytes.len() {
+        let ch = bytes[end] as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+
+    if start == end {
+        return None;
+    }
+
+    Some((text[start..end].to_string(), Span::new(start, end)))
+}
+
 pub fn prepare_type_hierarchy(
     db: &dyn Database,
     file: FileId,
@@ -3126,15 +3502,32 @@ pub fn prepare_type_hierarchy(
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
     let offset = text_index.position_to_offset(position)?;
-    let analysis = analyze(text);
-    let uri = file_uri(db, file);
 
-    let class = analysis
-        .classes
-        .iter()
-        .find(|c| span_contains(c.name_span, offset))?;
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
 
-    Some(vec![type_hierarchy_item(&uri, &text_index, class)])
+    // Prefer type declarations at the cursor.
+    let mut type_name: Option<String> = None;
+    if let Some(parsed) = index.file(file) {
+        if let Some(ty) = parsed.types.iter().find(|ty| span_contains(ty.name_span, offset)) {
+            type_name = Some(ty.name.clone());
+        }
+    }
+
+    // Otherwise, accept type usages (`Foo x`) if we can resolve the identifier as a workspace type.
+    if type_name.is_none() {
+        if let Some((ident, _span)) = identifier_at(text, offset) {
+            if index.type_info(&ident).is_some() {
+                type_name = Some(ident);
+            }
+        }
+    }
+
+    let type_name = type_name?;
+    let info = index.type_info(&type_name)?;
+    let def_file = index.file(info.file_id)?;
+    let def_text_index = TextIndex::new(&def_file.text);
+
+    Some(vec![type_hierarchy_item(&info.uri, &def_text_index, &info.def)])
 }
 
 pub fn type_hierarchy_supertypes(
@@ -3142,24 +3535,23 @@ pub fn type_hierarchy_supertypes(
     file: FileId,
     class_name: &str,
 ) -> Vec<TypeHierarchyItem> {
-    let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let analysis = analyze(text);
-    let uri = file_uri(db, file);
+    let _ = file; // Workspace-scoped.
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
 
-    let Some(class) = analysis.classes.iter().find(|c| c.name == class_name) else {
-        return Vec::new();
-    };
+    let mut out = Vec::new();
+    for super_name in index.resolve_super_types(class_name) {
+        let Some(info) = index.type_info(&super_name) else {
+            continue;
+        };
+        let Some(def_file) = index.file(info.file_id) else {
+            continue;
+        };
+        let def_text_index = TextIndex::new(&def_file.text);
+        out.push(type_hierarchy_item(&info.uri, &def_text_index, &info.def));
+    }
 
-    let Some(super_name) = class.extends.as_deref() else {
-        return Vec::new();
-    };
-
-    let Some(super_decl) = analysis.classes.iter().find(|c| c.name == super_name) else {
-        return Vec::new();
-    };
-
-    vec![type_hierarchy_item(&uri, &text_index, super_decl)]
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.uri.to_string().cmp(&b.uri.to_string())));
+    out
 }
 
 pub fn type_hierarchy_subtypes(
@@ -3167,32 +3559,56 @@ pub fn type_hierarchy_subtypes(
     file: FileId,
     class_name: &str,
 ) -> Vec<TypeHierarchyItem> {
-    let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let analysis = analyze(text);
-    let uri = file_uri(db, file);
+    let _ = file; // Workspace-scoped.
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
 
-    analysis
-        .classes
-        .iter()
-        .filter(|c| c.extends.as_deref() == Some(class_name))
-        .map(|c| type_hierarchy_item(&uri, &text_index, c))
-        .collect()
+    let mut out = Vec::new();
+    for subtype in index.resolve_sub_types(class_name) {
+        let Some(info) = index.type_info(&subtype) else {
+            continue;
+        };
+        let Some(def_file) = index.file(info.file_id) else {
+            continue;
+        };
+        let def_text_index = TextIndex::new(&def_file.text);
+        out.push(type_hierarchy_item(&info.uri, &def_text_index, &info.def));
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.uri.to_string().cmp(&b.uri.to_string())));
+    out
 }
 
 fn type_hierarchy_item(
     uri: &lsp_types::Uri,
     text_index: &TextIndex<'_>,
-    class: &ClassDecl,
+    ty: &crate::parse::TypeDef,
 ) -> TypeHierarchyItem {
+    let kind = match ty.kind {
+        crate::parse::TypeKind::Class => SymbolKind::CLASS,
+        crate::parse::TypeKind::Interface => SymbolKind::INTERFACE,
+    };
+
+    let mut detail_parts = Vec::new();
+    if let Some(super_class) = ty.super_class.as_ref() {
+        detail_parts.push(format!("extends {super_class}"));
+    }
+    if !ty.interfaces.is_empty() {
+        detail_parts.push(format!("implements {}", ty.interfaces.join(", ")));
+    }
+    let detail = if detail_parts.is_empty() {
+        None
+    } else {
+        Some(detail_parts.join(" "))
+    };
+
     TypeHierarchyItem {
-        name: class.name.clone(),
-        kind: SymbolKind::CLASS,
+        name: ty.name.clone(),
+        kind,
         tags: None,
-        detail: class.extends.as_ref().map(|s| format!("extends {s}")),
+        detail,
         uri: uri.clone(),
-        range: text_index.span_to_lsp_range(class.span),
-        selection_range: text_index.span_to_lsp_range(class.name_span),
+        range: text_index.span_to_lsp_range(ty.body_span),
+        selection_range: text_index.span_to_lsp_range(ty.name_span),
         data: None,
     }
 }
@@ -3307,6 +3723,7 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     let salsa = SalsaDatabase::new();
     salsa.set_jdk_index(project, jdk);
     salsa.set_classpath_index(project, None);
+    salsa.set_project_files(project, Arc::new(vec![file]));
     salsa.set_file_text(file, text.to_string());
     salsa.set_file_rel_path(file, Arc::new(format!("file_{}.java", file.to_raw())));
     salsa.set_project_files(project, Arc::new(vec![file]));
