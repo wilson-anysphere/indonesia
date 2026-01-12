@@ -1185,6 +1185,25 @@ class A {
 }
 
 #[test]
+fn completion_falls_back_when_member_receiver_type_is_unknown() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    this.missing.n<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items.is_empty(),
+        "expected completion list to be non-empty even when member receiver type can't be inferred; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_in_import_offers_package_segment_and_replaces_only_segment() {
     let (db, file, pos) = fixture(
         r#"

@@ -2385,7 +2385,9 @@ pub(crate) fn core_completions(
             let ranking_ctx = CompletionRankingContext::default();
             rank_completions(&prefix, &mut items, &ranking_ctx);
         }
-        if !items.is_empty() || (!prefix.is_empty() && !receiver.is_empty()) {
+        // Best-effort error recovery: if we can't produce any member/postfix completions, fall back
+        // to general completion rather than returning an empty list.
+        if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
@@ -2750,7 +2752,9 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let ranking_ctx = CompletionRankingContext::default();
             rank_completions(&prefix, &mut items, &ranking_ctx);
         }
-        if !items.is_empty() || (!prefix.is_empty() && !receiver.is_empty()) {
+        // Best-effort error recovery: if we can't produce any member/postfix completions, fall back
+        // to general completion rather than returning an empty list.
+        if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
