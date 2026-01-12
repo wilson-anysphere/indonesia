@@ -737,6 +737,38 @@ fn owning_targets_cache_is_not_cleared_by_invalidate_changed_files_on_source_edi
 }
 
 #[test]
+fn owning_targets_are_cached_per_file_in_run_target_closure() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+    let run_target = "//app:run";
+
+    let runner = QueryRunner::new([(
+        format!("rdeps(deps({run_target}), ({file_label}), 1)"),
+        MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+    )]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners1 = workspace
+        .java_owning_targets_for_file_in_run_target_closure(&file, run_target)
+        .unwrap();
+    let owners2 = workspace
+        .java_owning_targets_for_file_in_run_target_closure(&file, run_target)
+        .unwrap();
+    assert_eq!(owners1, vec!["//java:hello_lib".to_string()]);
+    assert_eq!(owners2, owners1);
+
+    assert_eq!(
+        runner.calls(),
+        vec![vec![
+            "query".to_string(),
+            format!("rdeps(deps({run_target}), ({file_label}), 1)"),
+            "--output=label_kind".to_string()
+        ]]
+    );
+}
+
+#[test]
 fn root_package_owner_resolution_uses_root_file_label() {
     let dir = tempdir().unwrap();
     let file = minimal_root_package(dir.path());
