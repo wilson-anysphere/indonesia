@@ -486,6 +486,14 @@ fn gradle_collection_skips_node_modules_and_bazel_output_trees() {
     let bazel_out_gradle = root.join("bazel-out").join("build.gradle");
     std::fs::write(&bazel_out_gradle, "ext.foo = 1\n").unwrap();
 
+    std::fs::create_dir_all(root.join("bazel-bin")).unwrap();
+    let bazel_bin_gradle = root.join("bazel-bin").join("build.gradle");
+    std::fs::write(&bazel_bin_gradle, "ext.foo = 1\n").unwrap();
+
+    std::fs::create_dir_all(root.join("bazel-testlogs")).unwrap();
+    let bazel_testlogs_gradle = root.join("bazel-testlogs").join("build.gradle");
+    std::fs::write(&bazel_testlogs_gradle, "ext.foo = 1\n").unwrap();
+
     std::fs::create_dir_all(root.join("bazel-myworkspace")).unwrap();
     let bazel_workspace_gradle = root.join("bazel-myworkspace").join("build.gradle");
     std::fs::write(&bazel_workspace_gradle, "ext.foo = 1\n").unwrap();
@@ -503,6 +511,8 @@ fn gradle_collection_skips_node_modules_and_bazel_output_trees() {
     std::fs::write(&node_modules_gradle, "ext.foo = 2\n").unwrap();
     std::fs::write(&nested_node_modules_gradle, "ext.foo = 2\n").unwrap();
     std::fs::write(&bazel_out_gradle, "ext.foo = 2\n").unwrap();
+    std::fs::write(&bazel_bin_gradle, "ext.foo = 2\n").unwrap();
+    std::fs::write(&bazel_testlogs_gradle, "ext.foo = 2\n").unwrap();
     std::fs::write(&bazel_workspace_gradle, "ext.foo = 2\n").unwrap();
 
     let fp2 =
@@ -552,6 +562,22 @@ fn maven_collection_skips_node_modules_and_bazel_output_trees() {
     )
     .unwrap();
 
+    std::fs::create_dir_all(root.join("bazel-bin")).unwrap();
+    let bazel_bin_pom = root.join("bazel-bin").join("pom.xml");
+    std::fs::write(
+        &bazel_bin_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel bin--></project>",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(root.join("bazel-testlogs")).unwrap();
+    let bazel_testlogs_pom = root.join("bazel-testlogs").join("pom.xml");
+    std::fs::write(
+        &bazel_testlogs_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel testlogs--></project>",
+    )
+    .unwrap();
+
     std::fs::create_dir_all(root.join("bazel-myworkspace")).unwrap();
     let bazel_workspace_pom = root.join("bazel-myworkspace").join("pom.xml");
     std::fs::write(
@@ -583,6 +609,16 @@ fn maven_collection_skips_node_modules_and_bazel_output_trees() {
     std::fs::write(
         &bazel_out_pom,
         "<project><modelVersion>4.0.0</modelVersion><!--bazel changed--></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &bazel_bin_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel bin changed--></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &bazel_testlogs_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel testlogs changed--></project>",
     )
     .unwrap();
     std::fs::write(
