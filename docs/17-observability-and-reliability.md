@@ -114,6 +114,35 @@ enabling the AI audit log requires `ai.enabled = true`, cloud code edits require
 and when `ai.privacy.local_only = true`, HTTP-backed providers must point at a loopback URL),
 but runtime validation should still be treated as the source of truth.
 
+### JDK configuration (`NovaConfig.jdk`)
+
+Nova uses a JDK installation for standard-library indexing and resolution. JDK settings live under
+the `[jdk]` table in `nova.toml`:
+
+- `jdk.home` (`string`, optional): explicit JDK installation root (wins over `JAVA_HOME` / `java` on
+  `PATH`).
+  - deprecated alias: `jdk.jdk_home`
+- `jdk.release` (`integer`, optional): default Java feature release used for `--release`-style API
+  selection when callers (or build-tool integrations) don't specify one.
+  - deprecated alias: `jdk.target_release`
+- `jdk.toolchains` (`table`, optional): per-release JDK roots. When a requested API release matches
+  one of these entries, Nova prefers that toolchain over `jdk.home`.
+
+Example:
+
+```toml
+[jdk]
+home = "/opt/jdks/jdk-21"
+release = 17
+toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
+```
+
+Notes:
+
+- `toolchains` keys should be numeric Java feature releases (e.g. `8`, `17`, `21`).
+- If multiple keys map to the same numeric release (for example `"8"` and `"08"`), the later entry
+  wins.
+
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be
