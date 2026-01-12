@@ -42,9 +42,10 @@ of truth).
 `WatchMode` is owned by `nova-vfs` so higher layers can express “recursive vs non-recursive” without
 depending on `notify`’s backend-specific enums.
 
-## Dynamic watch roots (workspace reloads)
+## Dynamic watch paths (workspace reloads)
 
-In `nova-workspace`, the set of watch roots can change after a project reload. For example:
+In `nova-workspace`, the set of watched **paths** (directory roots + their `WatchMode`) can change
+after a project reload. For example:
 
 - Maven/Gradle discovery may refine `source_roots`.
 - Generated source roots may appear/disappear depending on build configuration and APT output.
