@@ -140,6 +140,7 @@ toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
 Notes:
 
 - `toolchains` keys should be numeric Java feature releases (e.g. `8`, `17`, `21`).
+- Releases must be >= 1; toolchain keys like `"0"` are rejected.
 - If multiple keys map to the same numeric release (for example `"8"` and `"08"`), the later entry
   wins.
 
