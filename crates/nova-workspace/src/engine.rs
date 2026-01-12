@@ -2767,26 +2767,18 @@ fn reload_project_and_sync(
         cfg.nova_config_path = nova_config_path.clone();
     }
 
-    // If the watcher is running, ensure it begins watching any newly discovered roots outside the
-    // workspace root. Roots under the workspace root are already covered by the recursive watch.
+    // If the watcher is running, schedule a refresh so it reconciles watched roots with the
+    // latest `watch_config` (adds new external roots, removes stale ones, and picks up changes to
+    // the config-path watch).
     if let Some(tx) = watcher_command_store
         .lock()
         .expect("workspace watcher command store mutex poisoned")
         .clone()
     {
-        for root in watch_source_roots
-            .iter()
-            .chain(watch_generated_roots.iter())
-            .chain(watch_module_roots.iter())
-        {
-            if root.starts_with(workspace_root) {
-                continue;
-            }
-            // Never block the calling thread (this can run inside debounced background tasks).
-            // If the queue is full, a watch update is already pending and will pick up the latest
-            // `watch_config` state when it runs.
-            let _ = tx.try_send(WatchCommand::Watch(root.clone()));
-        }
+        // Never block the calling thread (this can run inside debounced background tasks).
+        // If the queue is full, a watch update is already pending and will pick up the latest
+        // `watch_config` state when it runs.
+        let _ = tx.try_send(WatchCommand::Watch(workspace_root.to_path_buf()));
     }
 
     let project = ProjectId::from_raw(0);
