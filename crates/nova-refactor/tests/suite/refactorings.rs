@@ -5878,6 +5878,47 @@ fn rename_parameter_updates_body_references() {
 }
 
 #[test]
+fn rename_anonymous_class_constructor_parameter_updates_body_references() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  static class Base { Base(int x) {} }
+
+  void m() {
+    new Base(1) {
+      Base(int foo) { System.out.println(foo); }
+    };
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at anonymous ctor parameter foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("Base(int bar)"),
+        "parameter should be renamed: {after}"
+    );
+    assert!(
+        after.contains("println(bar);"),
+        "parameter usage should be renamed: {after}"
+    );
+    assert!(!after.contains("foo"), "expected foo to be fully renamed: {after}");
+}
+
+#[test]
 fn rename_record_component_updates_header_and_references() {
     let file = FileId::new("Test.java");
     let src = r#"record P(int x) {

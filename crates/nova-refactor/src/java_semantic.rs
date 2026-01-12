@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use nova_core::{Name, QualifiedName};
-use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaIndexing, NovaTypeck};
+use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaIndexing, NovaSyntax, NovaTypeck};
 use nova_db::{FileId as DbFileId, ProjectId};
+use nova_hir::ast_id::AstIdMap;
 use nova_hir::hir;
 use nova_hir::ids::{ConstructorId, FieldId, ItemId, MethodId};
 use nova_hir::item_tree::Modifiers as HirModifiers;
@@ -15,8 +16,12 @@ use nova_resolve::{
     ScopeBuildResult, ScopeId, ScopeKind, StaticMemberResolution, TypeKind, TypeResolution,
     WorkspaceDefMap,
 };
+use nova_resolve::{
+    expr_scopes::{ExprScopes, ResolvedValue},
+    ids::{DefWithBodyId, ParamId},
+};
 use nova_syntax::java as java_syntax;
-use nova_syntax::{ast, AstNode};
+use nova_syntax::{ast, AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::edit::{FileId, TextRange};
 use crate::java::is_ident_char_byte;
@@ -24,6 +29,23 @@ use crate::semantic::{
     MethodSignature as SemanticMethodSignature, RefactorDatabase, Reference, ReferenceKind,
     SymbolDefinition, TypeSymbolInfo,
 };
+
+const SYNTHETIC_SCOPE: u32 = u32::MAX;
+
+#[derive(Debug, Clone)]
+struct AnonymousConstructor {
+    file: FileId,
+    db_file: DbFileId,
+    ctor: nova_hir::ids::ConstructorId,
+    params: Vec<AnonymousParam>,
+    body_range: TextRange,
+}
+
+#[derive(Debug, Clone)]
+struct AnonymousParam {
+    name: String,
+    name_range: TextRange,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolId(u32);
@@ -406,7 +428,9 @@ impl RefactorJavaDatabase {
                     .copied()
                     .expect("constructor scope map must contain key");
                 let scope = scope_interner.intern(*file_id, ctor_scope);
-                let ctor_data = tree.constructor(ctor);
+                let Some(ctor_data) = tree.constructors.get(&ctor.ast_id) else {
+                    continue;
+                };
                 for (idx, tp) in ctor_data.type_params.iter().enumerate() {
                     candidates.push(SymbolCandidate {
                         key: ResolutionKey::TypeParam(TypeParamKey {
@@ -620,6 +644,60 @@ impl RefactorJavaDatabase {
 
         let (type_supertypes, type_subtypes) =
             build_type_hierarchy(&file_ids, &item_trees, &scopes, &resolver);
+        // --- Anonymous class constructor parameters (syntax fallback) ---
+        //
+        // Nova's HIR item tree intentionally focuses on file-structural items. Depending on
+        // lowering support, constructor declarations inside anonymous class bodies may not appear
+        // in the item tree / scope graph. We still want refactorings like rename to work for
+        // constructor parameters declared in these bodies.
+        //
+        // We therefore scan the full-fidelity syntax tree for constructor declarations that are
+        // nested directly inside `new T(...) { ... }` expressions and index their parameters as
+        // `JavaSymbolKind::Parameter`. References inside the constructor bodies are collected later
+        // via a lightweight, body-only scope builder (`ExprScopes`).
+        let mut anonymous_ctors: Vec<AnonymousConstructor> = Vec::new();
+        let mut seen_keys: HashSet<ResolutionKey> = candidates.iter().map(|c| c.key).collect();
+        for (file, file_id) in &file_ids {
+            let parse = snap.parse_java(*file_id);
+            let ast_id_map = snap.hir_ast_id_map(*file_id);
+            for ctor in collect_anonymous_class_constructors(
+                file,
+                *file_id,
+                parse.as_ref(),
+                ast_id_map.as_ref(),
+            ) {
+                for (idx, param) in ctor.params.iter().enumerate() {
+                    let key = ResolutionKey::Param(ParamRef {
+                        owner: ParamOwner::Constructor(ctor.ctor),
+                        index: idx,
+                    });
+                    if !seen_keys.insert(key) {
+                        continue;
+                    }
+
+                    let scope = scopes
+                        .get(file_id)
+                        .and_then(|scope_result| scope_result.constructor_scopes.get(&ctor.ctor))
+                        .copied()
+                        .map(|ctor_scope| scope_interner.intern(*file_id, ctor_scope))
+                        .unwrap_or(SYNTHETIC_SCOPE);
+
+                    candidates.push(SymbolCandidate {
+                        key,
+                        file: file.clone(),
+                        name: param.name.clone(),
+                        name_range: param.name_range,
+                        scope,
+                        decl_scope: scope,
+                        kind: JavaSymbolKind::Parameter,
+                        type_info: None,
+                        method_signature: None,
+                    });
+                }
+
+                anonymous_ctors.push(ctor);
+            }
+        }
 
         candidates.sort_by(|a, b| {
             a.file
@@ -975,6 +1053,70 @@ impl RefactorJavaDatabase {
                 &mut references,
                 &mut spans,
             );
+        }
+
+        // Collect references for anonymous class constructor parameters using body-local scoping.
+        for ctor in &anonymous_ctors {
+            let Some(text) = texts_by_id.get(&ctor.db_file) else {
+                continue;
+            };
+            let Some(block_text) = text.get(ctor.body_range.start..ctor.body_range.end) else {
+                continue;
+            };
+
+            let block = nova_syntax::java::parse_block(block_text, ctor.body_range.start);
+            let body = nova_hir::lowering::lower_body(&block);
+
+            if ctor.params.is_empty() {
+                continue;
+            }
+
+            let param_ids: Vec<ParamId> = (0..ctor.params.len())
+                .map(|idx| ParamId::new(DefWithBodyId::Constructor(ctor.ctor), idx as u32))
+                .collect();
+            let expr_scopes = ExprScopes::new(&body, &param_ids, |param_id| {
+                let idx = param_id.index as usize;
+                ctor.params
+                    .get(idx)
+                    .map(|param| Name::from(param.name.as_str()))
+                    .unwrap_or_else(|| Name::from(""))
+            });
+
+            walk_hir_body(&body, |expr_id| {
+                let hir::Expr::Name { name, range } = &body.exprs[expr_id] else {
+                    return;
+                };
+
+                let Some(scope) = expr_scopes.scope_for_expr(expr_id) else {
+                    return;
+                };
+                let Some(resolved) = expr_scopes.resolve_name(scope, &Name::from(name.as_str()))
+                else {
+                    return;
+                };
+
+                let ResolvedValue::Param(param_id) = resolved else {
+                    return;
+                };
+                let param_idx = param_id.index as usize;
+
+                let key = ResolutionKey::Param(ParamRef {
+                    owner: ParamOwner::Constructor(ctor.ctor),
+                    index: param_idx,
+                });
+                let Some(&symbol) = resolution_to_symbol.get(&key) else {
+                    return;
+                };
+
+                let range = TextRange::new(range.start, range.end);
+                references[symbol.as_usize()].push(Reference {
+                    file: ctor.file.clone(),
+                    range,
+                    scope: None,
+                    kind: ReferenceKind::Name,
+                });
+                spans.push((ctor.file.clone(), range, symbol));
+            });
         }
 
         spans.sort_by(|(file_a, range_a, sym_a), (file_b, range_b, sym_b)| {
@@ -8308,4 +8450,131 @@ fn skip_char_literal(text: &str, mut i: usize, end: usize) -> usize {
         }
     }
     i
+}
+
+fn collect_anonymous_class_constructors(
+    file: &FileId,
+    db_file: DbFileId,
+    parse: &nova_syntax::JavaParseResult,
+    ast_id_map: &AstIdMap,
+) -> Vec<AnonymousConstructor> {
+    let root = parse.syntax();
+    let mut out = Vec::new();
+
+    for ctor_node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ConstructorDeclaration)
+    {
+        if !is_anonymous_class_constructor_decl(&ctor_node) {
+            continue;
+        }
+
+        let Some(ast_id) = ast_id_map.ast_id(&ctor_node) else {
+            continue;
+        };
+        let ctor = nova_hir::ids::ConstructorId::new(db_file, ast_id);
+
+        let Some(body_range) = ctor_body_range(&ctor_node) else {
+            continue;
+        };
+
+        let params = ctor_params(&ctor_node);
+
+        out.push(AnonymousConstructor {
+            file: file.clone(),
+            db_file,
+            ctor,
+            params,
+            body_range,
+        });
+    }
+
+    out
+}
+
+fn is_anonymous_class_constructor_decl(ctor_node: &SyntaxNode) -> bool {
+    let mut saw_type_decl = false;
+    let mut saw_new_expr = false;
+
+    for ancestor in ctor_node.ancestors() {
+        match ancestor.kind() {
+            SyntaxKind::NewExpression => {
+                saw_new_expr = true;
+                break;
+            }
+            SyntaxKind::ClassDeclaration
+            | SyntaxKind::InterfaceDeclaration
+            | SyntaxKind::EnumDeclaration
+            | SyntaxKind::RecordDeclaration
+            | SyntaxKind::AnnotationTypeDeclaration => {
+                saw_type_decl = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    saw_new_expr && !saw_type_decl
+}
+
+fn ctor_body_range(ctor_node: &SyntaxNode) -> Option<TextRange> {
+    let block = ctor_node
+        .children()
+        .find(|child| child.kind() == SyntaxKind::Block)?;
+    Some(syntax_node_text_range(&block))
+}
+
+fn ctor_params(ctor_node: &SyntaxNode) -> Vec<AnonymousParam> {
+    let Some(param_list) = ctor_node
+        .children()
+        .find(|child| child.kind() == SyntaxKind::ParameterList)
+    else {
+        return Vec::new();
+    };
+
+    param_list
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::Parameter)
+        .filter_map(|param| {
+            let tok = param_name_token(&param)?;
+            Some(AnonymousParam {
+                name: tok.text().to_string(),
+                name_range: syntax_token_range(&tok),
+            })
+        })
+        .collect()
+}
+
+fn param_name_token(param: &SyntaxNode) -> Option<SyntaxToken> {
+    // Mirror `nova_syntax::java`'s lowering heuristics: prefer the first identifier-like token
+    // after the type node, but fall back to the first identifier-like token for recovery.
+    let mut seen_type = false;
+    let mut first_ident = None;
+
+    for child in param.children_with_tokens() {
+        if child
+            .as_node()
+            .is_some_and(|n| n.kind() == SyntaxKind::Type)
+        {
+            seen_type = true;
+            continue;
+        }
+
+        let Some(tok) = child.as_token().cloned() else {
+            continue;
+        };
+        if !tok.kind().is_identifier_like() {
+            continue;
+        }
+
+        if first_ident.is_none() {
+            first_ident = Some(tok.clone());
+        }
+
+        if seen_type {
+            return Some(tok);
+        }
+    }
+
+    first_ident
 }
