@@ -1122,7 +1122,11 @@ fn reload_project_and_sync(
     if classpath_entries.is_empty() {
         query_db.set_classpath_index(project, None);
     } else {
-        match nova_classpath::ClasspathIndex::build(&classpath_entries, None) {
+        let classpath_cache_dir = query_db.classpath_cache_dir();
+        match nova_classpath::ClasspathIndex::build(
+            &classpath_entries,
+            classpath_cache_dir.as_deref(),
+        ) {
             Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
             Err(_) => query_db.set_classpath_index(project, None),
         }

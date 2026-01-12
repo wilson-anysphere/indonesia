@@ -754,6 +754,20 @@ impl Database {
         self.inner.lock().persistence_stats()
     }
 
+    /// Returns the per-project classpath cache directory (`<cache>/<project-hash>/classpath/`)
+    /// when persistence is enabled.
+    ///
+    /// This is intended for consumers that build a [`nova_classpath::ClasspathIndex`] outside of
+    /// the Salsa query graph (e.g. `nova-workspace` during project reload) and still want to reuse
+    /// Nova's on-disk caches.
+    pub fn classpath_cache_dir(&self) -> Option<PathBuf> {
+        self.inner
+            .lock()
+            .persistence
+            .cache_dir()
+            .map(|dir| dir.classpath_dir())
+    }
+
     pub fn with_write<T>(&self, f: impl FnOnce(&mut RootDatabase) -> T) -> T {
         let mut db = self.inner.lock();
         f(&mut db)
@@ -1217,6 +1231,28 @@ mod tests {
             }
             _ => None,
         }
+    }
+
+    #[test]
+    fn classpath_cache_dir_is_available_when_persistence_enabled() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache-root");
+        let config = PersistenceConfig {
+            mode: crate::persistence::PersistenceMode::ReadWrite,
+            cache: CacheConfig {
+                cache_root_override: Some(cache_root),
+            },
+        };
+
+        let db = Database::new_with_persistence(&project_root, config);
+        let classpath_dir = db
+            .classpath_cache_dir()
+            .expect("expected classpath cache dir when persistence enabled");
+        assert!(classpath_dir.is_dir());
+        assert!(classpath_dir.ends_with("classpath"));
     }
 
     #[test]
