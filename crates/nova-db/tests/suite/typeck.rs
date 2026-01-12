@@ -322,6 +322,27 @@ class C {
 }
 
 #[test]
+fn allows_explicit_generic_invocation_statement_expression() {
+    let src = r#"
+class C {
+    <T> void id(T t) {}
+    void m() {
+        this.<String>id("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-statement-expression"),
+        "expected no invalid-statement-expression diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn allows_inc_dec_statement_expression() {
     let src = r#"
 class C {
