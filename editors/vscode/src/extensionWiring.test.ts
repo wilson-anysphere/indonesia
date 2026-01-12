@@ -37,4 +37,14 @@ describe('extension wiring', () => {
     // showing unsupported-method popups.
     expect(dashboardContents).toMatch(/registerNovaFrameworkSearch\([\s\S]*allowMethodFallback:\s*true/);
   });
+
+  it('initializes nova.projectExplorer.projectModelSupported context to true on activation', async () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const extensionPath = path.join(srcRoot, 'extension.ts');
+    const contents = await fs.readFile(extensionPath, 'utf8');
+
+    expect(contents).toMatch(
+      /executeCommand\(\s*['"]setContext['"]\s*,\s*['"]nova\.projectExplorer\.projectModelSupported['"]\s*,\s*true\s*\)/,
+    );
+  });
 });
