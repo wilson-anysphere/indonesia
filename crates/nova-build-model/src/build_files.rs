@@ -190,7 +190,13 @@ fn project_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>
         }
 
         let candidate = workspace_root.join(&dir_rel);
-        if !candidate.is_dir() || !is_gradle_marker_root(&candidate) {
+        // Gradle subprojects can inherit all configuration from the root build script (via
+        // `allprojects {}` / `subprojects {}`), in which case they may not have a `build.gradle*`
+        // file at all. Still consider `gradle.properties` as a marker so changes to project-level
+        // properties contribute to fingerprints.
+        if !candidate.is_dir()
+            || !(is_gradle_marker_root(&candidate) || candidate.join("gradle.properties").is_file())
+        {
             continue;
         }
 
@@ -200,7 +206,8 @@ fn project_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>
 
         // Directory symlinks are skipped by the main recursive scan to avoid cycles. If any
         // component of this project directory path is a symlink, we need to explicitly scan it.
-        let has_symlink_component = !has_parent_dir && dir_rel_has_symlink_component(workspace_root, &dir_rel);
+        let has_symlink_component =
+            !has_parent_dir && dir_rel_has_symlink_component(workspace_root, &dir_rel);
 
         if has_parent_dir || has_symlink_component {
             roots.push(candidate);
@@ -318,10 +325,7 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
 
         for raw in extract_quoted_strings(&args) {
             let project_path = normalize_project_path(&raw);
-            let name = raw
-                .trim()
-                .trim_start_matches(':')
-                .replace([':', '\\'], "/");
+            let name = raw.trim().trim_start_matches(':').replace([':', '\\'], "/");
             let name = name.trim();
             if name.is_empty() {
                 continue;
@@ -1552,6 +1556,30 @@ mod tests {
         assert!(
             files.contains(&expected),
             "expected external includeFlat build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_includes_gradle_properties_from_include_flat_projects_without_build_scripts(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let external = dir.path().join("external");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+
+        write_file(&root.join("settings.gradle"), b"includeFlat 'external'\n");
+        write_file(
+            &external.join("gradle.properties"),
+            b"org.gradle.jvmargs=-Xmx1g\n",
+        );
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../external/gradle.properties");
+        assert!(
+            files.contains(&expected),
+            "expected external gradle.properties to be included in build file collection; got: {files:?}"
         );
     }
 
