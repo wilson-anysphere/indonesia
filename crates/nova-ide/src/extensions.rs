@@ -1054,6 +1054,7 @@ where
                 &cancel,
                 source,
                 &uri,
+                &cancel,
                 span,
                 &diagnostics,
             ));
@@ -1264,10 +1265,6 @@ fn type_mismatch_quick_fixes(
             document_changes: None,
             change_annotations: None,
         }
-    }
-
-    if cancel.is_cancelled() {
-        return Vec::new();
     }
 
     let mut actions = Vec::new();

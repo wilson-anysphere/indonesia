@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncReadExt, BufReader},
+    io::{AsyncBufReadExt, BufReader},
     net::{lookup_host, TcpListener},
     process::{Child, Command},
     sync::{broadcast, mpsc, watch, Mutex},
@@ -4419,23 +4419,9 @@ async fn pick_free_port() -> std::io::Result<u16> {
     Ok(port)
 }
 
-const OUTPUT_TRUNCATION_MARKER: &str = "\n<output truncated>";
-/// Maximum number of bytes forwarded in a single DAP `output` event.
-///
-/// This is intentionally small-ish to avoid huge DAP frames from pathological debuggee output.
-const MAX_OUTPUT_EVENT_BYTES: usize = 8 * 1024;
-/// Maximum number of bytes buffered while waiting for a newline before we emit/truncate.
-const MAX_OUTPUT_LINE_BUFFER_BYTES: usize = 8 * 1024;
-
-fn truncate_message(mut message: String, max_len: usize) -> String {
-    if message.len() <= max_len {
-        return message;
-    }
-
-    message.truncate(max_len);
-    message.push_str(OUTPUT_TRUNCATION_MARKER);
-    message
-}
+const MAX_DEBUGGEE_OUTPUT_LINE_BYTES: usize = 64 * 1024;
+const DEBUGGEE_OUTPUT_TRUNCATION_MARKER: &str = "<output truncated>";
+const DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX: &str = "<output truncated>\n";
 
 #[cfg(unix)]
 fn ignore_sigpipe() {
@@ -4459,25 +4445,29 @@ fn spawn_output_task<R>(
         // buffer and can OOM the adapter or retain a huge capacity forever. Bound buffering and
         // truncate long lines instead.
         let mut reader = BufReader::new(reader);
-        let mut buf = Vec::with_capacity(MAX_OUTPUT_LINE_BUFFER_BYTES);
-        let mut scratch = [0u8; 4096];
-        let mut discarding = false;
+
+        // Buffer for the current line (capped to MAX_DEBUGGEE_OUTPUT_LINE_BYTES).
+        let mut buf = Vec::new();
+        // Whether we've hit the cap for the current line and are currently discarding bytes until
+        // we see the next newline.
+        let mut discarding_until_newline = false;
 
         loop {
-            let read = tokio::select! {
+            let available = tokio::select! {
                 _ = server_shutdown.cancelled() => return,
-                res = reader.read(&mut scratch) => match res {
-                    Ok(n) => n,
+                res = reader.fill_buf() => match res {
+                    Ok(buf) => buf,
                     Err(_) => return,
                 }
             };
 
-            if read == 0 {
-                if !discarding && !buf.is_empty() {
-                    let output = truncate_message(
-                        String::from_utf8_lossy(&buf).to_string(),
-                        MAX_OUTPUT_EVENT_BYTES,
-                    );
+            if available.is_empty() {
+                // EOF. Preserve the old behavior of emitting a final (possibly unterminated) line.
+                if !buf.is_empty() || discarding_until_newline {
+                    let mut output = String::from_utf8_lossy(&buf).into_owned();
+                    if discarding_until_newline {
+                        output.push_str(DEBUGGEE_OUTPUT_TRUNCATION_MARKER);
+                    }
                     send_event(
                         &tx,
                         &seq,
@@ -4488,36 +4478,43 @@ fn spawn_output_task<R>(
                 return;
             }
 
-            let mut input = &scratch[..read];
-            while !input.is_empty() {
-                if discarding {
-                    if let Some(nl) = input.iter().position(|&b| b == b'\n') {
-                        // Drop everything through the newline, then resume normal processing.
-                        input = &input[nl + 1..];
-                        discarding = false;
+            let mut consumed = 0;
+            while consumed < available.len() {
+                if discarding_until_newline {
+                    // Discard until we find a newline, then emit the truncated line once.
+                    if let Some(pos) = available[consumed..].iter().position(|&b| b == b'\n') {
+                        consumed += pos + 1;
+
+                        let mut output = String::from_utf8_lossy(&buf).into_owned();
+                        output.push_str(DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX);
+                        send_event(
+                            &tx,
+                            &seq,
+                            "output",
+                            Some(json!({ "category": category, "output": output })),
+                        );
+                        buf.clear();
+                        discarding_until_newline = false;
                     } else {
-                        // Still in the middle of an oversized line.
-                        break;
+                        // No newline in this chunk; discard it all.
+                        consumed = available.len();
                     }
                     continue;
                 }
 
-                // Find the next newline so we can preserve the existing "one event per line"
-                // behavior for normal output.
-                let (chunk, has_newline) = match input.iter().position(|&b| b == b'\n') {
-                    Some(nl) => (&input[..nl + 1], true),
-                    None => (input, false),
-                };
+                // Normal line capture mode.
+                let newline_pos = available[consumed..].iter().position(|&b| b == b'\n');
+                let take = newline_pos
+                    .map(|pos| pos + 1)
+                    .unwrap_or(available.len() - consumed);
 
-                let remaining = MAX_OUTPUT_LINE_BUFFER_BYTES.saturating_sub(buf.len());
-                if chunk.len() <= remaining {
-                    buf.extend_from_slice(chunk);
-                    input = &input[chunk.len()..];
-                    if has_newline {
-                        let output = truncate_message(
-                            String::from_utf8_lossy(&buf).to_string(),
-                            MAX_OUTPUT_EVENT_BYTES,
-                        );
+                let remaining = MAX_DEBUGGEE_OUTPUT_LINE_BYTES.saturating_sub(buf.len());
+                if take <= remaining {
+                    buf.extend_from_slice(&available[consumed..consumed + take]);
+                    consumed += take;
+
+                    if newline_pos.is_some() {
+                        let output = String::from_utf8_lossy(&buf).into_owned();
                         send_event(
                             &tx,
                             &seq,
@@ -4529,37 +4526,30 @@ fn spawn_output_task<R>(
                     continue;
                 }
 
-                // We exceeded our per-line buffer cap. Emit a truncated output event and discard
-                // the remainder of this line until we see the next newline.
+                // This line is longer than MAX_DEBUGGEE_OUTPUT_LINE_BYTES.
                 if remaining > 0 {
-                    buf.extend_from_slice(&chunk[..remaining]);
+                    buf.extend_from_slice(&available[consumed..consumed + remaining]);
                 }
+                consumed += take;
 
-                let mut output = truncate_message(
-                    String::from_utf8_lossy(&buf).to_string(),
-                    MAX_OUTPUT_EVENT_BYTES,
-                );
-                if !output.ends_with(OUTPUT_TRUNCATION_MARKER) {
-                    output.push_str(OUTPUT_TRUNCATION_MARKER);
-                }
-                send_event(
-                    &tx,
-                    &seq,
-                    "output",
-                    Some(json!({ "category": category, "output": output })),
-                );
-                buf.clear();
-
-                // Discard the rest of the current line from this chunk (including the newline if
-                // present), then keep discarding from subsequent reads until a newline is seen.
-                if let Some(nl) = chunk[remaining..].iter().position(|&b| b == b'\n') {
-                    input = &input[(remaining + nl + 1)..];
-                    discarding = false;
+                if newline_pos.is_some() {
+                    // Newline is within `take`, so we can emit the truncated line now.
+                    let mut output = String::from_utf8_lossy(&buf).into_owned();
+                    output.push_str(DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX);
+                    send_event(
+                        &tx,
+                        &seq,
+                        "output",
+                        Some(json!({ "category": category, "output": output })),
+                    );
+                    buf.clear();
                 } else {
-                    input = &input[chunk.len()..];
-                    discarding = true;
+                    // No newline yet; keep discarding until we encounter one.
+                    discarding_until_newline = true;
                 }
             }
+
+            reader.consume(consumed);
         }
     });
 }
@@ -5316,9 +5306,16 @@ fn signature_to_object_type_name(sig: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    };
+
     use serde_json::json;
+    use tokio::io::AsyncWriteExt;
     use tokio::time::{timeout, Duration};
+
+    use super::*;
 
     async fn read_message<R: tokio::io::AsyncRead + Unpin>(reader: &mut DapReader<R>) -> Value {
         timeout(Duration::from_secs(2), reader.read_value())
@@ -5428,5 +5425,50 @@ mod tests {
             .expect("server did not shut down in time")
             .expect("server task panicked");
         server_res.expect("server returned error");
+    }
+
+    #[tokio::test]
+    async fn spawn_output_task_truncates_overlong_lines() {
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let seq = Arc::new(AtomicI64::new(1));
+        let shutdown = CancellationToken::new();
+
+        spawn_output_task(reader, tx, Arc::clone(&seq), "stdout", shutdown.clone());
+
+        let oversized = vec![b'a'; 200 * 1024];
+        writer.write_all(&oversized).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let msg = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for output event")
+            .expect("output channel closed");
+
+        assert_eq!(msg.get("event").and_then(|v| v.as_str()), Some("output"));
+
+        let output = msg
+            .get("body")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_str())
+            .expect("output.body.output should be a string");
+
+        assert!(
+            output.contains(DEBUGGEE_OUTPUT_TRUNCATION_MARKER),
+            "expected truncation marker in output, got: {output:?}"
+        );
+        assert!(
+            output.len() <= MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX.len(),
+            "expected output length to be bounded (got {}, limit {})",
+            output.len(),
+            MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX.len()
+        );
+
+        // Ensure `send_event` used the sequence counter.
+        assert_eq!(
+            msg.get("seq").and_then(|v| v.as_i64()),
+            Some(seq.load(Ordering::Relaxed) - 1)
+        );
     }
 }
