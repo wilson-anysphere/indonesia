@@ -122,6 +122,7 @@ pub fn is_build_file(path: &Path) -> bool {
         || name == ".bazelversion"
         || name == "MODULE.bazel.lock"
         || name == "bazelisk.rc"
+        || name == ".bazelignore"
         || name.starts_with("build.gradle")
         || name.starts_with("settings.gradle")
         || matches!(
@@ -178,6 +179,7 @@ mod tests {
             root.join(".bazelversion"),
             root.join("MODULE.bazel.lock"),
             root.join("bazelisk.rc"),
+            root.join(".bazelignore"),
             root.join("build.gradle"),
             root.join("build.gradle.kts"),
             root.join("settings.gradle"),
