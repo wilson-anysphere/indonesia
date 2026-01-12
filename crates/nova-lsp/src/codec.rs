@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Write};
 
 /// Write a JSON-RPC message framed with LSP-style `Content-Length` headers.
 pub fn write_json_message(writer: &mut impl Write, message: &Value) -> io::Result<()> {

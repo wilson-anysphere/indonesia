@@ -4008,7 +4008,11 @@ mod tests {
         let prior_java_home = std::env::var_os("JAVA_HOME");
         std::env::set_var("JAVA_HOME", &fake_jdk_root);
 
-        let mut state = ServerState::new(nova_config::NovaConfig::default(), None);
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            None,
+            MemoryBudgetOverrides::default(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
         let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
@@ -4073,7 +4077,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut state = ServerState::new(nova_config::NovaConfig::default(), None);
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            None,
+            MemoryBudgetOverrides::default(),
+        );
         state.ai = Some(ai);
         state.runtime = Some(runtime);
 
@@ -4180,7 +4188,11 @@ mod tests {
             .parse()
             .expect("uri");
 
-        let mut state = ServerState::new(nova_config::NovaConfig::default(), Some(nova_ai::PrivacyMode::default()));
+        let mut state = ServerState::new(
+            nova_config::NovaConfig::default(),
+            Some(nova_ai::PrivacyMode::default()),
+            MemoryBudgetOverrides::default(),
+        );
         state.project_root = Some(root.to_path_buf());
         state
             .analysis
