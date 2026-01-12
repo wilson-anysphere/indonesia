@@ -7,8 +7,9 @@
 //! [`nova_db::Database`] trait. This module bridges the two so `nova-framework` analyzers can run
 //! inside `nova-ide` without bespoke per-framework glue.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -77,6 +78,9 @@ struct FrameworkDbShared {
     classes: Vec<ClassData>,
 
     config: Option<Arc<nova_project::ProjectConfig>>,
+
+    synthetic_files_by_id: HashMap<FileId, (PathBuf, String)>,
+    synthetic_ids_by_path: HashMap<PathBuf, FileId>,
 
     classpath_exact_cache: Mutex<HashMap<String, bool>>,
     classpath_prefix_cache: Mutex<HashMap<String, bool>>,
@@ -154,7 +158,11 @@ impl FrameworkDbShared {
         false
     }
 
-    fn classpath_contains_prefix(&self, normalized_prefix: &str, cancel: &CancellationToken) -> bool {
+    fn classpath_contains_prefix(
+        &self,
+        normalized_prefix: &str,
+        cancel: &CancellationToken,
+    ) -> bool {
         if cancel.is_cancelled() {
             return false;
         }
@@ -181,6 +189,22 @@ impl FrameworkDbShared {
 
         false
     }
+
+    fn synthetic_file_text(&self, file: FileId) -> Option<&str> {
+        self.synthetic_files_by_id
+            .get(&file)
+            .map(|(_, text)| text.as_str())
+    }
+
+    fn synthetic_file_path(&self, file: FileId) -> Option<&Path> {
+        self.synthetic_files_by_id
+            .get(&file)
+            .map(|(path, _)| path.as_path())
+    }
+
+    fn synthetic_file_id(&self, path: &Path) -> Option<FileId> {
+        self.synthetic_ids_by_path.get(path).copied()
+    }
 }
 
 impl FrameworkDatabase for FrameworkDb {
@@ -198,14 +222,23 @@ impl FrameworkDatabase for FrameworkDb {
     }
 
     fn file_text(&self, file: FileId) -> Option<&str> {
+        if let Some(text) = self.shared.synthetic_file_text(file) {
+            return Some(text);
+        }
         Some(self.shared.host_db.file_content(file))
     }
 
     fn file_path(&self, file: FileId) -> Option<&Path> {
+        if let Some(path) = self.shared.synthetic_file_path(file) {
+            return Some(path);
+        }
         self.shared.host_db.file_path(file)
     }
 
     fn file_id(&self, path: &Path) -> Option<FileId> {
+        if let Some(id) = self.shared.synthetic_file_id(path) {
+            return Some(id);
+        }
         self.shared.host_db.file_id(path)
     }
 
@@ -339,10 +372,25 @@ fn shared_db_for_file(
                 .map(|entry| entry.db);
         }
         let text = db.file_content(*file_id);
-        classes.extend(crate::framework_class_data::extract_classes_from_source(text));
+        classes.extend(crate::framework_class_data::extract_classes_from_source(
+            text,
+        ));
     }
 
-    let all_file_ids = all_files.iter().map(|(_, id)| *id).collect();
+    let mut used_file_ids: HashSet<u32> = db
+        .all_file_ids()
+        .into_iter()
+        .map(|id| id.to_raw())
+        .collect();
+
+    let (synthetic_files_by_id, synthetic_ids_by_path, synthetic_entries) =
+        collect_spring_metadata_synthetic_files(config.as_deref(), &mut used_file_ids, cancel);
+
+    let mut all_file_entries: Vec<(PathBuf, FileId)> = all_files;
+    all_file_entries.extend(synthetic_entries);
+    all_file_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let all_file_ids = all_file_entries.iter().map(|(_, id)| *id).collect();
 
     let shared = Arc::new(FrameworkDbShared {
         host_db: Arc::clone(&db),
@@ -351,6 +399,8 @@ fn shared_db_for_file(
         all_files: all_file_ids,
         classes,
         config,
+        synthetic_files_by_id,
+        synthetic_ids_by_path,
         classpath_exact_cache: Mutex::new(HashMap::new()),
         classpath_prefix_cache: Mutex::new(HashMap::new()),
     });
@@ -418,13 +468,18 @@ fn collect_files(
         }
     }
 
-    let mut files = if under_root.is_empty() { all } else { under_root };
+    let mut files = if under_root.is_empty() {
+        all
+    } else {
+        under_root
+    };
     files.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     let mut java_files: Vec<_> = files
         .iter()
         .filter_map(|(path, id)| {
-            (path.extension().and_then(|e| e.to_str()) == Some("java")).then_some((path.clone(), *id))
+            (path.extension().and_then(|e| e.to_str()) == Some("java"))
+                .then_some((path.clone(), *id))
         })
         .collect();
     java_files.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -685,4 +740,109 @@ fn zip_contains_prefix(path: &Path, prefix: &str, cancel: &CancellationToken) ->
         }
     }
     false
+}
+
+fn collect_spring_metadata_synthetic_files(
+    config: Option<&nova_project::ProjectConfig>,
+    used_file_ids: &mut HashSet<u32>,
+    cancel: &CancellationToken,
+) -> (
+    HashMap<FileId, (PathBuf, String)>,
+    HashMap<PathBuf, FileId>,
+    Vec<(PathBuf, FileId)>,
+) {
+    let mut synthetic_files_by_id: HashMap<FileId, (PathBuf, String)> = HashMap::new();
+    let mut synthetic_ids_by_path: HashMap<PathBuf, FileId> = HashMap::new();
+    let mut synthetic_entries: Vec<(PathBuf, FileId)> = Vec::new();
+
+    let Some(config) = config else {
+        return (
+            synthetic_files_by_id,
+            synthetic_ids_by_path,
+            synthetic_entries,
+        );
+    };
+
+    // SpringAnalyzer expects to discover these metadata files from `Database::all_files` by
+    // filename, so we synthesize pseudo-paths that end with the expected basename.
+    const SPRING_META_FILES: &[&str] = &[
+        "META-INF/spring-configuration-metadata.json",
+        "META-INF/additional-spring-configuration-metadata.json",
+    ];
+
+    for entry in config.classpath.iter().chain(config.module_path.iter()) {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        if entry.kind != nova_project::ClasspathEntryKind::Jar {
+            continue;
+        }
+
+        let jar_path = entry.path.as_path();
+        let file = match std::fs::File::open(jar_path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+
+        let mut archive = match ZipArchive::new(file) {
+            Ok(archive) => archive,
+            Err(_) => continue,
+        };
+
+        for rel in SPRING_META_FILES {
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let mut zip_file = match archive.by_name(rel) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+
+            let mut bytes = Vec::new();
+            if zip_file.read_to_end(&mut bytes).is_err() {
+                continue;
+            }
+
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+
+            let synthetic_path = PathBuf::from(format!("{}!/{rel}", jar_path.display()));
+            if synthetic_ids_by_path.contains_key(&synthetic_path) {
+                continue;
+            }
+
+            let file_id = allocate_synthetic_file_id(&synthetic_path, used_file_ids);
+            synthetic_ids_by_path.insert(synthetic_path.clone(), file_id);
+            synthetic_entries.push((synthetic_path.clone(), file_id));
+            synthetic_files_by_id.insert(file_id, (synthetic_path, text));
+        }
+    }
+
+    (
+        synthetic_files_by_id,
+        synthetic_ids_by_path,
+        synthetic_entries,
+    )
+}
+
+fn allocate_synthetic_file_id(path: &Path, used_file_ids: &mut HashSet<u32>) -> FileId {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish() as u32;
+
+    // Allocate IDs with the high bit set so they are extremely unlikely to collide with
+    // host-allocated IDs (which are typically dense from 0).
+    let mut candidate = 0x8000_0000u32 | (hash & 0x7fff_ffff);
+
+    // Resolve collisions (including with existing host IDs) via linear probing.
+    while !used_file_ids.insert(candidate) {
+        candidate = 0x8000_0000u32 | ((candidate.wrapping_add(1)) & 0x7fff_ffff);
+    }
+
+    FileId::from_raw(candidate)
 }
