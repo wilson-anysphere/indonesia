@@ -45,6 +45,8 @@ pub(crate) mod javac;
 /// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
 pub mod wire_debugger;
 pub mod wire_server;
+/// Compile+inject stream evaluation helpers for the wire debugger (used by stream-debug).
+pub mod wire_stream_eval;
 
 /// Crash hardening helpers (panic hook installation, safe-mode toggles).
 pub mod hardening;
