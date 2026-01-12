@@ -12,7 +12,6 @@ import { formatError, isSafeModeError } from './safeMode';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
-const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
 type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
 };
@@ -100,6 +99,7 @@ type MessageNode = {
   label: string;
   description?: string;
   icon?: vscode.ThemeIcon;
+  command?: vscode.Command;
 };
 
 type FrameworkNode = WorkspaceNode | CategoryNode | WebEndpointNode | MicronautEndpointNode | MicronautBeanNode | MessageNode;
@@ -252,6 +252,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         item.description = element.description;
         item.iconPath = element.icon;
         item.contextValue = 'novaFrameworkMessage';
+        item.command = element.command;
         return item;
       }
     }
@@ -325,8 +326,18 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         return children;
       })
       .catch((err) => {
-        const children = isSafeModeError(err)
-          ? [messageNode('Nova is in safe mode. Run Nova: Generate Bug Report.', undefined, new vscode.ThemeIcon('warning'))]
+        const children: FrameworkNode[] = isSafeModeError(err)
+          ? [
+              messageNode(
+                'Nova is in safe mode',
+                'Run “Nova: Generate Bug Report” to help diagnose the issue.',
+                new vscode.ThemeIcon('warning'),
+                {
+                  command: 'nova.bugReport',
+                  title: 'Generate Bug Report',
+                },
+              ),
+            ]
           : [
               messageNode(
                 `Failed to load ${categoryLabel(element.category)}`,
@@ -334,6 +345,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
                 new vscode.ThemeIcon('error'),
               ),
             ];
+
         if (!this.disposed && epoch === this.cacheEpoch) {
           this.categoryCache.set(key, children);
         }
@@ -577,12 +589,17 @@ function categoryIcon(category: FrameworkCategory): vscode.ThemeIcon {
   }
 }
 
-function messageNode(label: string, description?: string, icon: vscode.ThemeIcon = new vscode.ThemeIcon('info')): MessageNode {
-  return { kind: 'message', label, description, icon };
+function messageNode(
+  label: string,
+  description?: string,
+  icon: vscode.ThemeIcon = new vscode.ThemeIcon('info'),
+  command?: vscode.Command,
+): MessageNode {
+  return { kind: 'message', label, description, icon, command };
 }
 
 function unsupportedMethodNode(method: string): MessageNode {
-  return messageNode(NOT_SUPPORTED_MESSAGE, method, new vscode.ThemeIcon('warning'));
+  return messageNode(`${method} not supported by this server`, undefined, new vscode.ThemeIcon('warning'));
 }
 
 function unsupportedCategoryNode(category: FrameworkCategory): MessageNode {

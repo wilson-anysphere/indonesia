@@ -79,8 +79,8 @@ const aiItemsByContextId = new Map<string, vscode.CompletionItem[]>();
 const aiRequestsInFlight = new Set<string>();
 const MAX_AI_CONTEXT_IDS = 50;
 
-const BUG_REPORT_COMMAND = 'nova.bugReport';
-const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
+  const BUG_REPORT_COMMAND = 'nova.bugReport';
+  const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
 
 // Capability tracking is keyed for multi-root workspaces (one client per folder). The VS Code
 // extension currently uses a single LanguageClient instance, so we keep a stable default key and
@@ -286,7 +286,7 @@ export async function activate(context: vscode.ExtensionContext) {
     isSafeMode: () => frameworksSafeMode,
   });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
-    isServerRunning: () => Boolean(client),
+    isServerRunning: () => Boolean(client && client.state !== State.Stopped),
   });
 
   // Keep capability entries for workspace-folder keys in sync as folders are added/removed.
@@ -305,6 +305,52 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       updateFrameworksMethodSupportContexts();
+    }),
+  );
+
+  // Keep `novaCapabilities.ts` keyed capability maps in sync with the current workspace folders.
+  // Even though this extension runs a single LanguageClient today, callers often key by
+  // `workspaceFolder.uri.toString()`, so we mirror the same capability list to each workspace key.
+  const trackedNovaCapabilityKeys = new Set<string>();
+
+  const desiredNovaCapabilityKeys = (): Set<string> => {
+    const keys = new Set<string>();
+    keys.add(DEFAULT_NOVA_CAPABILITIES_KEY);
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      keys.add(folder.uri.toString());
+    }
+    return keys;
+  };
+
+  const syncNovaCapabilityState = (initializeResult?: unknown): void => {
+    const desiredKeys = desiredNovaCapabilityKeys();
+
+    // Drop stale keys when workspace folders are removed.
+    for (const key of trackedNovaCapabilityKeys) {
+      if (!desiredKeys.has(key)) {
+        resetNovaExperimentalCapabilities(key);
+        trackedNovaCapabilityKeys.delete(key);
+      }
+    }
+
+    for (const key of desiredKeys) {
+      trackedNovaCapabilityKeys.add(key);
+      if (typeof initializeResult === 'undefined') {
+        resetNovaExperimentalCapabilities(key);
+      } else {
+        setNovaExperimentalCapabilities(key, initializeResult);
+      }
+    }
+  };
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const c = client;
+      if (c && c.state === State.Running) {
+        syncNovaCapabilityState(c.initializeResult);
+      } else {
+        syncNovaCapabilityState(undefined);
+      }
     }),
   );
 
@@ -1712,6 +1758,8 @@ export async function activate(context: vscode.ExtensionContext) {
         if (client !== languageClient) {
           return;
         }
+        // Keep view welcome content in sync if the language server restarts automatically.
+        void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', event.newState !== State.Stopped);
         if (event.newState === State.Starting || event.newState === State.Stopped) {
           void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', event.newState === State.Starting);
           resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
@@ -1720,6 +1768,7 @@ export async function activate(context: vscode.ExtensionContext) {
           }
           updateFrameworksMethodSupportContexts();
           frameworksView.refresh();
+          projectExplorerView.refresh();
           return;
         }
         if (event.newState === State.Running) {
@@ -1730,6 +1779,7 @@ export async function activate(context: vscode.ExtensionContext) {
           }
           updateFrameworksMethodSupportContexts();
           frameworksView.refresh();
+          projectExplorerView.refresh();
         }
       }),
     );
