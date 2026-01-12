@@ -44,7 +44,7 @@ function looksLikeAbsolutePath(value: string): boolean {
 
 function joinPathForUri(base: vscode.Uri, relativePath: string): vscode.Uri {
   // `Uri.joinPath` expects path segments. Normalize separators so Windows paths work even on non-Windows hosts.
-  const segments = relativePath.split(/[\\/]+/).filter(Boolean);
+  const segments = relativePath.split(/[\\/]+/).filter((segment) => segment.length > 0 && segment !== '.');
   return vscode.Uri.joinPath(base, ...segments);
 }
 
