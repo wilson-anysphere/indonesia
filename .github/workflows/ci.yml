@@ -31,6 +31,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Cargo.lock preflight (metadata --locked)
+        # Note: don't add `--no-deps` here. `cargo metadata --locked --no-deps` can still succeed
+        # even when Cargo.lock is stale (e.g. after changing workspace member dependencies).
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: fmt
         run: cargo fmt --all -- --check
