@@ -106,6 +106,10 @@ pub trait RefactorDatabase {
     ///
     /// The default implementation returns an empty list so lightweight database adapters (like
     /// `nova_index::Index`) do not need to materialize a full file set.
+    ///
+    /// This is also used for refactorings that need to find syntactic constructs which are not
+    /// represented as explicit semantic references (for example, Java's annotation shorthand
+    /// `@Anno(expr)` for `value()`).
     fn all_files(&self) -> Vec<FileId> {
         Vec::new()
     }

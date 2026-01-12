@@ -95,11 +95,182 @@ pub fn rename(
         }
     }
 
-    let changes = vec![SemanticChange::Rename {
+    let mut changes = vec![SemanticChange::Rename {
         symbol: params.symbol,
-        new_name: params.new_name,
+        new_name: params.new_name.clone(),
     }];
+
+    // Java annotation shorthand `@Anno(expr)` is desugared as `@Anno(value = expr)`. If the
+    // annotation element method `value()` is renamed, shorthand usages must be rewritten to an
+    // explicit element-value pair using the new name.
+    if matches!(kind, Some(JavaSymbolKind::Method)) {
+        changes.extend(annotation_value_shorthand_updates(
+            db,
+            params.symbol,
+            &params.new_name,
+        ));
+    }
+
     Ok(materialize(db, changes)?)
+}
+
+fn annotation_value_shorthand_updates(
+    db: &dyn RefactorDatabase,
+    symbol: SymbolId,
+    new_name: &str,
+) -> Vec<SemanticChange> {
+    use std::collections::HashSet;
+
+    if new_name == "value" {
+        return Vec::new();
+    }
+
+    let Some(kind) = db.symbol_kind(symbol) else {
+        return Vec::new();
+    };
+    if kind != JavaSymbolKind::Method {
+        return Vec::new();
+    }
+
+    let Some(def) = db.symbol_definition(symbol) else {
+        return Vec::new();
+    };
+    if def.name != "value" {
+        return Vec::new();
+    }
+
+    let Some(text) = db.file_text(&def.file) else {
+        return Vec::new();
+    };
+
+    let parsed = parse_java(text);
+    let root = parsed.syntax();
+
+    // Find the method declaration in the syntax tree and confirm it's a 0-arg `value()` inside an
+    // `@interface`. This ensures we only apply the rewrite when renaming the special annotation
+    // element, not arbitrary methods named `value`.
+    let mut annotation_name = None;
+    for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
+        let Some(name_tok) = method.name_token() else {
+            continue;
+        };
+        if syntax_token_range(&name_tok) != def.name_range {
+            continue;
+        }
+
+        let param_count = method
+            .parameter_list()
+            .map(|list| list.parameters().count())
+            .unwrap_or(0);
+        if param_count != 0 {
+            return Vec::new();
+        }
+
+        let Some(annotation_ty) = method
+            .syntax()
+            .ancestors()
+            .find_map(ast::AnnotationTypeDeclaration::cast)
+        else {
+            return Vec::new();
+        };
+        annotation_name = annotation_ty
+            .name_token()
+            .map(|tok| tok.text().to_string());
+        break;
+    }
+
+    let Some(annotation_name) = annotation_name else {
+        return Vec::new();
+    };
+
+    fn annotation_args_inner_range(
+        source: &str,
+        args: &ast::AnnotationElementValuePairList,
+    ) -> Option<TextRange> {
+        let range = syntax_range(args.syntax());
+        if range.len() < 2 {
+            return None;
+        }
+
+        let bytes = source.as_bytes();
+        if bytes.get(range.start) != Some(&b'(') {
+            return None;
+        }
+        if bytes.get(range.end.saturating_sub(1)) != Some(&b')') {
+            return None;
+        }
+
+        Some(TextRange::new(range.start + 1, range.end - 1))
+    }
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<(FileId, TextRange)> = HashSet::new();
+
+    for file in db.all_files() {
+        let Some(source) = db.file_text(&file) else {
+            continue;
+        };
+        let parsed = parse_java(source);
+        let root = parsed.syntax();
+
+        for ann in root.descendants().filter_map(ast::Annotation::cast) {
+            let Some(name) = ann.name() else {
+                continue;
+            };
+            let name_text = name.text();
+            let simple = name_text
+                .rsplit('.')
+                .next()
+                .unwrap_or_else(|| name_text.as_str());
+            if simple != annotation_name {
+                continue;
+            }
+
+            let Some(args) = ann.arguments() else {
+                continue;
+            };
+
+            let has_pairs = args.pairs().next().is_some();
+            let value = args.value();
+
+            // If the parse produced both a shorthand value and named pairs, skip (shouldn't happen
+            // in valid Java).
+            if value.is_some() && has_pairs {
+                continue;
+            }
+
+            let Some(value) = value else {
+                continue;
+            };
+            if has_pairs {
+                continue;
+            }
+
+            let Some(inner_range) = annotation_args_inner_range(source, &args) else {
+                continue;
+            };
+            if !seen.insert((file.clone(), inner_range)) {
+                continue;
+            }
+
+            let value_range = syntax_range(value.syntax());
+            let value_text = source
+                .get(value_range.start..value_range.end)
+                .unwrap_or_default()
+                .trim();
+            if value_text.is_empty() {
+                continue;
+            }
+
+            out.push(SemanticChange::UpdateReferences {
+                file: file.clone(),
+                range: inner_range,
+                new_text: format!("{new_name} = {value_text}"),
+            });
+        }
+    }
+
+    out
 }
 
 fn check_rename_conflicts(
