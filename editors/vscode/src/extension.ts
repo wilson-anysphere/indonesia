@@ -2174,6 +2174,22 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const handleAiPrivacyExcluded = async (): Promise<void> => {
+    const picked = await vscode.window.showErrorMessage(
+      'Nova AI is disabled for this file by your privacy settings (ai.privacy.excluded_paths). Remove the matching excluded path rule and restart the language server.',
+      'Open Settings (nova.lsp.configPath)',
+      'Open AI docs',
+      'Restart Language Server',
+    );
+    if (picked === 'Open Settings (nova.lsp.configPath)') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.lsp.configPath');
+    } else if (picked === 'Open AI docs') {
+      await openAiDocs();
+    } else if (picked === 'Restart Language Server') {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    }
+  };
+
   const handleAiDisabled = async (): Promise<void> => {
     const options: string[] = [];
     if ((vscode.workspace.workspaceFolders ?? []).length > 0) {
@@ -2255,6 +2271,10 @@ export async function activate(context: vscode.ExtensionContext) {
           await handleAiNotConfigured();
           return;
         }
+        if (isAiPrivacyExcludedError(err)) {
+          await handleAiPrivacyExcluded();
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: explain error failed: ${message}`);
       }
@@ -2302,6 +2322,10 @@ export async function activate(context: vscode.ExtensionContext) {
           await handleAiNotConfigured();
           return;
         }
+        if (isAiPrivacyExcludedError(err)) {
+          await handleAiPrivacyExcluded();
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: generate method body failed: ${message}`);
       }
@@ -2347,6 +2371,10 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (isAiNotConfiguredError(err)) {
           await handleAiNotConfigured();
+          return;
+        }
+        if (isAiPrivacyExcludedError(err)) {
+          await handleAiPrivacyExcluded();
           return;
         }
         const message = formatError(err);
@@ -3386,6 +3414,18 @@ function isAiNotConfiguredError(err: unknown): boolean {
   // "AI is not configured" message as actionable configuration guidance.
   const message = formatError(err).toLowerCase();
   return message.includes('ai is not configured');
+}
+
+function isAiPrivacyExcludedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (code !== -32600) {
+    return false;
+  }
+  const message = formatError(err).toLowerCase();
+  return message.includes('ai.privacy.excluded_paths');
 }
 
 function normalizeAiResult(result: unknown): string {
