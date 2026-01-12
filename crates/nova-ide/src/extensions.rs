@@ -10,6 +10,10 @@ use nova_framework::{
     CompletionContext as FrameworkCompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
     Symbol as FrameworkSymbol,
 };
+use nova_refactor::{
+    organize_imports, workspace_edit_to_lsp, FileId as RefactorFileId, OrganizeImportsParams,
+    TextDatabase,
+};
 use nova_scheduler::CancellationToken;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -626,12 +630,36 @@ where
         let mut actions = Vec::new();
 
         let source = self.db.file_content(file);
-        let uri = self
+        let uri: Option<lsp_types::Uri> = self
             .db
             .file_path(file)
             .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
             .and_then(|path| nova_core::path_to_file_uri(&path).ok())
             .and_then(|uri| uri.parse().ok());
+
+        if let Some(uri) = uri.clone() {
+            if source.contains("import") {
+                let file = RefactorFileId::new(uri.to_string());
+                let db = TextDatabase::new([(file.clone(), source.to_string())]);
+                if let Ok(edit) = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+                {
+                    if !edit.is_empty() {
+                        if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
+                            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+                                lsp_types::CodeAction {
+                                    title: "Organize imports".to_string(),
+                                    kind: Some(
+                                        lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                                    ),
+                                    edit: Some(lsp_edit),
+                                    ..lsp_types::CodeAction::default()
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         if let (Some(uri), Some(span)) = (uri, span) {
             let source_index = TextIndex::new(source);
@@ -796,12 +824,36 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let mut actions = Vec::new();
 
         let source = self.db.file_content(file);
-        let uri = self
+        let uri: Option<lsp_types::Uri> = self
             .db
             .file_path(file)
             .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
             .and_then(|path| nova_core::path_to_file_uri(&path).ok())
             .and_then(|uri| uri.parse().ok());
+
+        if let Some(uri) = uri.clone() {
+            if source.contains("import") {
+                let file = RefactorFileId::new(uri.to_string());
+                let db = TextDatabase::new([(file.clone(), source.to_string())]);
+                if let Ok(edit) = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+                {
+                    if !edit.is_empty() {
+                        if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
+                            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+                                lsp_types::CodeAction {
+                                    title: "Organize imports".to_string(),
+                                    kind: Some(
+                                        lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                                    ),
+                                    edit: Some(lsp_edit),
+                                    ..lsp_types::CodeAction::default()
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         if let (Some(uri), Some(span)) = (uri, span) {
             let source_index = TextIndex::new(source);
