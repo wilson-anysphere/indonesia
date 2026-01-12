@@ -6797,7 +6797,7 @@ fn postfix_completions(
     if is_array || is_iterable {
         let snippet = match &receiver_ty {
             Type::Array(elem) if !elem.is_errorish() => {
-                let elem_ty = nova_types::format_type(&types, elem);
+                let elem_ty = format_type_for_postfix_snippet(&types, &import_ctx, elem);
                 format!(
                     "for ({elem_ty} ${{1:item}} : {}) {{\n    $0\n}}",
                     receiver.expr
@@ -6818,6 +6818,56 @@ fn postfix_completions(
     }
 
     items
+}
+
+fn format_type_for_postfix_snippet(
+    types: &TypeStore,
+    import_ctx: &JavaImportContext,
+    ty: &Type,
+) -> String {
+    let Type::Class(class_ty) = ty else {
+        return nova_types::format_type(types, ty);
+    };
+    let Some(class_def) = types.class(class_ty.def) else {
+        return nova_types::format_type(types, ty);
+    };
+    let binary_name = class_def.name.as_str();
+    let source_name = binary_name.replace('$', ".");
+
+    // Always use the short name for `java.lang.*` types (implicitly imported).
+    let outer_binary_name = binary_name.split('$').next().unwrap_or(binary_name);
+    let outer_package = outer_binary_name
+        .rsplit_once('.')
+        .map(|(pkg, _)| pkg)
+        .unwrap_or("");
+    if outer_package == "java.lang" {
+        let prefix = "java.lang.";
+        return source_name
+            .strip_prefix(prefix)
+            .unwrap_or(source_name.as_str())
+            .to_string();
+    }
+
+    let outer_source_name = outer_binary_name.to_string();
+    let outer_in_scope = import_ctx.package.as_deref() == Some(outer_package)
+        || import_ctx.explicit.iter().any(|imp| imp == &outer_source_name)
+        || import_ctx
+            .wildcard_packages
+            .iter()
+            .any(|pkg| pkg == outer_package);
+    if outer_in_scope {
+        if outer_package.is_empty() {
+            source_name
+        } else {
+            let prefix = format!("{outer_package}.");
+            source_name
+                .strip_prefix(&prefix)
+                .unwrap_or(source_name.as_str())
+                .to_string()
+        }
+    } else {
+        source_name
+    }
 }
 
 fn postfix_completion_item(range: Range, label: &str, snippet: String) -> CompletionItem {
@@ -15403,52 +15453,6 @@ fn analyze(text: &str) -> Analysis {
             }
 
             idx += 1;
-        }
-
-        // Vars with array types: <ty> ('[' ']')+ <name> ('=' | ';')
-        //
-        // `tokenize` splits `[]` into two separate tokens, so the fixed-size
-        // window above cannot capture declarations like `int[] xs = ...`.
-        for (idx, ty_tok) in body_tokens.iter().enumerate() {
-            if ty_tok.kind != TokenKind::Ident || ty_tok.text == "var" {
-                continue;
-            }
-
-            let mut k = idx + 1;
-            let mut dims = 0usize;
-            while k + 1 < body_tokens.len()
-                && body_tokens[k].kind == TokenKind::Symbol('[')
-                && body_tokens[k + 1].kind == TokenKind::Symbol(']')
-            {
-                dims += 1;
-                k += 2;
-            }
-            if dims == 0 {
-                continue;
-            }
-
-            if k + 1 >= body_tokens.len() {
-                continue;
-            }
-            let name_tok = body_tokens[k];
-            let next = body_tokens[k + 1];
-            if name_tok.kind != TokenKind::Ident
-                || (next.kind != TokenKind::Symbol('=') && next.kind != TokenKind::Symbol(';'))
-            {
-                continue;
-            }
-
-            let mut ty = ty_tok.text.clone();
-            for _ in 0..dims {
-                ty.push_str("[]");
-            }
-
-            analysis.vars.push(VarDecl {
-                name: name_tok.text.clone(),
-                name_span: name_tok.span,
-                ty,
-                is_var: false,
-            });
         }
 
         // Enhanced for-loop variables: `for (Type name : iterable) stmt`.
