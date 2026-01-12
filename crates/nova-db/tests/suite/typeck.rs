@@ -2103,6 +2103,40 @@ class C {
 }
 
 #[test]
+fn foreach_var_is_not_inferred_below_java_10() {
+    let src = r#"
+class C {
+    void m() {
+        for (var s : new String[0]) {
+            s.length();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db_with_source(src, JavaVersion::JAVA_8);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        "expected `var` to be treated as an unresolved type below Java 10; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("length")),
+        "expected foreach var to not be inferred below Java 10; got {diags:?}"
+    );
+
+    let offset = src
+        .find("s.length()")
+        .expect("snippet should contain `s.length()`");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "var");
+}
+
+#[test]
 fn unresolved_signature_types_are_anchored() {
     let src = r#"
 class C {
