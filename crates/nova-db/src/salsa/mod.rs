@@ -4927,6 +4927,63 @@ class Foo {
     }
 
     #[test]
+    fn open_document_parse_java_cache_respects_file_text_identity() {
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+
+        let store = JavaParseStore::new(&manager, open_docs);
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_java_parse_store(Some(store));
+
+        let text1 = Arc::new("class Foo {}".to_string());
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text1.clone());
+
+        let parse1 = db.snapshot().parse_java(file);
+        assert!(parse1.errors.is_empty());
+        assert_eq!(
+            u32::from(parse1.syntax().text_range().end()) as usize,
+            text1.len()
+        );
+
+        // Pinned parse_java should survive memo eviction while the text identity matches.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let parse1_after_evict = db.snapshot().parse_java(file);
+        assert!(
+            Arc::ptr_eq(&parse1, &parse1_after_evict),
+            "expected open document parse_java to be reused across eviction when text is unchanged"
+        );
+
+        // Changing the file text should invalidate the pinned parse_java (even if the file is still
+        // open) to avoid returning stale trees.
+        let text2 = Arc::new("class Foo { int x; }".to_string());
+        db.set_file_content(file, text2.clone());
+        let parse2 = db.snapshot().parse_java(file);
+        assert!(
+            !Arc::ptr_eq(&parse1, &parse2),
+            "expected parse_java to recompute after file_content changes"
+        );
+        assert!(parse2.errors.is_empty());
+        assert_eq!(
+            u32::from(parse2.syntax().text_range().end()) as usize,
+            text2.len()
+        );
+
+        // The new parse_java should now be pinned and survive a subsequent eviction.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let parse2_after_evict = db.snapshot().parse_java(file);
+        assert!(
+            Arc::ptr_eq(&parse2, &parse2_after_evict),
+            "expected new open document parse_java to be reused across eviction"
+        );
+    }
+
+    #[test]
     fn unpin_syntax_tree_restores_salsa_memo_accounting() {
         let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
         let open_docs = Arc::new(OpenDocuments::default());
@@ -5125,6 +5182,64 @@ class Foo {
         assert!(
             Arc::ptr_eq(&before, &after),
             "expected open document item_tree to be reused after enforcement-driven memo eviction"
+        );
+    }
+
+    #[test]
+    fn open_document_reuses_parse_java_after_memory_manager_enforce() {
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
+        // `JavaParseStore` intact so open documents can reuse pinned parse_java results.
+        let total = 1_000_000_000_000_u64;
+        let manager = MemoryManager::new(MemoryBudget {
+            total,
+            categories: nova_memory::MemoryBreakdown {
+                query_cache: 1,
+                syntax_trees: total / 2,
+                indexes: 0,
+                type_info: 0,
+                other: total - (total / 2) - 1,
+            },
+        });
+
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = JavaParseStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_java_parse_store(Some(store));
+
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+        db.set_file_text(file, "class Foo { int x; }");
+
+        let before = db.with_snapshot(|snap| {
+            let parse_java = snap.parse_java(file);
+            // Force non-zero query-cache usage so enforcement triggers Salsa memo eviction.
+            let _ = snap.parse(file);
+            parse_java
+        });
+        assert!(
+            before.errors.is_empty(),
+            "expected initial parse_java to succeed"
+        );
+        assert!(
+            db.salsa_memo_bytes() > 0,
+            "expected memo tracker to be non-zero prior to enforcement"
+        );
+
+        manager.enforce();
+        assert_eq!(
+            db.salsa_memo_bytes(),
+            0,
+            "expected memo tracker to clear after enforcement-driven eviction"
+        );
+
+        let after = db.snapshot().parse_java(file);
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "expected open document parse_java to be reused after enforcement-driven memo eviction"
         );
     }
 
