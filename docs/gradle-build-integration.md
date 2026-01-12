@@ -378,8 +378,10 @@ Gradle execution is time-bounded by whichever `CommandRunner` is in use:
 
 - `nova-lsp` typically uses a request-scoped time budget (e.g. 60s for `handle_java_classpath`) via
   `DeadlineCommandRunner` in `crates/nova-lsp/src/extensions/mod.rs`.
-- `nova-workspace` uses its configured build runner (`WorkspaceEngineConfig.build_runner`); in
-  non-test builds this defaults to `nova_build::DefaultCommandRunner` (15 minute timeout).
+- `nova-workspace` uses its configured build runner (`WorkspaceEngineConfig.build_runner`). When
+  using the default runner and Gradle build integration is enabled (`[build] mode = "on"` or
+  `[build.gradle] mode = "on"`), it applies the configured timeout from
+  `NovaConfig.build.gradle_timeout()` (default 120s).
 
 ---
 
