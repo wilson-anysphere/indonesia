@@ -1470,6 +1470,7 @@ pub fn core_file_diagnostics(
     if cancel.is_cancelled() {
         return Vec::new();
     }
+    sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
 }
 
@@ -1676,6 +1677,11 @@ pub(crate) fn diagnostics_for_quick_fixes(
         ));
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
 }
 

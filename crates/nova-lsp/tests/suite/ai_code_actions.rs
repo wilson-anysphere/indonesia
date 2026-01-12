@@ -1781,15 +1781,26 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         resp.get("error").is_none(),
         "expected executeCommand success, got: {resp:#?}"
     );
+    let apply_edit = find_apply_edit_request(&messages);
     let result = resp.get("result").expect("executeCommand result");
     if !result.is_null() {
         assert_eq!(
             result.get("applied").and_then(|v| v.as_bool()),
             Some(true),
-            "expected executeCommand result.applied == true, got: {resp:#?}"
+            "expected executeCommand result.applied true, got: {resp:#?}"
         );
+        if let Some(result_edit) = result.get("edit") {
+            let apply_edit_value = apply_edit
+                .get("params")
+                .and_then(|p| p.get("edit"))
+                .expect("applyEdit params.edit");
+            assert_eq!(
+                result_edit,
+                apply_edit_value,
+                "expected executeCommand result.edit to match applyEdit edit"
+            );
+        }
     }
-    let apply_edit = find_apply_edit_request(&messages);
 
     assert_eq!(
         apply_edit
@@ -1991,15 +2002,26 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         resp.get("error").is_none(),
         "expected executeCommand success, got: {resp:#?}"
     );
+    let apply_edit = find_apply_edit_request(&messages);
     let result = resp.get("result").expect("executeCommand result");
     if !result.is_null() {
         assert_eq!(
             result.get("applied").and_then(|v| v.as_bool()),
             Some(true),
-            "expected executeCommand result.applied == true, got: {resp:#?}"
+            "expected executeCommand result.applied true, got: {resp:#?}"
         );
+        if let Some(result_edit) = result.get("edit") {
+            let apply_edit_value = apply_edit
+                .get("params")
+                .and_then(|p| p.get("edit"))
+                .expect("applyEdit params.edit");
+            assert_eq!(
+                result_edit,
+                apply_edit_value,
+                "expected executeCommand result.edit to match applyEdit edit"
+            );
+        }
     }
-    let apply_edit = find_apply_edit_request(&messages);
 
     assert_eq!(
         apply_edit
