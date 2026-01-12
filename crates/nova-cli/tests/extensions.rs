@@ -200,4 +200,24 @@ wasm_paths = ["extensions"]
                 )),
             );
     }
+
+    #[test]
+    fn validate_exits_nonzero_for_invalid_manifest() {
+        let temp = TempDir::new().unwrap();
+        write_workspace_config(&temp);
+
+        temp.child("extensions/bad_manifest").create_dir_all().unwrap();
+        temp.child("extensions/bad_manifest/nova-ext.toml")
+            .write_str("not = [valid")
+            .unwrap();
+
+        nova()
+            .arg("extensions")
+            .arg("validate")
+            .arg("--root")
+            .arg(temp.path())
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("failed to parse extension manifest"));
+    }
 }

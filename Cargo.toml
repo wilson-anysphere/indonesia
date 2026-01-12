@@ -120,17 +120,29 @@ lto = "thin"
 # with full debug info enabled).
 [profile.dev.package.wasmtime]
 debug = 0
+[profile.dev.package.wasmtime-asm-macros]
+debug = 0
 [profile.dev.package.wasmtime-cranelift]
 debug = 0
 [profile.dev.package.wasmtime-cranelift-shared]
 debug = 0
 [profile.dev.package.wasmtime-environ]
 debug = 0
+[profile.dev.package.wasmtime-jit-icache-coherence]
+debug = 0
 [profile.dev.package.wasmtime-runtime]
+debug = 0
+[profile.dev.package.wasmtime-types]
+debug = 0
+[profile.dev.package.wasmtime-wmemcheck]
 debug = 0
 [profile.dev.package.cranelift-codegen]
 debug = 0
+[profile.dev.package.cranelift-codegen-meta]
+debug = 0
 [profile.dev.package.cranelift-frontend]
+debug = 0
+[profile.dev.package.cranelift-isle]
 debug = 0
 [profile.dev.package.cranelift-wasm]
 debug = 0
@@ -142,8 +154,24 @@ debug = 0
 debug = 0
 [profile.dev.package.cranelift-bforest]
 debug = 0
+[profile.dev.package.cranelift-codegen-shared]
+debug = 0
+[profile.dev.package.gimli]
+debug = 0
+[profile.dev.package.object]
+debug = 0
+[profile.dev.package.regalloc2]
+debug = 0
+[profile.dev.package.target-lexicon]
+debug = 0
+[profile.dev.package.wasm-encoder]
+debug = 0
+[profile.dev.package.wasmparser]
+debug = 0
 
 [profile.test.package.wasmtime]
+debug = 0
+[profile.test.package.wasmtime-asm-macros]
 debug = 0
 [profile.test.package.wasmtime-cranelift]
 debug = 0
@@ -151,11 +179,21 @@ debug = 0
 debug = 0
 [profile.test.package.wasmtime-environ]
 debug = 0
+[profile.test.package.wasmtime-jit-icache-coherence]
+debug = 0
 [profile.test.package.wasmtime-runtime]
+debug = 0
+[profile.test.package.wasmtime-types]
+debug = 0
+[profile.test.package.wasmtime-wmemcheck]
 debug = 0
 [profile.test.package.cranelift-codegen]
 debug = 0
+[profile.test.package.cranelift-codegen-meta]
+debug = 0
 [profile.test.package.cranelift-frontend]
+debug = 0
+[profile.test.package.cranelift-isle]
 debug = 0
 [profile.test.package.cranelift-wasm]
 debug = 0
@@ -166,4 +204,18 @@ debug = 0
 [profile.test.package.cranelift-control]
 debug = 0
 [profile.test.package.cranelift-bforest]
+debug = 0
+[profile.test.package.cranelift-codegen-shared]
+debug = 0
+[profile.test.package.gimli]
+debug = 0
+[profile.test.package.object]
+debug = 0
+[profile.test.package.regalloc2]
+debug = 0
+[profile.test.package.target-lexicon]
+debug = 0
+[profile.test.package.wasm-encoder]
+debug = 0
+[profile.test.package.wasmparser]
 debug = 0
