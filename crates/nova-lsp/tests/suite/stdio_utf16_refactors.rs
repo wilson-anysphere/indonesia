@@ -366,7 +366,6 @@ fn stdio_server_supports_field_rename() {
     let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
     let changes = edit.changes.expect("changes map");
     let edits = changes.get(&uri).expect("edits for uri");
-
     let actual = apply_lsp_text_edits(source, edits);
     let expected = source.replace("foo", "bar");
     assert_eq!(actual, expected);

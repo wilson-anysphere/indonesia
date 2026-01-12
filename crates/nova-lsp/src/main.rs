@@ -4272,7 +4272,7 @@ fn handle_rename(
     let Some(symbol) = symbol else {
         // If the cursor is on an identifier but we can't resolve it to a refactor symbol, prefer a
         // "rename not supported" error over "no symbol" to avoid confusing clients that attempt
-        // rename on fields/methods/types (which are not yet supported by the semantic refactorer).
+        // renames in places we can't resolve (e.g. incomplete code or unsupported symbols).
         if ident_range_at(&source, offset).is_some() {
             return Err((
                 -32602,
