@@ -1,0 +1,3 @@
+rootProject.name = 'gradle-mixed-java-levels'
+include 'app'
+

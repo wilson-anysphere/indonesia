@@ -375,11 +375,15 @@ pub(crate) fn load_gradle_project(
         .or_else(default_gradle_user_home);
 
     // Best-effort: parse Java level and deps from build scripts.
+    //
+    // When a Gradle snapshot exists, its Java config (if present) is authoritative.
+    // Otherwise, we aggregate Java level across discovered modules by taking the max
+    // `source`/`target` and OR-ing `enable_preview`.
     let mut root_java = parse_gradle_java_config(root).unwrap_or_default();
-    if let Some(snapshot) = snapshot.as_ref() {
-        if let Some(java) = java_config_from_snapshot(snapshot) {
-            root_java = java;
-        }
+    let snapshot_java = snapshot.as_ref().and_then(java_config_from_snapshot);
+    let aggregate_java_across_modules = snapshot_java.is_none();
+    if let Some(java) = snapshot_java {
+        root_java = java;
     }
     let version_catalog = load_gradle_version_catalog(root);
 
@@ -410,6 +414,14 @@ pub(crate) fn load_gradle_project(
             root: module_root.clone(),
             annotation_processing: Default::default(),
         });
+
+        if aggregate_java_across_modules {
+            if let Some(module_java) = parse_gradle_java_config(&module_root) {
+                root_java.source = root_java.source.max(module_java.source);
+                root_java.target = root_java.target.max(module_java.target);
+                root_java.enable_preview |= module_java.enable_preview;
+            }
+        }
 
         if let Some(cfg) = snapshot
             .as_ref()
@@ -499,7 +511,6 @@ pub(crate) fn load_gradle_project(
                 });
             }
         } else {
-            let _module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);
             append_source_set_java_roots(&mut source_roots, &module_root);
             crate::generated::append_generated_source_roots(
                 &mut source_roots,

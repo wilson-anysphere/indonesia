@@ -470,6 +470,23 @@ fn loads_gradle_toolchain_language_version() {
 }
 
 #[test]
+fn gradle_java_version_is_max_across_modules_without_snapshot() {
+    let root = testdata_path("gradle-mixed-java-levels");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    // Root build script targets Java 11; `:app` targets Java 17. Without a Gradle snapshot, Nova
+    // should best-effort aggregate to the maximum across modules.
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.java.source, JavaVersion(17));
+    assert_eq!(config.java.target, JavaVersion(17));
+}
+
+#[test]
 fn gradle_source_compatibility_overrides_toolchain_language_version() {
     let root = testdata_path("gradle-toolchain-with-compat");
     let gradle_home = tempdir().expect("tempdir");
