@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { LanguageClient, State, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
-import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
+import { WorkDoneProgress, type TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { registerNovaBuildFileWatchers } from './buildFileWatch';
 import { registerNovaBuildIntegration } from './buildIntegration';
@@ -1801,6 +1801,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   let aiResultCounter = 0;
+  let aiWorkDoneTokenCounter = 0;
 
   const openAiDocs = async (): Promise<void> => {
     try {
@@ -1856,9 +1857,18 @@ export async function activate(context: vscode.ExtensionContext) {
     const c = await requireClient();
     const lspArgs = Array.isArray(args.lspArguments) ? args.lspArguments : [];
 
+    aiWorkDoneTokenCounter += 1;
+    const workDoneToken = `nova-ai:${Date.now()}:${aiWorkDoneTokenCounter}`;
+
     const result = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: progressTitle, cancellable: true },
-      async (_progress, token) => {
+      async (progress, token) => {
+        const disposable = c.onProgress(WorkDoneProgress.type, workDoneToken, (value) => {
+          if (typeof value.message === 'string' && value.message.trim()) {
+            progress.report({ message: value.message });
+          }
+        });
+        try {
         if (token.isCancellationRequested) {
           throw new Error('RequestCancelled');
         }
@@ -1868,6 +1878,7 @@ export async function activate(context: vscode.ExtensionContext) {
           {
             command: args.lspCommand,
             arguments: lspArgs,
+            workDoneToken,
           },
           token,
         );
@@ -1875,6 +1886,9 @@ export async function activate(context: vscode.ExtensionContext) {
           throw new Error('RequestCancelled');
         }
         return resp;
+        } finally {
+          disposable.dispose();
+        }
       },
     );
 
