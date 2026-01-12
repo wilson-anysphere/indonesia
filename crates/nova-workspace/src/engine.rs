@@ -743,6 +743,7 @@ impl WorkspaceEngine {
             // The document is no longer open; unpin its syntax tree so memory
             // accounting attributes it back to Salsa memoization.
             self.query_db.unpin_syntax_tree(file_id);
+            self.query_db.unpin_item_tree(file_id);
         }
     }
 

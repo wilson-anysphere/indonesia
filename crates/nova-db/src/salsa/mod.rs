@@ -1059,6 +1059,29 @@ impl Database {
         self.memo_footprint.record(file, TrackedSalsaMemo::Parse, bytes);
     }
 
+    /// Remove any pinned item tree for `file` from the shared item tree store (if configured) and
+    /// restore the memo entry in the Salsa memo footprint.
+    ///
+    /// This is intended to be called when an editor document is closed: the item tree is no longer
+    /// pinned and should once again be attributed to Salsa memoization for accounting purposes.
+    pub fn unpin_item_tree(&self, file: FileId) {
+        let store = self.inner.lock().item_tree_store.clone();
+        if let Some(store) = store.as_ref() {
+            store.remove(file);
+        }
+
+        // Best-effort: restore the item-tree memo approximation based on the most recent input
+        // text snapshot.
+        let bytes = self
+            .inputs
+            .lock()
+            .file_content
+            .get(&file)
+            .map(|text| text.len() as u64)
+            .unwrap_or(0);
+        self.memo_footprint.record(file, TrackedSalsaMemo::ItemTree, bytes);
+    }
+
     pub fn new_with_persistence(
         project_root: impl AsRef<Path>,
         persistence: PersistenceConfig,
@@ -2932,6 +2955,46 @@ class Foo {
         assert!(
             report.usage.query_cache < text_len / 2,
             "expected query cache usage to not include the pinned parse allocation (query_cache={}, text_len={text_len})",
+            report.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn open_doc_item_tree_is_not_double_counted_between_query_cache_and_syntax_trees() {
+        use nova_syntax::SyntaxTreeStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let syntax_trees = SyntaxTreeStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(syntax_trees);
+        db.attach_item_tree_store(&manager, open_docs.clone());
+
+        let file = FileId::from_raw(43);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+
+        db.with_snapshot(|snap| {
+            let it = snap.item_tree(file);
+            assert!(
+                !it.items.is_empty(),
+                "expected item tree to contain at least one item"
+            );
+        });
+
+        let report = manager.report();
+        assert!(
+            report.usage.syntax_trees > 0,
+            "expected syntax tree store(s) to report usage for open document"
+        );
+        assert!(
+            report.usage.query_cache < text_len / 2,
+            "expected query cache usage to not include pinned parse/item_tree allocations (query_cache={}, text_len={text_len})",
             report.usage.query_cache
         );
     }

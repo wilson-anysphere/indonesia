@@ -61,6 +61,10 @@ impl ItemTreeStore {
         store
     }
 
+    pub fn is_open(&self, file: FileId) -> bool {
+        self.open_docs.is_open(file)
+    }
+
     /// Returns a cached `item_tree` result if `file` is open and `text` matches
     /// by pointer identity.
     pub fn get_if_text_matches(
@@ -68,10 +72,6 @@ impl ItemTreeStore {
         file: FileId,
         text: &Arc<String>,
     ) -> Option<Arc<TokenItemTree>> {
-        if !self.open_docs.is_open(file) {
-            return None;
-        }
-
         let mut inner = self.inner.lock().unwrap();
 
         // Opportunistically drop closed documents so the store only retains
@@ -80,6 +80,10 @@ impl ItemTreeStore {
         inner.retain(|file, _| self.open_docs.is_open(*file));
         if inner.len() != len_before {
             self.update_tracker_locked(&inner);
+        }
+
+        if !self.open_docs.is_open(file) {
+            return None;
         }
 
         let entry = inner.get(&file)?;
@@ -95,12 +99,17 @@ impl ItemTreeStore {
     }
 
     pub fn insert(&self, file: FileId, text: Arc<String>, item_tree: Arc<TokenItemTree>) {
+        let mut inner = self.inner.lock().unwrap();
+        let len_before = inner.len();
+        inner.retain(|file, _| self.open_docs.is_open(*file));
+
         if !self.open_docs.is_open(file) {
+            if inner.len() != len_before {
+                self.update_tracker_locked(&inner);
+            }
             return;
         }
 
-        let mut inner = self.inner.lock().unwrap();
-        inner.retain(|file, _| self.open_docs.is_open(*file));
         inner.insert(
             file,
             Entry {
@@ -115,6 +124,13 @@ impl ItemTreeStore {
         let mut inner = self.inner.lock().unwrap();
         inner.retain(|file, _| self.open_docs.is_open(*file));
         self.update_tracker_locked(&inner);
+    }
+
+    pub fn remove(&self, file: FileId) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.remove(&file).is_some() {
+            self.update_tracker_locked(&inner);
+        }
     }
 
     fn clear_all(&self) {

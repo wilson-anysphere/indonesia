@@ -53,10 +53,14 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
     };
     let approx_bytes = text.len() as u64;
 
+    // If an item tree store is configured, prefer reusing the pinned result for
+    // open documents. This allows warm reuse across Salsa memo eviction.
     let store = db.item_tree_store();
-    if let Some(store) = store.as_ref() {
+    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
         if let Some(cached) = store.get_if_text_matches(file, &text) {
-            db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
+            // Avoid double-counting: the item tree allocation is tracked by the
+            // item tree store under `MemoryCategory::SyntaxTrees`.
+            db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, 0);
             db.record_query_stat("item_tree", start.elapsed());
             return cached;
         }
@@ -78,10 +82,13 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
                 Some(artifacts) => {
                     db.record_disk_cache_hit("item_tree");
                     let result = Arc::new(artifacts.item_tree);
-                    if let Some(store) = store.as_ref() {
+                    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
                         store.insert(file, text.clone(), result.clone());
+                        // Avoid double-counting with `ItemTreeStore`.
+                        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, 0);
+                    } else {
+                        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
                     }
-                    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
                     db.record_query_stat("item_tree", start.elapsed());
                     return result;
                 }
@@ -94,10 +101,13 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
     let parse = db.parse(file);
     let it = build_item_tree(&parse, text.as_str());
     let result = Arc::new(it);
-    if let Some(store) = store.as_ref() {
+    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
         store.insert(file, text.clone(), result.clone());
+        // Avoid double-counting with `ItemTreeStore`.
+        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, 0);
+    } else {
+        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
     }
-    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
         let artifacts = FileAstArtifacts {
