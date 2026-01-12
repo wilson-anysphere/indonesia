@@ -1914,4 +1914,117 @@ mod tests {
         let invocations_second = runner.invocations();
         assert_eq!(invocations_second.len(), invocations_first.len());
     }
+
+    #[test]
+    fn java_compile_config_skips_module_path_elements_when_module_info_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        std::fs::write(
+            project_root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        let src_main = project_root.join("src/main/java");
+        std::fs::create_dir_all(&src_main).unwrap();
+        std::fs::write(src_main.join("module-info.java"), "module example.mod {}").unwrap();
+
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+        );
+        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+
+        // Make `project.compileSourceRoots` empty so Nova falls back to conventional `src/main/java`.
+        outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
+
+        let runner = Arc::new(StaticMavenRunner::new(outputs));
+        let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+        let cache = BuildCache::new(tmp.path().join("cache"));
+
+        let cfg = build
+            .java_compile_config(&project_root, None, &cache)
+            .unwrap();
+
+        assert_eq!(cfg.module_path, vec![named, automatic]);
+
+        // Since module-info.java is present, we should not need to evaluate Maven's module path
+        // element expressions.
+        assert!(!runner.invocations().iter().any(|args| {
+            args.iter()
+                .any(|a| a == "-Dexpression=project.compileModulePathElements")
+                || args
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.compileModulepathElements")
+                || args
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
+        }));
+    }
+
+    #[test]
+    fn java_compile_config_skips_module_path_elements_when_jpms_flags_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        std::fs::write(
+            project_root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(project_root.join("src/main/java")).unwrap();
+
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+        );
+        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
+
+        // JPMS signal via compiler args.
+        outputs.insert("maven.compiler.compilerArgs".to_string(), "[--module-path]".to_string());
+
+        let runner = Arc::new(StaticMavenRunner::new(outputs));
+        let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+        let cache = BuildCache::new(tmp.path().join("cache"));
+
+        let cfg = build
+            .java_compile_config(&project_root, None, &cache)
+            .unwrap();
+
+        assert_eq!(cfg.module_path, vec![named, automatic]);
+
+        // Since JPMS flags are present, we should not need to evaluate Maven's module path element
+        // expressions.
+        assert!(!runner.invocations().iter().any(|args| {
+            args.iter()
+                .any(|a| a == "-Dexpression=project.compileModulePathElements")
+                || args
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.compileModulepathElements")
+                || args
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
+        }));
+    }
 }
