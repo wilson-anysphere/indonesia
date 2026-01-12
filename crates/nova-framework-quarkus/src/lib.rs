@@ -224,8 +224,7 @@ where
 
 fn is_java_file(db: &dyn Database, file: FileId) -> bool {
     let Some(path) = db.file_path(file) else {
-        // Best-effort fallback when file paths are unavailable.
-        return true;
+        return false;
     };
 
     path.extension()
@@ -433,7 +432,13 @@ fn collect_application_properties<'a>(db: &'a dyn Database, project: ProjectId) 
             continue;
         }
 
-        if path.file_name().and_then(|n| n.to_str()) != Some("application.properties") {
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !file_name.starts_with("application")
+            || !path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("properties"))
+        {
             continue;
         }
 
