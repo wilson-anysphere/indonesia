@@ -98,8 +98,16 @@ Implementation: `crates/nova-project/src/gradle.rs` (`load_gradle_snapshot`).
 
 The snapshot is versioned by a top-level `schemaVersion` field.
 
-- **Writer constant:** `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot`, `SCHEMA_VERSION`)
-- **Reader constant:** `crates/nova-project/src/gradle.rs` (`GRADLE_SNAPSHOT_SCHEMA_VERSION`)
+To keep `nova-build` and `nova-project` in sync, the schema types/constants live in `nova-build-model`:
+
+- `crates/nova-build-model/src/gradle_snapshot.rs`:
+  - `GRADLE_SNAPSHOT_SCHEMA_VERSION`
+  - `GRADLE_SNAPSHOT_REL_PATH`
+
+Both sides import these from `nova_build_model`:
+
+- writer: `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot*`)
+- reader: `crates/nova-project/src/gradle.rs` (`load_gradle_snapshot`)
 
 When the schema changes, bump **both** constants in the same change and update the (de)serializer
 structs on both sides.
