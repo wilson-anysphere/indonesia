@@ -138,6 +138,7 @@ impl<'a> JavaPrettyFormatter<'a> {
 
         let mut parts: Vec<Doc<'a>> = Vec::new();
         let mut has_content = false;
+        let mut at_line_start = true;
         let mut pending_ws: Option<PendingWs> = None;
         let mut consumes_next_line_break = false;
         let ctx = FmtCtx::new(0);
@@ -190,7 +191,6 @@ impl<'a> JavaPrettyFormatter<'a> {
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
                     }
-
                     let kind = match tok.kind() {
                         SyntaxKind::LineComment => CommentKind::Line,
                         SyntaxKind::BlockComment => CommentKind::Block,
@@ -203,7 +203,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                         // emitting verbatim tokens for brace bodies we want the caller to control
                         // the final newline (e.g. avoid an extra blank line before `}`), so we
                         // print the comment text directly and enqueue a pending newline.
-                        if has_content && !had_ws {
+                        if has_content && !had_ws && !at_line_start {
                             // Ensure we don't glue `//` to the previous token when the source
                             // omits whitespace (`int x;// comment`).
                             parts.push(Doc::text(" "));
@@ -221,6 +221,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                         pending_ws =
                             Some(pending_ws.map_or(newline, |existing| existing.merge(newline)));
                         consumes_next_line_break = false;
+                        at_line_start = false;
                         continue;
                     }
 
@@ -237,6 +238,8 @@ impl<'a> JavaPrettyFormatter<'a> {
                     parts.push(fmt_comment(&ctx, &comment, self.source));
                     has_content = true;
                     consumes_next_line_break = kind == CommentKind::Doc;
+                    at_line_start = consumes_next_line_break;
+
                     // Ensure block comments cannot glue to the following token when the source has
                     // no whitespace between them (e.g. `/* comment */int x;`).
                     //
@@ -268,6 +271,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                     };
                     parts.push(token_doc);
                     has_content = true;
+                    at_line_start = false;
                 }
             }
         }
