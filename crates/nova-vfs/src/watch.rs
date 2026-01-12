@@ -14,7 +14,8 @@
 //!   `watch-notify` feature. This keeps `notify` and platform-specific watcher dependencies out of
 //!   the default build.
 //!   - This feature should be enabled by binaries / integration crates that actually need OS file
-//!     watching (e.g. `nova-lsp`, `nova-cli`, `nova-workspace`), not by low-level library crates.
+//!     watching (e.g. `nova-workspace`, which is used by the `nova` CLI), not by low-level library
+//!     crates.
 //!   - If you add another backend, keep it in `nova-vfs` and feature-gate it similarly (optional
 //!     dependency + `watch-*` feature), so other crates don't take on extra OS-specific deps.
 //! - Recursion semantics are represented by [`WatchMode`] (recursive vs non-recursive), which is

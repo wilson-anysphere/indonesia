@@ -125,8 +125,8 @@ Tradeoffs:
 
 Guidance:
 
-- **Binaries / integration crates** that need to watch the real filesystem (e.g. `nova-lsp`,
-  `nova-cli`, `nova-workspace`) should enable `nova-vfs/watch-notify`.
+- **Binaries / integration crates** that need to watch the real filesystem (e.g. `nova-workspace`,
+  which is used by the `nova` CLI) should enable `nova-vfs/watch-notify`.
 - Lower-level crates should depend only on the `nova-vfs` abstraction and avoid depending on
   `notify` directly.
 
