@@ -112,12 +112,40 @@ test('extension does not manually forward workspace file operations (vscode-lang
   const srcRoot = path.resolve(__dirname, '../../src');
   const tsFiles = await collectTypeScriptFiles(srcRoot);
 
-  const violations: string[] = [];
+  const bannedNotificationMethods = new Set(FILE_OPERATION_LISTENERS.map((entry) => entry.notificationMethod));
+  const violations = new Set<string>();
 
   for (const filePath of tsFiles) {
     const raw = await fs.readFile(filePath, 'utf8');
     const sourceFile = ts.createSourceFile(filePath, raw, ts.ScriptTarget.ESNext, true);
     const fileEnv = buildConstStringEnvFromVariableStatements(sourceFile.statements);
+
+    const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>) => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        if (node.expression.name.text === 'sendNotification') {
+          const arg0 = node.arguments[0];
+          const method = arg0 ? evalConstString(arg0, env) : undefined;
+          if (method && bannedNotificationMethods.has(method)) {
+            const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+            violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`);
+          }
+        }
+      }
+
+      let nextEnv = env;
+      if (ts.isBlock(node)) {
+        const blockEnv = buildConstStringEnvFromVariableStatements(node.statements);
+        if (blockEnv.size > 0) {
+          nextEnv = new Map<string, string>([...env, ...blockEnv]);
+        }
+      }
+
+      ts.forEachChild(node, (child) => {
+        scanForBannedSendNotifications(child, nextEnv);
+      });
+    };
+
+    scanForBannedSendNotifications(sourceFile, fileEnv);
 
     const visit = (node: ts.Node) => {
       if (!ts.isCallExpression(node)) {
@@ -156,7 +184,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
               const resolved = evalConstString(arg0, env);
               if (resolved === listener.notificationMethod) {
                 const loc = sourceFile.getLineAndCharacterOfPosition(handlerNode.getStart(sourceFile));
-                violations.push(
+                violations.add(
                   `${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} ${listenerMethod} -> ${listener.notificationMethod}`,
                 );
               }
@@ -175,10 +203,10 @@ test('extension does not manually forward workspace file operations (vscode-lang
   }
 
   assert.deepEqual(
-    violations,
+    Array.from(violations).sort(),
     [],
     `Manual forwarding of workspace file operations detected.\n` +
       `vscode-languageclient should handle LSP workspace/fileOperations automatically.\n\n` +
-      violations.join('\n'),
+      Array.from(violations).sort().join('\n'),
   );
 });
