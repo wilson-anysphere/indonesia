@@ -7441,6 +7441,11 @@ fn general_completions(
         ("try-finally", Some("try {\n    $0\n} finally {\n}")),
         ("else", None),
         ("return", None),
+        // Top-level / file-scoped keywords. Even though these are not valid in all contexts, they
+        // improve mid-edit completion when the user is still typing `import`/`package` and the
+        // specialized clause completions cannot trigger yet.
+        ("import", None),
+        ("package", None),
         ("class", None),
         ("new", None),
     ] {

@@ -178,6 +178,26 @@ class Main2 {
 }
 
 #[test]
+fn completion_in_incomplete_import_keyword_suggests_import() {
+    let (db, file, pos) = fixture("impor<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "import"),
+        "expected `import` keyword completion for incomplete `impor`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_package_keyword_suggests_package() {
+    let (db, file, pos) = fixture("packag<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "package"),
+        "expected `package` keyword completion for incomplete `packag`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_call_does_not_panic() {
     let (db, file, pos) = fixture(
         r#"
