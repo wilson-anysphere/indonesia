@@ -1106,3 +1106,45 @@ fn type_use_annotations_can_be_qualified_and_glued_to_type_tokens() {
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 }
+
+#[test]
+fn type_use_annotations_before_qualified_segments_are_ignored() {
+    // JLS allows annotations on type uses in qualified class types, e.g.
+    // `Outer.@A Inner`. `TypeRef.text` will typically strip whitespace to
+    // `Outer.@AInner`.
+    let (jdk, index, scopes, scope) = setup(&["import java.util.Map;"]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "Map.Entry", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "Map.@AEntry", None);
+
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
+
+#[test]
+fn type_use_annotations_between_multiple_array_dims_are_ignored() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String[][]", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String@A[]@B[]",
+        None,
+    );
+
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
