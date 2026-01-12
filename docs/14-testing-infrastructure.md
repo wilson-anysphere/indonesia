@@ -172,6 +172,8 @@ cargo nextest run --locked --workspace --profile ci
 
 # one crate
 cargo test --locked -p nova-syntax
+# agent/multi-runner:
+bash scripts/cargo_agent.sh test --locked -p nova-syntax
 
 # one integration test harness + filter (e.g. navigation tests)
 cargo test --locked -p nova-lsp --test stdio_server navigation
