@@ -847,7 +847,8 @@ fn new_expression_type_completions(
         }
     }
 
-    rank_completions(prefix, &mut items);
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
     items.truncate(MAX_NEW_TYPE_COMPLETIONS);
     items
 }
