@@ -277,7 +277,7 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   const frameworksView: NovaFrameworksViewController = registerNovaFrameworkDashboard(context, sendNovaRequest, {
-    isServerRunning: () => Boolean(client),
+    isServerRunning: () => client?.state === State.Running || client?.state === State.Starting,
     isSafeMode: () => frameworksSafeMode,
   });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
@@ -1708,19 +1708,23 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
         if (event.newState === State.Starting || event.newState === State.Stopped) {
+          void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', event.newState === State.Starting);
           resetNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY);
           for (const workspace of vscode.workspace.workspaceFolders ?? []) {
             resetNovaExperimentalCapabilities(workspace.uri.toString());
           }
           updateFrameworksMethodSupportContexts();
+          frameworksView.refresh();
           return;
         }
         if (event.newState === State.Running) {
+          void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', true);
           setNovaExperimentalCapabilities(DEFAULT_NOVA_CAPABILITIES_KEY, languageClient.initializeResult);
           for (const workspace of vscode.workspace.workspaceFolders ?? []) {
             setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
           }
           updateFrameworksMethodSupportContexts();
+          frameworksView.refresh();
         }
       }),
     );
