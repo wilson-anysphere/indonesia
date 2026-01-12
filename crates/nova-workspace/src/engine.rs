@@ -1849,16 +1849,18 @@ impl WorkspaceEngine {
         let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
         let text = view.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
-        let mut items: Vec<CompletionItem> = nova_ide::completions(&view, file_id, position)
+        let mut lsp_items = nova_ide::completions(&view, file_id, position);
+        // Truncate before mapping into `nova_types::CompletionItem` so we avoid allocating
+        // intermediate completion structs (and their strings) that would be dropped immediately.
+        lsp_items.truncate(cap);
+        lsp_items
             .into_iter()
             .map(|item| CompletionItem {
                 label: item.label,
                 detail: item.detail,
                 replace_span: None,
             })
-            .collect();
-        items.truncate(cap);
-        items
+            .collect()
     }
 
     fn background_indexing_plan(
