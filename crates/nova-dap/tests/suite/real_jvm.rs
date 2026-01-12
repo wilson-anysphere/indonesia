@@ -496,7 +496,7 @@ async fn dap_stream_debug_request_works_on_real_jvm() {
 
     std::fs::write(
         &source_path,
-        "import java.util.*;\npublic class Main {\n  List<Integer> nums = Arrays.asList(1,2,3);\n  void run() throws Exception {\n    Thread.sleep(500);\n    long count = nums.stream().filter(x -> x > 1).map(x -> x * 2).count(); // BREAKPOINT\n    System.out.println(count);\n  }\n  public static void main(String[] args) throws Exception { new Main().run(); }\n}\n",
+        "import java.util.*;\npublic class Main {\n  public static void main(String[] args) throws Exception {\n    Thread.sleep(500);\n    List<Integer> nums = Arrays.asList(1,2,3);\n    long count = nums.stream().filter(x -> x > 1).map(x -> x * 2).count(); // BREAKPOINT\n    System.out.println(count);\n  }\n}\n",
     )
     .unwrap();
 
@@ -640,26 +640,11 @@ async fn dap_stream_debug_request_works_on_real_jvm() {
     let stream_resp = dap
         .wait_for_response(stream_seq, Instant::now() + Duration::from_secs(60))
         .await;
-    let stream_ok = stream_resp
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !stream_ok {
-        // Stream debug is currently only implemented for the mock debugger; the
-        // wire debugger returns an error. Treat this as a best-effort smoke test
-        // so environments with a JDK still stay green, while keeping assertions
-        // for the eventual implementation.
-        let msg = stream_resp
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        assert!(
-            msg.contains("streamDebug is not implemented")
-                || msg.contains("VM returned error code"),
-            "nova/streamDebug request failed unexpectedly: {stream_resp}"
-        );
-        return;
-    }
+    assert_eq!(
+        stream_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "nova/streamDebug request failed: {stream_resp}"
+    );
 
     let intermediates = stream_resp
         .pointer("/body/analysis/intermediates")
