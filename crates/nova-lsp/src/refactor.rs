@@ -253,7 +253,6 @@ pub fn extract_variable_code_actions(
         // use structured semantic conflicts (`Conflicts(NameCollision)`).
         const NAME_CONFLICT_REASON: &str =
             "extracted variable name conflicts with an existing binding";
-
         for attempt in 0usize..100 {
             let name = if attempt == 0 {
                 "extracted".to_string()
