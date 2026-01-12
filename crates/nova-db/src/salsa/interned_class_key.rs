@@ -263,4 +263,32 @@ mod tests {
         }));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn snapshot_retains_pre_eviction_interned_ids() {
+        let db = SalsaDatabase::new();
+        let project = ProjectId::from_raw(0);
+
+        let _sentinel = db.with_write(|db| {
+            db.intern_class_key(InternedClassKey {
+                project,
+                name: "Sentinel".to_string(),
+            })
+        });
+        let key = InternedClassKey {
+            project,
+            name: "Foo".to_string(),
+        };
+        let id_before = db.with_write(|db| db.intern_class_key(key.clone()));
+
+        let snap = db.snapshot();
+
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        // The snapshot owns a salsa storage snapshot, so it should still be able
+        // to resolve the pre-eviction interned id even though the live database
+        // has been rebuilt from scratch.
+        assert_eq!(snap.lookup_intern_class_key(id_before), key);
+        assert_eq!(snap.intern_class_key(key.clone()), id_before);
+    }
 }

@@ -291,8 +291,11 @@ fn jpms_typeck_allows_classpath_types_from_named_modules_via_all_unnamed_readabi
 
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
 
-    // Simulate WorkspaceLoader flattening: the legacy classpath index contains dep.jar,
-    // and in JPMS mode it should be treated as the unnamed module.
+    // Simulate WorkspaceLoader flattening: the legacy classpath index contains dep.jar.
+    //
+    // In JPMS mode we treat these jars as belonging to the unnamed module. In practice,
+    // many build tools also apply `--add-reads <module>=ALL-UNNAMED` so named workspace
+    // modules can still access classpath-only dependencies.
     let classpath = ClasspathIndex::build(&[CpEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
 
