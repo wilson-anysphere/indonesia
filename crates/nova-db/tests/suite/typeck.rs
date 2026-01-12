@@ -8,7 +8,7 @@ use nova_db::{
 };
 use nova_hir::item_tree::{Item, Member};
 use nova_jdk::JdkIndex;
-use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
+use nova_project::{BuildSystem, JavaConfig, JavaVersion, Module, ProjectConfig};
 use nova_resolve::ids::DefWithBodyId;
 use nova_types::{PrimitiveType, Severity, Type, TypeEnv, TypeStore};
 use tempfile::TempDir;
@@ -20,7 +20,12 @@ fn base_project_config(root: PathBuf) -> ProjectConfig {
     ProjectConfig {
         workspace_root: root.clone(),
         build_system: BuildSystem::Simple,
-        java: JavaConfig::default(),
+        // Make the language level deterministic in tests; don't rely on `JavaConfig::default()`.
+        java: JavaConfig {
+            source: JavaVersion::JAVA_17,
+            target: JavaVersion::JAVA_17,
+            enable_preview: false,
+        },
         modules: vec![Module {
             name: "dummy".to_string(),
             root,
@@ -51,13 +56,17 @@ fn set_file(
 }
 
 fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
+    setup_db_with_source(text, JavaVersion::JAVA_17)
+}
+
+fn setup_db_with_source(text: &str, source: JavaVersion) -> (SalsaRootDatabase, FileId) {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
     let tmp = TempDir::new().unwrap();
-    db.set_project_config(
-        project,
-        Arc::new(base_project_config(tmp.path().to_path_buf())),
-    );
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.java.source = source;
+    cfg.java.target = source;
+    db.set_project_config(project, Arc::new(cfg));
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
 
@@ -1730,6 +1739,31 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "String");
+}
+
+#[test]
+fn var_is_not_inferred_below_java_10() {
+    let src = r#"
+class C {
+    void m() {
+        var x = 1;
+        x.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db_with_source(src, JavaVersion::JAVA_8);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        "expected `var` to be treated as an unresolved type below Java 10; got {diags:?}"
+    );
+
+    let offset = src.find("x.toString").expect("snippet should contain `x.toString`");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "var");
 }
 
 #[test]
