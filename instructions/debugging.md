@@ -22,6 +22,7 @@ This workstream owns the Debug Adapter Protocol implementation and JVM debugging
 - **`--listen <addr>`:** serve DAP over **TCP** instead of stdio (wire adapter only)
   - Example: `--listen 127.0.0.1:4711`
   - Use port `0` to auto-pick a free port: `--listen 127.0.0.1:0`
+- **`--config <path>` / `NOVA_CONFIG=<path>`:** load a `NovaConfig` TOML file (optional)
 
 ---
 

@@ -45,6 +45,15 @@ prints the bound address to stderr (for example: `listening on 127.0.0.1:4711`).
 `--listen` is only supported by the default wire adapter; `--legacy --listen` is
 rejected.
 
+### Configuration (optional)
+
+`nova-dap` accepts a TOML config file via:
+
+- `--config <path>` (preferred), or
+- `NOVA_CONFIG=/path/to/nova.toml` (fallback)
+
+When neither are set, it uses `NovaConfig::default()` (in-memory defaults).
+
 ## DAP lifecycle / request ordering
 
 `nova-dap` follows the standard DAP initialization flow:
