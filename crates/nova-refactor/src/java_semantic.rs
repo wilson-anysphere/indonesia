@@ -6965,56 +6965,6 @@ fn record_lightweight_expr(
     use java_syntax::ast::Expr;
 
     match expr {
-        Expr::ArrayCreation(array) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(array.elem_ty.range.start, array.elem_ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            for dim_expr in &array.dim_exprs {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    dim_expr,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
-        Expr::Cast(cast) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(cast.ty.range.start, cast.ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_expr(
-                file,
-                text,
-                &cast.expr,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
         Expr::New(new_expr) => {
             record_type_names_in_range(
                 file,
@@ -7040,6 +6990,56 @@ fn record_lightweight_expr(
                     spans,
                 );
             }
+        }
+        Expr::ArrayCreation(expr) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(expr.elem_ty.range.start, expr.elem_ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for dim in &expr.dim_exprs {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    dim,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Expr::Cast(expr) => {
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
         }
         Expr::Call(call) => {
             record_lightweight_expr(
