@@ -12,6 +12,10 @@ export async function readTsSourceFile(filePath: string): Promise<ts.SourceFile>
     const contents = await fs.readFile(filePath, 'utf8');
     return ts.createSourceFile(filePath, contents, ts.ScriptTarget.ESNext, true);
   })();
+  // If parsing fails (e.g. file deleted mid-run), don't permanently cache the rejected promise.
+  void task.catch(() => {
+    sourceFileCache.delete(filePath);
+  });
   sourceFileCache.set(filePath, task);
   return await task;
 }
