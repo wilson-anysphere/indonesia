@@ -1748,6 +1748,41 @@ class C {
 }
 
 #[test]
+fn type_at_offset_display_does_not_execute_typeck_body() {
+    let src = r#"
+class C {
+    String m() {
+        return "x".substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    db.clear_query_stats();
+
+    let offset = src
+        .find("substring(")
+        .expect("snippet should contain substring call")
+        + "substring".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "type_at_offset_display should not invoke full-body type checking"
+    );
+}
+
+#[test]
 fn resolve_method_call_demand_uses_expected_return_for_target_typed_generic_call() {
     let src = r#"
 import java.util.*;
@@ -3911,6 +3946,27 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "var");
+}
+
+#[test]
+fn var_self_reference_does_not_panic() {
+    let src = r#"
+class C {
+    void m() {
+        var x = x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("= x")
+        .expect("snippet should contain initializer x")
+        + "= ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "<?>");
 }
 
 #[test]

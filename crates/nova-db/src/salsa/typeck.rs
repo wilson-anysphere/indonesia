@@ -325,12 +325,9 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     fn type_at_offset_display(&self, file: FileId, offset: u32) -> Option<String>;
 }
 
-fn type_of_expr(db: &dyn NovaTypeck, _file: FileId, expr: FileExprId) -> Type {
-    let body = db.typeck_body(expr.owner);
-    body.expr_types
-        .get(expr.expr.idx())
-        .cloned()
-        .unwrap_or(Type::Unknown)
+fn type_of_expr(db: &dyn NovaTypeck, file: FileId, expr: FileExprId) -> Type {
+    // Demand-driven: avoid forcing `typeck_body(owner)` for IDE queries.
+    db.type_of_expr_demand(file, expr)
 }
 
 fn type_of_expr_demand_result(
