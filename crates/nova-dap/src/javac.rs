@@ -103,6 +103,22 @@ fn normalize_legacy_javac_source_target(value: &str) -> Cow<'_, str> {
     }
 }
 
+fn normalize_javac_release(value: &str) -> Cow<'_, str> {
+    // `javac --release` expects a feature release number (8, 11, 17, ...). Some build tools may
+    // still report legacy `1.x` values (e.g. `1.8`). Normalize those to the expected form.
+    let trimmed = value.trim();
+    let Some(rest) = trimmed.strip_prefix("1.") else {
+        return Cow::Borrowed(trimmed);
+    };
+
+    let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    let Ok(version) = digits.parse::<u32>() else {
+        return Cow::Borrowed(trimmed);
+    };
+
+    Cow::Owned(version.to_string())
+}
+
 pub(crate) async fn resolve_vm_classpath(
     cancel: &CancellationToken,
     jdwp: &JdwpClient,
@@ -275,7 +291,8 @@ pub(crate) async fn compile_java_to_dir(
     }
     if let Some(release) = javac.release.as_deref() {
         cmd.arg("--release");
-        cmd.arg(release);
+        let normalized = normalize_javac_release(release);
+        cmd.arg(normalized.as_ref());
     } else {
         if let Some(source) = javac.source.as_deref() {
             cmd.arg("-source");
@@ -449,6 +466,16 @@ mod tests {
     #[test]
     fn normalize_legacy_javac_source_target_does_not_rewrite_modern_versions() {
         assert_eq!(normalize_legacy_javac_source_target("17").as_ref(), "17");
+    }
+
+    #[test]
+    fn normalize_javac_release_converts_legacy_1_8_to_8() {
+        assert_eq!(normalize_javac_release("1.8").as_ref(), "8");
+    }
+
+    #[test]
+    fn normalize_javac_release_preserves_modern_versions() {
+        assert_eq!(normalize_javac_release("21").as_ref(), "21");
     }
 }
 
