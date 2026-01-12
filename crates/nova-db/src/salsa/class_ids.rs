@@ -25,6 +25,17 @@ impl ClassKey {
 ///
 /// This intentionally lives outside Salsa storage so it is unaffected by
 /// `Database::evict_salsa_memos` which rebuilds the Salsa storage from scratch.
+///
+/// ## Salsa purity / determinism caveat
+///
+/// This interner is **not** tracked by Salsa. If it is accessed from within
+/// Salsa queries, the numeric `ClassId` assigned to a given [`ClassKey`] can
+/// become dependent on evaluation order (which queries ran first, thread
+/// scheduling, etc).
+///
+/// That violates Salsa's "purity rule" unless callers ensure interning happens
+/// in a deterministic, input-driven order (e.g. by pre-seeding all known class
+/// keys in a stable sort order before any query results are observed).
 #[derive(Debug, Default)]
 pub struct ClassIdInterner {
     by_key: HashMap<ClassKey, ClassId>,
