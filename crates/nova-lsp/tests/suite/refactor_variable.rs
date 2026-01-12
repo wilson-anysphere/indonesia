@@ -818,6 +818,64 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_actions_offered_in_multiline_switch_group() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        switch (x) {
+            case 1:
+                System.out.println(/*start*/1 + 2/*end*/);
+                break;
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let mut actions = extract_variable_code_actions(&uri, &source, range);
+    assert_eq!(actions.len(), 2);
+
+    let mut var_action = actions
+        .drain(..)
+        .find_map(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) if action.title == "Extract variable…" => {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("extract variable action");
+
+    resolve_extract_variable_code_action(&uri, &source, &mut var_action, Some("sum".to_string()))
+        .expect("resolve var action");
+
+    let edit = var_action.edit.expect("resolved edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for uri");
+    let actual = apply_lsp_edits(&source, edits);
+
+    let expected = r#"
+class C {
+    void m(int x) {
+        switch (x) {
+            case 1:
+                var sum = 1 + 2;
+                System.out.println(sum);
+                break;
+        }
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_variable_not_offered_inside_try_with_resources_resource_specification() {
     let fixture = r#"
 class C {

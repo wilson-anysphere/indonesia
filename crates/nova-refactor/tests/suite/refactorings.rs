@@ -4410,6 +4410,49 @@ fn extract_variable_allows_switch_case_group() {
 }
 
 #[test]
+fn extract_variable_rejects_name_conflict_in_other_switch_case_group() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        int tmp = 0;
+        break;
+      case 2:
+        System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "tmp")),
+        "expected NameCollision conflict, got: {conflicts:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_switch_arrow_single_statement_body() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
