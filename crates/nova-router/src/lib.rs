@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BinaryHeap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -2478,6 +2479,11 @@ fn build_global_symbols<'a>(
     symbols
 }
 
+thread_local! {
+    static TRIGRAM_SCRATCH: RefCell<TrigramCandidateScratch> =
+        RefCell::new(TrigramCandidateScratch::default());
+}
+
 #[derive(Debug, Clone)]
 struct GlobalSymbolIndex {
     update_id: u64,
@@ -2561,18 +2567,23 @@ impl GlobalSymbolIndex {
             return self.finish_top_k(scored, limit);
         }
 
-        let mut candidate_scratch = TrigramCandidateScratch::default();
-        let candidates = self
-            .trigram
-            .candidates_with_scratch(query, &mut candidate_scratch);
+        let have_trigram_candidates = TRIGRAM_SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            let candidates = self.trigram.candidates_with_scratch(query, &mut *scratch);
+            if candidates.is_empty() {
+                false
+            } else {
+                self.score_candidates_top_k(
+                    candidates.iter().copied(),
+                    &mut matcher,
+                    limit,
+                    &mut scored,
+                );
+                true
+            }
+        });
 
-        if !candidates.is_empty() {
-            self.score_candidates_top_k(
-                candidates.iter().copied(),
-                &mut matcher,
-                limit,
-                &mut scored,
-            );
+        if have_trigram_candidates {
             return self.finish_top_k(scored, limit);
         }
 
@@ -3025,6 +3036,52 @@ mod tests {
                     index.search_full(query, limit),
                     "mismatch for query={query:?} limit={limit}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn global_symbol_search_reuses_trigram_scratch_across_queries() {
+        let symbols = vec![
+            Symbol {
+                name: "HashMap".into(),
+                path: "a.java".into(),
+            },
+            Symbol {
+                name: "FooBar".into(),
+                path: "b.java".into(),
+            },
+            Symbol {
+                name: "Vector".into(),
+                path: "c.java".into(),
+            },
+        ];
+
+        let index = GlobalSymbolIndex::new(symbols, 0);
+
+        let cases = [
+            ("Hash", Some("HashMap")),
+            // Acronym-style query where trigram intersection is likely empty.
+            ("fbr", Some("FooBar")),
+            ("zzz", None),
+            ("Vec", Some("Vector")),
+        ];
+
+        // Run the queries repeatedly to ensure scratch state doesn't leak between calls.
+        for _ in 0..3 {
+            for (query, expected) in cases {
+                let results = index.search(query, 10);
+                match expected {
+                    Some(name) => assert_eq!(
+                        results.first().map(|sym| sym.name.as_str()),
+                        Some(name),
+                        "unexpected first result for query={query:?}: {results:?}"
+                    ),
+                    None => assert!(
+                        results.is_empty(),
+                        "expected no results for query={query:?}, got {results:?}"
+                    ),
+                }
             }
         }
     }
