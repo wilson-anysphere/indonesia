@@ -133,7 +133,7 @@ fn file_uri(db: &dyn Database, file: FileId) -> lsp_types::Uri {
     lsp_types::Uri::from_str("file:///unknown.java").expect("static URI is valid")
 }
 
-fn insertion_point(source: &str) -> (usize, String) {
+pub(crate) fn insertion_point(source: &str) -> (usize, String) {
     let Some(close_brace) = source.rfind('}') else {
         return (source.len(), "  ".to_string());
     };
@@ -171,7 +171,7 @@ fn single_file_insert_edit(
     }
 }
 
-fn method_stub(name: &str, indent: &str, is_static: bool) -> String {
+pub(crate) fn method_stub(name: &str, indent: &str, is_static: bool) -> String {
     let static_kw = if is_static { "static " } else { "" };
     format!("\n\n{indent}private {static_kw}Object {name}(Object... args) {{ return null; }}\n")
 }

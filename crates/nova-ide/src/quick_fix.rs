@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
@@ -16,6 +16,7 @@ pub(crate) fn quick_fixes_for_diagnostics(
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
+    let mut seen_create_method: HashSet<String> = HashSet::new();
 
     actions.extend(crate::quickfix::unresolved_type_quick_fixes(
         uri,
@@ -170,6 +171,36 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     ..Default::default()
                 }));
             }
+            // Lightweight lexer-based diagnostics.
+            "UNRESOLVED_REFERENCE"
+            // Salsa/typeck.
+            | "unresolved-method" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
+
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                let Some(name) = extract_unresolved_member_name(diag, source, diag_span) else {
+                    continue;
+                };
+
+                let title = format!("Create method '{name}'");
+                if !seen_create_method.insert(title.clone()) {
+                    continue;
+                }
+
+                let (insert_offset, indent) = crate::quick_fixes::insertion_point(source);
+                let new_text = crate::quick_fixes::method_stub(&name, &indent, false);
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(single_edit(uri, source, insert_offset, new_text)),
+                    ..Default::default()
+                }));
+            }
             _ => {}
         }
     }
@@ -238,6 +269,70 @@ fn is_simple_type_identifier(name: &str) -> bool {
         return false;
     }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn extract_unresolved_member_name(diag: &Diagnostic, source: &str, span: Span) -> Option<String> {
+    extract_quoted(&diag.message, '\'')
+        .or_else(|| extract_backticked(&diag.message))
+        .or_else(|| {
+            let snippet = source.get(span.start..span.end)?;
+            extract_method_name_from_snippet(snippet)
+        })
+}
+
+fn extract_quoted(message: &str, quote: char) -> Option<String> {
+    let start = message.find(quote)?;
+    let rest = &message[start + quote.len_utf8()..];
+    let end_rel = rest.find(quote)?;
+    let value = &rest[..end_rel];
+    (!value.is_empty()).then_some(value.to_string())
+}
+
+fn extract_method_name_from_snippet(snippet: &str) -> Option<String> {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let prefix = trimmed.split('(').next().unwrap_or(trimmed);
+    extract_last_identifier(prefix)
+}
+
+fn extract_last_identifier(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        let ch = bytes[i - 1] as char;
+        if is_ident_continue(ch) {
+            break;
+        }
+        i -= 1;
+    }
+    if i == 0 {
+        return None;
+    }
+    let end = i;
+    while i > 0 {
+        let ch = bytes[i - 1] as char;
+        if is_ident_continue(ch) {
+            i -= 1;
+            continue;
+        }
+        break;
+    }
+    let start = i;
+    let ident = text.get(start..end)?;
+    if ident.is_empty() || !is_ident_start(ident.as_bytes()[0] as char) {
+        return None;
+    }
+    Some(ident.to_string())
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || matches!(ch, '_' | '$')
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
 }
 
 fn create_local_variable_action(
