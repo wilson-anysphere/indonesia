@@ -16,6 +16,12 @@ use tempfile::TempDir;
 #[path = "../typeck/diagnostics.rs"]
 mod diagnostics;
 
+#[path = "../typeck/demand.rs"]
+mod demand;
+
+#[path = "../typeck/resolve_method_call.rs"]
+mod resolve_method_call;
+
 fn base_project_config(root: PathBuf) -> ProjectConfig {
     ProjectConfig {
         workspace_root: root.clone(),
@@ -780,6 +786,28 @@ class C { void m(){ Object x = String.class; } }
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "Class<String>");
+}
+
+#[test]
+fn type_at_offset_finds_explicit_constructor_invocation() {
+    let src = r#"
+class C {
+    C() { this(1); }
+    C(int x) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("this(1)")
+        .expect("snippet should contain explicit constructor invocation")
+        + 1;
+    let ty = db.type_at_offset_display(file, offset as u32);
+    assert!(
+        ty.is_some(),
+        "expected a type at offset inside explicit constructor invocation, got {ty:?}; diagnostics: {:?}",
+        db.type_diagnostics(file)
+    );
 }
 
 #[test]

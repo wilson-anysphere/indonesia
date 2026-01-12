@@ -1,3 +1,6 @@
+mod class_id_registry;
+mod class_id_stability;
+mod class_ids;
 mod hir_lowering;
 mod java_parse_no_reparse;
 mod line_index;
@@ -7,5 +10,8 @@ mod resilience_broken_code;
 mod salsa_db_view;
 mod salsa_indexing;
 mod salsa_item_tree_store;
+mod typeck;
+mod typeck_java_shadowing;
 mod typeck_jpms;
+mod workspace_class_ids;
 mod workspace_loader;
