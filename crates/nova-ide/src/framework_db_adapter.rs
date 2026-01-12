@@ -150,6 +150,10 @@ impl TextDatabase for FrameworkIdeDatabase {
         self.inner.file_content(file_id)
     }
 
+    fn salsa_db(&self) -> Option<nova_db::SalsaDatabase> {
+        self.inner.salsa_db()
+    }
+
     fn file_path(&self, file_id: FileId) -> Option<&Path> {
         self.inner.file_path(file_id)
     }

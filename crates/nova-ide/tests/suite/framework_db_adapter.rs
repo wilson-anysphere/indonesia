@@ -112,3 +112,50 @@ fn classpath_queries_return_false_without_project_config() {
     assert!(!adapter.has_class_on_classpath(project, "java.lang.String"));
     assert!(!adapter.has_class_on_classpath_prefix(project, "java.lang"));
 }
+
+#[test]
+fn delegates_salsa_db_to_inner_database() {
+    use std::path::Path;
+
+    use nova_db::{Database as TextDatabase, FileId, SalsaDatabase};
+
+    struct DbWithSalsa {
+        inner: InMemoryFileStore,
+        salsa: SalsaDatabase,
+    }
+
+    impl TextDatabase for DbWithSalsa {
+        fn file_content(&self, file_id: FileId) -> &str {
+            self.inner.file_content(file_id)
+        }
+
+        fn file_path(&self, file_id: FileId) -> Option<&Path> {
+            self.inner.file_path(file_id)
+        }
+
+        fn all_file_ids(&self) -> Vec<FileId> {
+            self.inner.all_file_ids()
+        }
+
+        fn file_id(&self, path: &Path) -> Option<FileId> {
+            self.inner.file_id(path)
+        }
+
+        fn salsa_db(&self) -> Option<SalsaDatabase> {
+            Some(self.salsa.clone())
+        }
+    }
+
+    let mut inner = InMemoryFileStore::new();
+    let file_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let file = inner.file_id_for_path(&file_path);
+    inner.set_file_text(file, "class Main {}".to_string());
+
+    let db: Arc<dyn TextDatabase + Send + Sync> = Arc::new(DbWithSalsa {
+        inner,
+        salsa: SalsaDatabase::new(),
+    });
+
+    let adapter = FrameworkIdeDatabase::new(db, ProjectId::new(0));
+    assert!(adapter.salsa_db().is_some());
+}
