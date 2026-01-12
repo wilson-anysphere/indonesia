@@ -56,6 +56,14 @@ impl Workspace {
     /// event stream and overlay handling.
     pub fn new_in_memory() -> Self {
         let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        Self::new_in_memory_with_memory_manager(memory)
+    }
+
+    /// Construct an in-memory workspace using a caller-provided [`MemoryManager`].
+    ///
+    /// This is useful for higher-level hosts (or integration tests) that want to
+    /// share a single memory manager across multiple Nova components.
+    pub fn new_in_memory_with_memory_manager(memory: MemoryManager) -> Self {
         let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
         let engine_config = engine::WorkspaceEngineConfig {
             workspace_root: PathBuf::new(),
@@ -1511,6 +1519,16 @@ mod memory_manager_injection_tests {
             components.iter().any(|c| c.name == "symbol_search_index"),
             "expected symbol search index to register with injected memory manager; got {components:?}"
         );
+    }
+
+    #[test]
+    fn in_memory_workspace_uses_injected_memory_manager_for_budget() {
+        let budget = MemoryBudget::from_total(8 * nova_memory::MB);
+        let memory = MemoryManager::new(budget);
+
+        let workspace = Workspace::new_in_memory_with_memory_manager(memory);
+
+        assert_eq!(workspace.memory.budget(), budget);
     }
 }
 
