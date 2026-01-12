@@ -1269,9 +1269,6 @@ fn type_mismatch_quick_fixes(
     let mut actions = Vec::new();
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
-        if cancel.is_cancelled() {
-            return Vec::new();
-        }
         if diag.code.as_ref() != "type-mismatch" {
             continue;
         }
