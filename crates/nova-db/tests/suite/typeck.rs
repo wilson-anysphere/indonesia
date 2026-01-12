@@ -6670,6 +6670,80 @@ class D { void m(){ new C(1); } }
 }
 
 #[test]
+fn resolve_method_call_demand_resolves_record_canonical_constructor_call() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file_record = FileId::from_raw(1);
+    let file_use = FileId::from_raw(2);
+
+    set_file(&mut db, project, file_record, "src/R.java", "record R(int x) {}");
+    set_file(
+        &mut db,
+        project,
+        file_use,
+        "src/Use.java",
+        r#"
+class Use {
+    void m(){ new R(1); }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file_record, file_use]));
+
+    // Find the `new R(1)` expression inside `Use.m`.
+    let tree = db.hir_item_tree(file_use);
+    let m_id = find_method_named(&tree, "m");
+    let body = db.hir_body(m_id);
+    let new_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement with new expression");
+
+    assert!(
+        matches!(&body.exprs[new_expr], nova_hir::hir::Expr::New { .. }),
+        "expected expression statement to be a New expr, got {:?}",
+        body.exprs[new_expr]
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: new_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file_use, call_site)
+        .expect("expected record constructor call resolution");
+
+    assert_eq!(resolved.name, "<init>");
+    assert_eq!(resolved.params, vec![Type::Primitive(PrimitiveType::Int)]);
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
 fn ambiguous_constructor_call_reports_diag() {
     let src = r#"
 class C {
