@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
-import { State, type LanguageClient } from 'vscode-languageclient/node';
 import { isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT, uriFromFileLike } from './frameworkDashboard';
+
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
 type WebEndpoint = {
   path: string;
@@ -31,12 +32,9 @@ const OPEN_ENDPOINT_COMMAND = 'nova.frameworks.openEndpoint';
 
 export function registerNovaFrameworksView(
   context: vscode.ExtensionContext,
-  opts: {
-    getClient(): LanguageClient | undefined;
-    getClientStart(): Promise<void> | undefined;
-  },
+  request: NovaRequest,
 ): NovaFrameworksViewController {
-  const provider = new NovaFrameworksTreeDataProvider(opts);
+  const provider = new NovaFrameworksTreeDataProvider(request);
   const view = vscode.window.createTreeView('novaFrameworks', {
     treeDataProvider: provider,
     showCollapseAll: false,
@@ -67,12 +65,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
   private lastContextServerRunning: boolean | undefined;
   private lastContextWebEndpointsSupported: boolean | undefined;
 
-  constructor(
-    private readonly opts: {
-      getClient(): LanguageClient | undefined;
-      getClientStart(): Promise<void> | undefined;
-    },
-  ) {}
+  constructor(private readonly request: NovaRequest) {}
 
   attachTreeView(view: vscode.TreeView<EndpointNode>): void {
     this.treeView = view;
@@ -126,69 +119,118 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
       return [];
     }
 
-    const client = this.opts.getClient();
-    if (!client) {
-      await this.setContexts({ serverRunning: false, webEndpointsSupported: true });
-      this.setMessage(undefined);
-      return [];
-    }
+    const endpoints: EndpointNode[] = [];
+    const workspacesWithUnsupported: vscode.WorkspaceFolder[] = [];
+    const workspacesWithSafeMode: vscode.WorkspaceFolder[] = [];
+    const workspacesWithErrors: Array<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }> = [];
+    const workspacesWithNoServer: Array<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }> = [];
+    let foundSupportedWorkspace = false;
+    let foundRunningServer = false;
 
-    const clientStart = this.opts.getClientStart();
-    if (clientStart) {
+    for (const workspaceFolder of workspaces) {
+      const projectRoot = workspaceFolder.uri.fsPath;
       try {
-        await clientStart;
-      } catch {
-        await this.setContexts({ serverRunning: false, webEndpointsSupported: true });
-        this.setMessage(undefined);
-        return [];
-      }
-    }
+        const resp = await fetchWebEndpoints(this.request, projectRoot);
 
-    // The client can be restarted while we awaited `clientStart`.
-    const readyClient = this.opts.getClient();
-    if (!readyClient || readyClient.state !== State.Running) {
-      await this.setContexts({ serverRunning: false, webEndpointsSupported: true });
-      this.setMessage(undefined);
-      return [];
-    }
+        // `sendNovaRequest` returns `undefined` when the server does not support a method.
+        // Preserve the old behavior of treating that as "method not found" for this view.
+        foundRunningServer = true;
+        if (!resp) {
+          workspacesWithUnsupported.push(workspaceFolder);
+          continue;
+        }
 
-    try {
-      const endpoints: EndpointNode[] = [];
-      for (const workspaceFolder of workspaces) {
-        const projectRoot = workspaceFolder.uri.fsPath;
-        const resp = await fetchWebEndpoints(readyClient, projectRoot);
-
+        foundSupportedWorkspace = true;
         const values = Array.isArray(resp?.endpoints) ? resp.endpoints : [];
         for (const endpoint of values) {
           endpoints.push({ kind: 'endpoint', workspaceFolder, projectRoot, baseUri: workspaceFolder.uri, endpoint });
         }
+      } catch (err) {
+        if (isNovaMethodNotFoundError(err)) {
+          foundRunningServer = true;
+          workspacesWithUnsupported.push(workspaceFolder);
+          continue;
+        }
+
+        if (isSafeModeError(err)) {
+          foundRunningServer = true;
+          workspacesWithSafeMode.push(workspaceFolder);
+          continue;
+        }
+
+        if (isNoServerError(err)) {
+          workspacesWithNoServer.push({ workspaceFolder, error: err });
+          continue;
+        }
+
+        foundRunningServer = true;
+        workspacesWithErrors.push({ workspaceFolder, error: err });
       }
+    }
 
-      await this.setContexts({ serverRunning: true, webEndpointsSupported: true });
-
-      if (endpoints.length === 0) {
-        this.setMessage('No web endpoints found.');
-        return [];
-      }
-
+    // If we couldn't reach any running server, treat the view as disconnected (old behavior).
+    if (!foundRunningServer) {
+      await this.setContexts({ serverRunning: false, webEndpointsSupported: true });
       this.setMessage(undefined);
-      return endpoints;
-    } catch (err) {
-      await this.setContexts({ serverRunning: true, webEndpointsSupported: !isNovaMethodNotFoundError(err) });
+      return [];
+    }
 
-      if (isNovaMethodNotFoundError(err)) {
-        this.setMessage('Web endpoints are not supported by this server (missing nova/web/endpoints).');
-        return [];
-      }
+    const webEndpointsSupported =
+      foundSupportedWorkspace || workspacesWithSafeMode.length > 0 || workspacesWithErrors.length > 0;
+    await this.setContexts({ serverRunning: true, webEndpointsSupported });
 
-      if (isSafeModeError(err)) {
+    if (!webEndpointsSupported) {
+      this.setMessage('Web endpoints are not supported by this server (missing nova/web/endpoints).');
+      return [];
+    }
+
+    const failedCount =
+      workspacesWithUnsupported.length +
+      workspacesWithSafeMode.length +
+      workspacesWithErrors.length +
+      workspacesWithNoServer.length;
+
+    if (endpoints.length === 0) {
+      if (workspacesWithSafeMode.length > 0 && workspacesWithErrors.length === 0) {
+        // Preserve old single-workspace behavior: safe-mode is treated as a distinct message.
         this.setMessage('Nova is in safe mode. Run Nova: Generate Bug Report.');
         return [];
       }
 
-      this.setMessage(`Failed to load web endpoints: ${formatError(err)}`);
+      if (workspacesWithErrors.length > 0) {
+        this.setMessage(`Failed to load web endpoints: ${formatError(workspacesWithErrors[0].error)}`);
+        return [];
+      }
+
+      if (failedCount > 0) {
+        this.setMessage(
+          summarizeWorkspaceFailures(workspaces, {
+            unsupported: workspacesWithUnsupported,
+            safeMode: workspacesWithSafeMode,
+            errors: workspacesWithErrors,
+            noServer: workspacesWithNoServer,
+          }),
+        );
+        return [];
+      }
+
+      this.setMessage('No web endpoints found.');
       return [];
     }
+
+    if (failedCount > 0) {
+      this.setMessage(
+        summarizeWorkspaceFailures(workspaces, {
+          unsupported: workspacesWithUnsupported,
+          safeMode: workspacesWithSafeMode,
+          errors: workspacesWithErrors,
+          noServer: workspacesWithNoServer,
+        }),
+      );
+    } else {
+      this.setMessage(undefined);
+    }
+    return endpoints;
   }
 
   private setMessage(message: string | undefined): void {
@@ -219,7 +261,7 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<v
   await vscode.window.showTextDocument(doc, { selection: range, preview: true });
 }
 
-async function fetchWebEndpoints(client: LanguageClient, projectRoot: string): Promise<WebEndpointsResponse> {
+async function fetchWebEndpoints(request: NovaRequest, projectRoot: string): Promise<WebEndpointsResponse | undefined> {
   const method = 'nova/web/endpoints';
   const alias = 'nova/quarkus/endpoints';
 
@@ -252,30 +294,21 @@ async function fetchWebEndpoints(client: LanguageClient, projectRoot: string): P
   const seen = new Set<string>();
   const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
 
-  if (ordered.length === 0) {
-    const err = new Error(`Method not found: ${method}`) as Error & { code: number };
-    err.code = -32601;
-    throw err;
-  }
-
-  let lastNotFound: unknown | undefined;
   for (const candidate of ordered) {
     try {
-      return await client.sendRequest<WebEndpointsResponse>(candidate, { projectRoot });
+      const resp = (await request<WebEndpointsResponse>(candidate, { projectRoot })) as WebEndpointsResponse | undefined;
+      if (resp) {
+        return resp;
+      }
     } catch (err) {
       if (isNovaMethodNotFoundError(err)) {
-        lastNotFound = err;
         continue;
       }
       throw err;
     }
   }
 
-  throw lastNotFound ?? (() => {
-    const err = new Error(`Method not found: ${method}`) as Error & { code: number };
-    err.code = -32601;
-    return err;
-  })();
+  return undefined;
 }
 function formatError(err: unknown): string {
   if (err instanceof Error) {
@@ -302,4 +335,60 @@ function isSafeModeError(err: unknown): boolean {
 
   // Defensive: handle safe-mode guard messages that might not include the exact phrase.
   return message.includes('nova/bugreport') && message.includes('only') && message.includes('available');
+}
+
+function isNoServerError(err: unknown): boolean {
+  const message = formatError(err).toLowerCase();
+  if (message.includes('language client is not running')) {
+    return true;
+  }
+
+  // Heuristic: treat obvious startup failures as "server not running" so we preserve the view's
+  // welcome messaging when Nova can't start.
+  if (message.includes('failed to start') || message.includes('launching server')) {
+    return true;
+  }
+  if (message.includes('spawn') && message.includes('enoent')) {
+    return true;
+  }
+  if (message.includes('enoent') || message.includes('eacces') || message.includes('permission denied')) {
+    return true;
+  }
+  return false;
+}
+
+function summarizeWorkspaceFailures(
+  allWorkspaces: readonly vscode.WorkspaceFolder[],
+  failures: {
+    unsupported: readonly vscode.WorkspaceFolder[];
+    safeMode: readonly vscode.WorkspaceFolder[];
+    errors: ReadonlyArray<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }>;
+    noServer: ReadonlyArray<{ workspaceFolder: vscode.WorkspaceFolder; error: unknown }>;
+  },
+): string {
+  const totalFailed =
+    failures.unsupported.length + failures.safeMode.length + failures.errors.length + failures.noServer.length;
+  if (totalFailed === 0) {
+    return '';
+  }
+
+  // Keep the message short for the TreeView header.
+  const names = new Set<string>();
+  for (const w of failures.unsupported) {
+    names.add(w.name);
+  }
+  for (const w of failures.safeMode) {
+    names.add(w.name);
+  }
+  for (const w of failures.errors) {
+    names.add(w.workspaceFolder.name);
+  }
+  for (const w of failures.noServer) {
+    names.add(w.workspaceFolder.name);
+  }
+
+  const sortedNames = Array.from(names).sort((a, b) => a.localeCompare(b));
+  const suffix = sortedNames.length > 0 ? `: ${sortedNames.join(', ')}` : '';
+  const multiRootPrefix = allWorkspaces.length > 1 ? ` (${totalFailed}/${allWorkspaces.length})` : '';
+  return `Some workspaces failed to load web endpoints${multiRootPrefix}${suffix}.`;
 }
