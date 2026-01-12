@@ -3395,6 +3395,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "libc",
+ "nova-build-model",
  "nova-core",
  "nova-process",
  "serde",
@@ -3405,6 +3406,9 @@ dependencies = [
 [[package]]
 name = "nova-build-model"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "nova-cache"

@@ -13,6 +13,7 @@ anyhow = "1"
 blake3 = "1"
 libc = "0.2"
 nova-core = { path = "../nova-core" }
+nova-build-model = { path = "../nova-build-model" }
 nova-process = { path = "../nova-process" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

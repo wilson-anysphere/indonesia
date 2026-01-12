@@ -1,6 +1,7 @@
+use nova_build_model::AnnotationProcessingConfig;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::BufRead;
 use std::path::PathBuf;
 
@@ -14,24 +15,6 @@ const MAX_LINE_BUF_CAPACITY_BYTES: usize = 1024 * 1024;
 pub struct JavacAction {
     pub owner: Option<String>,
     pub arguments: Vec<String>,
-}
-
-/// Annotation processing (APT) configuration extracted from a `javac` invocation.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AnnotationProcessingConfig {
-    /// Whether annotation processing is enabled (`-proc:none` disables it).
-    pub enabled: bool,
-    /// Output directory for generated `.java` sources (`javac -s`).
-    pub generated_sources_dir: Option<PathBuf>,
-    /// Annotation processor classpath (`-processorpath` / `--processor-path`).
-    pub processor_path: Vec<PathBuf>,
-    /// Explicit processors passed via `-processor`.
-    pub processors: Vec<String>,
-    /// Key/value pairs from `-Akey=value` options.
-    pub options: BTreeMap<String, String>,
-    /// APT-related compiler arguments (e.g. `-proc:none`, `-A...`, `-processorpath`, `-s`).
-    pub compiler_args: Vec<String>,
 }
 
 /// The compilation settings Nova cares about for Java semantic analysis.
