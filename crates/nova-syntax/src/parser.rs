@@ -407,6 +407,8 @@ pub fn parse_expression(input: &str) -> JavaParseResult {
     }
     parser.builder.finish_node();
 
+    crate::util::sort_parse_errors(&mut parser.errors);
+
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
@@ -454,6 +456,7 @@ fn parse_java_fragment(
 pub(crate) fn parse_block_fragment(input: &str, stmt_ctx: StatementContext) -> JavaParseResult {
     let mut parser = Parser::new(input);
     parser.parse_block(stmt_ctx);
+    crate::util::sort_parse_errors(&mut parser.errors);
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
@@ -484,6 +487,8 @@ fn parse_node_fragment(
 
     parser.builder.finish_node(); // root_kind
 
+    crate::util::sort_parse_errors(&mut parser.errors);
+
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
@@ -497,6 +502,7 @@ pub(crate) fn parse_switch_block_fragment(
 ) -> JavaParseResult {
     let mut parser = Parser::new(input);
     parser.parse_switch_block(stmt_ctx, switch_ctx);
+    crate::util::sort_parse_errors(&mut parser.errors);
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
@@ -506,6 +512,7 @@ pub(crate) fn parse_switch_block_fragment(
 pub(crate) fn parse_class_body_fragment(input: &str, body_kind: SyntaxKind) -> JavaParseResult {
     let mut parser = Parser::new(input);
     parser.parse_class_body(body_kind);
+    crate::util::sort_parse_errors(&mut parser.errors);
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
@@ -532,6 +539,8 @@ pub(crate) fn parse_class_member_fragment(input: &str) -> JavaParseResult {
             rowan::NodeOrToken::Token(_) => None,
         })
         .unwrap_or_else(|| wrapper.clone());
+
+    crate::util::sort_parse_errors(&mut parser.errors);
 
     JavaParseResult {
         green: member,
@@ -648,6 +657,8 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::Eof, "expected end of file");
         self.builder.finish_node();
 
+        crate::util::sort_parse_errors(&mut self.errors);
+
         JavaParseResult {
             green: self.builder.finish(),
             errors: self.errors,
@@ -676,6 +687,8 @@ impl<'a> Parser<'a> {
         self.eat_trivia();
         self.expect(SyntaxKind::Eof, "expected end of expression");
         self.builder.finish_node();
+
+        crate::util::sort_parse_errors(&mut self.errors);
 
         JavaParseResult {
             green: self.builder.finish(),
@@ -708,6 +721,8 @@ impl<'a> Parser<'a> {
         self.eat_trivia();
         self.expect(SyntaxKind::Eof, "expected end of file");
         self.builder.finish_node();
+
+        crate::util::sort_parse_errors(&mut self.errors);
 
         JavaParseResult {
             green: self.builder.finish(),
@@ -3132,10 +3147,8 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     if self.nth(1) == Some(SyntaxKind::StringTemplateStart) {
-                        self.builder.start_node_at(
-                            checkpoint,
-                            SyntaxKind::StringTemplateExpression.into(),
-                        );
+                        self.builder
+                            .start_node_at(checkpoint, SyntaxKind::StringTemplateExpression.into());
                         self.bump(); // .
                         self.parse_string_template();
                         continue;
@@ -3202,10 +3215,8 @@ impl<'a> Parser<'a> {
                         self.nth(1),
                         Some(SyntaxKind::StringLiteral | SyntaxKind::TextBlock)
                     ) {
-                        self.builder.start_node_at(
-                            checkpoint,
-                            SyntaxKind::StringTemplateExpression.into(),
-                        );
+                        self.builder
+                            .start_node_at(checkpoint, SyntaxKind::StringTemplateExpression.into());
                         self.bump(); // .
                         if self.at(SyntaxKind::StringLiteral) || self.at(SyntaxKind::TextBlock) {
                             self.bump();
@@ -3370,7 +3381,10 @@ impl<'a> Parser<'a> {
 
         // We only enter this parser after recognizing `.` + `StringTemplateStart` in the postfix
         // expression parser, but keep it resilient for partial code.
-        self.expect(SyntaxKind::StringTemplateStart, "expected string template delimiter");
+        self.expect(
+            SyntaxKind::StringTemplateStart,
+            "expected string template delimiter",
+        );
 
         while !self.at(SyntaxKind::StringTemplateEnd) && !self.at(SyntaxKind::Eof) {
             match self.current() {

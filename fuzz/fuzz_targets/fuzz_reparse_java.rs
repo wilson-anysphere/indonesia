@@ -10,12 +10,8 @@ use libfuzzer_sys::fuzz_target;
 mod utils;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-/// Reserve up to this many bytes from the end of the fuzzer input for encoding a single edit.
-///
-/// Keeping the edit stream reasonably small makes it more likely that `*.java` seeds remain mostly
-/// intact while still allowing a meaningful edit to be described.
 const MAX_OP_BYTES: usize = 256;
-const MAX_REPLACEMENT_BYTES: usize = 8 * 1024;
+const MAX_REPLACEMENT_BYTES: usize = 64;
 
 #[derive(Debug)]
 struct Input {
@@ -63,14 +59,6 @@ fn runner() -> &'static Runner {
     })
 }
 
-fn read_u32_le(data: &[u8]) -> u32 {
-    let mut buf = [0u8; 4];
-    for (i, b) in data.iter().take(4).enumerate() {
-        buf[i] = *b;
-    }
-    u32::from_le_bytes(buf)
-}
-
 fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
     offset = offset.min(text.len());
     while offset > 0 && !text.is_char_boundary(offset) {
@@ -99,6 +87,82 @@ fn apply_edit(old_text: &str, start: usize, end: usize, replacement: &str) -> St
     new_text
 }
 
+#[derive(Clone, Copy)]
+struct ByteCursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ByteCursor<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    fn take_u8(&mut self) -> Option<u8> {
+        if self.pos >= self.data.len() {
+            return None;
+        }
+        let b = self.data[self.pos];
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn take_u16_le(&mut self) -> Option<u16> {
+        let lo = self.take_u8()?;
+        let hi = self.take_u8()?;
+        Some(u16::from_le_bytes([lo, hi]))
+    }
+
+    fn take_bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.remaining() < len {
+            return None;
+        }
+        let start = self.pos;
+        self.pos += len;
+        Some(&self.data[start..start + len])
+    }
+}
+
+fn decode_edit(cursor: &mut ByteCursor<'_>, text: &str) -> Option<nova_syntax::TextEdit> {
+    let start_raw = cursor.take_u16_le()? as usize;
+    let delete_raw = cursor.take_u16_le()? as usize;
+    let replacement_len_raw = cursor.take_u8()? as usize;
+
+    let replacement_len = replacement_len_raw % (MAX_REPLACEMENT_BYTES + 1);
+    let replacement_bytes = cursor.take_bytes(replacement_len)?;
+    let mut replacement = String::from_utf8_lossy(replacement_bytes).into_owned();
+
+    let text_len = text.len();
+    let start = if text_len == 0 {
+        0
+    } else {
+        clamp_to_char_boundary(text, start_raw % (text_len + 1))
+    };
+
+    let max_delete = text_len.saturating_sub(start);
+    let end = clamp_to_char_boundary(text, start + (delete_raw % (max_delete + 1)));
+
+    // Enforce the global document size cap by truncating the replacement if needed.
+    //
+    // We truncate the *replacement* (not the whole result) so that the `TextEdit` remains
+    // consistent with the produced `new_text`.
+    let deleted_len = end.saturating_sub(start);
+    let base_len = text_len.saturating_sub(deleted_len);
+    let allowed_insert_len = utils::MAX_INPUT_SIZE.saturating_sub(base_len);
+    if replacement.len() > allowed_insert_len {
+        replacement = truncate_str_to_boundary(&replacement, allowed_insert_len).to_owned();
+    }
+
+    Some(nova_syntax::TextEdit::new(
+        nova_syntax::TextRange::new(start, end),
+        replacement,
+    ))
+}
+
 fuzz_target!(|data: &[u8]| {
     let cap = data.len().min(utils::MAX_INPUT_SIZE);
     let data = &data[..cap];
@@ -106,14 +170,8 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // Split the input into an initial UTF-8 buffer and a small "edit op" stream at the end.
-    //
-    // We bound `op_len` to at most half of the input so that even small `.java` seeds still
-    // contribute some Java-ish `old_text`.
-    let op_len_limit = data.len() / 2;
-    let op_len = (data[0] as usize % (MAX_OP_BYTES + 1))
-        .min(op_len_limit)
-        .min(data.len());
+    // Split the input into an initial UTF-8 buffer and a small "edit op" stream.
+    let op_len = (data[0] as usize % (MAX_OP_BYTES + 1)).min(data.len());
     let split = data.len().saturating_sub(op_len);
     let (text_bytes, op_bytes) = data.split_at(split);
 
@@ -121,40 +179,15 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    let start_raw = read_u32_le(op_bytes);
-    let delete_raw = read_u32_le(op_bytes.get(4..).unwrap_or(&[]));
-    let replacement_bytes = op_bytes.get(8..).unwrap_or(&[]);
-    let replacement_bytes =
-        &replacement_bytes[..replacement_bytes.len().min(MAX_REPLACEMENT_BYTES)];
-    let mut replacement = String::from_utf8_lossy(replacement_bytes).into_owned();
-
-    let mut start = (start_raw as usize) % (old_text.len() + 1);
-    start = clamp_to_char_boundary(old_text, start);
-
-    let max_delete = old_text.len().saturating_sub(start);
-    let mut end = if max_delete == 0 {
-        start
-    } else {
-        start + (delete_raw as usize) % (max_delete + 1)
-    };
-    end = clamp_to_char_boundary(old_text, end);
-    if end < start {
-        end = start;
-    }
-
-    // Ensure the post-edit text doesn't exceed the global input size cap by truncating the
-    // replacement if needed. Truncate the replacement (not the result) so the `TextEdit` remains
-    // consistent with `new_text`.
-    let deleted_len = end.saturating_sub(start);
-    let base_len = old_text.len().saturating_sub(deleted_len);
-    let allowed_insert_len = utils::MAX_INPUT_SIZE.saturating_sub(base_len);
-    if replacement.len() > allowed_insert_len {
-        replacement = truncate_str_to_boundary(&replacement, allowed_insert_len).to_owned();
-    }
-
+    let mut cursor = ByteCursor::new(op_bytes);
     let edit =
-        nova_syntax::TextEdit::new(nova_syntax::TextRange::new(start, end), replacement.clone());
-    let new_text = apply_edit(old_text, start, end, &replacement);
+        decode_edit(&mut cursor, old_text).unwrap_or_else(|| nova_syntax::TextEdit::insert(0, ""));
+    let new_text = apply_edit(
+        old_text,
+        edit.range.start as usize,
+        edit.range.end as usize,
+        &edit.replacement,
+    );
 
     let runner = runner();
     runner
