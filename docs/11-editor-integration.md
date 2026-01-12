@@ -450,6 +450,7 @@ The real VS Code UX in this repo is an Explorer tree view (`novaFrameworks`, lab
   `TreeItem.contextValue` (e.g., `novaFrameworkEndpoint` for endpoints; `novaFrameworkBean` is reserved for bean nodes).
 - is refreshed on-demand via a view toolbar button / command (`nova.frameworks.refresh`)
 - supports quick navigation via **Nova: Search Framework Items…** (`nova.frameworks.search`)
+- shows contextual empty-state messages when no folder is open, the server isn't running, or endpoint discovery is unavailable
 - can be extended to show framework-specific items like Micronaut endpoints/beans when the corresponding `nova/*`
   methods are available.
 
