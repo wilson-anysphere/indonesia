@@ -799,7 +799,9 @@ fn parse_method_body(
         if let Some((ty, ty_span, name, name_span, after_name)) =
             parse_var_decl(tokens, decl_start, body_end)
         {
-            let next_sym = tokens.get(after_name).and_then(|t| t.symbol());
+            let next_tok = tokens.get(after_name);
+            let next_sym = next_tok.and_then(|t| t.symbol());
+            let next_ident = next_tok.and_then(|t| t.ident());
             if matches!(next_sym, Some('=') | Some(';') | Some(',')) {
                 let stmt_end =
                     find_statement_terminator(tokens, after_name, body_end).unwrap_or(body_end);
@@ -837,6 +839,24 @@ fn parse_method_body(
                     });
                 }
             } else if matches!(next_sym, Some(':') | Some(')') | Some('&') | Some('?')) {
+                locals.push(VarDef {
+                    ty,
+                    ty_span,
+                    name,
+                    name_span,
+                });
+            } else if next_sym == Some('-')
+                && tokens.get(after_name + 1).and_then(|t| t.symbol()) == Some('>')
+            {
+                // Best-effort: `case Foo f ->` (switch patterns) and typed lambda params.
+                locals.push(VarDef {
+                    ty,
+                    ty_span,
+                    name,
+                    name_span,
+                });
+            } else if next_ident == Some("when") {
+                // Best-effort: `case Foo f when <guard> ->` (switch patterns).
                 locals.push(VarDef {
                     ty,
                     ty_span,
