@@ -950,7 +950,7 @@ impl Database {
             file_fingerprints.as_ref().clone(),
         );
 
-        let shards = snap.project_indexes(project);
+        let shards = snap.project_index_shards(project);
         let mut shards = (*shards).clone();
 
         nova_index::save_sharded_indexes(

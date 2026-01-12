@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,7 +33,13 @@ pub trait NovaIndexing: NovaHir + HasQueryStats + HasPersistence {
 
     /// Project-wide sharded indexes built by merging per-file deltas, warm-starting from disk when
     /// possible.
-    fn project_indexes(&self, project: ProjectId) -> Arc<Vec<ProjectIndexes>>;
+    ///
+    /// The returned vector is always ordered by shard id and always has length
+    /// [`DEFAULT_SHARD_COUNT`].
+    fn project_index_shards(&self, project: ProjectId) -> Arc<Vec<ProjectIndexes>>;
+
+    /// Convenience query that returns the merged project indexes across all shards.
+    fn project_indexes(&self, project: ProjectId) -> Arc<ProjectIndexes>;
 
     /// Convenience downstream query used by tests to validate early-cutoff behavior.
     fn project_symbol_count(&self, project: ProjectId) -> usize;
@@ -128,11 +134,11 @@ fn file_index_delta(db: &dyn NovaIndexing, file: FileId) -> Arc<ProjectIndexes> 
     result
 }
 
-fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<ProjectIndexes>> {
+fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<ProjectIndexes>> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "project_indexes", ?project).entered();
+    let _span = tracing::debug_span!("query", name = "project_index_shards", ?project).entered();
 
     cancel::check_cancelled(db);
 
@@ -283,6 +289,28 @@ fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Project
     }
 
     let result = Arc::new(shards);
+    db.record_query_stat("project_index_shards", start.elapsed());
+    result
+}
+
+fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<ProjectIndexes> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "project_indexes", ?project).entered();
+
+    cancel::check_cancelled(db);
+
+    let shards = db.project_index_shards(project);
+    let mut indexes = ProjectIndexes::default();
+    for shard in shards.iter() {
+        indexes.merge_from(shard.clone());
+    }
+    // Ensure equality between warm-start and cold-start outputs by normalizing any persisted
+    // generation marker.
+    indexes.set_generation(0);
+
+    let result = Arc::new(indexes);
     db.record_query_stat("project_indexes", start.elapsed());
     result
 }
@@ -295,12 +323,7 @@ fn project_symbol_count(db: &dyn NovaIndexing, project: ProjectId) -> usize {
 
     cancel::check_cancelled(db);
 
-    let shards = db.project_indexes(project);
-    let mut names = BTreeSet::new();
-    for shard in shards.iter() {
-        names.extend(shard.symbols.symbols.keys().cloned());
-    }
-    let count = names.len();
+    let count = db.project_indexes(project).symbols.symbols.len();
     db.record_query_stat("project_symbol_count", start.elapsed());
     count
 }
