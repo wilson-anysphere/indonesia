@@ -15,9 +15,9 @@ use std::{
 
 #[derive(Debug, Deserialize)]
 struct DotBspConnectionJson {
-    argv: Vec<String>,
+    argv: Option<Vec<String>>,
     #[serde(default)]
-    languages: Vec<String>,
+    languages: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +68,10 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
             Err(_) => continue,
         };
 
-        let Some((program, args)) = parsed.argv.split_first() else {
+        let Some(argv) = parsed.argv.as_deref() else {
+            continue;
+        };
+        let Some((program, args)) = argv.split_first() else {
             continue;
         };
         let program = program.trim();
@@ -78,6 +81,8 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
 
         let has_java = parsed
             .languages
+            .as_deref()
+            .unwrap_or_default()
             .iter()
             .any(|lang| lang.eq_ignore_ascii_case("java"));
 
