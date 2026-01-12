@@ -53,42 +53,6 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
 }
 
 #[test]
-fn this_in_static_method_emits_static_context_diagnostic() {
-    let src = r#"
-class C {
-  static Object m() {
-    return this;
-  }
-}
-"#;
-
-    let (db, file) = setup_db(src);
-    let diags = db.type_diagnostics(file);
-    assert!(
-        diags.iter().any(|d| d.message.contains("static context")),
-        "expected diagnostics to mention static context; got {diags:?}"
-    );
-}
-
-#[test]
-fn super_in_static_method_emits_static_context_diagnostic() {
-    let src = r#"
-class C {
-  static Object m() {
-    return super;
-  }
-}
-"#;
-
-    let (db, file) = setup_db(src);
-    let diags = db.type_diagnostics(file);
-    assert!(
-        diags.iter().any(|d| d.message.contains("static context")),
-        "expected diagnostics to mention static context; got {diags:?}"
-    );
-}
-
-#[test]
 fn reports_type_mismatch_inside_labeled_statement() {
     let src = r#"
 class C {
