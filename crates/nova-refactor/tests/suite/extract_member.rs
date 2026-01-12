@@ -184,6 +184,43 @@ class A {
 }
 
 #[test]
+fn extract_constant_infers_string_for_text_block_literal() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        String x = /*[*/"""
+hi
+"""/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final String VALUE = """
+hi
+""";
+
+    void m() {
+        String x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn extract_constant_replace_all() {
     let (code, range) = fixture_range(
         r#"
