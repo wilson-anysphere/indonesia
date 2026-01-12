@@ -1350,7 +1350,6 @@ pub fn target_compile_info_via_bsp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
     #[cfg(feature = "bsp")]
     use tempfile::tempdir;
@@ -1593,15 +1592,6 @@ mod tests {
         assert_eq!(config.args, vec!["--from-env".to_string()]);
     }
 
-    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_MUTEX
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("failed to lock env mutex")
-    }
-
     struct MaxMessageBytesEnvVarGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
@@ -1617,7 +1607,9 @@ mod tests {
     }
 
     fn set_max_message_bytes_env_var(value: Option<&str>) -> MaxMessageBytesEnvVarGuard {
-        let lock = env_lock();
+        let lock = crate::test_support::ENV_LOCK
+            .lock()
+            .expect("failed to lock env mutex");
         let previous = std::env::var_os(BSP_MAX_MESSAGE_BYTES_ENV_VAR);
 
         match value {
