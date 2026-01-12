@@ -3565,7 +3565,10 @@ fn switch_selector_ident(tokens: &[Token], offset: usize) -> Option<String> {
         }
 
         let open_idx = i + 1;
-        if tokens.get(open_idx).is_none_or(|t| t.kind != TokenKind::Symbol('(')) {
+        if tokens
+            .get(open_idx)
+            .is_none_or(|t| t.kind != TokenKind::Symbol('('))
+        {
             continue;
         }
         let (close_idx, _close_offset) = find_matching_paren(tokens, open_idx)?;

@@ -3355,9 +3355,11 @@ class C { double m(){ return E; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
-            && d.code.as_ref() != "unresolved-field"
-            && d.code.as_ref() != "unresolved-name"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-static-member"
+                && d.code.as_ref() != "unresolved-field"
+                && d.code.as_ref() != "unresolved-name"),
         "expected Math.* static star import to provide E; got {diags:?}"
     );
 
@@ -3414,10 +3416,7 @@ class C {
         "expected Math.E to resolve via implicit java.lang import; got {diags:?}"
     );
 
-    let offset = src
-        .find("Math.E")
-        .expect("snippet should contain Math.E")
-        + "Math.".len();
+    let offset = src.find("Math.E").expect("snippet should contain Math.E") + "Math.".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");

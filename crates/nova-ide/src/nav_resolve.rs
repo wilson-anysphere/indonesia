@@ -540,11 +540,13 @@ impl Resolver {
                     // Best-effort fallback for qualified type references like `p.Foo`:
                     // if the "receiver" doesn't resolve to a value/type (common for package
                     // segments), try resolving the identifier as a type name.
-                    self.index.resolve_type_definition(&ident).map(|def| ResolvedSymbol {
-                        name: ident,
-                        kind: ResolvedKind::Type,
-                        def,
-                    })
+                    self.index
+                        .resolve_type_definition(&ident)
+                        .map(|def| ResolvedSymbol {
+                            name: ident,
+                            kind: ResolvedKind::Type,
+                            def,
+                        })
                 }
             }
             OccurrenceKind::LocalCall => {

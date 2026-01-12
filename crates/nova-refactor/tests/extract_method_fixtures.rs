@@ -7,7 +7,12 @@ use std::path::{Path, PathBuf};
 fn apply_edit(files: &mut BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) {
     let by_id: BTreeMap<FileId, String> = files
         .iter()
-        .map(|(path, text)| (FileId::new(path.to_string_lossy().into_owned()), text.clone()))
+        .map(|(path, text)| {
+            (
+                FileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        })
         .collect();
 
     let updated = apply_workspace_edit(&by_id, edit).expect("workspace edit applies cleanly");
@@ -80,4 +85,3 @@ fn extract_method_record_compact_constructor() {
         Path::new("tests/fixtures/extract_method_record_compact_constructor/after"),
     );
 }
-
