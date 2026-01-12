@@ -1,5 +1,3 @@
-#![cfg(feature = "bsp")]
-
 use anyhow::{anyhow, Context, Result};
 use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileParams, InitializeBuildResult, InverseSourcesParams,

@@ -1,5 +1,3 @@
-#![cfg(feature = "bsp")]
-
 use crate::fake_bsp::{spawn_fake_bsp_server, FakeBspServerConfig};
 use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileProvider, InitializeBuildResult, JavacProvider,

@@ -1831,8 +1831,10 @@ mod toml_tests {
 
     #[test]
     fn logging_level_parses_simple_levels() {
-        let mut logging = LoggingConfig::default();
-        logging.level = "DEBUG".to_owned();
+        let logging = LoggingConfig {
+            level: "DEBUG".to_owned(),
+            ..Default::default()
+        };
 
         let filter = logging.config_env_filter();
         let buffer = Arc::new(LogBuffer::new(64));
@@ -1856,8 +1858,10 @@ mod toml_tests {
 
     #[test]
     fn logging_level_parses_env_filter_directives() {
-        let mut logging = LoggingConfig::default();
-        logging.level = "warn,nova_config=trace".to_owned();
+        let logging = LoggingConfig {
+            level: "warn,nova_config=trace".to_owned(),
+            ..Default::default()
+        };
 
         let filter = logging.config_env_filter();
         let buffer = Arc::new(LogBuffer::new(64));
@@ -1922,8 +1926,10 @@ mod tests {
     #[test]
     fn ai_config_debug_does_not_expose_api_key() {
         let key = "super-secret-api-key";
-        let mut config = AiConfig::default();
-        config.api_key = Some(key.to_string());
+        let config = AiConfig {
+            api_key: Some(key.to_string()),
+            ..Default::default()
+        };
 
         let output = format!("{config:?}");
         assert!(
@@ -1941,11 +1947,13 @@ mod tests {
         let username = "super-secret-user";
         let password = "super-secret-pass";
         let token = "super-secret-token";
-        let mut config = AiProviderConfig::default();
-        config.url = Url::parse(&format!(
-            "https://{username}:{password}@example.com/path?token={token}&other=1"
-        ))
-        .expect("parse url");
+        let config = AiProviderConfig {
+            url: Url::parse(&format!(
+                "https://{username}:{password}@example.com/path?token={token}&other=1"
+            ))
+            .expect("parse url"),
+            ..Default::default()
+        };
 
         let output = format!("{config:?}");
         assert!(
@@ -1968,8 +1976,10 @@ mod tests {
 
     #[test]
     fn ai_config_features_and_timeouts_roundtrip_toml() {
-        let mut config = AiConfig::default();
-        config.enabled = true;
+        let mut config = AiConfig {
+            enabled: true,
+            ..Default::default()
+        };
         config.features.completion_ranking = true;
         config.features.semantic_search = true;
         config.features.multi_token_completion = true;
@@ -2191,9 +2201,10 @@ wasm_paths = ["extensions"]
 
     #[test]
     fn extensions_config_allow_none_means_no_allow_restriction() {
-        let mut config = ExtensionsConfig::default();
-        config.allow = None;
-        config.deny = vec!["com.evil.*".to_owned()];
+        let config = ExtensionsConfig {
+            deny: vec!["com.evil.*".to_owned()],
+            ..Default::default()
+        };
 
         assert!(config.is_extension_allowed("com.example.one"));
         assert!(!config.is_extension_allowed("com.evil.rules"));
@@ -2201,9 +2212,11 @@ wasm_paths = ["extensions"]
 
     #[test]
     fn extensions_config_exact_allow_and_deny() {
-        let mut config = ExtensionsConfig::default();
-        config.allow = Some(vec!["com.good.one".to_owned()]);
-        config.deny = vec!["com.good.two".to_owned()];
+        let config = ExtensionsConfig {
+            allow: Some(vec!["com.good.one".to_owned()]),
+            deny: vec!["com.good.two".to_owned()],
+            ..Default::default()
+        };
 
         assert!(config.is_extension_allowed("com.good.one"));
         assert!(!config.is_extension_allowed("com.good.one.extra"));
@@ -2212,39 +2225,54 @@ wasm_paths = ["extensions"]
 
     #[test]
     fn extensions_config_wildcards_at_beginning_middle_end() {
-        let mut config = ExtensionsConfig::default();
-        config.allow = Some(vec!["*.rules".to_owned()]);
+        let config = ExtensionsConfig {
+            allow: Some(vec!["*.rules".to_owned()]),
+            ..Default::default()
+        };
         assert!(config.is_extension_allowed("com.mycorp.rules"));
         assert!(!config.is_extension_allowed("com.mycorp.rule"));
 
-        config.allow = Some(vec!["com.*.rules".to_owned()]);
+        let config = ExtensionsConfig {
+            allow: Some(vec!["com.*.rules".to_owned()]),
+            ..Default::default()
+        };
         assert!(config.is_extension_allowed("com.mycorp.rules"));
         assert!(config.is_extension_allowed("com.mycorp.internal.rules"));
         assert!(!config.is_extension_allowed("org.mycorp.rules"));
 
-        config.allow = Some(vec!["com.mycorp.*".to_owned()]);
+        let config = ExtensionsConfig {
+            allow: Some(vec!["com.mycorp.*".to_owned()]),
+            ..Default::default()
+        };
         assert!(config.is_extension_allowed("com.mycorp.rules"));
         assert!(!config.is_extension_allowed("com.mycorpish.rules"));
     }
 
     #[test]
     fn extensions_config_multiple_wildcards_match() {
-        let mut config = ExtensionsConfig::default();
-        config.allow = Some(vec!["com.*rules*beta".to_owned()]);
+        let config = ExtensionsConfig {
+            allow: Some(vec!["com.*rules*beta".to_owned()]),
+            ..Default::default()
+        };
 
         assert!(config.is_extension_allowed("com.acme.rules.v1.beta"));
         assert!(!config.is_extension_allowed("com.acme.rules.v1.betas"));
 
-        config.allow = Some(vec!["com.**.beta".to_owned()]);
+        let config = ExtensionsConfig {
+            allow: Some(vec!["com.**.beta".to_owned()]),
+            ..Default::default()
+        };
         assert!(config.is_extension_allowed("com.acme.beta"));
         assert!(config.is_extension_allowed("com.acme.internal.beta"));
     }
 
     #[test]
     fn extensions_config_deny_overrides_allow() {
-        let mut config = ExtensionsConfig::default();
-        config.allow = Some(vec!["com.*".to_owned()]);
-        config.deny = vec!["com.evil.*".to_owned()];
+        let config = ExtensionsConfig {
+            allow: Some(vec!["com.*".to_owned()]),
+            deny: vec!["com.evil.*".to_owned()],
+            ..Default::default()
+        };
 
         assert!(config.is_extension_allowed("com.good.one"));
         assert!(!config.is_extension_allowed("com.evil.one"));
@@ -2252,10 +2280,12 @@ wasm_paths = ["extensions"]
 
     #[test]
     fn extensions_config_disabled_disables_all() {
-        let mut config = ExtensionsConfig::default();
-        config.enabled = false;
-        config.allow = None;
-        config.deny = vec!["*".to_owned()];
+        let config = ExtensionsConfig {
+            enabled: false,
+            allow: None,
+            deny: vec!["*".to_owned()],
+            ..Default::default()
+        };
 
         assert!(!config.is_extension_allowed("com.good.one"));
         assert!(!config.is_extension_allowed("com.evil.one"));

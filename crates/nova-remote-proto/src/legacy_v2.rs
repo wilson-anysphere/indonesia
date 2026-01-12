@@ -154,31 +154,6 @@ pub fn encode_message(msg: &RpcMessage) -> anyhow::Result<Vec<u8>> {
     w.finish()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn worker_hello_debug_does_not_expose_auth_token() {
-        let token = "super-secret-token";
-        let msg = RpcMessage::WorkerHello {
-            shard_id: 1,
-            auth_token: Some(token.to_string()),
-            has_cached_index: false,
-        };
-
-        let output = format!("{msg:?}");
-        assert!(
-            !output.contains(token),
-            "RpcMessage::WorkerHello debug output leaked auth token: {output}"
-        );
-        assert!(
-            output.contains("auth_present"),
-            "RpcMessage::WorkerHello debug output should include auth presence indicator: {output}"
-        );
-    }
-}
-
 pub fn decode_message(bytes: &[u8]) -> anyhow::Result<RpcMessage> {
     ensure!(
         bytes.len() <= MAX_MESSAGE_BYTES,
@@ -686,5 +661,30 @@ impl<'a> WireReader<'a> {
             }),
             other => bail!("unknown legacy_v2::RpcMessage tag: {other}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_hello_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let msg = RpcMessage::WorkerHello {
+            shard_id: 1,
+            auth_token: Some(token.to_string()),
+            has_cached_index: false,
+        };
+
+        let output = format!("{msg:?}");
+        assert!(
+            !output.contains(token),
+            "RpcMessage::WorkerHello debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("auth_present"),
+            "RpcMessage::WorkerHello debug output should include auth presence indicator: {output}"
+        );
     }
 }

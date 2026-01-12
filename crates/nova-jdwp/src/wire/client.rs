@@ -16,7 +16,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    codec::{signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN},
+    codec::{
+        class_name_to_signature, signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE,
+        HEADER_LEN,
+    },
     inspect::InspectCache,
     types::{
         ClassInfo, FieldId, FieldInfo, FieldInfoWithGeneric, FrameId, FrameInfo,
@@ -759,6 +762,13 @@ impl JdwpClient {
         &self,
         class_id: ReferenceTypeId,
     ) -> Result<(String, Option<String>)> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(sig) = cache.signatures_with_generic.get(&class_id) {
+                return Ok(sig.clone());
+            }
+        }
+
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_reference_type_id(class_id, &sizes);
@@ -767,7 +777,13 @@ impl JdwpClient {
         let signature = r.read_string()?;
         let generic = r.read_string()?;
         let generic = (!generic.is_empty()).then_some(generic);
-        Ok((signature, generic))
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache
+            .signatures
+            .insert(class_id, signature.clone());
+        let value = (signature, generic);
+        cache.signatures_with_generic.insert(class_id, value.clone());
+        Ok(value)
     }
 
     pub(crate) async fn reference_type_signature_cached(
@@ -804,7 +820,6 @@ impl JdwpClient {
         cache.signatures_with_generic.insert(class_id, sig.clone());
         Ok(sig)
     }
-
     pub async fn reference_type_class_loader(&self, class_id: ReferenceTypeId) -> Result<ObjectId> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
@@ -1736,14 +1751,6 @@ fn is_unsupported_command_error(err: &JdwpError) -> bool {
     )
 }
 
-fn class_name_to_signature(class_name: &str) -> String {
-    if class_name.starts_with('L') && class_name.ends_with(';') {
-        return class_name.to_string();
-    }
-    let internal = class_name.replace('.', "/");
-    format!("L{internal};")
-}
-
 #[derive(Debug)]
 pub enum EventModifier {
     /// JDWP `EventRequest` modifier kind 1.
@@ -2413,11 +2420,13 @@ mod tests {
         let client = JdwpClient::connect(server.addr()).await.unwrap();
         let caps = client.capabilities().await;
 
-        let mut expected = JdwpCapabilitiesNew::default();
-        expected.can_watch_field_modification = true;
-        expected.can_get_monitor_info = true;
-        // Legacy `VirtualMachine.Capabilities` cannot report `can_redefine_classes`.
-        expected.can_redefine_classes = false;
+        let expected = JdwpCapabilitiesNew {
+            can_watch_field_modification: true,
+            can_get_monitor_info: true,
+            // Legacy `VirtualMachine.Capabilities` cannot report `can_redefine_classes`.
+            can_redefine_classes: false,
+            ..Default::default()
+        };
 
         assert_eq!(caps, expected);
     }
@@ -2439,9 +2448,11 @@ mod tests {
         let client = JdwpClient::connect(server.addr()).await.unwrap();
         let caps = client.capabilities().await;
 
-        let mut expected = JdwpCapabilitiesNew::default();
-        expected.can_get_bytecodes = true;
-        expected.can_get_synthetic_attribute = true;
+        let expected = JdwpCapabilitiesNew {
+            can_get_bytecodes: true,
+            can_get_synthetic_attribute: true,
+            ..Default::default()
+        };
 
         assert_eq!(caps, expected);
     }
@@ -2464,9 +2475,11 @@ mod tests {
         let client = JdwpClient::connect(server.addr()).await.unwrap();
         let caps = client.capabilities().await;
 
-        let mut expected = JdwpCapabilitiesNew::default();
-        expected.can_watch_field_access = true;
-        expected.can_get_current_contended_monitor = true;
+        let expected = JdwpCapabilitiesNew {
+            can_watch_field_access: true,
+            can_get_current_contended_monitor: true,
+            ..Default::default()
+        };
 
         assert_eq!(caps, expected);
     }
@@ -3215,7 +3228,7 @@ mod tests {
                 0xDEAD_BEEF,
                 thread,
                 ctor_method,
-                &[arg.clone()],
+                std::slice::from_ref(&arg),
                 INVOKE_SINGLE_THREADED | INVOKE_NONVIRTUAL,
             )
             .await
@@ -3423,11 +3436,11 @@ mod tests {
         assert_eq!(server.signature_with_generic_calls(), 0);
 
         let _ = client
-            .reference_type_signature_with_generic_cached(main_id)
+            .reference_type_signature_with_generic(main_id)
             .await
             .unwrap();
         let _ = client
-            .reference_type_signature_with_generic_cached(main_id)
+            .reference_type_signature_with_generic(main_id)
             .await
             .unwrap();
 

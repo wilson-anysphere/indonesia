@@ -1,5 +1,3 @@
-#![cfg(feature = "bsp")]
-
 use nova_build_bazel::{test_support::EnvVarGuard, BspServerConfig, BspWorkspace};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

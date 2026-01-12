@@ -1,5 +1,3 @@
-#![cfg(feature = "bsp")]
-
 use nova_build_bazel::test_support::EnvVarGuard;
 use nova_build_bazel::{
     BazelBspConfig, BazelBuildExecutor, BazelBuildOrchestrator, BazelBuildRequest,

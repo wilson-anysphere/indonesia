@@ -2191,7 +2191,7 @@ mod bsp_config_tests {
         )
         .unwrap();
 
-        let runner = NoopRunner::default();
+        let runner = NoopRunner;
         let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
         workspace.bsp = BspConnection::Failed;
 

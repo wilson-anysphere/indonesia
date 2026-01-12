@@ -243,9 +243,11 @@ impl MockJdwpServer {
     }
 
     pub async fn spawn_with_capabilities(capabilities: Vec<bool>) -> std::io::Result<Self> {
-        let mut config = MockJdwpServerConfig::default();
-        config.capabilities = capabilities;
-        Self::spawn_with_config(config).await
+        Self::spawn_with_config(MockJdwpServerConfig {
+            capabilities,
+            ..Default::default()
+        })
+        .await
     }
 
     pub async fn spawn_with_config(config: MockJdwpServerConfig) -> std::io::Result<Self> {
@@ -2665,7 +2667,7 @@ async fn handle_packet(
                         let buckets_a = [HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_A_OBJECT_ID];
                         let buckets_b = [HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_B_OBJECT_ID];
                         let call = state.hashmap_bucket_calls.fetch_add(1, Ordering::Relaxed);
-                        let buckets = if call % 2 == 0 {
+                        let buckets = if call.is_multiple_of(2) {
                             &buckets_a
                         } else {
                             &buckets_b
@@ -3734,100 +3736,7 @@ fn smart_step_location(state: &State) -> Location {
         .map(|frame| frame.location)
         .unwrap_or_else(default_location)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::super::inspect::{Inspector, ObjectKindPreview};
-    use super::*;
-
-    #[tokio::test]
-    async fn variable_table_with_generic_locals_have_coherent_values() {
-        let server = MockJdwpServer::spawn().await.unwrap();
-        let client = super::super::JdwpClient::connect(server.addr())
-            .await
-            .unwrap();
-
-        let thread = client.all_threads().await.unwrap()[0];
-        let frame = client.frames(thread, 0, 10).await.unwrap()[0].clone();
-
-        let (_argc, vars) = client
-            .method_variable_table_with_generic(frame.location.class_id, frame.location.method_id)
-            .await
-            .unwrap();
-
-        let list = vars
-            .iter()
-            .find(|v| v.name == "list")
-            .expect("mock generic variable table missing `list`");
-        let arr = vars
-            .iter()
-            .find(|v| v.name == "arr")
-            .expect("mock generic variable table missing `arr`");
-
-        let slots = vec![
-            (list.slot, list.signature.clone()),
-            (arr.slot, arr.signature.clone()),
-        ];
-        let values = client
-            .stack_frame_get_values(thread, frame.frame_id, &slots)
-            .await
-            .unwrap();
-
-        assert_eq!(values.len(), 2);
-
-        // `list` should never decode to `Void` (regression guard for slot=0, tag='L').
-        let list_id = match &values[0] {
-            JdwpValue::Object { id, .. } => {
-                assert_ne!(*id, 0, "expected non-null list object id");
-                *id
-            }
-            other => panic!("expected list to be an object value, got {other:?}"),
-        };
-
-        // Ensure the mock provides a collection-like runtime type for `list` so higher-level
-        // stream-eval/stream-debug code can resolve `stream()` and similar methods.
-        let (_tag, type_id) = client
-            .object_reference_reference_type(list_id)
-            .await
-            .unwrap();
-        let signature = client.reference_type_signature(type_id).await.unwrap();
-        assert_eq!(signature, "Ljava/util/ArrayList;");
-
-        // Ensure higher-level helpers can treat `list` like an actual list (regression guard for
-        // stream-debug, which samples the backing collection via inspection).
-        let mut inspector = Inspector::new(client.clone());
-        let preview = inspector.preview_object(list_id).await.unwrap();
-        let runtime_type = preview.runtime_type.clone();
-        match preview.kind {
-            ObjectKindPreview::List { size, sample } => {
-                assert!(size > 0, "expected list preview size > 0");
-                assert!(
-                    !sample.is_empty(),
-                    "expected list preview to include a sample"
-                );
-            }
-            other => {
-                panic!(
-                    "expected list local to preview as List, got {other:?} (type={runtime_type})"
-                )
-            }
-        }
-
-        match &values[1] {
-            JdwpValue::Object { tag, id } => {
-                assert_eq!(*tag, b'[', "expected arr to be tagged as an array");
-                assert_ne!(*id, 0, "expected non-null array object id");
-                let len = client.array_reference_length(*id).await.unwrap();
-                assert!(
-                    len > 0,
-                    "expected mock array id to be recognized by ArrayReference.Length"
-                );
-            }
-            other => panic!("expected arr to be an object value, got {other:?}"),
-        }
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 fn make_stop_event_packet(
     state: &State,
     id_sizes: &JdwpIdSizes,
@@ -3945,9 +3854,7 @@ fn make_stop_event_packet(
         }
     }
 
-    let Some(kind) = kind else {
-        return None;
-    };
+    let kind = kind?;
 
     let suspend_policy = match kind {
         2 => breakpoint_suspend_policy.unwrap_or(1),
@@ -3985,4 +3892,100 @@ fn make_stop_event_packet(
     let payload = w.into_vec();
     let packet_id = state.alloc_packet_id();
     Some(encode_command(packet_id, 64, 100, &payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::inspect::{Inspector, ObjectKindPreview};
+    use super::*;
+
+    #[tokio::test]
+    async fn variable_table_with_generic_locals_have_coherent_values() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = super::super::JdwpClient::connect(server.addr())
+            .await
+            .unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let frame = client
+            .frames(thread, 0, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("expected mock to return at least one frame");
+
+        let (_argc, vars) = client
+            .method_variable_table_with_generic(frame.location.class_id, frame.location.method_id)
+            .await
+            .unwrap();
+
+        let list = vars
+            .iter()
+            .find(|v| v.name == "list")
+            .expect("mock generic variable table missing `list`");
+        let arr = vars
+            .iter()
+            .find(|v| v.name == "arr")
+            .expect("mock generic variable table missing `arr`");
+
+        let slots = vec![
+            (list.slot, list.signature.clone()),
+            (arr.slot, arr.signature.clone()),
+        ];
+        let values = client
+            .stack_frame_get_values(thread, frame.frame_id, &slots)
+            .await
+            .unwrap();
+
+        assert_eq!(values.len(), 2);
+
+        // `list` should never decode to `Void` (regression guard for slot=0, tag='L').
+        let list_id = match &values[0] {
+            JdwpValue::Object { id, .. } => {
+                assert_ne!(*id, 0, "expected non-null list object id");
+                *id
+            }
+            other => panic!("expected list to be an object value, got {other:?}"),
+        };
+
+        // Ensure the mock provides a collection-like runtime type for `list` so higher-level
+        // stream-eval/stream-debug code can resolve `stream()` and similar methods.
+        let (_tag, type_id) = client
+            .object_reference_reference_type(list_id)
+            .await
+            .unwrap();
+        let signature = client.reference_type_signature(type_id).await.unwrap();
+        assert_eq!(signature, "Ljava/util/ArrayList;");
+
+        // Ensure higher-level helpers can treat `list` like an actual list (regression guard for
+        // stream-debug, which samples the backing collection via inspection).
+        let mut inspector = Inspector::new(client.clone());
+        let preview = inspector.preview_object(list_id).await.unwrap();
+        let runtime_type = preview.runtime_type.clone();
+        match preview.kind {
+            ObjectKindPreview::List { size, sample } => {
+                assert!(size > 0, "expected list preview size > 0");
+                assert!(!sample.is_empty(), "expected list preview to include a sample");
+            }
+            other => {
+                panic!(
+                    "expected list local to preview as List, got {other:?} (type={runtime_type})"
+                )
+            }
+        }
+
+        match &values[1] {
+            JdwpValue::Object { tag, id } => {
+                assert_eq!(*tag, b'[', "expected arr to be tagged as an array");
+                assert_ne!(*id, 0, "expected non-null array object id");
+                let len = client.array_reference_length(*id).await.unwrap();
+                assert!(
+                    len > 0,
+                    "expected mock array id to be recognized by ArrayReference.Length"
+                );
+            }
+            other => panic!("expected arr to be an object value, got {other:?}"),
+        }
+    }
 }
