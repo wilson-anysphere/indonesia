@@ -1,4 +1,4 @@
-use nova_db::{Database as LegacyDatabase, FileId, SalsaDatabase, SalsaDbView};
+use nova_db::{Database as LegacyDatabase, FileId, SalsaDatabase, SalsaDbView, SourceDatabase};
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -57,8 +57,8 @@ fn salsa_db_view_is_snapshot_isolated_from_main_db_mutations() {
     db.set_file_text(file, "new".to_string());
     let view_new = SalsaDbView::new(db.snapshot());
 
-    assert_eq!(view_old.file_content(file), "old");
-    assert_eq!(view_new.file_content(file), "new");
+    assert_eq!(LegacyDatabase::file_content(&view_old, file), "old");
+    assert_eq!(LegacyDatabase::file_content(&view_new, file), "new");
 }
 
 #[test]
@@ -68,21 +68,53 @@ fn salsa_db_view_file_path_none_is_consistent() {
     db.set_file_text(file, "class A {}".to_string());
 
     let view_without_path = SalsaDbView::new(db.snapshot());
-    assert!(view_without_path.file_path(file).is_none());
+    assert!(LegacyDatabase::file_path(&view_without_path, file).is_none());
 
     db.set_file_path(file, "src/A.java");
     assert!(
-        view_without_path.file_path(file).is_none(),
+        LegacyDatabase::file_path(&view_without_path, file).is_none(),
         "existing view should not observe new paths"
     );
 
     let view_with_path = SalsaDbView::new(db.snapshot());
     assert_eq!(
-        view_with_path.file_path(file).unwrap().to_str().unwrap(),
+        LegacyDatabase::file_path(&view_with_path, file)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "src/A.java"
     );
     assert_eq!(
-        view_with_path.file_id(std::path::Path::new("src/A.java")),
+        LegacyDatabase::file_id(&view_with_path, std::path::Path::new("src/A.java")),
         Some(file)
     );
+}
+
+#[test]
+fn salsa_all_file_ids_only_includes_files_with_content_set() {
+    let db = SalsaDatabase::new();
+    let file = FileId::from_raw(0);
+
+    // `file_exists` alone should not make the file enumeratable: `file_content`
+    // is a Salsa input and would panic if no value was set.
+    db.set_file_exists(file, true);
+    {
+        let snap = db.snapshot();
+        assert!(
+            SourceDatabase::all_file_ids(&snap).is_empty(),
+            "files without file_content should not be enumerated"
+        );
+    }
+
+    // Setting file_content adds the file to the enumerated set.
+    //
+    // NB: Salsa input writes may block while snapshots are alive, so ensure any
+    // prior snapshots are dropped before setting new input values.
+    db.set_file_content(file, std::sync::Arc::new("class A {}".to_string()));
+    let snap = db.snapshot();
+    assert_eq!(SourceDatabase::all_file_ids(&snap).as_ref(), &[file]);
+
+    // The legacy view can still be built and read safely.
+    let view = SalsaDbView::new(snap);
+    assert_eq!(LegacyDatabase::file_content(&view, file), "class A {}");
 }
