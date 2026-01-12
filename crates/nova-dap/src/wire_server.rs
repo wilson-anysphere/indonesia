@@ -35,6 +35,7 @@ use crate::{
         BuildSystemMulti, CompileError, CompileOutputMulti, CompiledClass, HotSwapClassResult,
         HotSwapEngine, HotSwapStatus,
     },
+    stream_debug::StreamDebugArguments,
     wire_debugger::{
         AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError,
         FunctionBreakpointSpec, StepDepth, VmStoppedValue,
@@ -2258,6 +2259,115 @@ async fn handle_request_inner(
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
+        "nova/streamDebug" => {
+            if cancel.is_cancelled() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
+                return;
+            }
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
+                return;
+            };
+
+            let args: StreamDebugArguments = match serde_json::from_value(request.arguments.clone())
+            {
+                Ok(args) => args,
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid streamDebug arguments: {err}")),
+                    );
+                    return;
+                }
+            };
+
+            let Some(frame_id) = args.frame_id else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("streamDebug.frameId is required".to_string()),
+                );
+                return;
+            };
+            if frame_id <= 0 {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("streamDebug.frameId must be a positive integer".to_string()),
+                );
+                return;
+            }
+
+            let config = args.into_config();
+
+            match dbg
+                .stream_debug(cancel, frame_id, &args.expression, config)
+                .await
+            {
+                Ok(body) if cancel.is_cancelled() => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Ok(body) => match serde_json::to_value(body) {
+                    Ok(body) => send_response(out_tx, seq, request, true, Some(body), None),
+                    Err(err) => {
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
+                    }
+                },
+                Err(err) if is_cancelled_error(&err) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
         "nova/pinObject" => {
             let Some(variables_reference) = request
                 .arguments
@@ -2846,6 +2956,36 @@ async fn handle_request_inner(
 
 fn is_cancelled_error(err: &DebuggerError) -> bool {
     matches!(err, DebuggerError::Jdwp(JdwpError::Cancelled))
+}
+
+// Temporary compatibility shim: `nova/streamDebug` is being migrated to the wire adapter.
+//
+// The runtime implementation should live in `wire_debugger::Debugger`, but while that work
+// lands we provide a trait method so `wire_server` can compile and handle request plumbing.
+#[allow(dead_code)]
+trait StreamDebugExt {
+    async fn stream_debug(
+        &mut self,
+        cancel: &CancellationToken,
+        frame_id: i64,
+        expression: &str,
+        config: nova_stream_debug::StreamDebugConfig,
+    ) -> std::result::Result<crate::stream_debug::StreamDebugBody, DebuggerError>;
+}
+
+#[allow(dead_code)]
+impl StreamDebugExt for Debugger {
+    async fn stream_debug(
+        &mut self,
+        _cancel: &CancellationToken,
+        _frame_id: i64,
+        _expression: &str,
+        _config: nova_stream_debug::StreamDebugConfig,
+    ) -> std::result::Result<crate::stream_debug::StreamDebugBody, DebuggerError> {
+        Err(DebuggerError::InvalidRequest(
+            "streamDebug is not implemented in the wire debugger yet".to_string(),
+        ))
+    }
 }
 
 fn resolve_source_roots(

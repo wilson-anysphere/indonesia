@@ -21,6 +21,7 @@ mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
 mod source_mapping;
 mod stream_debug;
+mod wire_stream_debug;
 mod wire_breakpoint_mapping;
 mod wire_format;
 mod wire_variables_preview;
