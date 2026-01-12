@@ -3424,7 +3424,10 @@ class Foo {
 
         // Build a body large enough to exceed the HIR lowering cancellation checkpoint interval.
         let mut source = String::from("class Foo { void m() {");
-        for i in 0..2_000_u32 {
+        // Use a body large enough that the query runs long enough for the cancellation request
+        // (issued from another thread) to reliably land while `hir_body` is still executing,
+        // without making `parse_block` so slow that we miss the ENTER_TIMEOUT.
+        for i in 0..8_000_u32 {
             let _ = write!(source, "int v{i} = {i};");
         }
         source.push_str("} }");
@@ -3454,7 +3457,10 @@ class Foo {
         // Build a body large enough that `flow_diagnostics` is still executing after the
         // cancellation request is issued.
         let mut source = String::from("class Foo { void m() { int x = 0;");
-        for _ in 0..2_000_u32 {
+        // Use a body large enough that the cancellation request reliably lands while flow analysis
+        // is still running, even under parallel test execution load, without making parsing too
+        // slow for the cancellation harness.
+        for _ in 0..8_000_u32 {
             source.push_str("x = x;");
         }
         source.push_str("} }");
@@ -4776,6 +4782,55 @@ class Foo {
             db.inner.lock().java_parse_cache.entry_count(),
             0,
             "expected incremental parse cache to clear after MemoryManager eviction"
+        );
+    }
+
+    #[test]
+    fn java_parse_cache_enforces_lru_entry_cap() {
+        // Keep in sync with `java_parse_cache::DEFAULT_ENTRY_CAP`.
+        const CAP: u32 = 64;
+
+        let db = Database::new();
+        for idx in 0..CAP {
+            let file = FileId::from_raw(idx + 1);
+            db.set_file_text(file, format!("class C{idx} {{ int x = {idx}; }}"));
+            db.with_snapshot(|snap| {
+                let _ = snap.parse_java(file);
+            });
+        }
+
+        let cache = db.inner.lock().java_parse_cache.clone();
+        assert_eq!(
+            cache.entry_count() as u32,
+            CAP,
+            "expected java_parse_cache to contain exactly CAP entries after initial population"
+        );
+
+        // Touch the first entry to make it most-recent so the second entry becomes LRU.
+        let first = FileId::from_raw(1);
+        assert!(
+            cache.get(first).is_some(),
+            "expected first entry to exist in the cache"
+        );
+
+        let extra = FileId::from_raw(CAP + 1);
+        db.set_file_text(extra, "class Extra { int y; }");
+        db.with_snapshot(|snap| {
+            let _ = snap.parse_java(extra);
+        });
+
+        assert_eq!(
+            cache.entry_count() as u32,
+            CAP,
+            "expected java_parse_cache to keep a stable CAP after inserting an extra entry"
+        );
+        assert!(
+            cache.get(FileId::from_raw(2)).is_none(),
+            "expected the least-recently-used entry (file 2) to be evicted"
+        );
+        assert!(
+            cache.get(first).is_some(),
+            "expected the recently-used entry (file 1) to remain in the cache"
         );
     }
 
