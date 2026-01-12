@@ -377,6 +377,7 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
             jast::Expr::Binary(bin) => {
                 walk_expr(source, method_name, &bin.lhs) || walk_expr(source, method_name, &bin.rhs)
             }
+            jast::Expr::Instanceof(expr) => walk_expr(source, method_name, expr.expr.as_ref()),
             jast::Expr::Assign(expr) => {
                 walk_expr(source, method_name, &expr.lhs)
                     || walk_expr(source, method_name, &expr.rhs)

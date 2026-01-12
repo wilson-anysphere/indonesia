@@ -1078,6 +1078,64 @@ class C {
 }
 
 #[test]
+fn instanceof_has_boolean_type() {
+    let src = r#"
+class C {
+    boolean m(Object o){
+        return o instanceof String;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String")
+        .expect("snippet should contain instanceof type");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn instanceof_rhs_primitive_is_error() {
+    let src = r#"
+class C {
+    boolean m(Object o){
+        return o instanceof int;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "instanceof-invalid-type"),
+        "expected instanceof-invalid-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn instanceof_lhs_primitive_is_error() {
+    let src = r#"
+class C {
+    boolean m(int i){
+        return i instanceof String;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "instanceof-on-primitive"),
+        "expected instanceof-on-primitive diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn boxed_primitive_equality_with_null_is_boolean() {
     let src = r#"
 class C {

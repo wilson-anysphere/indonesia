@@ -297,6 +297,12 @@ pub enum Expr {
         rhs: ExprId,
         range: Span,
     },
+    Instanceof {
+        expr: ExprId,
+        ty_text: String,
+        ty_range: Span,
+        range: Span,
+    },
     Assign {
         op: AssignOp,
         lhs: ExprId,
@@ -353,6 +359,7 @@ impl Expr {
             | Expr::New { range, .. }
             | Expr::Unary { range, .. }
             | Expr::Binary { range, .. }
+            | Expr::Instanceof { range, .. }
             | Expr::Assign { range, .. }
             | Expr::Conditional { range, .. }
             | Expr::Lambda { range, .. }

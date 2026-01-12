@@ -356,6 +356,9 @@ impl Builder {
                 self.visit_expr(body, *lhs, scope);
                 self.visit_expr(body, *rhs, scope);
             }
+            Expr::Instanceof { expr, .. } => {
+                self.visit_expr(body, *expr, scope);
+            }
             Expr::Assign { lhs, rhs, .. } => {
                 self.visit_expr(body, *lhs, scope);
                 self.visit_expr(body, *rhs, scope);

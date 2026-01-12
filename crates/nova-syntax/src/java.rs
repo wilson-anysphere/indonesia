@@ -404,6 +404,7 @@ pub mod ast {
         New(NewExpr),
         Unary(UnaryExpr),
         Binary(BinaryExpr),
+        Instanceof(InstanceofExpr),
         MethodReference(MethodReferenceExpr),
         ConstructorReference(ConstructorReferenceExpr),
         ClassLiteral(ClassLiteralExpr),
@@ -435,6 +436,7 @@ pub mod ast {
                 Expr::New(expr) => expr.range,
                 Expr::Unary(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
+                Expr::Instanceof(expr) => expr.range,
                 Expr::MethodReference(expr) => expr.range,
                 Expr::ConstructorReference(expr) => expr.range,
                 Expr::ClassLiteral(expr) => expr.range,
@@ -548,6 +550,13 @@ pub mod ast {
         pub op: BinaryOp,
         pub lhs: Box<Expr>,
         pub rhs: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct InstanceofExpr {
+        pub expr: Box<Expr>,
+        pub ty: TypeRef,
         pub range: Span,
     }
 
@@ -2012,6 +2021,7 @@ impl Lowerer {
             SyntaxKind::ClassLiteralExpression => self.lower_class_literal_expr(node),
             SyntaxKind::UnaryExpression => self.lower_unary_expr(node),
             SyntaxKind::BinaryExpression => self.lower_binary_expr(node),
+            SyntaxKind::InstanceofExpression => self.lower_instanceof_expr(node),
             SyntaxKind::AssignmentExpression => self.lower_assign_expr(node),
             SyntaxKind::ConditionalExpression => self.lower_conditional_expr(node),
             SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
@@ -2052,6 +2062,34 @@ impl Lowerer {
                 }
             }
         }
+    }
+
+    fn lower_instanceof_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let lhs_node = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()));
+        let lhs = lhs_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty = ty_node
+            .as_ref()
+            .map(|ty| self.lower_type_ref(ty))
+            .unwrap_or_else(|| {
+                let range = self.spans.map_node(node);
+                ast::TypeRef {
+                    text: String::new(),
+                    range: Span::new(range.end, range.end),
+                }
+            });
+
+        ast::Expr::Instanceof(ast::InstanceofExpr {
+            expr: Box::new(lhs),
+            ty,
+            range: self.spans.map_node(node),
+        })
     }
 
     fn lower_name_expr(&self, node: &SyntaxNode) -> ast::Expr {
@@ -2976,6 +3014,22 @@ mod tests {
             matches!(call.callee.as_ref(), ast::Expr::Super(_)),
             "expected call callee to be `super`, got {:?}",
             call.callee
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_instanceof() {
+        let text = "{ o instanceof String; }";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        assert!(
+            matches!(expr_stmt.expr, ast::Expr::Instanceof(_)),
+            "expected instanceof expression"
         );
     }
 }

@@ -1297,6 +1297,15 @@ impl<'a> BodyLower<'a> {
                     range: binary.range,
                 })
             }
+            syntax::Expr::Instanceof(instanceof) => {
+                let expr = self.lower_expr(instanceof.expr.as_ref());
+                self.alloc_expr(Expr::Instanceof {
+                    expr,
+                    ty_text: instanceof.ty.text.clone(),
+                    ty_range: instanceof.ty.range,
+                    range: instanceof.range,
+                })
+            }
             syntax::Expr::MethodReference(expr) => {
                 let receiver = self.lower_expr(&expr.receiver);
                 self.alloc_expr(Expr::MethodReference {

@@ -1023,6 +1023,10 @@ fn resolve_method_call_demand(
                     set_parent(parent_expr, *inner);
                     visit_expr(body, *inner, parent_expr, visited_expr);
                 }
+                HirExpr::Instanceof { expr: inner, .. } => {
+                    set_parent(parent_expr, *inner);
+                    visit_expr(body, *inner, parent_expr, visited_expr);
+                }
                 HirExpr::Binary { lhs, rhs, .. } | HirExpr::Assign { lhs, rhs, .. } => {
                     set_parent(parent_expr, *lhs);
                     set_parent(parent_expr, *rhs);
@@ -4186,8 +4190,55 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Binary { op, lhs, rhs, .. } => {
-                self.infer_binary(loader, expr, *op, *lhs, *rhs)
+            HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, expr, *op, *lhs, *rhs),
+            HirExpr::Instanceof {
+                expr: lhs_expr,
+                ty_text,
+                ty_range,
+                range,
+            } => {
+                let lhs = self.infer_expr(loader, *lhs_expr).ty;
+                let rhs = if ty_text.trim().is_empty() {
+                    Type::Unknown
+                } else {
+                    self.resolve_source_type(loader, ty_text.as_str(), Some(*ty_range))
+                };
+
+                if matches!(rhs, Type::Primitive(_) | Type::Void) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "instanceof-invalid-type",
+                        "`instanceof` requires a reference type",
+                        Some(*ty_range),
+                    ));
+                }
+
+                if !lhs.is_errorish() && matches!(lhs, Type::Primitive(_)) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "instanceof-on-primitive",
+                        "`instanceof` cannot be applied to a primitive expression",
+                        Some(self.body.exprs[*lhs_expr].range()),
+                    ));
+                }
+
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                if lhs.is_reference()
+                    && rhs.is_reference()
+                    && !lhs.is_errorish()
+                    && !rhs.is_errorish()
+                    && cast_conversion(env_ro, &lhs, &rhs).is_none()
+                    && cast_conversion(env_ro, &rhs, &lhs).is_none()
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-instanceof",
+                        "invalid `instanceof` check between unrelated types",
+                        Some(*range),
+                    ));
+                }
+
+                ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Boolean),
+                    is_type_ref: false,
+                }
             }
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
@@ -7209,6 +7260,7 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
         HirExpr::Unary { expr, .. } => contains_expr_in_expr(body, *expr, target),
+        HirExpr::Instanceof { expr, .. } => contains_expr_in_expr(body, *expr, target),
         HirExpr::Binary { lhs, rhs, .. } => {
             contains_expr_in_expr(body, *lhs, target) || contains_expr_in_expr(body, *rhs, target)
         }
@@ -7291,6 +7343,9 @@ fn find_best_expr_in_expr(
         HirExpr::Binary { lhs, rhs, .. } => {
             find_best_expr_in_expr(body, *lhs, offset, owner, best);
             find_best_expr_in_expr(body, *rhs, offset, owner, best);
+        }
+        HirExpr::Instanceof { expr, .. } => {
+            find_best_expr_in_expr(body, *expr, offset, owner, best);
         }
         HirExpr::Assign { lhs, rhs, .. } => {
             find_best_expr_in_expr(body, *lhs, offset, owner, best);

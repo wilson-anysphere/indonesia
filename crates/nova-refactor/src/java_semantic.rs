@@ -1788,10 +1788,12 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 }
             }
             hir::Expr::Unary { expr, .. } => walk_expr(body, *expr, f),
-            hir::Expr::Binary { lhs, rhs, .. } | hir::Expr::Assign { lhs, rhs, .. } => {
+            hir::Expr::Binary { lhs, rhs, .. }
+            | hir::Expr::Assign { lhs, rhs, .. } => {
                 walk_expr(body, *lhs, f);
                 walk_expr(body, *rhs, f);
             }
+            hir::Expr::Instanceof { expr, .. } => walk_expr(body, *expr, f),
             hir::Expr::Conditional {
                 condition,
                 then_expr,
