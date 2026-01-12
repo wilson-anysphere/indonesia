@@ -10,136 +10,203 @@ use crate::{ClassId, ClassKind, ClassType, PrimitiveType, Type, TypeEnv, TypeVar
 ///
 /// Example: `ArrayList<String>` instantiated as `List` returns `List<String>`.
 pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -> Option<Type> {
-    // Handle a few non-class cases up front.
-    match ty {
-        Type::Array(_) => {
-            let wk = env.well_known();
-            if target == wk.object || target == wk.cloneable || target == wk.serializable {
-                return Some(Type::class(target, vec![]));
-            }
-            return None;
-        }
-        Type::Intersection(parts) => {
-            // Best-effort: if any component can be viewed as the requested supertype, use it.
-            // Sort to ensure deterministic results independent of intersection order.
-            let mut sorted: Vec<&Type> = parts.iter().collect();
-            sorted.sort_by_cached_key(|ty| {
-                (
-                    crate::intersection_component_rank(env, ty),
-                    crate::type_sort_key(env, ty),
-                )
-            });
-
-            for part in sorted {
-                if let Some(found) = instantiate_as_supertype(env, part, target) {
-                    return Some(found);
+    fn inner(
+        env: &dyn TypeEnv,
+        ty: &Type,
+        target: ClassId,
+        seen_type_vars: &mut HashSet<TypeVarId>,
+    ) -> Option<Type> {
+        // Handle a few non-class cases up front.
+        match ty {
+            Type::Array(_) => {
+                let wk = env.well_known();
+                if target == wk.object || target == wk.cloneable || target == wk.serializable {
+                    return Some(Type::class(target, vec![]));
                 }
+                return None;
             }
-            return None;
-        }
-        Type::TypeVar(id) => {
-            // Best-effort: consult the first upper bound that can be instantiated.
-            let tp = env.type_param(*id)?;
-            // Sort bounds so results don't depend on the (sometimes unstable) ordering of bound
-            // collection (e.g. inference bounds, capture conversion, or recovery).
-            let mut sorted: Vec<&Type> = tp.upper_bounds.iter().collect();
-            sorted.sort_by_cached_key(|ty| {
-                (
-                    crate::intersection_component_rank(env, ty),
-                    crate::type_sort_key(env, ty),
-                )
-            });
+            Type::Intersection(parts) => {
+                // Deterministically iterate intersection components.
+                let mut sorted: Vec<&Type> = parts.iter().collect();
+                sorted.sort_by_cached_key(|ty| {
+                    (
+                        crate::intersection_component_rank(env, ty),
+                        crate::type_sort_key(env, ty),
+                    )
+                });
 
-            for bound in sorted {
-                if let Some(found) = instantiate_as_supertype(env, bound, target) {
-                    return Some(found);
+                // Best-effort: if multiple parts can be viewed as the requested supertype, prefer
+                // the most informative (fewest Unknowns) and ensure the result is not ambiguous.
+                let mut out: Option<Type> = None;
+                for part in sorted {
+                    let Some(found) = inner(env, part, target, seen_type_vars) else {
+                        continue;
+                    };
+                    out = match out {
+                        None => Some(found),
+                        Some(existing) => Some(merge_instantiated_supertypes(env, existing, found)?),
+                    };
                 }
+                return out;
             }
+            Type::TypeVar(id) => {
+                if !seen_type_vars.insert(*id) {
+                    return None;
+                }
+
+                let mut out: Option<Type> = None;
+                if let Some(tp) = env.type_param(*id) {
+                    // Deterministically iterate bounds (ordering isn't guaranteed stable during recovery).
+                    let mut sorted: Vec<&Type> = tp.upper_bounds.iter().collect();
+                    sorted.sort_by_cached_key(|ty| {
+                        (
+                            crate::intersection_component_rank(env, ty),
+                            crate::type_sort_key(env, ty),
+                        )
+                    });
+
+                    for bound in sorted {
+                        let Some(found) = inner(env, bound, target, seen_type_vars) else {
+                            continue;
+                        };
+                        out = match out {
+                            None => Some(found),
+                            Some(existing) => {
+                                Some(merge_instantiated_supertypes(env, existing, found)?)
+                            }
+                        };
+                    }
+                }
+
+                seen_type_vars.remove(id);
+                return out;
+            }
+            _ => {}
+        }
+
+        let ty = crate::canonicalize_named(env, ty);
+
+        let Type::Class(ClassType { def, args }) = ty else {
             return None;
-        }
-        _ => {}
-    }
-
-    let ty = crate::canonicalize_named(env, ty);
-
-    let Type::Class(ClassType { def, args }) = ty else {
-        return None;
-    };
-
-    let mut queue: VecDeque<Type> = VecDeque::new();
-    let mut seen: HashSet<(ClassId, Vec<Type>)> = HashSet::new();
-    queue.push_back(Type::class(def, args));
-
-    while let Some(current) = queue.pop_front() {
-        let Type::Class(ClassType { def, args }) = current.clone() else {
-            continue;
-        };
-        if !seen.insert((def, args.clone())) {
-            continue;
-        }
-
-        if def == target {
-            return Some(current);
-        }
-
-        let Some(class_def) = env.class(def) else {
-            continue;
         };
 
-        // If the current instantiation is raw (e.g. `List` rather than `List<String>`), we can't
-        // recover meaningful type arguments for supertypes. Preserve rawness when walking.
-        let raw = args.is_empty() && !class_def.type_params.is_empty();
+        let mut queue: VecDeque<Type> = VecDeque::new();
+        let mut seen: HashSet<(ClassId, Vec<Type>)> = HashSet::new();
+        queue.push_back(Type::class(def, args));
 
-        if raw {
+        while let Some(current) = queue.pop_front() {
+            let Type::Class(ClassType { def, args }) = current.clone() else {
+                continue;
+            };
+            if !seen.insert((def, args.clone())) {
+                continue;
+            }
+
+            if def == target {
+                return Some(current);
+            }
+
+            let Some(class_def) = env.class(def) else {
+                continue;
+            };
+
+            // If the current instantiation is raw (e.g. `List` rather than `List<String>`), we can't
+            // recover meaningful type arguments for supertypes. Preserve rawness when walking.
+            let raw = args.is_empty() && !class_def.type_params.is_empty();
+
+            if raw {
+                if let Some(sc) = &class_def.super_class {
+                    if let Some(raw_sc) = raw_class_type(env, sc) {
+                        queue.push_back(raw_sc);
+                    }
+                }
+
+                let mut ifaces: Vec<Type> = class_def
+                    .interfaces
+                    .iter()
+                    .filter_map(|iface| raw_class_type(env, iface))
+                    .collect();
+                ifaces.sort_by_cached_key(|ty| crate::type_sort_key(env, ty));
+                for iface in ifaces {
+                    queue.push_back(iface);
+                }
+
+                if class_def.kind == ClassKind::Interface {
+                    queue.push_back(Type::class(env.well_known().object, vec![]));
+                }
+                continue;
+            }
+
+            // Apply the current instantiation's substitution to its supertypes.
+            let mut subst: HashMap<TypeVarId, Type> =
+                HashMap::with_capacity(class_def.type_params.len());
+            for (idx, formal) in class_def.type_params.iter().copied().enumerate() {
+                subst.insert(formal, args.get(idx).cloned().unwrap_or(Type::Unknown));
+            }
+
             if let Some(sc) = &class_def.super_class {
-                if let Some(raw_sc) = raw_class_type(env, sc) {
-                    queue.push_back(raw_sc);
-                }
+                let sc = crate::canonicalize_named(env, &crate::substitute(sc, &subst));
+                queue.push_back(sc);
             }
+
             let mut ifaces: Vec<Type> = class_def
                 .interfaces
                 .iter()
-                .filter_map(|iface| raw_class_type(env, iface))
+                .map(|iface| {
+                    let iface = crate::substitute(iface, &subst);
+                    crate::canonicalize_named(env, &iface)
+                })
                 .collect();
             ifaces.sort_by_cached_key(|ty| crate::type_sort_key(env, ty));
             for iface in ifaces {
                 queue.push_back(iface);
             }
+
+            // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
             if class_def.kind == ClassKind::Interface {
                 queue.push_back(Type::class(env.well_known().object, vec![]));
             }
-            continue;
         }
 
-        // Apply the current instantiation's substitution to its supertypes.
-        let mut subst: HashMap<TypeVarId, Type> = HashMap::with_capacity(class_def.type_params.len());
-        for (idx, formal) in class_def.type_params.iter().copied().enumerate() {
-            subst.insert(formal, args.get(idx).cloned().unwrap_or(Type::Unknown));
-        }
-
-        if let Some(sc) = &class_def.super_class {
-            let sc = crate::substitute(sc, &subst);
-            queue.push_back(crate::canonicalize_named(env, &sc));
-        }
-        let mut ifaces: Vec<Type> = class_def
-            .interfaces
-            .iter()
-            .map(|iface| {
-                let iface = crate::substitute(iface, &subst);
-                crate::canonicalize_named(env, &iface)
-            })
-            .collect();
-        ifaces.sort_by_cached_key(|ty| crate::type_sort_key(env, ty));
-        for iface in ifaces {
-            queue.push_back(iface);
-        }
-        // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
-        if class_def.kind == ClassKind::Interface {
-            queue.push_back(Type::class(env.well_known().object, vec![]));
-        }
+        None
     }
 
-    None
+    let mut seen_type_vars = HashSet::new();
+    inner(env, ty, target, &mut seen_type_vars)
+}
+
+fn merge_instantiated_supertypes(env: &dyn TypeEnv, a: Type, b: Type) -> Option<Type> {
+    if a == b {
+        return Some(a);
+    }
+
+    let a_score = placeholder_score(&a);
+    let b_score = placeholder_score(&b);
+    if a_score != b_score {
+        return Some(if a_score < b_score { a } else { b });
+    }
+
+    let a_sub_b = crate::is_subtype(env, &a, &b);
+    let b_sub_a = crate::is_subtype(env, &b, &a);
+
+    match (a_sub_b, b_sub_a) {
+        (true, false) => Some(a),
+        (false, true) => Some(b),
+        (true, true) => Some(a),
+        (false, false) => None,
+    }
+}
+
+fn placeholder_score(ty: &Type) -> usize {
+    match ty {
+        Type::Unknown | Type::Error => 1,
+        Type::Array(elem) => placeholder_score(elem),
+        Type::Class(ClassType { args, .. }) => args.iter().map(placeholder_score).sum(),
+        Type::Wildcard(crate::WildcardBound::Extends(upper))
+        | Type::Wildcard(crate::WildcardBound::Super(upper)) => placeholder_score(upper),
+        Type::Intersection(parts) => parts.iter().map(placeholder_score).sum(),
+        _ => 0,
+    }
 }
 
 fn raw_class_type(env: &dyn TypeEnv, ty: &Type) -> Option<Type> {
@@ -636,5 +703,48 @@ mod tests {
         let instantiated =
             instantiate_as_supertype(&store, &array_list_named, list).expect("should map supertypes");
         assert_eq!(instantiated, Type::class(list, vec![]));
+    }
+
+    #[test]
+    fn instantiate_as_supertype_rejects_conflicting_intersection_instantiations() {
+        let store = TypeStore::with_minimal_jdk();
+        let list = store
+            .class_id("java.util.List")
+            .expect("minimal JDK should define java.util.List");
+        let string = Type::class(store.well_known().string, vec![]);
+        let integer = Type::class(store.well_known().integer, vec![]);
+
+        let ty = Type::Intersection(vec![
+            Type::class(list, vec![string]),
+            Type::class(list, vec![integer]),
+        ]);
+
+        assert!(
+            instantiate_as_supertype(&store, &ty, list).is_none(),
+            "ambiguous intersection instantiations should not pick an arbitrary type argument"
+        );
+    }
+
+    #[test]
+    fn instantiate_as_supertype_rejects_conflicting_type_var_bounds() {
+        let mut store = TypeStore::with_minimal_jdk();
+        let list = store
+            .class_id("java.util.List")
+            .expect("minimal JDK should define java.util.List");
+        let string = Type::class(store.well_known().string, vec![]);
+        let integer = Type::class(store.well_known().integer, vec![]);
+
+        let tv = store.add_type_param(
+            "T",
+            vec![
+                Type::class(list, vec![string]),
+                Type::class(list, vec![integer]),
+            ],
+        );
+
+        assert!(
+            instantiate_as_supertype(&store, &Type::TypeVar(tv), list).is_none(),
+            "conflicting bounds should not produce an arbitrary instantiation"
+        );
     }
 }
