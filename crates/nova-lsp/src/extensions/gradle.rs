@@ -70,6 +70,22 @@ mod tests {
     }
 
     #[test]
+    fn resolves_project_dir_override_from_settings_gradle_kts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.gradle.kts"),
+            "include(\":app\")\nproject(\":app\").projectDir = file(\"modules/application\")\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("modules/application")).unwrap();
+
+        let resolved = resolve_gradle_module_root(dir.path(), ":app").expect("module root");
+        let expected = dir.path().join("modules/application").canonicalize().unwrap();
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
     fn resolves_include_flat_module_outside_workspace_root() {
         let dir = tempfile::tempdir().unwrap();
         let workspace_root = dir.path().join("workspace");
@@ -77,6 +93,24 @@ mod tests {
         std::fs::write(
             workspace_root.join("settings.gradle"),
             "includeFlat 'app'\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+
+        let resolved = resolve_gradle_module_root(&workspace_root, ":app").expect("module root");
+        let expected = dir.path().join("app").canonicalize().unwrap();
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolves_include_flat_module_from_settings_gradle_kts() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(
+            workspace_root.join("settings.gradle.kts"),
+            "includeFlat(\"app\")\n",
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join("app")).unwrap();
