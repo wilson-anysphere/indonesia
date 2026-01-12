@@ -1042,6 +1042,50 @@ fn type_use_annotations_in_type_arguments_with_suffix_annotations_are_ignored() 
 }
 
 #[test]
+fn type_use_annotations_before_fully_qualified_types_are_ignored() {
+    // `@A java.util.List<@B String>` -> `@Ajava.util.List<@BString>`
+    // `java.util.@A List<@B String>` -> `java.util.@AList<@BString>`
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "java.util.List<String>",
+        None,
+    );
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "@Ajava.util.List<@BString>",
+        None,
+    );
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "java.util.@AList<@BString>",
+        None,
+    );
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
+
+#[test]
 fn type_use_annotations_before_varargs_are_ignored() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
