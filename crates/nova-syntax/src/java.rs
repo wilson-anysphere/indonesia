@@ -3553,9 +3553,16 @@ mod tests {
         let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
             panic!("expected expression statement");
         };
+        let ast::Expr::ArrayCreation(array) = &expr_stmt.expr else {
+            panic!("expected array creation expression");
+        };
+        assert_eq!(array.elem_ty.text, "int");
+        assert_eq!(array.dim_exprs.len(), 1);
+        assert_eq!(array.extra_dims, 0);
+
         assert!(
-            matches!(expr_stmt.expr, ast::Expr::ArrayCreation(_)),
-            "expected array creation expression"
+            matches!(&array.dim_exprs[0], ast::Expr::IntLiteral(_)),
+            "expected array dimension to be an int literal"
         );
     }
 
@@ -3572,5 +3579,21 @@ mod tests {
             !matches!(stmt.condition, ast::Expr::Missing(_)),
             "expected non-missing assert condition"
         );
+    }
+
+    #[test]
+    fn parse_block_lowers_array_creation_with_extra_dims() {
+        let block = parse_block("{ new int[1][]; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        let ast::Expr::ArrayCreation(array) = &expr_stmt.expr else {
+            panic!("expected array creation expression");
+        };
+        assert_eq!(array.elem_ty.text, "int");
+        assert_eq!(array.dim_exprs.len(), 1);
+        assert_eq!(array.extra_dims, 1);
     }
 }

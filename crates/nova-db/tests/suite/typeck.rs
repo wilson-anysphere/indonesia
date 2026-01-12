@@ -348,6 +348,37 @@ class C { void m(){ int[] a = new int[1]; } }
 }
 
 #[test]
+fn array_creation_multidimensional_has_array_type() {
+    let src = r#"
+class C { void m(){ int[][] a = new int[1][2]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("new int[1][2]")
+        .expect("snippet should contain array creation")
+        + "new ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[][]");
+}
+
+#[test]
+fn array_creation_dimension_type_must_be_integral() {
+    let src = r#"
+class C { void m(){ int[] a = new int[1.0]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "array-dimension-type"),
+        "expected array-dimension-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn rejects_non_statement_expression() {
     let src = r#"
 class C {
