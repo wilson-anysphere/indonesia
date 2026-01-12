@@ -29,8 +29,8 @@ use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
     MultiTokenCompletionProvider,
 };
+use nova_core::WasmHostDb;
 use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
-use nova_ext::wasm::WasmHostDb;
 use nova_ext::{ExtensionManager, ExtensionMetadata, ExtensionRegistry};
 use nova_ide::extensions::IdeExtensions;
 use nova_ide::{
@@ -1624,30 +1624,56 @@ impl ServerState {
             tracing::warn!(target = "nova.lsp", error = %err, "failed to load extension bundle");
         }
 
-        let mut registry = ExtensionRegistry::<SingleFileDb>::default();
-        let register_report = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
-        self.extension_register_errors = register_report
-            .errors
-            .iter()
-            .map(|failure| failure.error.to_string())
-            .collect();
-        for failure in &register_report.errors {
-            tracing::warn!(
+        #[cfg(feature = "wasm-extensions")]
+        {
+            let mut registry = ExtensionRegistry::<SingleFileDb>::default();
+            let register_report = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
+            self.extension_register_errors = register_report
+                .errors
+                .iter()
+                .map(|failure| failure.error.to_string())
+                .collect();
+            for failure in &register_report.errors {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    extension_id = %failure.extension.id,
+                    error = %failure.error,
+                    "failed to register extension provider"
+                );
+            }
+            self.loaded_extensions = register_report.registered;
+
+            self.extensions_registry = registry;
+
+            tracing::info!(
                 target = "nova.lsp",
-                extension_id = %failure.extension.id,
-                error = %failure.error,
-                "failed to register extension provider"
+                loaded = self.loaded_extensions.len(),
+                "loaded wasm extensions"
             );
         }
-        self.loaded_extensions = register_report.registered;
 
-        self.extensions_registry = registry;
-
-        tracing::info!(
-            target = "nova.lsp",
-            loaded = self.loaded_extensions.len(),
-            "loaded wasm extensions"
-        );
+        #[cfg(not(feature = "wasm-extensions"))]
+        {
+            // We can still read extension bundle manifests, but without the Wasmtime-based
+            // runtime we cannot register any providers.
+            self.loaded_extensions = ExtensionManager::list(&loaded);
+            self.extension_register_errors = if self.loaded_extensions.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "nova-lsp was built without WASM extension support; rebuild with `--features wasm-extensions` to enable loading {} extension(s)",
+                    self.loaded_extensions.len()
+                )]
+            };
+            for error in &self.extension_register_errors {
+                tracing::warn!(target = "nova.lsp", error = %error, "extensions not registered");
+            }
+            tracing::info!(
+                target = "nova.lsp",
+                loaded = self.loaded_extensions.len(),
+                "loaded extension bundle metadata (WASM runtime disabled)"
+            );
+        }
     }
 
     fn semantic_search_enabled(&self) -> bool {

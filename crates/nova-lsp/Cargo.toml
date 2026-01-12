@@ -24,7 +24,11 @@ nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
 nova-decompile = { path = "../nova-decompile" }
-nova-ext = { path = "../nova-ext", features = ["wasm-extensions"] }
+# Keep the extension system metadata/loading surface available by default, but
+# make the Wasmtime-based runtime opt-in via the `wasm-extensions` feature to
+# keep `cargo test` link memory under the default `scripts/cargo_agent.sh`
+# RLIMIT_AS budget.
+nova-ext = { path = "../nova-ext", features = ["extension-bundles"] }
 nova-ide = { path = "../nova-ide" }
 nova-framework-web = { path = "../nova-framework-web" }
 nova-db = { path = "../nova-db" }
@@ -66,6 +70,9 @@ globset = "0.4"
 [features]
 default = ["ai"]
 ai = ["nova-ide/ai"]
+# Enable third-party WASM extensions (Wasmtime runtime). Off by default to keep
+# debug/test builds within the 4G RLIMIT_AS enforced by `scripts/cargo_agent.sh`.
+wasm-extensions = ["nova-ext/wasm-extensions"]
 # Optional Build Server Protocol integration for Bazel via `nova-build-bazel`.
 bsp = ["nova-build-bazel/bsp"]
 
