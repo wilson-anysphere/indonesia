@@ -1491,8 +1491,8 @@ class A {}
 fn completion_in_import_includes_jdk_type() {
     let (db, file, pos) = fixture(
         r#"
-import java.util.<|>;
-class A {}
+ import java.util.<|>;
+ class A {}
 "#,
     );
 
@@ -1502,6 +1502,35 @@ class A {}
         labels.contains(&"List"),
         "expected completion list to contain java.util.List; got {labels:?}"
     );
+}
+
+#[test]
+fn completion_in_import_nested_type_segment_includes_entry() {
+    let text_with_caret = r#"
+import java.util.Map.E<|>;
+class A {}
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "Entry")
+        .expect("expected java.util.Map.Entry nested type completion");
+
+    let text = text_with_caret.replace("<|>", "");
+    let segment_start = text
+        .find("Map.E")
+        .expect("expected Map.E in fixture")
+        + "Map.".len();
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, segment_start));
+    assert_eq!(edit.range.end, pos);
 }
 
 #[test]

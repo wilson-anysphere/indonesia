@@ -2622,6 +2622,18 @@ fn import_completions(
     workspace_classes.sort();
     workspace_classes.dedup();
 
+    // If the already-complete portion of the import path resolves to a type, treat this import as
+    // completing nested types (source syntax uses `.`, but binary names use `$`).
+    //
+    // Example: `import java.util.Map.E<cursor>;` should suggest `Entry`.
+    let nested_type_owner = ctx
+        .base_prefix
+        .strip_suffix('.')
+        .and_then(|owner| {
+            resolve_static_import_owner(jdk.as_ref(), owner)
+                .or_else(|| resolve_static_import_owner(&fallback_jdk, owner))
+        });
+
     let mut items = Vec::new();
 
     // Package segment completions.
@@ -2711,46 +2723,84 @@ fn import_completions(
         mark_workspace_completion_item(&mut item);
         items.push(item);
     }
-    let start = class_names.partition_point(|name| name.as_str() < ctx.prefix.as_str());
-    for name in &class_names[start..] {
-        if items.len() >= MAX_ITEMS {
-            break;
-        }
-        if !name.starts_with(ctx.prefix.as_str()) {
-            break;
-        }
 
-        let name = name.as_str();
-        if !name.starts_with(&ctx.base_prefix) {
-            continue;
-        }
-        let mut remainder = name[ctx.base_prefix.len()..].to_string();
-        if remainder.is_empty() {
-            continue;
-        }
-        // Translate binary nested names (`$`) to Java source nested form (`.`).
-        remainder = remainder.replace('$', ".");
+    if let Some(owner_binary) = nested_type_owner.as_deref() {
+        let binary_prefix = format!("{owner_binary}${}", ctx.segment_prefix);
+        let start = class_names.partition_point(|name| name.as_str() < binary_prefix.as_str());
+        for name in &class_names[start..] {
+            if items.len() >= MAX_ITEMS {
+                break;
+            }
+            if !name.starts_with(binary_prefix.as_str()) {
+                break;
+            }
 
-        if !seen_types.insert(remainder.clone()) {
-            continue;
-        }
+            let source_name = name.replace('$', ".");
+            if !source_name.starts_with(&ctx.base_prefix) {
+                continue;
+            }
+            let remainder = source_name[ctx.base_prefix.len()..].to_string();
+            if remainder.is_empty() {
+                continue;
+            }
+            if !seen_types.insert(remainder.clone()) {
+                continue;
+            }
 
-        items.push(CompletionItem {
-            label: remainder.clone(),
-            kind: Some(CompletionItemKind::CLASS),
-            detail: Some(name.to_string()),
-            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                range: replace_range,
-                new_text: remainder,
-            })),
-            ..Default::default()
-        });
+            items.push(CompletionItem {
+                label: remainder.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(name.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range,
+                    new_text: remainder,
+                })),
+                ..Default::default()
+            });
+        }
+    } else {
+        let start = class_names.partition_point(|name| name.as_str() < ctx.prefix.as_str());
+        for name in &class_names[start..] {
+            if items.len() >= MAX_ITEMS {
+                break;
+            }
+            if !name.starts_with(ctx.prefix.as_str()) {
+                break;
+            }
+
+            let name = name.as_str();
+            if !name.starts_with(&ctx.base_prefix) {
+                continue;
+            }
+            let mut remainder = name[ctx.base_prefix.len()..].to_string();
+            if remainder.is_empty() {
+                continue;
+            }
+            // Translate binary nested names (`$`) to Java source nested form (`.`).
+            remainder = remainder.replace('$', ".");
+
+            if !seen_types.insert(remainder.clone()) {
+                continue;
+            }
+
+            items.push(CompletionItem {
+                label: remainder.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(name.to_string()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range,
+                    new_text: remainder,
+                })),
+                ..Default::default()
+            });
+        }
     }
 
     // Optional star import (`import foo.bar.*;`). Only offer when the cursor is at the start of a
     // segment (e.g. after a dot).
     if items.len() < MAX_ITEMS
         && !ctx.is_static
+        && nested_type_owner.is_none()
         && ctx.segment_prefix.is_empty()
         && !ctx.base_prefix.is_empty()
         && ctx.base_prefix.ends_with('.')
