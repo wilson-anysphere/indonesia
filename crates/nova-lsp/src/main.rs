@@ -5335,7 +5335,10 @@ fn handle_workspace_symbol(
                 "missing project root (initialize.rootUri)".to_string(),
             )
         })?;
-        let workspace = Workspace::open(project_root).map_err(|e| (-32603, e.to_string()))?;
+        // Reuse the server's shared memory manager so all workspace components
+        // (Salsa memo evictor, symbol search index, etc.) account/evict together.
+        let workspace = Workspace::open_with_memory_manager(project_root, state.memory.clone())
+            .map_err(|e| (-32603, e.to_string()))?;
         state.workspace = Some(workspace);
     }
 
