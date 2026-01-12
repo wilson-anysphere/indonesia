@@ -3148,6 +3148,10 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
+                    // String templates (preview): `processor."..."` / `processor."""..."""`.
+                    //
+                    // The lexer emits dedicated `StringTemplate*` tokens, so templates are always
+                    // parsed via the `StringTemplateStart..StringTemplateEnd` token sequence.
                     if self.nth(1) == Some(SyntaxKind::StringTemplateStart) {
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::StringTemplateExpression.into());
@@ -3207,29 +3211,6 @@ impl<'a> Parser<'a> {
                             self.parse_type_arguments();
                         }
                         self.parse_new_expression_or_array_creation(checkpoint, allow_lambda);
-                        continue;
-                    }
-
-                    // String templates (preview): `processor."..."` / `processor."""..."""`.
-                    // The Java parser accepts a modern superset grammar; language-level validity
-                    // is handled by the feature gate pass.
-                    if matches!(
-                        self.nth(1),
-                        Some(SyntaxKind::StringLiteral | SyntaxKind::TextBlock)
-                    ) {
-                        self.builder
-                            .start_node_at(checkpoint, SyntaxKind::StringTemplateExpression.into());
-                        self.bump(); // .
-                        if self.at(SyntaxKind::StringLiteral) || self.at(SyntaxKind::TextBlock) {
-                            self.bump();
-                        } else {
-                            // Should be unreachable due to the lookahead above, but keep the
-                            // parser resilient for partial code.
-                            self.builder.start_node(SyntaxKind::Error.into());
-                            self.error_here("expected template after `.`");
-                            self.builder.finish_node();
-                        }
-                        self.builder.finish_node();
                         continue;
                     }
 
