@@ -295,6 +295,45 @@ class A {
 }
 
 #[test]
+fn completion_includes_workspace_annotation_types_after_at_sign() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let anno_text = "package p; public @interface MyAnno {}".to_string();
+    let main_text = r#"package p; @My<|> class Main {}"#;
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(anno_path, anno_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"MyAnno"),
+        "expected completion list to contain MyAnno; got {labels:?}"
+    );
+
+    let main_without_caret = main_text.replace("<|>", "");
+    let at_my = main_without_caret
+        .find("@My")
+        .expect("expected @My prefix in fixture");
+    let my_start = at_my + 1; // skip '@'
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "MyAnno")
+        .expect("expected MyAnno completion item");
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&main_without_caret, my_start)
+    );
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn completion_includes_postfix_if_for_boolean() {
     let (db, file, pos) = fixture(
         r#"
@@ -320,7 +359,6 @@ class A {
         .iter()
         .find(|i| i.label == "if" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
         .expect("expected postfix `if` snippet completion");
-
     let edit = match item.text_edit.as_ref().expect("expected text_edit") {
         CompletionTextEdit::Edit(edit) => edit,
         other => panic!("unexpected text_edit variant: {other:?}"),

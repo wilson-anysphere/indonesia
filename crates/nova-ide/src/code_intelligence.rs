@@ -1170,6 +1170,16 @@ pub(crate) fn core_completions(
         );
     }
 
+    let before = skip_whitespace_backwards(text, prefix_start);
+    if before > 0 && text.as_bytes()[before - 1] == b'@' {
+        return decorate_completions(
+            &text_index,
+            prefix_start,
+            offset,
+            annotation_type_completions(db, &prefix),
+        );
+    }
+
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
         let receiver = receiver_before_dot(text, ctx.dot_offset);
         let mut items = member_completions(db, file, &receiver, &prefix);
@@ -1391,6 +1401,16 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             prefix_start,
             offset,
             new_expression_type_completions(text, &text_index, &prefix),
+        );
+    }
+
+    let before = skip_whitespace_backwards(text, prefix_start);
+    if before > 0 && text.as_bytes()[before - 1] == b'@' {
+        return decorate_completions(
+            &text_index,
+            prefix_start,
+            offset,
+            annotation_type_completions(db, &prefix),
         );
     }
 
@@ -1787,6 +1807,186 @@ fn line_text_at_offset(text: &str, offset: usize) -> String {
         end += 1;
     }
     text[start..end].to_string()
+}
+
+fn annotation_type_completions(db: &dyn Database, prefix: &str) -> Vec<CompletionItem> {
+    const WORKSPACE_LIMIT: usize = 200;
+    const JDK_LIMIT: usize = 200;
+    const TOTAL_LIMIT: usize = 200;
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    items.extend(workspace_type_completions(
+        db,
+        prefix,
+        &mut seen,
+        WORKSPACE_LIMIT,
+    ));
+
+    items.extend(jdk_type_completions(prefix, &mut seen, JDK_LIMIT));
+
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items.truncate(TOTAL_LIMIT);
+    items
+}
+
+fn workspace_type_completions(
+    db: &dyn Database,
+    prefix: &str,
+    seen: &mut HashSet<String>,
+    limit: usize,
+) -> Vec<CompletionItem> {
+    let mut out = Vec::new();
+
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+
+        let text = db.file_content(file_id);
+        let (package, type_names) = java_package_and_top_level_types(text);
+
+        for name in type_names {
+            if !prefix.is_empty() && !name.starts_with(prefix) {
+                continue;
+            }
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            out.push(CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: package.clone(),
+                insert_text: Some(name),
+                ..Default::default()
+            });
+
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+
+    out
+}
+
+fn jdk_type_completions(
+    prefix: &str,
+    seen: &mut HashSet<String>,
+    limit: usize,
+) -> Vec<CompletionItem> {
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    // Prefer a handful of common packages; `class_names_with_prefix` works on
+    // binary names (e.g. `java.lang.Str`), not simple names (`Str`), so we seed
+    // with package prefixes to keep the list bounded.
+    let packages = [
+        "java.lang.",
+        "java.lang.annotation.",
+        "javax.annotation.",
+        "javax.inject.",
+        "jakarta.inject.",
+    ];
+
+    let mut out = Vec::new();
+
+    for pkg in packages {
+        let query_prefix = format!("{pkg}{prefix}");
+        let Ok(names) = jdk.class_names_with_prefix(&query_prefix) else {
+            continue;
+        };
+
+        for binary in names {
+            let simple = simple_name_from_binary(&binary);
+            if !prefix.is_empty() && !simple.starts_with(prefix) {
+                continue;
+            }
+            if !seen.insert(simple.clone()) {
+                continue;
+            }
+
+            out.push(CompletionItem {
+                label: simple.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(binary),
+                insert_text: Some(simple),
+                ..Default::default()
+            });
+
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+
+    out
+}
+
+fn simple_name_from_binary(binary: &str) -> String {
+    let last = binary.rsplit('.').next().unwrap_or(binary);
+    // Nested classes are encoded as `$` in binary names; present them using
+    // the Java source separator to keep labels readable.
+    last.replace('$', ".")
+}
+
+fn java_package_and_top_level_types(text: &str) -> (Option<String>, Vec<String>) {
+    let tokens = tokenize(text);
+    let mut package: Option<String> = None;
+    let mut types = Vec::new();
+
+    let mut brace_depth = 0i32;
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if brace_depth == 0 {
+            let tok = &tokens[i];
+            if tok.kind == TokenKind::Ident {
+                match tok.text.as_str() {
+                    "package" if package.is_none() => {
+                        let mut parts = Vec::new();
+                        let mut j = i + 1;
+                        while j < tokens.len() {
+                            let t = &tokens[j];
+                            match t.kind {
+                                TokenKind::Ident => parts.push(t.text.clone()),
+                                TokenKind::Symbol('.') => {}
+                                TokenKind::Symbol(';') => break,
+                                _ => break,
+                            }
+                            j += 1;
+                        }
+                        if !parts.is_empty() {
+                            package = Some(parts.join("."));
+                        }
+                    }
+                    "class" | "interface" | "enum" | "record" => {
+                        if let Some(name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident)
+                        {
+                            types.push(name_tok.text.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        match tokens[i].kind {
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => brace_depth -= 1,
+            _ => {}
+        }
+
+        i += 1;
+    }
+
+    (package, types)
 }
 
 fn member_completions(
