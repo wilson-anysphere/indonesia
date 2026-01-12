@@ -9761,6 +9761,84 @@ class C {
 }
 
 #[test]
+fn var_initialized_with_method_reference_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        var f = String::length;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-poly-expression"),
+        "expected var-poly-expression diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected no method-ref-without-target diagnostic when var-poly-expression is present; got {diags:?}"
+    );
+}
+
+#[test]
+fn var_initialized_with_constructor_reference_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        var f = String::new;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-poly-expression"),
+        "expected var-poly-expression diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected no method-ref-without-target diagnostic when var-poly-expression is present; got {diags:?}"
+    );
+}
+
+#[test]
+fn var_initialized_with_conditional_method_reference_is_error() {
+    let src = r#"
+class C {
+    void m(boolean b) {
+        var f = b ? String::length : String::length;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-poly-expression"),
+        "expected var-poly-expression diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected no method-ref-without-target diagnostic when var-poly-expression is present; got {diags:?}"
+    );
+}
+
+#[test]
 fn void_local_variable_type_is_error() {
     let src = r#"
 class C {

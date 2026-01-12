@@ -4596,12 +4596,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     };
 
                     let init_range = self.body.exprs[*init].range();
-                    let init_is_poly = matches!(
-                        &self.body.exprs[*init],
-                        HirExpr::Lambda { .. }
-                            | HirExpr::MethodReference { .. }
-                            | HirExpr::ConstructorReference { .. }
-                    );
+                    let init_is_poly = self.is_poly_expression(*init);
 
                     // `var` cannot be inferred from target-typed ("poly") expressions without an
                     // explicit target type.
@@ -4610,7 +4605,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let _ = self.infer_expr(loader, *init);
                         self.diagnostics.push(Diagnostic::error(
                             "var-functional-initializer",
-                            "`var` cannot be initialized with a lambda or method reference",
+                            "`var` cannot be initialized with a lambda, method reference, or constructor reference",
                             Some(init_range),
                         ));
                         self.diagnostics.push(Diagnostic::error(
@@ -5149,18 +5144,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
                 if let Some(init) = self.local_initializers[local.idx()] {
                     let init_range = self.body.exprs[init].range();
-                    let init_is_poly = matches!(
-                        &self.body.exprs[init],
-                        HirExpr::Lambda { .. }
-                            | HirExpr::MethodReference { .. }
-                            | HirExpr::ConstructorReference { .. }
-                    );
+                    let init_is_poly = self.is_poly_expression(init);
                     if init_is_poly {
                         // Still walk the expression for internal errors/best-effort IDE info.
                         let _ = self.infer_expr(loader, init);
                         self.diagnostics.push(Diagnostic::error(
                             "var-functional-initializer",
-                            "`var` cannot be initialized with a lambda or method reference",
+                            "`var` cannot be initialized with a lambda, method reference, or constructor reference",
                             Some(init_range),
                         ));
                         self.diagnostics.push(Diagnostic::error(
@@ -5440,11 +5430,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let recv_info = self.infer_expr(loader, *receiver);
 
                 let Some(expected) = expected else {
-                    self.diagnostics.push(Diagnostic::error(
-                        "method-ref-without-target",
-                        "cannot infer method reference type without a target functional interface",
-                        Some(self.body.exprs[expr].range()),
-                    ));
                     return ExprInfo {
                         ty: Type::Unknown,
                         is_type_ref: false,
@@ -5581,11 +5566,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let recv_info = self.infer_expr(loader, *receiver);
 
                 let Some(expected) = expected else {
-                    self.diagnostics.push(Diagnostic::error(
-                        "method-ref-without-target",
-                        "cannot infer constructor reference type without a target functional interface",
-                        Some(self.body.exprs[expr].range()),
-                    ));
                     return ExprInfo {
                         ty: Type::Unknown,
                         is_type_ref: false,
@@ -6739,6 +6719,20 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             ty: Type::Unknown,
             is_type_ref: false,
         });
+    }
+
+    fn is_poly_expression(&self, expr: HirExprId) -> bool {
+        match &self.body.exprs[expr] {
+            HirExpr::Lambda { .. }
+            | HirExpr::MethodReference { .. }
+            | HirExpr::ConstructorReference { .. } => true,
+            HirExpr::Conditional {
+                then_expr,
+                else_expr,
+                ..
+            } => self.is_poly_expression(*then_expr) || self.is_poly_expression(*else_expr),
+            _ => false,
+        }
     }
 
     fn infer_array_initializer_with_expected(
