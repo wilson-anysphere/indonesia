@@ -14,10 +14,32 @@ impl BuildFileFingerprint {
         files.sort();
         files.dedup();
 
+        // Best-effort canonicalization to make the fingerprint resilient to callers mixing
+        // canonical/non-canonical paths (e.g. macOS `/var` vs `/private/var`, or symlinked
+        // workspace roots).
+        //
+        // We intentionally treat canonicalization failures as "no canonical root" to avoid
+        // introducing new IO errors in edge cases (if callers are hashing files outside
+        // `project_root`, for example).
+        let canonical_root = project_root.canonicalize().ok();
+
         let mut hasher = Sha256::new();
         for path in files {
-            let rel = path.strip_prefix(project_root).unwrap_or(&path);
-            hasher.update(rel.to_string_lossy().as_bytes());
+            if let Ok(rel) = path.strip_prefix(project_root) {
+                hasher.update(rel.to_string_lossy().as_bytes());
+            } else if let Some(canonical_root) = canonical_root.as_ref() {
+                if let Ok(canonical_path) = path.canonicalize() {
+                    if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
+                        hasher.update(rel.to_string_lossy().as_bytes());
+                    } else {
+                        hasher.update(path.to_string_lossy().as_bytes());
+                    }
+                } else {
+                    hasher.update(path.to_string_lossy().as_bytes());
+                }
+            } else {
+                hasher.update(path.to_string_lossy().as_bytes());
+            }
             hasher.update([0]);
 
             let bytes = fs::read(&path)?;
@@ -699,5 +721,32 @@ mod tests {
             files.contains(&expected_included_build_gradle),
             "expected included build.gradle to be included in build file collection; got: {files:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fingerprint_is_stable_when_project_root_is_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_root = dir.path().join("real");
+        std::fs::create_dir_all(&real_root).unwrap();
+        let file = real_root.join("build.gradle");
+        write_file(&file, b"plugins {}");
+
+        let link_root = dir.path().join("link");
+        symlink(&real_root, &link_root).unwrap();
+
+        // Simulate callers passing a symlinked `project_root` but a "real" file path (common when
+        // some codepaths canonicalize paths and others don't).
+        let fp_real =
+            BuildFileFingerprint::from_files(&link_root, vec![file]).expect("fingerprint");
+        let fp_link = BuildFileFingerprint::from_files(
+            &link_root,
+            vec![link_root.join("build.gradle")],
+        )
+        .expect("fingerprint");
+
+        assert_eq!(fp_real, fp_link);
     }
 }
