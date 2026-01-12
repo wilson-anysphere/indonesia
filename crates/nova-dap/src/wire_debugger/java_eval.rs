@@ -4,13 +4,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use nova_classfile::{
-    parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature as GenericType,
-};
 use nova_jdwp::wire::types::{MethodId, INVOKE_SINGLE_THREADED};
 use nova_stream_debug::StreamOperationKind;
 use tokio_util::sync::CancellationToken;
 
+use crate::java_type::signature_to_java_source_type;
 use crate::javac::{compile_java_to_dir, hot_swap_temp_dir, HotSwapJavacConfig};
 
 use super::*;
@@ -211,7 +209,6 @@ impl Debugger {
             DebuggerError::InvalidRequest(format!("failed to create javac output dir: {err}"))
         })?;
         let output_dir = temp_dir.path().to_path_buf();
-
         let source_path = output_dir.join(format!("{simple_name}.java"));
         std::fs::write(&source_path, &source).map_err(|err| {
             DebuggerError::InvalidRequest(format!(
@@ -545,104 +542,16 @@ fn build_param_bindings(locals: &[ScopedLocal]) -> (Vec<JdwpValue>, Vec<String>,
         };
         needs_this_rewrite |= needs_rewrite;
 
-        let ty = java_source_type_for_local(&local.signature, local.generic_signature.as_deref());
+        let chosen_sig = local
+            .generic_signature
+            .as_deref()
+            .unwrap_or(local.signature.as_str());
+        let ty = signature_to_java_source_type(chosen_sig);
         params.push(format!("{ty} {param_name}"));
         args.push(local.value.clone());
     }
 
     (args, params, needs_this_rewrite)
-}
-
-fn java_source_type_for_local(signature: &str, generic_signature: Option<&str>) -> String {
-    // Prefer the generic signature when it parses cleanly and doesn't reference
-    // undeclared type variables. Type variables would require us to generate
-    // corresponding type parameters on the eval methods.
-    if let Some(generic) = generic_signature {
-        if let Ok(ty) = parse_field_signature(generic) {
-            if !contains_type_variable(&ty) {
-                return generic_type_to_java_source(&ty);
-            }
-        }
-    }
-
-    // Fall back to erased type.
-    signature_to_type_name(signature).replace('$', ".")
-}
-
-fn contains_type_variable(ty: &GenericType) -> bool {
-    match ty {
-        GenericType::TypeVariable(_) => true,
-        GenericType::Array(inner) => contains_type_variable(inner),
-        GenericType::Class(ct) => ct
-            .segments
-            .iter()
-            .flat_map(|seg| seg.type_arguments.iter())
-            .any(|arg| type_argument_contains_type_variable(arg)),
-        GenericType::Base(_) => false,
-    }
-}
-
-fn type_argument_contains_type_variable(arg: &TypeArgument) -> bool {
-    match arg {
-        TypeArgument::Any => false,
-        TypeArgument::Exact(inner) => contains_type_variable(inner),
-        TypeArgument::Extends(inner) => contains_type_variable(inner),
-        TypeArgument::Super(inner) => contains_type_variable(inner),
-    }
-}
-
-fn generic_type_to_java_source(ty: &GenericType) -> String {
-    match ty {
-        GenericType::Base(base) => match base {
-            BaseType::Byte => "byte".to_string(),
-            BaseType::Char => "char".to_string(),
-            BaseType::Double => "double".to_string(),
-            BaseType::Float => "float".to_string(),
-            BaseType::Int => "int".to_string(),
-            BaseType::Long => "long".to_string(),
-            BaseType::Short => "short".to_string(),
-            BaseType::Boolean => "boolean".to_string(),
-        },
-        GenericType::Array(inner) => format!("{}[]", generic_type_to_java_source(inner)),
-        GenericType::Class(ct) => class_type_to_java_source(ct),
-        GenericType::TypeVariable(name) => name.clone(),
-    }
-}
-
-fn class_type_to_java_source(ct: &ClassTypeSignature) -> String {
-    let mut out = String::new();
-    if !ct.package.is_empty() {
-        out.push_str(&ct.package.join("."));
-        out.push('.');
-    }
-
-    for (idx, seg) in ct.segments.iter().enumerate() {
-        if idx > 0 {
-            out.push('.');
-        }
-        out.push_str(&seg.name.replace('$', "."));
-
-        if !seg.type_arguments.is_empty() {
-            out.push('<');
-            for (arg_idx, arg) in seg.type_arguments.iter().enumerate() {
-                if arg_idx > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&type_argument_to_java_source(arg));
-            }
-            out.push('>');
-        }
-    }
-    out
-}
-
-fn type_argument_to_java_source(arg: &TypeArgument) -> String {
-    match arg {
-        TypeArgument::Any => "?".to_string(),
-        TypeArgument::Exact(inner) => generic_type_to_java_source(inner),
-        TypeArgument::Extends(inner) => format!("? extends {}", generic_type_to_java_source(inner)),
-        TypeArgument::Super(inner) => format!("? super {}", generic_type_to_java_source(inner)),
-    }
 }
 
 fn normalize_expr(expr: &str, rewrite_this: bool) -> String {

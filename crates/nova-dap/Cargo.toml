@@ -25,11 +25,11 @@ libc = "0.2"
 tempfile = { workspace = true }
 
 nova-core = { path = "../nova-core" }
+nova-classfile = { path = "../nova-classfile" }
 nova-db = { path = "../nova-db" }
 nova-ide = { path = "../nova-ide" }
 nova-project = { path = "../nova-project" }
 nova-build = { path = "../nova-build" }
-nova-classfile = { path = "../nova-classfile" }
 nova-jdwp = { path = "../nova-jdwp" }
 nova-stream-debug = { path = "../nova-stream-debug" }
 nova-metrics = { path = "../nova-metrics" }

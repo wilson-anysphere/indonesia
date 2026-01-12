@@ -15,6 +15,7 @@ pub mod hot_swap;
 pub mod jdwp;
 pub mod smart_step_into;
 pub mod stream_debug;
+pub(crate) mod java_type;
 // The `jdwp` module is a thin re-export wrapper over `nova-jdwp` so downstream
 // crates can depend on `nova-dap` alone for JDWP integrations.
 /// Debugger UX helpers (return values, stable object IDs, rich formatting).
