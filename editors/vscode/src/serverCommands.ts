@@ -251,8 +251,7 @@ export function registerNovaServerCommands(
     }
 
     // Command palette: fall back to interactive picker.
-    const workspaceFolder =
-      workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
     if (!workspaceFolder) {
       return;
     }
