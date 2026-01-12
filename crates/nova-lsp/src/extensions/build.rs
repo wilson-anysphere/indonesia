@@ -1321,9 +1321,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
         let mut status_guard = BuildStatusGuard::new(&workspace_root);
         let value_result: Result<serde_json::Value> = (|| {
             let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
-            let mut workspace = workspace
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
 
             let targets = workspace
                 .java_targets()

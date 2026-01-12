@@ -1293,9 +1293,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags
-            .iter()
-            .all(|d| d.code.as_ref() != "unresolved-field" && d.code.as_ref() != "unresolved-method"),
+        diags.iter().all(
+            |d| d.code.as_ref() != "unresolved-field" && d.code.as_ref() != "unresolved-method"
+        ),
         "expected System.out.println to resolve via minimal JDK, got {diags:?}"
     );
 
@@ -1338,10 +1338,7 @@ class C {
         .expect("expected a type at offset for PI");
     assert_eq!(pi_ty, "double");
 
-    let max_offset = src
-        .find("max(")
-        .expect("snippet should contain max call")
-        + "max".len();
+    let max_offset = src.find("max(").expect("snippet should contain max call") + "max".len();
     let max_ty = db
         .type_at_offset_display(file, max_offset as u32)
         .expect("expected a type at offset for max call");

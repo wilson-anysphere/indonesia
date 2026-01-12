@@ -6079,16 +6079,38 @@ fn collect_switch_contexts(
                         for label in &arm.labels {
                             if let hir::SwitchLabel::Case { values, .. } = label {
                                 for value in values {
-                                    walk_expr(body, *value, owner, scope_result, resolver, item_trees, out);
+                                    walk_expr(
+                                        body,
+                                        *value,
+                                        owner,
+                                        scope_result,
+                                        resolver,
+                                        item_trees,
+                                        out,
+                                    );
                                 }
                             }
                         }
                         match &arm.body {
-                            hir::SwitchArmBody::Expr(expr) => {
-                                walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
-                            }
+                            hir::SwitchArmBody::Expr(expr) => walk_expr(
+                                body,
+                                *expr,
+                                owner,
+                                scope_result,
+                                resolver,
+                                item_trees,
+                                out,
+                            ),
                             hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
-                                walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
+                                walk_stmt(
+                                    body,
+                                    *stmt,
+                                    owner,
+                                    scope_result,
+                                    resolver,
+                                    item_trees,
+                                    out,
+                                )
                             }
                         }
                     }
@@ -6112,7 +6134,15 @@ fn collect_switch_contexts(
                     for label in &arm.labels {
                         if let hir::SwitchLabel::Case { values, .. } = label {
                             for value in values {
-                                walk_expr(body, *value, owner, scope_result, resolver, item_trees, out);
+                                walk_expr(
+                                    body,
+                                    *value,
+                                    owner,
+                                    scope_result,
+                                    resolver,
+                                    item_trees,
+                                    out,
+                                );
                             }
                         }
                     }
@@ -6186,7 +6216,15 @@ fn collect_switch_contexts(
                 ..
             } => {
                 // Walk nested selectors first so we can record their contexts too.
-                walk_expr(body, *selector, owner, scope_result, resolver, item_trees, out);
+                walk_expr(
+                    body,
+                    *selector,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
 
                 let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
                     walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);

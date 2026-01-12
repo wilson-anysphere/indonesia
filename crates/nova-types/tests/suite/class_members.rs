@@ -185,29 +185,15 @@ fn resolve_field_intersection_receiver_is_order_independent() {
         methods: vec![],
     });
 
-    let receiver_iface_first = Type::Intersection(vec![
-        Type::class(iface, vec![]),
-        Type::class(class, vec![]),
-    ]);
-    let receiver_class_first = Type::Intersection(vec![
-        Type::class(class, vec![]),
-        Type::class(iface, vec![]),
-    ]);
+    let receiver_iface_first =
+        Type::Intersection(vec![Type::class(iface, vec![]), Type::class(class, vec![])]);
+    let receiver_class_first =
+        Type::Intersection(vec![Type::class(class, vec![]), Type::class(iface, vec![])]);
 
-    let f1 = resolve_field(
-        &env,
-        &receiver_iface_first,
-        "foo",
-        CallKind::Instance,
-    )
-    .expect("field should resolve");
-    let f2 = resolve_field(
-        &env,
-        &receiver_class_first,
-        "foo",
-        CallKind::Instance,
-    )
-    .expect("field should resolve");
+    let f1 = resolve_field(&env, &receiver_iface_first, "foo", CallKind::Instance)
+        .expect("field should resolve");
+    let f2 = resolve_field(&env, &receiver_class_first, "foo", CallKind::Instance)
+        .expect("field should resolve");
 
     // Should always prefer the class-bound field regardless of intersection ordering.
     assert_eq!(f1.ty, Type::class(string, vec![]));

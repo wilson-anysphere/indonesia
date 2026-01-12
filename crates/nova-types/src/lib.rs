@@ -3636,7 +3636,9 @@ pub fn resolve_field(
                     uniq.push(t);
                 }
             }
-            uniq.sort_by_cached_key(|ty| (intersection_component_rank(env, ty), type_sort_key(env, ty)));
+            uniq.sort_by_cached_key(|ty| {
+                (intersection_component_rank(env, ty), type_sort_key(env, ty))
+            });
 
             for ty in uniq {
                 match ty {
@@ -4986,11 +4988,7 @@ fn total_conversion_score(method: &ResolvedMethod) -> u32 {
     method.conversions.iter().map(conversion_score).sum()
 }
 
-fn rank_resolved_methods(
-    env: &dyn TypeEnv,
-    call: &MethodCall<'_>,
-    methods: &mut [ResolvedMethod],
-) {
+fn rank_resolved_methods(env: &dyn TypeEnv, call: &MethodCall<'_>, methods: &mut [ResolvedMethod]) {
     methods.sort_by_cached_key(|m| {
         let primary = (
             u8::from(call.call_kind == CallKind::Instance && m.is_static),
@@ -5006,7 +5004,10 @@ fn rank_resolved_methods(
         let tie = (
             m.owner.to_raw(),
             m.name.clone(),
-            m.params.iter().map(|t| type_sort_key(env, t)).collect::<Vec<_>>(),
+            m.params
+                .iter()
+                .map(|t| type_sort_key(env, t))
+                .collect::<Vec<_>>(),
             type_sort_key(env, &m.return_type),
             m.inferred_type_args
                 .iter()

@@ -3966,7 +3966,10 @@ mod tests {
         match preview.kind {
             ObjectKindPreview::List { size, sample } => {
                 assert!(size > 0, "expected list preview size > 0");
-                assert!(!sample.is_empty(), "expected list preview to include a sample");
+                assert!(
+                    !sample.is_empty(),
+                    "expected list preview to include a sample"
+                );
             }
             other => {
                 panic!(

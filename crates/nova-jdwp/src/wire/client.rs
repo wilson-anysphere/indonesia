@@ -829,11 +829,11 @@ impl JdwpClient {
         let generic = r.read_string()?;
         let generic = (!generic.is_empty()).then_some(generic);
         let mut cache = self.inner.inspect_cache.lock().await;
-        cache
-            .signatures
-            .insert(class_id, signature.clone());
+        cache.signatures.insert(class_id, signature.clone());
         let value = (signature, generic);
-        cache.signatures_with_generic.insert(class_id, value.clone());
+        cache
+            .signatures_with_generic
+            .insert(class_id, value.clone());
         Ok(value)
     }
 

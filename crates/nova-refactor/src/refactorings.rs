@@ -1320,18 +1320,18 @@ pub fn extract_variable(
             fn expr_might_be_void(expr: &ast::Expression) -> bool {
                 match expr {
                     ast::Expression::MethodCallExpression(_) => true,
-                    ast::Expression::ParenthesizedExpression(p) => p
-                        .expression()
-                        .is_some_and(|e| expr_might_be_void(&e)),
+                    ast::Expression::ParenthesizedExpression(p) => {
+                        p.expression().is_some_and(|e| expr_might_be_void(&e))
+                    }
                     _ => false,
                 }
             }
 
             fn requires_target_type(expr: &ast::Expression) -> bool {
                 match expr {
-                    ast::Expression::ParenthesizedExpression(p) => p
-                        .expression()
-                        .is_some_and(|e| requires_target_type(&e)),
+                    ast::Expression::ParenthesizedExpression(p) => {
+                        p.expression().is_some_and(|e| requires_target_type(&e))
+                    }
                     ast::Expression::LambdaExpression(_)
                     | ast::Expression::MethodReferenceExpression(_)
                     | ast::Expression::ConstructorReferenceExpression(_)
@@ -6022,8 +6022,8 @@ fn check_side_effectful_inline_order(
     targets: &[crate::semantic::Reference],
     decl_file: &FileId,
 ) -> Result<(), RefactorError> {
-    let decl_stmt =
-        ast::Statement::cast(decl_stmt.syntax().clone()).ok_or(RefactorError::InlineNotSupported)?;
+    let decl_stmt = ast::Statement::cast(decl_stmt.syntax().clone())
+        .ok_or(RefactorError::InlineNotSupported)?;
     let decl_parent = decl_stmt
         .syntax()
         .parent()

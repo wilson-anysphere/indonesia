@@ -5743,8 +5743,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             range.start.saturating_add(err.span.start),
                             range.start.saturating_add(err.span.end),
                         );
-                        self.diagnostics
-                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-literal",
+                            err.message,
+                            Some(span),
+                        ));
                         ExprInfo {
                             ty: Type::Error,
                             is_type_ref: false,
@@ -5762,8 +5765,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             range.start.saturating_add(err.span.start),
                             range.start.saturating_add(err.span.end),
                         );
-                        self.diagnostics
-                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-literal",
+                            err.message,
+                            Some(span),
+                        ));
                         ExprInfo {
                             ty: Type::Error,
                             is_type_ref: false,
@@ -11733,7 +11739,13 @@ fn find_enclosing_target_typed_expr_in_expr(
                 );
             }
             if let Some(init_expr) = initializer {
-                find_enclosing_target_typed_expr_in_expr(body, *init_expr, target, target_range, best);
+                find_enclosing_target_typed_expr_in_expr(
+                    body,
+                    *init_expr,
+                    target,
+                    target_range,
+                    best,
+                );
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {

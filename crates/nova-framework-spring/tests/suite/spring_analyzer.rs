@@ -240,7 +240,12 @@ fn value_completions_read_application_properties_from_disk_when_file_text_is_una
             self.inner.all_classes(project)
         }
 
-        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+        fn has_dependency(
+            &self,
+            project: nova_core::ProjectId,
+            group: &str,
+            artifact: &str,
+        ) -> bool {
             self.inner.has_dependency(project, group, artifact)
         }
 
@@ -248,7 +253,11 @@ fn value_completions_read_application_properties_from_disk_when_file_text_is_una
             self.inner.has_class_on_classpath(project, binary_name)
         }
 
-        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+        fn has_class_on_classpath_prefix(
+            &self,
+            project: nova_core::ProjectId,
+            prefix: &str,
+        ) -> bool {
             self.inner.has_class_on_classpath_prefix(project, prefix)
         }
     }
