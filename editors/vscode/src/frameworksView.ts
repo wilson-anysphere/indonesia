@@ -16,6 +16,8 @@ type WebEndpointsResponse = {
 type EndpointNode = {
   kind: 'endpoint';
   workspaceFolder: vscode.WorkspaceFolder;
+  baseUri: vscode.Uri;
+  projectRoot: string;
   endpoint: WebEndpoint;
 };
 
@@ -84,7 +86,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
   }
 
   getTreeItem(element: EndpointNode): vscode.TreeItem {
-    const { endpoint, workspaceFolder } = element;
+    const { endpoint } = element;
     const methods = Array.isArray(endpoint.methods) ? endpoint.methods.filter((m) => typeof m === 'string' && m.length > 0) : [];
     const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
     const label = `${methodLabel} ${endpoint.path}`;
@@ -93,7 +95,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     item.contextValue = 'novaFrameworkEndpoint';
     item.tooltip = `${endpoint.file}:${endpoint.line}`;
 
-    const uri = resolveEndpointUri(workspaceFolder.uri.fsPath, endpoint.file);
+    const uri = resolveEndpointUri(element.baseUri, element.projectRoot, endpoint.file);
     if (uri) {
       item.command = {
         command: OPEN_ENDPOINT_COMMAND,
@@ -150,13 +152,14 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     try {
       const endpoints: EndpointNode[] = [];
       for (const workspaceFolder of workspaces) {
+        const projectRoot = workspaceFolder.uri.fsPath;
         const resp = await readyClient.sendRequest<WebEndpointsResponse>('nova/web/endpoints', {
-          projectRoot: workspaceFolder.uri.fsPath,
+          projectRoot,
         });
 
         const values = Array.isArray(resp?.endpoints) ? resp.endpoints : [];
         for (const endpoint of values) {
-          endpoints.push({ kind: 'endpoint', workspaceFolder, endpoint });
+          endpoints.push({ kind: 'endpoint', workspaceFolder, projectRoot, baseUri: workspaceFolder.uri, endpoint });
         }
       }
 
@@ -215,13 +218,44 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<v
   await vscode.window.showTextDocument(doc, { selection: range, preview: true });
 }
 
-function resolveEndpointUri(projectRoot: string, file: string): vscode.Uri | undefined {
+function resolveEndpointUri(baseUri: vscode.Uri, projectRoot: string, file: string): vscode.Uri | undefined {
   if (typeof file !== 'string' || file.length === 0) {
     return undefined;
   }
 
-  const candidate = path.isAbsolute(file) ? file : path.join(projectRoot, file);
-  return vscode.Uri.file(candidate);
+  if (looksLikeUriString(file)) {
+    try {
+      return vscode.Uri.parse(file);
+    } catch {
+      // fall through
+    }
+  }
+
+  if (looksLikeAbsolutePath(file)) {
+    // When running in a remote workspace, preserve the workspace scheme.
+    if (baseUri.scheme !== 'file') {
+      return baseUri.with({ path: file });
+    }
+
+    return vscode.Uri.file(file);
+  }
+
+  const baseSegments = file.split(/[\\/]+/).filter(Boolean);
+  if (baseSegments.length === 0) {
+    return undefined;
+  }
+
+  // Prefer workspace URI join so remote workspaces (vscode-remote, etc.) resolve correctly.
+  return vscode.Uri.joinPath(baseUri, ...baseSegments);
+}
+
+function looksLikeUriString(value: string): boolean {
+  // `scheme:` is the only required part of a URI. We special-case Windows drive letters.
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value);
+}
+
+function looksLikeAbsolutePath(value: string): boolean {
+  return path.isAbsolute(value) || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
 
 function formatError(err: unknown): string {
