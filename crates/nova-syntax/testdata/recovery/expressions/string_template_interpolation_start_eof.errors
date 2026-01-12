@@ -1,0 +1,7 @@
+4:1: unterminated string template interpolation
+4:1: expected expression, found Error ``
+4:1: expected `}` to close template expression, found end of file
+4:1: expected closing string template delimiter, found end of file
+4:1: expected `;` after local variable declaration, found end of file
+4:1: expected `}` to close block, found end of file
+4:1: expected `}` to close class body, found end of file
