@@ -5,7 +5,7 @@
 //! file reads.
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
@@ -24,6 +24,58 @@ use zip::ZipArchive;
 /// 16MiB is intentionally generous for the kinds of entries we read today while
 /// still providing a strong safety net against decompression bombs.
 const MAX_ARCHIVE_ENTRY_BYTES: usize = 16 * 1024 * 1024;
+
+const JMOD_HEADER_LEN: u64 = 4;
+
+struct OffsetReader<R> {
+    inner: R,
+    base: u64,
+}
+
+impl<R> OffsetReader<R>
+where
+    R: Seek,
+{
+    fn new(mut inner: R, base: u64) -> std::io::Result<Self> {
+        inner.seek(SeekFrom::Start(base))?;
+        Ok(Self { inner, base })
+    }
+}
+
+impl<R> Read for OffsetReader<R>
+where
+    R: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R> Seek for OffsetReader<R>
+where
+    R: Seek,
+{
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let base = self.base;
+        let adjusted = match pos {
+            SeekFrom::Start(offset) => SeekFrom::Start(
+                offset
+                    .checked_add(base)
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow"))?,
+            ),
+            SeekFrom::End(offset) => SeekFrom::End(offset),
+            SeekFrom::Current(offset) => SeekFrom::Current(offset),
+        };
+
+        let absolute = self.inner.seek(adjusted)?;
+        absolute.checked_sub(base).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before archive start",
+            )
+        })
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Archive {
@@ -86,22 +138,23 @@ impl Archive {
             return Ok(Some(buf));
         }
 
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open archive {}", self.path.display()))?;
-        let mut zip = ZipArchive::new(file)
-            .with_context(|| format!("failed to read zip {}", self.path.display()))?;
-        let result = match zip.by_name(name) {
-            Ok(mut entry) => {
-                let declared_size = entry.size();
-                if declared_size > MAX_ARCHIVE_ENTRY_BYTES as u64 {
-                    bail!(
-                        "refusing to read {} from {}: declared uncompressed size is {} bytes (max allowed: {} bytes)",
-                        name,
-                        self.path.display(),
-                        declared_size,
-                        MAX_ARCHIVE_ENTRY_BYTES
-                    );
-                }
+        fn read_from_zip<R: Read + Seek>(
+            zip: &mut ZipArchive<R>,
+            archive_path: &Path,
+            name: &str,
+        ) -> anyhow::Result<Option<Vec<u8>>> {
+            let result = match zip.by_name(name) {
+                Ok(mut entry) => {
+                    let declared_size = entry.size();
+                    if declared_size > MAX_ARCHIVE_ENTRY_BYTES as u64 {
+                        bail!(
+                            "refusing to read {} from {}: declared uncompressed size is {} bytes (max allowed: {} bytes)",
+                            name,
+                            archive_path.display(),
+                            declared_size,
+                            MAX_ARCHIVE_ENTRY_BYTES
+                        );
+                    }
 
                 // Allocate only up to the declared size (which is already bounded)
                 // to avoid oversized allocations from untrusted metadata.
@@ -111,34 +164,57 @@ impl Archive {
                 // never read more than MAX+1 bytes from the decompressor.
                 let mut limited = (&mut entry).take((MAX_ARCHIVE_ENTRY_BYTES as u64) + 1);
                 limited.read_to_end(&mut buf).with_context(|| {
-                    format!("failed to read {} from {}", name, self.path.display())
+                    format!("failed to read {} from {}", name, archive_path.display())
                 })?;
                 if buf.len() > MAX_ARCHIVE_ENTRY_BYTES {
                     bail!(
                         "refusing to read more than {} bytes from {}:{} (read: {} bytes)",
                         MAX_ARCHIVE_ENTRY_BYTES,
-                        self.path.display(),
+                        archive_path.display(),
                         name,
                         buf.len()
                     );
                 }
 
                 Ok(Some(buf))
-            }
-            Err(zip::result::ZipError::FileNotFound) => Ok(None),
-            Err(err) => Err(err).with_context(|| {
-                format!("failed to read {} from zip {}", name, self.path.display())
-            }),
-        };
-        result
+                }
+                Err(zip::result::ZipError::FileNotFound) => Ok(None),
+                Err(err) => Err(err).with_context(|| {
+                    format!("failed to read {} from zip {}", name, archive_path.display())
+                }),
+            };
+
+            result
+        }
+
+        let mut file = File::open(&self.path)
+            .with_context(|| format!("failed to open archive {}", self.path.display()))?;
+        let mut header = [0u8; 2];
+        let is_jmod = file.read_exact(&mut header).is_ok() && header == *b"JM";
+        file.seek(SeekFrom::Start(0))
+            .with_context(|| format!("failed to seek {}", self.path.display()))?;
+
+        if is_jmod {
+            let reader = OffsetReader::new(file, JMOD_HEADER_LEN)
+                .with_context(|| format!("failed to seek {}", self.path.display()))?;
+            let mut zip = ZipArchive::new(reader)
+                .with_context(|| format!("failed to read zip {}", self.path.display()))?;
+            return read_from_zip(&mut zip, &self.path, name);
+        }
+
+        let mut zip = ZipArchive::new(file)
+            .with_context(|| format!("failed to read zip {}", self.path.display()))?;
+        read_from_zip(&mut zip, &self.path, name)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::io::Write;
 
     use tempfile::TempDir;
+    use zip::write::FileOptions;
 
     use super::{Archive, MAX_ARCHIVE_ENTRY_BYTES};
 
@@ -159,6 +235,34 @@ mod tests {
         assert!(msg.contains("refusing to read"));
         assert!(msg.contains("max allowed"));
         assert!(msg.contains("too-large.bin"));
+    }
+
+    #[test]
+    fn reads_entries_from_jmod_archives() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("demo.jmod");
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            zip.start_file("classes/module-info.class", FileOptions::<()>::default())
+                .unwrap();
+            zip.write_all(b"hello-jmod").unwrap();
+            zip.finish().unwrap();
+        }
+        let zip_bytes = cursor.into_inner();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"JM\x01\x00");
+        bytes.extend_from_slice(&zip_bytes);
+        std::fs::write(&path, bytes).unwrap();
+
+        let archive = Archive::new(&path);
+        let contents = archive
+            .read("classes/module-info.class")
+            .unwrap()
+            .expect("module-info.class");
+        assert_eq!(contents, b"hello-jmod");
     }
 
     fn patch_zip_entry_uncompressed_size(zip_bytes: &mut [u8], name: &str, new_size: u32) {
