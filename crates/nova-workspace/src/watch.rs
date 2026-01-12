@@ -86,6 +86,12 @@ pub fn is_build_file(path: &Path) -> bool {
         return false;
     };
 
+    if name == "generated-roots.json"
+        && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
+    {
+        return true;
+    }
+
     if name == "pom.xml"
         || name == "nova.toml"
         || name == ".nova.toml"
@@ -328,6 +334,9 @@ mod tests {
             root.join("some").join("pkg").join("BUILD"),
             root.join("some").join("pkg").join("BUILD.bazel"),
             root.join("tools").join("defs.bzl"),
+            root.join(".nova")
+                .join("apt-cache")
+                .join("generated-roots.json"),
         ];
 
         for path in build_files {
