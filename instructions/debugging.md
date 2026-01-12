@@ -45,7 +45,7 @@ This workstream owns the Debug Adapter Protocol implementation and JVM debugging
 │                    Debug Architecture                            │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Editor ←── DAP JSON-RPC ──→ nova-dap                           │
+│  Editor ←── DAP (framed JSON messages) ──→ nova-dap             │
 │                                │                                 │
 │                                │ JDWP                           │
 │                                ▼                                 │
