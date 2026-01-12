@@ -996,7 +996,11 @@ impl WorkspaceEngine {
             None
         }
         .unwrap_or_else(|| normalize_rel_path(&path.to_string()));
-        self.query_db.set_file_rel_path(file_id, Arc::new(rel_path));
+        let rel_path_arc = Arc::new(rel_path.clone());
+        self.query_db.set_file_rel_path(file_id, rel_path_arc);
+        // `file_path` is a non-tracked persistence key used to warm-start Salsa queries (parse/HIR/typeck/flow).
+        // It is intentionally kept project-relative and normalized for cross-platform cache reuse.
+        self.query_db.set_file_path(file_id, rel_path);
     }
 
     fn apply_path_event(&self, path: &Path) {
@@ -1920,6 +1924,33 @@ mod tests {
         engine.query_db.with_snapshot(|snap| {
             assert!(snap.file_exists(file_id));
             assert_eq!(snap.file_content(file_id).as_str(), "class Main { int x; }");
+        });
+    }
+
+    #[test]
+    fn open_document_sets_non_tracked_file_path_for_persistence_keys() {
+        use nova_db::salsa::HasFilePaths;
+
+        let workspace = crate::Workspace::new_in_memory();
+        let engine = workspace.engine_for_tests();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        engine.set_workspace_root(&root).unwrap();
+
+        // Use a path with a `.` segment so we exercise `normalize_rel_path` via `rel_path_for_workspace`.
+        let file_path = root.join("src/./Main.java");
+        let vfs_path = VfsPath::local(file_path);
+        let file_id = workspace.open_document(vfs_path, "class Main {}".to_string(), 1);
+
+        let expected_rel_path = normalize_rel_path("src/./Main.java");
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_rel_path(file_id).as_str(), expected_rel_path.as_str());
+
+            let file_path = snap.file_path(file_id).expect("file_path should be set");
+            assert!(!file_path.is_empty());
+            assert_eq!(file_path.as_str(), expected_rel_path.as_str());
         });
     }
 
