@@ -107,7 +107,7 @@ fi
 # These crates intentionally consolidate their integration tests into a single root harness for
 # compile-time/memory efficiency (each `tests/*.rs` file is its own integration test binary).
 framework_harness_checks=(
-  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/integration.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
+  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/harness.rs|crates/nova-framework-spring/tests/integration.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
   "crates/nova-framework-builtins/tests:crates/nova-framework-builtins/tests/builtins_tests.rs:move additional files into crates/nova-framework-builtins/tests/builtins/ and add them to crates/nova-framework-builtins/tests/builtins/mod.rs"
   "crates/nova-framework-micronaut/tests:crates/nova-framework-micronaut/tests/integration_tests.rs:move additional files into crates/nova-framework-micronaut/tests/integration_tests/ and add them to crates/nova-framework-micronaut/tests/integration_tests/mod.rs"
 )
