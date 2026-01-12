@@ -9754,6 +9754,28 @@ class C {
 }
 
 #[test]
+fn type_use_annotation_types_are_ignored_in_explicit_generic_invocations() {
+    let src = r#"
+class C {
+    static <T> T id(T t) { return t; }
+
+    void m() {
+        C.<@Missing String>id(null);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "expected type-use annotation types in explicit generic invocations to be ignored; got {diags:?}"
+    );
+}
+
+#[test]
 fn unresolved_class_type_param_bounds_are_anchored() {
     let src = r#"
 class C<T extends Missing> {
