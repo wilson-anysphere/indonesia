@@ -2130,9 +2130,8 @@ fn collect_declared_types(
             if declared_ty.trim() == "var" {
                 if let Some(ast::Expression::NewExpression(new_expr)) = decl.initializer() {
                     if let Some(init_ty) = new_expr.ty() {
-                        let init_ty_text = slice_syntax(source, init_ty.syntax())
-                            .unwrap_or("")
-                            .trim();
+                        let init_ty_text =
+                            slice_syntax(source, init_ty.syntax()).unwrap_or("").trim();
                         if init_ty_text
                             .chars()
                             .next()

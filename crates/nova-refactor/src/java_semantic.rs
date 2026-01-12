@@ -7582,20 +7582,23 @@ fn record_lightweight_expr(
             );
             for arm in &expr.arms {
                 for label in &arm.labels {
-                    if let java_syntax::ast::SwitchLabel::Case { values, .. } = label {
-                        for value in values {
-                            record_lightweight_expr(
-                                file,
-                                text,
-                                value,
-                                type_scopes,
-                                scope_result,
-                                resolver,
-                                resolution_to_symbol,
-                                references,
-                                spans,
-                            );
+                    match label {
+                        java_syntax::ast::SwitchLabel::Case { values, .. } => {
+                            for value in values {
+                                record_lightweight_expr(
+                                    file,
+                                    text,
+                                    value,
+                                    type_scopes,
+                                    scope_result,
+                                    resolver,
+                                    resolution_to_symbol,
+                                    references,
+                                    spans,
+                                );
+                            }
                         }
+                        java_syntax::ast::SwitchLabel::Default { .. } => {}
                     }
                 }
                 match &arm.body {
