@@ -429,7 +429,14 @@ impl<'a> ScopeBuilder<'a> {
         owner: BodyOwner,
         body: &hir::Body,
     ) -> ScopeId {
-        self.build_stmt_scopes(parent, owner, body, body.root)
+        // `build_stmt_scopes` returns the scope that should be used for *following*
+        // statements (order-sensitive), while `body_scopes` is expected to point at
+        // the lexical scope for the body root statement itself.
+        self.build_stmt_scopes(parent, owner, body, body.root);
+        self.stmt_scopes
+            .get(&body.root)
+            .copied()
+            .unwrap_or(parent)
     }
 
     fn build_stmt_scopes(
@@ -451,18 +458,28 @@ impl<'a> ScopeBuilder<'a> {
                 self.block_scopes.push(block_scope);
                 self.stmt_scopes.insert(stmt_id, block_scope);
 
+                let mut current_scope = block_scope;
                 for stmt in statements {
-                    self.build_stmt_scopes(block_scope, owner, body, *stmt);
+                    current_scope = self.build_stmt_scopes(current_scope, owner, body, *stmt);
                 }
 
-                block_scope
+                // A nested block doesn't introduce bindings in the parent scope.
+                parent
             }
             hir::Stmt::Let {
                 local, initializer, ..
             } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                // Java: a local variable is in scope within its own initializer.
+                let let_scope = self.alloc_scope(
+                    Some(parent),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: stmt_id,
+                    },
+                );
+                self.stmt_scopes.insert(stmt_id, let_scope);
                 let local_data = &body.locals[*local];
-                self.scopes[parent].values.insert(
+                self.scopes[let_scope].values.insert(
                     Name::from(local_data.name.clone()),
                     Resolution::Local(LocalRef {
                         owner,
@@ -471,10 +488,11 @@ impl<'a> ScopeBuilder<'a> {
                 );
 
                 if let Some(expr) = initializer {
-                    self.record_expr_scopes(parent, owner, body, *expr);
+                    self.record_expr_scopes(let_scope, owner, body, *expr);
                 }
 
-                parent
+                // Following statements see the new binding.
+                let_scope
             }
             hir::Stmt::Expr { expr, .. } => {
                 self.stmt_scopes.insert(stmt_id, parent);
@@ -552,21 +570,22 @@ impl<'a> ScopeBuilder<'a> {
                 );
                 self.stmt_scopes.insert(stmt_id, for_scope);
 
+                let mut current_scope = for_scope;
                 for stmt in init {
-                    self.build_stmt_scopes(for_scope, owner, body, *stmt);
+                    current_scope = self.build_stmt_scopes(current_scope, owner, body, *stmt);
                 }
 
                 if let Some(expr) = condition {
-                    self.record_expr_scopes(for_scope, owner, body, *expr);
+                    self.record_expr_scopes(current_scope, owner, body, *expr);
                 }
                 for expr in update {
-                    self.record_expr_scopes(for_scope, owner, body, *expr);
+                    self.record_expr_scopes(current_scope, owner, body, *expr);
                 }
 
-                // The loop body can declare additional locals; keep them nested under `for_scope`
-                // so they do not appear in the header expressions.
+                // The loop body can declare additional locals; keep them nested under the scope
+                // produced by the init statements so they do not appear in the header expressions.
                 let body_scope = self.alloc_scope(
-                    Some(for_scope),
+                    Some(current_scope),
                     ScopeKind::Block {
                         owner,
                         stmt: *loop_body,

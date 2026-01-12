@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{FileId, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
-use nova_hir::queries;
-use nova_hir::queries::HirDatabase;
+use nova_hir::queries::{self, HirDatabase};
+use nova_hir::hir;
 use nova_jdk::JdkIndex;
-use nova_resolve::{build_scopes, BodyOwner, NameResolution, Resolution, Resolver, TypeResolution};
+use nova_resolve::{
+    build_scopes, BodyOwner, LocalRef, NameResolution, Resolution, Resolver, TypeResolution,
+};
 
 fn test_dep_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
@@ -90,18 +92,191 @@ class C {
     );
 
     let scopes = build_scopes(&db, file);
-    let method = *scopes.method_scopes.keys().next().expect("method");
-    let block_scope = *scopes
-        .body_scopes
-        .get(&BodyOwner::Method(method))
-        .expect("root block scope");
+    let &method = scopes.method_scopes.keys().next().expect("method");
+    let body = queries::body(&db, method);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+    let stmt_local = statements[0];
+    let local_scope = *scopes
+        .stmt_scopes
+        .get(&stmt_local)
+        .expect("local statement scope");
 
     let jdk = JdkIndex::new();
     let resolver = Resolver::new(&jdk);
-    let res = resolver.resolve_name(&scopes.scopes, block_scope, &Name::from("x"));
+    let res = resolver.resolve_name(&scopes.scopes, local_scope, &Name::from("x"));
     assert!(
         matches!(res, Some(Resolution::Local(_))),
         "expected local, got {res:?}"
+    );
+}
+
+#[test]
+fn local_ordering_does_not_allow_future_bindings() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+class C {
+  void m() { System.out.println(a); int a = 0; }
+}
+"#,
+    );
+
+    let scopes = build_scopes(&db, file);
+    let &method = scopes.method_scopes.keys().next().expect("method");
+    let body = queries::body(&db, method);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    let stmt_print = statements[0];
+    let call_expr = match &body.stmts[stmt_print] {
+        hir::Stmt::Expr { expr, .. } => *expr,
+        other => panic!("expected expr stmt, got {other:?}"),
+    };
+
+    let a_expr = match &body.exprs[call_expr] {
+        hir::Expr::Call { args, .. } => args
+            .iter()
+            .copied()
+            .find(|expr| matches!(&body.exprs[*expr], hir::Expr::Name { name, .. } if name == "a"))
+            .expect("call argument `a`"),
+        other => panic!("expected call expr, got {other:?}"),
+    };
+
+    let a_scope = *scopes.expr_scopes.get(&a_expr).expect("a expr scope");
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, a_scope, &Name::from("a"));
+    assert_eq!(res, None, "expected `a` to be unresolved, got {res:?}");
+}
+
+#[test]
+fn local_is_in_scope_in_its_initializer() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+class C {
+  void m() { int x = x; }
+}
+"#,
+    );
+
+    let scopes = build_scopes(&db, file);
+    let &method = scopes.method_scopes.keys().next().expect("method");
+    let body = queries::body(&db, method);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    let stmt_x = statements[0];
+    let (local_x, init_expr) = match &body.stmts[stmt_x] {
+        hir::Stmt::Let {
+            local,
+            initializer: Some(expr),
+            ..
+        } => (*local, *expr),
+        other => panic!("expected let with initializer, got {other:?}"),
+    };
+
+    let init_scope = *scopes.expr_scopes.get(&init_expr).expect("init scope");
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, init_scope, &Name::from("x"));
+    assert_eq!(
+        res,
+        Some(Resolution::Local(LocalRef {
+            owner: BodyOwner::Method(method),
+            local: local_x
+        }))
+    );
+}
+
+#[test]
+fn local_shadowing_prefers_innermost_binding() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+class C {
+  void m() { int x = 0; { int x = 1; x; } x; }
+}
+"#,
+    );
+
+    let scopes = build_scopes(&db, file);
+    let &method = scopes.method_scopes.keys().next().expect("method");
+    let body = queries::body(&db, method);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    let stmt_outer_let = statements[0];
+    let local_outer = match &body.stmts[stmt_outer_let] {
+        hir::Stmt::Let { local, .. } => *local,
+        other => panic!("expected let, got {other:?}"),
+    };
+
+    let stmt_inner_block = statements[1];
+    let inner_statements = match &body.stmts[stmt_inner_block] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected block stmt, got {other:?}"),
+    };
+    let stmt_inner_let = inner_statements[0];
+    let local_inner = match &body.stmts[stmt_inner_let] {
+        hir::Stmt::Let { local, .. } => *local,
+        other => panic!("expected let, got {other:?}"),
+    };
+
+    let stmt_inner_use = inner_statements[1];
+    let inner_use_expr = match &body.stmts[stmt_inner_use] {
+        hir::Stmt::Expr { expr, .. } => *expr,
+        other => panic!("expected expr stmt, got {other:?}"),
+    };
+
+    let stmt_outer_use = statements[2];
+    let outer_use_expr = match &body.stmts[stmt_outer_use] {
+        hir::Stmt::Expr { expr, .. } => *expr,
+        other => panic!("expected expr stmt, got {other:?}"),
+    };
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+
+    let inner_scope = *scopes
+        .expr_scopes
+        .get(&inner_use_expr)
+        .expect("inner use scope");
+    let inner_res = resolver.resolve_name(&scopes.scopes, inner_scope, &Name::from("x"));
+    assert_eq!(
+        inner_res,
+        Some(Resolution::Local(LocalRef {
+            owner: BodyOwner::Method(method),
+            local: local_inner
+        }))
+    );
+
+    let outer_scope = *scopes
+        .expr_scopes
+        .get(&outer_use_expr)
+        .expect("outer use scope");
+    let outer_res = resolver.resolve_name(&scopes.scopes, outer_scope, &Name::from("x"));
+    assert_eq!(
+        outer_res,
+        Some(Resolution::Local(LocalRef {
+            owner: BodyOwner::Method(method),
+            local: local_outer
+        }))
     );
 }
 
