@@ -752,27 +752,29 @@ impl WorkerState {
             .map(|(path, file_id)| (path.clone(), *file_id))
             .collect();
 
-        let index = tokio::task::spawn_blocking(move || -> std::result::Result<ShardIndex, ProtoRpcError> {
-            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
-                return Err(cancelled_error());
-            }
-            let symbols = build_symbols(&db, &files, cancel.as_ref())?;
-            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
-                return Err(cancelled_error());
-            }
-            let index = ShardIndex {
-                shard_id,
-                revision,
-                index_generation,
-                symbols,
-            };
-            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
-                return Err(cancelled_error());
-            }
-            nova_cache::save_shard_index(&cache_dir, &index)
-                .map_err(|err| internal_error(anyhow!(err).context("write shard cache")))?;
-            Ok(index)
-        })
+        let index = tokio::task::spawn_blocking(
+            move || -> std::result::Result<ShardIndex, ProtoRpcError> {
+                if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                    return Err(cancelled_error());
+                }
+                let symbols = build_symbols(&db, &files, cancel.as_ref())?;
+                if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                    return Err(cancelled_error());
+                }
+                let index = ShardIndex {
+                    shard_id,
+                    revision,
+                    index_generation,
+                    symbols,
+                };
+                if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                    return Err(cancelled_error());
+                }
+                nova_cache::save_shard_index(&cache_dir, &index)
+                    .map_err(|err| internal_error(anyhow!(err).context("write shard cache")))?;
+                Ok(index)
+            },
+        )
         .await
         .map_err(|err| internal_error(anyhow!(err).context("join shard index task")))??;
 

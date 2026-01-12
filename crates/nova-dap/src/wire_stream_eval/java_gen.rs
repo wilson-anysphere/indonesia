@@ -260,7 +260,8 @@ pub fn rewrite_unqualified_method_calls(
                     if has_this_object && instance_method_names.contains(&ident) {
                         out.push_str("__this.");
                         out.push_str(&ident);
-                    } else if static_method_names.contains(&ident) && !declaring_class_fqcn.is_empty()
+                    } else if static_method_names.contains(&ident)
+                        && !declaring_class_fqcn.is_empty()
                     {
                         out.push_str(declaring_class_fqcn);
                         out.push('.');

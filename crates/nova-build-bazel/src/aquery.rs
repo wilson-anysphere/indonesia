@@ -1143,10 +1143,7 @@ mod tests {
             generated_sources_dir: Some(std::path::PathBuf::from("gen")),
             processor_path: vec![std::path::PathBuf::from("proc.jar")],
             processors: vec!["com.example.Proc".to_string()],
-            options: std::collections::BTreeMap::from([(
-                "key".to_string(),
-                "value".to_string(),
-            )]),
+            options: std::collections::BTreeMap::from([("key".to_string(), "value".to_string())]),
             compiler_args: vec![
                 "-processorpath".to_string(),
                 "proc.jar".to_string(),

@@ -79,12 +79,7 @@ impl MultiOutputRunner {
 }
 
 impl CommandRunner for MultiOutputRunner {
-    fn run(
-        &self,
-        _cwd: &Path,
-        _program: &Path,
-        args: &[String],
-    ) -> std::io::Result<CommandOutput> {
+    fn run(&self, _cwd: &Path, _program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         let mut invocations = self.invocations.lock().expect("lock poisoned");
         *invocations += 1;
 

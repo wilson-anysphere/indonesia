@@ -18,7 +18,8 @@ use crate::java_completion::workspace_index::WorkspaceJavaIndex;
 
 const MAX_CACHED_ROOTS: usize = 32;
 
-static WORKSPACE_INDEX_CACHE: Lazy<WorkspaceJavaIndexCache> = Lazy::new(WorkspaceJavaIndexCache::new);
+static WORKSPACE_INDEX_CACHE: Lazy<WorkspaceJavaIndexCache> =
+    Lazy::new(WorkspaceJavaIndexCache::new);
 
 /// A best-effort identifier for the current database instance.
 ///
@@ -89,7 +90,11 @@ impl WorkspaceJavaIndexCache {
             }
         }
 
-        let mut files = if under_root.is_empty() { all } else { under_root };
+        let mut files = if under_root.is_empty() {
+            all
+        } else {
+            under_root
+        };
         files.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         // Fingerprint sources (cheap pointer/len hashing, like `completion_cache`).
@@ -234,14 +239,8 @@ mod tests {
         let a = db.file_id_for_path("/workspace/src/main/java/com/foo/A.java");
         let b = db.file_id_for_path("/workspace/src/main/java/com/foo/B.java");
 
-        db.set_file_text(
-            a,
-            "package com.foo;\npublic class A {}\n".to_string(),
-        );
-        db.set_file_text(
-            b,
-            "package com.foo;\npublic class B {}\n".to_string(),
-        );
+        db.set_file_text(a, "package com.foo;\npublic class A {}\n".to_string());
+        db.set_file_text(b, "package com.foo;\npublic class B {}\n".to_string());
 
         let first = workspace_index_for_file(&db, a);
         let second = workspace_index_for_file(&db, a);
@@ -250,10 +249,7 @@ mod tests {
         assert!(first.contains_fqn("com.foo.B"));
 
         // Mutate a different Java file under the same root to force invalidation.
-        db.set_file_text(
-            b,
-            "package com.foo;\npublic class B2 {}\n".to_string(),
-        );
+        db.set_file_text(b, "package com.foo;\npublic class B2 {}\n".to_string());
 
         let third = workspace_index_for_file(&db, a);
         assert!(!Arc::ptr_eq(&first, &third));
@@ -261,4 +257,3 @@ mod tests {
         assert!(!third.contains_fqn("com.foo.B"));
     }
 }
-

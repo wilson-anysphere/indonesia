@@ -2161,9 +2161,10 @@ impl Lowerer {
 
             let expr = self.lower_expr(expr.syntax());
             let range = expr.range();
-            block
-                .statements
-                .push(ast::Stmt::Yield(ast::YieldStmt { expr: Some(expr), range }));
+            block.statements.push(ast::Stmt::Yield(ast::YieldStmt {
+                expr: Some(expr),
+                range,
+            }));
         }
 
         block

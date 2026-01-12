@@ -629,7 +629,10 @@ fn single_file_fingerprint(db: &dyn Database, file: FileId) -> u64 {
     if let Some(text) = db.file_text(file) {
         fingerprint_text(text, &mut hasher);
     } else {
-        match db.file_path(file).and_then(|path| std::fs::metadata(path).ok()) {
+        match db
+            .file_path(file)
+            .and_then(|path| std::fs::metadata(path).ok())
+        {
             Some(meta) => {
                 meta.len().hash(&mut hasher);
                 hash_mtime(&mut hasher, meta.modified().ok());

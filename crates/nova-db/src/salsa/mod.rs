@@ -2997,13 +2997,8 @@ impl Database {
             )
         };
 
-        self.input_footprint.record_file_text(
-            file,
-            &new_text,
-            &old_text,
-            Some(&syntax_edit),
-            None,
-        );
+        self.input_footprint
+            .record_file_text(file, &new_text, &old_text, Some(&syntax_edit), None);
         if let Some((project, files)) = project_files_update.as_ref() {
             let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
             self.input_footprint

@@ -2081,10 +2081,7 @@ class C { int m(int[][] a){ return a[0].length; } }
 "#;
 
     let (db, file) = setup_db(src);
-    let offset = src
-        .find("length")
-        .expect("snippet should contain length")
-        + 1;
+    let offset = src.find("length").expect("snippet should contain length") + 1;
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");

@@ -375,12 +375,10 @@ pub(crate) async fn compile_java_to_dir(
         .take()
         .ok_or_else(|| CompileError::new("javac stderr unavailable"))?;
 
-    let stdout_task = tokio::spawn(async move {
-        read_truncated_and_drain(stdout, MAX_JAVAC_OUTPUT_BYTES).await
-    });
-    let stderr_task = tokio::spawn(async move {
-        read_truncated_and_drain(stderr, MAX_JAVAC_OUTPUT_BYTES).await
-    });
+    let stdout_task =
+        tokio::spawn(async move { read_truncated_and_drain(stdout, MAX_JAVAC_OUTPUT_BYTES).await });
+    let stderr_task =
+        tokio::spawn(async move { read_truncated_and_drain(stderr, MAX_JAVAC_OUTPUT_BYTES).await });
 
     let timeout = Duration::from_secs(30);
     let status = tokio::select! {

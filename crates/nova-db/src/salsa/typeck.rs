@@ -11058,7 +11058,13 @@ fn find_enclosing_target_typed_expr_in_expr(
             ..
         } => {
             find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
-            find_enclosing_target_typed_expr_in_stmt_inner(body, *switch_body, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(
+                body,
+                *switch_body,
+                target,
+                target_range,
+                best,
+            );
         }
         HirExpr::Invalid { children, .. } => {
             for child in children {

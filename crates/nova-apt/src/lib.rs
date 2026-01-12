@@ -1496,10 +1496,15 @@ impl AptManager {
             progress.event(event);
 
             let result = match (&self.project.build_system, &plan.action) {
-                (BuildSystem::Maven, ModuleBuildAction::Maven { module, goal }) => build
-                    .build_maven_goal(&self.project.workspace_root, module.as_deref(), *goal),
+                (BuildSystem::Maven, ModuleBuildAction::Maven { module, goal }) => {
+                    build.build_maven_goal(&self.project.workspace_root, module.as_deref(), *goal)
+                }
                 (BuildSystem::Gradle, ModuleBuildAction::Gradle { project_path, task }) => build
-                    .build_gradle_task(&self.project.workspace_root, project_path.as_deref(), *task),
+                    .build_gradle_task(
+                        &self.project.workspace_root,
+                        project_path.as_deref(),
+                        *task,
+                    ),
                 _ => Ok(BuildResult::default()),
             };
 

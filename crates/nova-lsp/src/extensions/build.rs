@@ -35,9 +35,8 @@ fn bazel_build_orchestrators() -> &'static Mutex<HashMap<PathBuf, BazelBuildOrch
     ORCHESTRATORS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-type CachedBazelWorkspace = Arc<
-    Mutex<nova_build_bazel::BazelWorkspace<nova_build_bazel::DefaultCommandRunner>>,
->;
+type CachedBazelWorkspace =
+    Arc<Mutex<nova_build_bazel::BazelWorkspace<nova_build_bazel::DefaultCommandRunner>>>;
 
 fn cached_bazel_workspaces() -> &'static Mutex<HashMap<PathBuf, CachedBazelWorkspace>> {
     static WORKSPACES: OnceLock<Mutex<HashMap<PathBuf, CachedBazelWorkspace>>> = OnceLock::new();
@@ -70,7 +69,9 @@ fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelW
     let mut map = cached_bazel_workspaces()
         .lock()
         .unwrap_or_else(|err| err.into_inner());
-    let entry = map.entry(canonical).or_insert_with(|| Arc::clone(&workspace));
+    let entry = map
+        .entry(canonical)
+        .or_insert_with(|| Arc::clone(&workspace));
     Ok(Arc::clone(entry))
 }
 
@@ -111,9 +112,7 @@ pub fn invalidate_bazel_workspaces(changed: &[PathBuf]) {
     };
 
     for workspace in workspaces {
-        let mut guard = workspace
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut guard = workspace.lock().unwrap_or_else(|err| err.into_inner());
         // Best-effort: cache invalidation should never crash the server.
         let _ = guard.invalidate_changed_files(&changed_filtered);
     }
@@ -918,9 +917,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         let mut status_guard = BuildStatusGuard::new(&workspace_root);
         let value_result: Result<serde_json::Value> = (|| {
             let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
-            let mut workspace = workspace
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
 
             let info = workspace
                 .target_compile_info(&target)
@@ -1190,9 +1187,7 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
     let mut status_guard = BuildStatusGuard::new(&workspace_root);
     let value_result: Result<serde_json::Value> = (|| {
         let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
-        let mut workspace = workspace
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut workspace = workspace.lock().unwrap_or_else(|err| err.into_inner());
 
         let info = match req
             .run_target

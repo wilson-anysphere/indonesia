@@ -380,7 +380,12 @@ pub(crate) fn load_maven_workspace_model(
         // Maven modules. Fall back to those roots when the standard Maven conventions are not
         // present.
         if !main_standard {
-            push_source_root_if_has_java(&mut source_roots, module_root, SourceRootKind::Main, "src");
+            push_source_root_if_has_java(
+                &mut source_roots,
+                module_root,
+                SourceRootKind::Main,
+                "src",
+            );
         }
         if !test_standard {
             push_source_root_if_has_java(

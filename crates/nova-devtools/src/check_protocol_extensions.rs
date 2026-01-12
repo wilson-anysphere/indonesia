@@ -454,7 +454,10 @@ mod protocol_extension_tests {
 pub const FOO: &str =
     "nova/foo";
 "#;
-        assert_eq!(extract_rust_methods_from_text(text), vec!["nova/foo".to_string()]);
+        assert_eq!(
+            extract_rust_methods_from_text(text),
+            vec!["nova/foo".to_string()]
+        );
     }
 }
 

@@ -3629,7 +3629,10 @@ fn default_gradle_user_home() -> Option<PathBuf> {
         }
 
         // Accept both separators so configs remain portable.
-        let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix('/')
+            .or_else(|| rest.strip_prefix('\\'))
+            .unwrap_or(rest);
         if rest.contains("${") {
             // If there are any remaining placeholders, bail out rather than guessing.
             return None;
@@ -3666,7 +3669,10 @@ fn default_gradle_user_home() -> Option<PathBuf> {
 
     if let Some(home) = std::env::var_os("GRADLE_USER_HOME").filter(|v| !v.is_empty()) {
         let value = home.to_string_lossy();
-        let value = value.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
+        let value = value
+            .trim()
+            .trim_matches(|c| matches!(c, '"' | '\''))
+            .trim();
         if !value.is_empty() {
             if let Some(expanded) = expand_tilde_home(value)
                 .or_else(|| expand_env_placeholder(value))
@@ -3992,8 +3998,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        append_included_build_module_refs, extract_named_brace_blocks, gradle_dependency_jar_paths,
-        default_gradle_user_home, parse_gradle_dependencies_from_text,
+        append_included_build_module_refs, default_gradle_user_home, extract_named_brace_blocks,
+        gradle_dependency_jar_paths, parse_gradle_dependencies_from_text,
         parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
         parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
         sort_dedup_dependencies, strip_gradle_comments, Dependency, GradleModuleRef,
@@ -4809,10 +4815,8 @@ dependencies {
         let _lock = env_lock();
         let _home = EnvVarGuard::set_path("HOME", Some(&home));
         let _userprofile = EnvVarGuard::set_path("USERPROFILE", Some(&home));
-        let _gradle_home = EnvVarGuard::set_str(
-            "GRADLE_USER_HOME",
-            Some("${user.home}/.gradle-custom"),
-        );
+        let _gradle_home =
+            EnvVarGuard::set_str("GRADLE_USER_HOME", Some("${user.home}/.gradle-custom"));
 
         let resolved = default_gradle_user_home().expect("gradle user home");
         assert_eq!(resolved, home.join(".gradle-custom"));
