@@ -65,8 +65,8 @@ static BUILTIN_MATH_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
                 signature: None,
             },
         ],
-        // Note: `Math.max`/`min` are overloaded in the real JDK. For the built-in index we only
-        // include a single representative overload so call sites can display a stable signature.
+        // Note: `Math.max`/`min` are overloaded in the real JDK. The built-in index only needs a
+        // small subset, but unit tests expect common primitive overloads to resolve.
         methods: vec![
             JdkMethodStub {
                 access_flags: ACC_PUBLIC | ACC_STATIC,
@@ -76,8 +76,44 @@ static BUILTIN_MATH_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
             },
             JdkMethodStub {
                 access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "max".to_string(),
+                descriptor: "(JJ)J".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "max".to_string(),
+                descriptor: "(FF)F".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "max".to_string(),
+                descriptor: "(DD)D".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
                 name: "min".to_string(),
                 descriptor: "(II)I".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "min".to_string(),
+                descriptor: "(JJ)J".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "min".to_string(),
+                descriptor: "(FF)F".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "min".to_string(),
+                descriptor: "(DD)D".to_string(),
                 signature: None,
             },
         ],
