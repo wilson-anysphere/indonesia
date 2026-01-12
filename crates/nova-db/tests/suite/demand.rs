@@ -431,6 +431,85 @@ class C {
 }
 
 #[test]
+fn demand_type_of_expr_targets_lambda_in_array_initializer() {
+    let src = r#"
+interface I {
+    int f(int x);
+}
+
+class C {
+    void m() {
+        I[] xs = { (x) -> x + 1 };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let root = &body.stmts[body.root];
+    let init_expr = match root {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Let {
+                    initializer: Some(expr),
+                    ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected a local initializer"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let lambda_expr = match &body.exprs[init_expr] {
+        nova_hir::hir::Expr::ArrayInitializer { items, .. } => items
+            .first()
+            .copied()
+            .expect("expected array initializer to contain a lambda item"),
+        other => panic!("expected initializer to be an ArrayInitializer expr, got {other:?}"),
+    };
+
+    let lambda_body_expr = match &body.exprs[lambda_expr] {
+        nova_hir::hir::Expr::Lambda { body, .. } => match body {
+            nova_hir::hir::LambdaBody::Expr(expr_id) => *expr_id,
+            other => panic!("expected expression-bodied lambda, got {other:?}"),
+        },
+        other => panic!("expected initializer item to be a lambda expression, got {other:?}"),
+    };
+
+    db.clear_query_stats();
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: lambda_body_expr,
+        },
+    );
+    assert_eq!(
+        format_type(&*res.env, &res.ty),
+        "int",
+        "expected demand-driven inference to target-type the lambda and infer `x + 1` as int"
+    );
+
+    let stats = db.query_stats();
+    assert!(
+        stats.by_query.get("typeck_body").is_none(),
+        "type_of_expr_demand_result should not execute typeck_body; stats: {:?}",
+        stats.by_query.get("typeck_body")
+    );
+}
+
+#[test]
 fn demand_reports_var_requires_initializer_for_local_var_decl() {
     let src = r#"
 class C {
