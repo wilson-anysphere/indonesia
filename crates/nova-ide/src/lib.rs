@@ -61,10 +61,7 @@ pub use file_navigation::{declaration, implementation, type_definition};
 // Test-only instrumentation used by integration tests to ensure global caching works.
 #[cfg(any(test, debug_assertions))]
 #[doc(hidden)]
-pub use file_navigation::{
-    file_navigation_index_build_count_for_file_for_tests,
-    file_navigation_index_build_count_for_tests,
-};
+pub use file_navigation::file_navigation_index_build_count_for_tests;
 pub use refactor::inline_method_code_actions;
 
 /// Spring-specific configuration helpers (config file parsing, metadata lookup,

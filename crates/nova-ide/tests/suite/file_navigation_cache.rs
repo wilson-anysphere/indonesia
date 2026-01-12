@@ -1,5 +1,5 @@
 use nova_db::InMemoryFileStore;
-use nova_ide::{file_navigation_index_build_count_for_file_for_tests, implementation};
+use nova_ide::{file_navigation_index_build_count_for_tests, implementation};
 use tempfile::TempDir;
 
 use crate::framework_harness::offset_to_position;
@@ -31,9 +31,9 @@ class C {
     let file_d = db.file_id_for_path(&path_d);
     db.set_file_text(file_d, "class D {}".to_string());
 
-    let before = file_navigation_index_build_count_for_file_for_tests(&db, file_c);
+    let before = file_navigation_index_build_count_for_tests();
     let _ = implementation(&db, file_c, call_pos);
-    let after_first = file_navigation_index_build_count_for_file_for_tests(&db, file_c);
+    let after_first = file_navigation_index_build_count_for_tests();
     assert_eq!(
         after_first,
         before + 1,
@@ -41,7 +41,7 @@ class C {
     );
 
     let _ = implementation(&db, file_c, call_pos);
-    let after_second = file_navigation_index_build_count_for_file_for_tests(&db, file_c);
+    let after_second = file_navigation_index_build_count_for_tests();
     assert_eq!(
         after_second, after_first,
         "expected second request to reuse cached FileNavigationIndex"
