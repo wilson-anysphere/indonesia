@@ -298,6 +298,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     ///    deterministically)
     ///
     /// Returns `Ok(None)` when:
+    /// - `file` is outside the Bazel workspace root, or
     /// - `file` is not contained in any Bazel package under the workspace root (no `BUILD` /
     ///   `BUILD.bazel` file found up to the workspace root), or
     /// - no owning `java_*` targets were found for `file`.
@@ -339,7 +340,25 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         file: &Path,
         run_target: Option<&str>,
     ) -> Result<Option<JavaCompileInfo>> {
-        let Some((file_label, package_rel)) = self.workspace_file_label_and_package(file)? else {
+        let label_and_package = match self.workspace_file_label_and_package(file) {
+            Ok(value) => value,
+            Err(err) => {
+                // `compile_info_for_file` is intended for IDE-style on-demand lookups. Treat files
+                // outside the workspace root as a non-match rather than surfacing an error.
+                //
+                // This is intentionally more forgiving than `workspace_file_label`, which treats
+                // outside-workspace paths as an error.
+                let message = err.to_string();
+                if message.contains("outside the Bazel workspace root")
+                    || message.contains("failed to canonicalize file path")
+                {
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        };
+
+        let Some((file_label, package_rel)) = label_and_package else {
             return Ok(None);
         };
         let cache_key = if let Some(run_target) = run_target {

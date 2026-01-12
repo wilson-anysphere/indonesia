@@ -205,6 +205,21 @@ fn compile_info_for_file_returns_none_when_file_is_not_in_any_bazel_package() {
 }
 
 #[test]
+fn compile_info_for_file_returns_none_when_file_is_outside_workspace_root() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# test\n");
+
+    let outside = tempdir().unwrap();
+    let outside_file = outside.path().join("Hello.java");
+    create_file(&outside_file);
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let info = workspace.compile_info_for_file(&outside_file).unwrap();
+    assert_eq!(info, None);
+}
+
+#[test]
 fn compile_info_for_file_returns_none_when_file_is_bazelignored() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
