@@ -424,6 +424,19 @@ impl MemoryConfig {
 #[schemars(deny_unknown_fields)]
 /// Top-level Nova configuration loaded from TOML.
 ///
+/// Build tool integration can be configured via the `[build]` table:
+/// ```toml
+/// [build]
+/// enabled = true
+/// timeout_ms = 30000
+///
+/// [build.maven]
+/// enabled = true
+///
+/// [build.gradle]
+/// enabled = true
+/// ```
+///
 /// Extensions can be configured via the `[extensions]` table:
 /// ```toml
 /// [extensions]

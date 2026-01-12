@@ -5,7 +5,7 @@ expression: schema
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "NovaConfig",
-  "description": "Top-level Nova configuration loaded from TOML.\n\nExtensions can be configured via the `[extensions]` table: ```toml [extensions] enabled = true wasm_paths = [\"./extensions\"] allow = [\"example.my_extension\"] deny = [\"example.bad_extension\"] wasm_memory_limit_bytes = 268435456 wasm_timeout_ms = 5000 ```",
+  "description": "Top-level Nova configuration loaded from TOML.\n\nBuild tool integration can be configured via the `[build]` table: ```toml [build] enabled = true timeout_ms = 30000\n\n[build.maven] enabled = true\n\n[build.gradle] enabled = true ```\n\nExtensions can be configured via the `[extensions]` table: ```toml [extensions] enabled = true wasm_paths = [\"./extensions\"] allow = [\"example.my_extension\"] deny = [\"example.bad_extension\"] wasm_memory_limit_bytes = 268435456 wasm_timeout_ms = 5000 ```",
   "type": "object",
   "allOf": [
     {
