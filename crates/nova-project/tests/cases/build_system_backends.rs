@@ -113,6 +113,9 @@ fn watch_files_contains_canonical_markers() {
         .contains(&PathPattern::ExactFileName("build.gradle")));
     assert!(simple
         .watch_files()
+        .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
+    assert!(simple
+        .watch_files()
         .contains(&PathPattern::Glob("**/*.bzl")));
 }
 

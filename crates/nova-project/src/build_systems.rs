@@ -234,6 +234,11 @@ impl BuildSystemBackend for SimpleBuildSystem {
                 PathPattern::ExactFileName("settings.gradle"),
                 PathPattern::ExactFileName("settings.gradle.kts"),
                 PathPattern::ExactFileName("gradle.properties"),
+                // Simple projects can "upgrade" to Gradle when wrapper/build marker files appear.
+                PathPattern::ExactFileName("gradlew"),
+                PathPattern::ExactFileName("gradlew.bat"),
+                PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.properties"),
+                PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar"),
                 PathPattern::ExactFileName("WORKSPACE"),
                 PathPattern::ExactFileName("WORKSPACE.bazel"),
                 PathPattern::ExactFileName("MODULE.bazel"),
