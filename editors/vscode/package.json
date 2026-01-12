@@ -50,6 +50,7 @@
     "onCommand:nova.refreshProjectExplorer",
     "onCommand:nova.showProjectModel",
     "onCommand:nova.showProjectConfiguration",
+    "onCommand:nova.projectExplorer.revealPath",
     "onDebug"
   ],
   "main": "./out/extension.js",
@@ -186,6 +187,10 @@
       {
         "command": "nova.showProjectConfiguration",
         "title": "Nova: Show Project Configuration"
+      },
+      {
+        "command": "nova.projectExplorer.revealPath",
+        "title": "Nova: Reveal Path"
       }
     ],
     "views": {
