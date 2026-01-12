@@ -294,8 +294,17 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
 
     let cfg = build.java_compile_config(&root, None, &cache).unwrap();
     // When Maven doesn't expose module-path expressions, we fall back to a JPMS heuristic that
-    // infers the module-path from stable modules on the compile classpath.
+    // infers the module-path from stable modules on the resolved compile classpath.
+    //
+    // Note: we still include the output directory on the compile classpath, but exclude it from
+    // the module path (it doesn't contain `module-info.class` until after compilation).
     assert_eq!(cfg.module_path, vec![named.clone(), automatic.clone()]);
+    assert!(cfg.compile_classpath.contains(&named));
+    assert!(cfg.compile_classpath.contains(&automatic));
+    assert!(cfg
+        .compile_classpath
+        .iter()
+        .any(|p| p.ends_with(Path::new("target/classes"))));
     assert!(!cfg
         .module_path
         .iter()
