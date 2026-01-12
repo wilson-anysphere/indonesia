@@ -2973,10 +2973,13 @@ fn parse_gradle_version_catalog_library(
                                 .unwrap_or_else(|| v.to_string()),
                         )
                     } else {
-                        version_table.get("prefer").and_then(Value::as_str).map(|v| {
-                            resolve_gradle_properties_placeholder(v, gradle_properties)
-                                .unwrap_or_else(|| v.to_string())
-                        })
+                        version_table
+                            .get("prefer")
+                            .and_then(Value::as_str)
+                            .map(|v| {
+                                resolve_gradle_properties_placeholder(v, gradle_properties)
+                                    .unwrap_or_else(|| v.to_string())
+                            })
                     }
                 }
                 _ => None,

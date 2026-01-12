@@ -6748,6 +6748,39 @@ fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() 
 }
 
 #[test]
+fn inline_variable_rejected_when_initializer_dependency_is_written_in_later_declarator_same_statement(
+) {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1, a = x, y = (x = 2);
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("a = x").unwrap();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineWouldChangeValue { .. }),
+        "expected InlineWouldChangeValue, got: {err:?}"
+    );
+}
+
+#[test]
 fn inline_variable_rejected_when_initializer_field_dependency_is_written_before_use() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
@@ -10122,6 +10155,44 @@ fn inline_variable_rejects_shadowed_dependency_in_nested_block() {
             SemanticRefactorError::InlineShadowedDependency { name } if name == "b"
         ),
         "expected InlineShadowedDependency for `b`, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_shadowed_field_dependency_in_nested_block() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int x = 1;
+  void m() {
+    int a = x;
+    {
+      int x = 2;
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            SemanticRefactorError::InlineShadowedDependency { name } if name == "x"
+        ),
+        "expected InlineShadowedDependency for `x`, got: {err:?}"
     );
 }
 

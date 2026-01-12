@@ -2549,7 +2549,9 @@ impl Debugger {
                     DebuggerError::Jdwp(JdwpError::Cancelled)
                 }
                 crate::wire_stream_debug::WireStreamDebugError::Timeout => DebuggerError::Timeout,
-                crate::wire_stream_debug::WireStreamDebugError::Jdwp(err) => DebuggerError::Jdwp(err),
+                crate::wire_stream_debug::WireStreamDebugError::Jdwp(err) => {
+                    DebuggerError::Jdwp(err)
+                }
                 other => DebuggerError::InvalidRequest(other.to_string()),
             })?;
 

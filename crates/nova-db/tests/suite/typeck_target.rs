@@ -1440,7 +1440,9 @@ class C { long m(){ long x = 0; return x = 1; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1491,7 +1493,9 @@ class C { void m(){ byte b = 0; byte c = (b += 1); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1511,7 +1515,9 @@ class C { void m(){ byte b = 1; byte c = (b <<= 1); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1531,7 +1537,9 @@ class C { void m(){ boolean b = true; boolean c = (b &= false); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1551,7 +1559,9 @@ class C { Integer m(){ return true ? 1 : null; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1571,7 +1581,9 @@ class C { int m(){ int[] a = {1,2}; return a[0]; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1594,7 +1606,9 @@ class C { Class<String> m(){ return String.class; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1616,7 +1630,9 @@ class C { Class<?> m(){ return int.class; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 
@@ -1638,7 +1654,9 @@ class C { Class<String[]> m(){ return String[].class; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        diags
+            .iter()
+            .all(|d| d.severity != nova_types::Severity::Error),
         "expected no errors; got {diags:?}"
     );
 

@@ -32,8 +32,9 @@ use nova_jdwp::wire::{
 };
 use nova_scheduler::CancellationToken;
 use nova_stream_debug::{
-    analyze_stream_expression, StreamAnalysisError, StreamChain, StreamDebugConfig, StreamDebugResult,
-    StreamOperationKind, StreamSample, StreamSource, StreamStepResult, StreamTerminalResult,
+    analyze_stream_expression, StreamAnalysisError, StreamChain, StreamDebugConfig,
+    StreamDebugResult, StreamOperationKind, StreamSample, StreamSource, StreamStepResult,
+    StreamTerminalResult,
 };
 use thiserror::Error;
 use tokio::process::Command;
@@ -349,11 +350,16 @@ pub async fn debug_stream_in_frame(
     }
 
     if is_mock_jdwp_vm(cancel, jdwp).await? {
-        return debug_stream_placeholder(jdwp, cancel, started, thread, frame_id, location, chain, config)
-            .await;
+        return debug_stream_placeholder(
+            jdwp, cancel, started, thread, frame_id, location, chain, config,
+        )
+        .await;
     }
 
-    debug_stream_real(jdwp, cancel, started, thread, frame_id, location, chain, config).await
+    debug_stream_real(
+        jdwp, cancel, started, thread, frame_id, location, chain, config,
+    )
+    .await
 }
 
 async fn debug_stream_real(
@@ -370,7 +376,9 @@ async fn debug_stream_real(
     // (peek/forEach when side effects are disallowed) so they don't affect later expressions.
     let mut safe_expr = chain.source.stream_expr().trim().to_string();
     if safe_expr.is_empty() {
-        return Err(WireStreamDebugError::Analysis(StreamAnalysisError::NoStreamPipeline));
+        return Err(WireStreamDebugError::Analysis(
+            StreamAnalysisError::NoStreamPipeline,
+        ));
     }
 
     let mut stage_exprs = vec![safe_expr.clone()];
@@ -387,10 +395,9 @@ async fn debug_stream_real(
         stage_exprs.push(safe_expr.clone());
     }
 
-    let terminal_allowed = chain
-        .terminal
-        .as_ref()
-        .is_some_and(|t| config.allow_terminal_ops && (!t.is_side_effecting() || config.allow_side_effects));
+    let terminal_allowed = chain.terminal.as_ref().is_some_and(|t| {
+        config.allow_terminal_ops && (!t.is_side_effecting() || config.allow_side_effects)
+    });
     let terminal_expr = terminal_allowed.then(|| {
         let term = chain.terminal.as_ref().expect("terminal exists");
         format!(
@@ -545,13 +552,7 @@ async fn debug_stream_placeholder(
     //   ArrayReference.GetValues and lets the mock delay replies).
     let _ = cancellable_jdwp(
         cancel,
-        jdwp.class_type_invoke_method(
-            location.class_id,
-            thread,
-            0,
-            &[JdwpValue::Int(1)],
-            0,
-        ),
+        jdwp.class_type_invoke_method(location.class_id, thread, 0, &[JdwpValue::Int(1)], 0),
     )
     .await;
 
@@ -590,7 +591,8 @@ async fn debug_stream_placeholder(
     }
 
     let terminal = if let Some(term) = &chain.terminal {
-        let executed = config.allow_terminal_ops && (!term.is_side_effecting() || config.allow_side_effects);
+        let executed =
+            config.allow_terminal_ops && (!term.is_side_effecting() || config.allow_side_effects);
         let value = if executed && term.kind == StreamOperationKind::Count {
             Some(last_sample.elements.len().to_string())
         } else {
@@ -644,7 +646,9 @@ async fn resolve_stream_source_value(
     }
 
     let mut name = match &chain.source {
-        StreamSource::Collection { collection_expr, .. } => collection_expr.trim().to_string(),
+        StreamSource::Collection {
+            collection_expr, ..
+        } => collection_expr.trim().to_string(),
         StreamSource::ExistingStream { stream_expr } => {
             let stream_expr = stream_expr.trim();
             // Best-effort support for `...Arrays.stream(arr)` by sampling the underlying array.
@@ -704,7 +708,8 @@ async fn resolve_local_in_frame(
             let in_scope: Vec<_> = vars
                 .into_iter()
                 .filter(|v| {
-                    v.code_index <= location.index && location.index < v.code_index + (v.length as u64)
+                    v.code_index <= location.index
+                        && location.index < v.code_index + (v.length as u64)
                 })
                 .collect();
             if let Some(found) = in_scope.iter().find(|v| v.name == name) {
@@ -716,14 +721,16 @@ async fn resolve_local_in_frame(
     }
 
     if slot_sig.is_none() {
-        let (_argc, vars) =
-            match cancellable_jdwp(cancel, jdwp.method_variable_table(location.class_id, location.method_id))
-                .await
-            {
-                Ok(res) => res,
-                Err(WireStreamDebugError::Cancelled) => return Err(WireStreamDebugError::Cancelled),
-                Err(_) => return Ok(None),
-            };
+        let (_argc, vars) = match cancellable_jdwp(
+            cancel,
+            jdwp.method_variable_table(location.class_id, location.method_id),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(WireStreamDebugError::Cancelled) => return Err(WireStreamDebugError::Cancelled),
+            Err(_) => return Ok(None),
+        };
 
         let in_scope: Vec<VariableInfo> = vars
             .into_iter()

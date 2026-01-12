@@ -2184,7 +2184,14 @@ pub fn inline_variable(
         db,
         &parsed,
         &def.file,
-        decl.statement_range.end,
+        // Use the end of the initializer expression (not the end of the whole declaration
+        // statement) so we catch cases where the initializer's dependencies are written by later
+        // declarators in the same multi-declarator statement:
+        //
+        // `int x = 1, a = x, y = (x = 2); System.out.println(a);`
+        //
+        // Inlining `a` would change the printed value from 1 to 2.
+        init_range.end,
         &init_expr,
         &targets,
     )?;
@@ -2643,7 +2650,7 @@ fn ensure_inline_variable_value_stable(
     db: &dyn RefactorDatabase,
     parsed: &nova_syntax::JavaParseResult,
     file: &FileId,
-    decl_stmt_end: usize,
+    decl_init_end: usize,
     initializer: &ast::Expression,
     targets: &[crate::semantic::Reference],
 ) -> Result<(), RefactorError> {
@@ -2688,12 +2695,12 @@ fn ensure_inline_variable_value_stable(
 
     for usage in targets {
         let usage_start = usage.range.start;
-        if usage_start <= decl_stmt_end {
+        if usage_start <= decl_init_end {
             continue;
         }
 
         for (sym, name) in &deps {
-            if has_write_to_symbol_between(db, parsed, file, *sym, decl_stmt_end, usage_start)? {
+            if has_write_to_symbol_between(db, parsed, file, *sym, decl_init_end, usage_start)? {
                 return Err(RefactorError::InlineWouldChangeValue {
                     reason: format!(
                         "`{name}` is written between the variable declaration and the inlined usage"

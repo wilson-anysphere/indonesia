@@ -402,7 +402,13 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
             return None;
         }
         let ((_name, params), return_type) = candidates.into_iter().next()?;
-        Some(normalize_sig(env, SamSignature { params, return_type }))
+        Some(normalize_sig(
+            env,
+            SamSignature {
+                params,
+                return_type,
+            },
+        ))
     }
 
     let mut seen_type_vars = HashSet::new();

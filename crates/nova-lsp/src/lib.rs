@@ -161,7 +161,8 @@ pub const EXTENSIONS_NAVIGATION_METHOD: &str = "nova/extensions/navigation";
 // These methods are intentionally not part of Nova's stable public protocol surface. The stdio
 // server only implements them in debug builds (`cfg(debug_assertions)`).
 pub const INTERNAL_INTERRUPTIBLE_WORK_METHOD: &str = "nova/internal/interruptibleWork";
-pub const INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION: &str = "nova/internal/interruptibleWorkStarted";
+pub const INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION: &str =
+    "nova/internal/interruptibleWorkStarted";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryStatusResponse {

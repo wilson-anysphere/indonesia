@@ -76,9 +76,7 @@ pub fn nfkc_casefold_first_char_and_grapheme_len(
 ) -> (Option<char>, usize) {
     if input.is_ascii() {
         let bytes = input.as_bytes();
-        let first = bytes
-            .first()
-            .map(|&b0| b0.to_ascii_lowercase() as char);
+        let first = bytes.first().map(|&b0| b0.to_ascii_lowercase() as char);
         return (first, bytes.len());
     }
 

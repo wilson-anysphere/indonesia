@@ -705,10 +705,7 @@ impl SymbolSearchIndex {
         );
 
         #[inline]
-        fn bucket_for_key<'a>(
-            index: &'a SymbolSearchIndex,
-            key: Prefix1Key,
-        ) -> &'a Vec<SymbolId> {
+        fn bucket_for_key<'a>(index: &'a SymbolSearchIndex, key: Prefix1Key) -> &'a Vec<SymbolId> {
             match key {
                 Prefix1Key::Ascii(b) => &index.prefix1_ascii[b as usize],
                 Prefix1Key::Unicode(ix) => &index.prefix1_unicode[ix],
@@ -719,10 +716,7 @@ impl SymbolSearchIndex {
         // to decide whether trigram filtering can apply (>= 3 folded graphemes)
         // and to compute the first-character prefix bucket key.
         let (first_char, query_len) = if query.is_ascii() {
-            (
-                Some(q_bytes[0].to_ascii_lowercase() as char),
-                q_bytes.len(),
-            )
+            (Some(q_bytes[0].to_ascii_lowercase() as char), q_bytes.len())
         } else {
             UNICODE_QUERY_BUF.with(|buf| {
                 let mut buf = buf.borrow_mut();
