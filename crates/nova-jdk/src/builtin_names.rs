@@ -16,6 +16,7 @@ pub const BUILTIN_JDK_BINARY_NAMES: &[&str] = &[
     "java.lang.Class",
     "java.lang.Cloneable",
     "java.lang.Double",
+    "java.lang.Enum",
     "java.lang.Exception",
     "java.lang.Float",
     "java.lang.Integer",
@@ -24,11 +25,14 @@ pub const BUILTIN_JDK_BINARY_NAMES: &[&str] = &[
     "java.lang.Math",
     "java.lang.Number",
     "java.lang.Object",
+    "java.lang.Record",
     "java.lang.Runnable",
     "java.lang.Short",
     "java.lang.String",
     "java.lang.System",
     "java.lang.Throwable",
+    // java.lang.annotation
+    "java.lang.annotation.Annotation",
     // java.util
     "java.util.ArrayList",
     "java.util.Collections",

@@ -805,6 +805,11 @@ pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
     "java.util.function.Supplier",
     "java.util.function.Consumer",
     "java.util.function.Predicate",
+    // java.lang (additional core supertypes used by semantic analysis)
+    "java.lang.Enum",
+    "java.lang.Record",
+    // java.lang.annotation
+    "java.lang.annotation.Annotation",
 ];
 
 impl TypeStore {
@@ -882,6 +887,15 @@ impl TypeStore {
         let serializable = store
             .lookup_class("java.io.Serializable")
             .expect("minimal JDK must contain java.io.Serializable");
+        let enum_ = store
+            .lookup_class("java.lang.Enum")
+            .expect("minimal JDK must contain java.lang.Enum");
+        let record = store
+            .lookup_class("java.lang.Record")
+            .expect("minimal JDK must contain java.lang.Record");
+        let annotation = store
+            .lookup_class("java.lang.annotation.Annotation")
+            .expect("minimal JDK must contain java.lang.annotation.Annotation");
 
         let object_ty = Type::class(object, vec![]);
         let string_ty = Type::class(string, vec![]);
@@ -928,6 +942,64 @@ impl TypeStore {
                         is_abstract: false,
                     },
                 ],
+            },
+        );
+        store.define_class(
+            enum_,
+            ClassDef {
+                name: "java.lang.Enum".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "name".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: string_ty.clone(),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "ordinal".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: Type::Primitive(PrimitiveType::Int),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                ],
+            },
+        );
+        store.define_class(
+            record,
+            ClassDef {
+                name: "java.lang.Record".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+        store.define_class(
+            annotation,
+            ClassDef {
+                name: "java.lang.annotation.Annotation".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
             },
         );
         store.define_class(

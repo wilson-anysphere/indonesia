@@ -2866,6 +2866,70 @@ class C {
 }
 
 #[test]
+fn java_lang_enum_resolves_and_has_ordinal_method() {
+    let src = r#"
+class C {
+    void m(java.lang.Enum e) {
+        e.ordinal();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-type"),
+        "expected java.lang.Enum to resolve; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-method" || !d.message.contains("ordinal")),
+        "expected java.lang.Enum.ordinal() to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn java_lang_record_resolves_and_inherits_object_methods() {
+    let src = r#"
+class C {
+    void m(java.lang.Record r) {
+        r.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-type"),
+        "expected java.lang.Record to resolve; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected java.lang.Record to inherit java.lang.Object methods; got {diags:?}"
+    );
+}
+
+#[test]
+fn java_lang_annotation_annotation_resolves() {
+    let src = r#"
+class C {
+    void m(java.lang.annotation.Annotation a) {
+        a.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-type"),
+        "expected java.lang.annotation.Annotation to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn object_constructor_is_available() {
     let src = r#"
 class C {
