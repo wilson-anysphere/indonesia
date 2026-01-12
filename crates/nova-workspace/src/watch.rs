@@ -150,6 +150,18 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
+    // Gradle version catalogs can also be custom-named, but they must live directly under a
+    // `gradle/` directory (e.g. `gradle/foo.versions.toml`).
+    if !in_ignored_dir
+        && name.ends_with(".versions.toml")
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|dir| dir == "gradle")
+    {
+        return true;
+    }
+
     if name == "pom.xml"
         || name == "module-info.java"
         || name == "nova.toml"
@@ -262,6 +274,7 @@ mod tests {
             root.join("dependencies.gradle"),
             root.join("dependencies.gradle.kts"),
             root.join("gradle").join("libs.versions.toml"),
+            root.join("gradle").join("foo.versions.toml"),
             root.join("gradle").join("dependencies.gradle"),
             root.join("gradle").join("dependencies.gradle.kts"),
         ];
@@ -283,11 +296,14 @@ mod tests {
 
         let non_build_files = [
             root.join("jvm.config"),
+            // Wrapper jars must be in their canonical wrapper locations.
+            root.join("gradle-wrapper.jar"),
+            root.join(".mvn").join("maven-wrapper.jar"),
+            // Custom version catalogs must live directly under `gradle/`.
+            root.join("foo.versions.toml"),
             root.join(".gradle").join("dependencies.gradle"),
             root.join("build").join("dependencies.gradle"),
             root.join("target").join("dependencies.gradle"),
-            root.join("gradle-wrapper.jar"),
-            root.join(".mvn").join("maven-wrapper.jar"),
         ];
 
         for path in non_build_files {

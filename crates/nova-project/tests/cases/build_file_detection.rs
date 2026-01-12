@@ -27,8 +27,9 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradlew",
         "gradlew.bat",
         "gradle/wrapper/gradle-wrapper.properties",
+        "gradle/wrapper/gradle-wrapper.jar",
         "gradle/libs.versions.toml",
-        "gradle/deps.versions.toml",
+        "gradle/foo.versions.toml",
         "gradle/conventions.gradle",
         "gradle/conventions.gradle.kts",
     ];
@@ -49,8 +50,13 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradle-wrapper.properties",
         "gradle/gradle-wrapper.properties",
         "wrapper/gradle-wrapper.properties",
-        // Additional version catalogs should live under `gradle/`.
-        "deps.versions.toml",
+        // Wrapper jar must be in the canonical wrapper location.
+        "gradle-wrapper.jar",
+        "gradle/gradle-wrapper.jar",
+        "wrapper/gradle-wrapper.jar",
+        // Version catalogs must live directly under `gradle/`.
+        "foo.versions.toml",
+        "catalogs/foo.versions.toml",
         // Sanity check: non-build file.
         "gradle/conventions.txt",
     ];
@@ -72,6 +78,7 @@ fn maven_is_build_file_recognizes_expected_paths() {
         "mvnw",
         "mvnw.cmd",
         ".mvn/wrapper/maven-wrapper.properties",
+        ".mvn/wrapper/maven-wrapper.jar",
         ".mvn/maven.config",
         ".mvn/jvm.config",
         ".mvn/extensions.xml",
@@ -94,6 +101,10 @@ fn maven_is_build_file_recognizes_expected_paths() {
         "maven-wrapper.properties",
         ".mvn/maven-wrapper.properties",
         "wrapper/maven-wrapper.properties",
+        // Wrapper jar must be in the canonical wrapper location.
+        "maven-wrapper.jar",
+        ".mvn/maven-wrapper.jar",
+        "wrapper/maven-wrapper.jar",
         // `.mvn` config files must be in `.mvn/`.
         "maven.config",
         "jvm.config",
@@ -141,8 +152,36 @@ fn reload_project_reloads_on_gradle_wrapper_file_change() {
         "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.0-bin.zip\n",
     );
 
-    let reloaded =
-        reload_project(&config, &mut options, &[wrapper_props]).expect("reload project");
+    let reloaded = reload_project(&config, &mut options, &[wrapper_props]).expect("reload project");
+    assert_eq!(reloaded.modules.len(), 2);
+}
+
+#[test]
+fn reload_project_reloads_on_gradle_wrapper_jar_change() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+
+    // Minimal Gradle project with one module.
+    write(&root.join("settings.gradle"), r#"include("app")"#);
+    write(&root.join("build.gradle"), "// root");
+    write(&root.join("app/build.gradle"), "// app");
+
+    let mut options = LoadOptions::default();
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.modules.len(), 1);
+
+    // Update settings to add another module; this should only be observed if reload_project
+    // decides to reload on our chosen changed-file path.
+    write(&root.join("settings.gradle"), r#"include("app", "lib")"#);
+    write(&root.join("lib/build.gradle"), "// lib");
+
+    // The changed file is *not* settings.gradle; it is a wrapper jar file that should trigger
+    // a full reload.
+    let wrapper_jar = root.join("gradle/wrapper/gradle-wrapper.jar");
+    write(&wrapper_jar, "jar bytes are not relevant for this test\n");
+
+    let reloaded = reload_project(&config, &mut options, &[wrapper_jar]).expect("reload project");
     assert_eq!(reloaded.modules.len(), 2);
 }
 
@@ -221,7 +260,81 @@ fn reload_project_reloads_on_maven_wrapper_file_change() {
     let maven_config = root.join(".mvn/maven.config");
     write(&maven_config, "-DskipTests\n");
 
-    let reloaded =
-        reload_project(&config, &mut options, &[maven_config]).expect("reload project");
+    let reloaded = reload_project(&config, &mut options, &[maven_config]).expect("reload project");
+    assert_eq!(reloaded.modules.len(), 2);
+}
+
+#[test]
+fn reload_project_reloads_on_maven_wrapper_jar_change() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+
+    // Minimal Maven aggregator with one module.
+    write(
+        &root.join("pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>demo</artifactId>
+              <version>0.0.1</version>
+              <packaging>pom</packaging>
+              <modules>
+                <module>app</module>
+              </modules>
+            </project>
+        "#,
+    );
+    write(
+        &root.join("app/pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>app</artifactId>
+              <version>0.0.1</version>
+            </project>
+        "#,
+    );
+
+    let mut options = LoadOptions::default();
+    let config = load_project_with_options(&root, &options).expect("load maven project");
+    assert_eq!(config.build_system, BuildSystem::Maven);
+    assert_eq!(config.modules.len(), 1);
+
+    // Modify the root pom to add another module.
+    write(
+        &root.join("pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>demo</artifactId>
+              <version>0.0.1</version>
+              <packaging>pom</packaging>
+              <modules>
+                <module>app</module>
+                <module>lib</module>
+              </modules>
+            </project>
+        "#,
+    );
+    write(
+        &root.join("lib/pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>lib</artifactId>
+              <version>0.0.1</version>
+            </project>
+        "#,
+    );
+
+    // The changed file is *not* pom.xml; it is a Maven wrapper jar file.
+    let wrapper_jar = root.join(".mvn/wrapper/maven-wrapper.jar");
+    write(&wrapper_jar, "jar bytes are not relevant for this test\n");
+
+    let reloaded = reload_project(&config, &mut options, &[wrapper_jar]).expect("reload project");
     assert_eq!(reloaded.modules.len(), 2);
 }

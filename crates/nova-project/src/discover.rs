@@ -250,7 +250,11 @@ fn is_apt_generated_roots_snapshot(path: &Path) -> bool {
     // source roots from annotation processing. This file is read on project load, but may change
     // independently of build files or `nova.toml`, so treat it as a configuration-triggering file
     // for reloads.
-    path.ends_with(Path::new(".nova").join("apt-cache").join("generated-roots.json"))
+    path.ends_with(
+        Path::new(".nova")
+            .join("apt-cache")
+            .join("generated-roots.json"),
+    )
 }
 
 fn load_project_from_workspace_root(
@@ -509,10 +513,10 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
                 "jvm.config" => path.ends_with(Path::new(".mvn/jvm.config")),
                 "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
-                "maven-wrapper.jar" => path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.jar")),
                 "maven-wrapper.properties" => {
                     path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
-                }
+                },
+                "maven-wrapper.jar" => path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.jar")),
                 _ => false,
             }
         }
@@ -730,11 +734,8 @@ mod tests {
 
         // Add `module-info.java` to enable JPMS and trigger reload.
         let module_info_path = root.join("module-info.java");
-        std::fs::write(
-            &module_info_path,
-            "module mod.a { requires mod.b; }",
-        )
-        .expect("write module-info.java");
+        std::fs::write(&module_info_path, "module mod.a { requires mod.b; }")
+            .expect("write module-info.java");
 
         let mut options_reload = options.clone();
         let cfg = reload_project(&cfg, &mut options_reload, &[module_info_path.clone()])
@@ -761,7 +762,10 @@ mod tests {
         let graph = cfg.module_graph().expect("module graph");
         let mod_a = ModuleName::new("mod.a");
         let mod_b = ModuleName::new("mod.b");
-        assert!(graph.get(&mod_a).is_some(), "graph should contain workspace module");
+        assert!(
+            graph.get(&mod_a).is_some(),
+            "graph should contain workspace module"
+        );
         assert!(
             graph.get(&mod_b).is_some(),
             "graph should contain dependency module from module-path"
@@ -807,7 +811,9 @@ mod tests {
 
         impl Cp {
             fn new() -> Self {
-                Self { entries: Vec::new() }
+                Self {
+                    entries: Vec::new(),
+                }
             }
 
             fn push(&mut self, entry: CpEntry) -> u16 {
@@ -864,7 +870,7 @@ mod tests {
         push_u2(&mut module_attr, 0); // module_version_index
         push_u2(&mut module_attr, 0); // requires_count
         push_u2(&mut module_attr, 1); // exports_count
-                                          // exports
+                                      // exports
         push_u2(&mut module_attr, api_pkg); // exports_index (Package)
         push_u2(&mut module_attr, 0); // exports_flags
         push_u2(&mut module_attr, 1); // exports_to_count

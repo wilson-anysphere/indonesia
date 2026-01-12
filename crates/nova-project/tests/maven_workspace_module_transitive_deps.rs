@@ -81,9 +81,15 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
       <version>${project.version}</version>
     </dependency>
   </dependencies>
-</project>
+ </project>
 "#,
     );
+
+    // Seed the local Maven repo with the Guava jar so the workspace model can include it on the
+    // module classpath. (Nova does not download Maven dependencies.)
+    let guava_dir = maven_repo.join("com/google/guava/guava/33.0.0-jre");
+    fs::create_dir_all(&guava_dir).expect("mkdir guava dir");
+    fs::write(guava_dir.join("guava-33.0.0-jre.jar"), b"").expect("write guava jar");
 
     let options = LoadOptions {
         maven_repo: Some(maven_repo),
