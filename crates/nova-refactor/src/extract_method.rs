@@ -421,8 +421,11 @@ impl ExtractMethod {
                 })
                 .unwrap_or(selection);
 
-            let (reads_in_selection, writes_in_selection) =
-                collect_reads_writes_in_flow_selection(&flow_body, flow_selection);
+            let (reads_in_selection, writes_in_selection) = collect_reads_writes_in_flow_selection(
+                &flow_body,
+                flow_selection,
+                &selection_info.statements,
+            );
 
             // Flow IR intentionally skips lowering lambda bodies (they're lazily executed) and does
             // not model anonymous class bodies. When the selection contains such nested bodies, any
@@ -2243,14 +2246,280 @@ fn infer_thrown_exception_type_from_expr(
     }
 }
 
+#[derive(Debug)]
+struct FlowMaps {
+    /// Maps the span of a lowered `ExprKind::Local` expression to the resolved local.
+    expr_span_to_local: HashMap<Span, LocalId>,
+    /// Maps the span of a lowered `StmtKind::Assign` to the assignment target local.
+    assign_target_by_stmt_span: HashMap<Span, LocalId>,
+}
+
+impl FlowMaps {
+    fn build(body: &Body) -> Self {
+        let mut maps = FlowMaps {
+            expr_span_to_local: HashMap::new(),
+            assign_target_by_stmt_span: HashMap::new(),
+        };
+
+        fn walk_stmt(body: &Body, stmt_id: StmtId, maps: &mut FlowMaps) {
+            let stmt = body.stmt(stmt_id);
+            match &stmt.kind {
+                StmtKind::Block(stmts) => {
+                    for &s in stmts {
+                        walk_stmt(body, s, maps);
+                    }
+                }
+                StmtKind::Let { initializer, .. } => {
+                    if let Some(expr) = initializer {
+                        walk_expr(body, *expr, maps);
+                    }
+                }
+                StmtKind::Assign { target, value } => {
+                    maps.assign_target_by_stmt_span.insert(stmt.span, *target);
+                    walk_expr(body, *value, maps);
+                }
+                StmtKind::Expr(expr) => walk_expr(body, *expr, maps),
+                StmtKind::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                } => {
+                    walk_expr(body, *condition, maps);
+                    walk_stmt(body, *then_branch, maps);
+                    if let Some(e) = else_branch {
+                        walk_stmt(body, *e, maps);
+                    }
+                }
+                StmtKind::While { condition, body: b } => {
+                    walk_expr(body, *condition, maps);
+                    walk_stmt(body, *b, maps);
+                }
+                StmtKind::DoWhile { body: b, condition } => {
+                    walk_stmt(body, *b, maps);
+                    walk_expr(body, *condition, maps);
+                }
+                StmtKind::For {
+                    init,
+                    condition,
+                    update,
+                    body: b,
+                } => {
+                    if let Some(init) = init {
+                        walk_stmt(body, *init, maps);
+                    }
+                    if let Some(condition) = condition {
+                        walk_expr(body, *condition, maps);
+                    }
+                    if let Some(update) = update {
+                        walk_stmt(body, *update, maps);
+                    }
+                    walk_stmt(body, *b, maps);
+                }
+                StmtKind::Switch { expression, arms } => {
+                    walk_expr(body, *expression, maps);
+                    for arm in arms {
+                        for value in &arm.values {
+                            walk_expr(body, *value, maps);
+                        }
+                        walk_stmt(body, arm.body, maps);
+                    }
+                }
+                StmtKind::Try {
+                    body: b,
+                    catches,
+                    finally,
+                } => {
+                    walk_stmt(body, *b, maps);
+                    for &c in catches {
+                        walk_stmt(body, c, maps);
+                    }
+                    if let Some(f) = finally {
+                        walk_stmt(body, *f, maps);
+                    }
+                }
+                StmtKind::Return(value) => {
+                    if let Some(value) = value {
+                        walk_expr(body, *value, maps);
+                    }
+                }
+                StmtKind::Throw(expr) => walk_expr(body, *expr, maps),
+                StmtKind::Break | StmtKind::Continue | StmtKind::Nop => {}
+            }
+        }
+
+        fn walk_expr(body: &Body, expr_id: ExprId, maps: &mut FlowMaps) {
+            let expr = body.expr(expr_id);
+            if let ExprKind::Local(local) = expr.kind {
+                maps.expr_span_to_local.insert(expr.span, local);
+            }
+            match &expr.kind {
+                ExprKind::Local(_)
+                | ExprKind::Null
+                | ExprKind::Bool(_)
+                | ExprKind::Int(_)
+                | ExprKind::String(_) => {}
+                ExprKind::New { args, .. } => {
+                    for arg in args {
+                        walk_expr(body, *arg, maps);
+                    }
+                }
+                ExprKind::Unary { expr, .. } => walk_expr(body, *expr, maps),
+                ExprKind::Binary { lhs, rhs, .. } => {
+                    walk_expr(body, *lhs, maps);
+                    walk_expr(body, *rhs, maps);
+                }
+                ExprKind::FieldAccess { receiver, .. } => walk_expr(body, *receiver, maps),
+                ExprKind::Call {
+                    receiver, args, ..
+                } => {
+                    if let Some(recv) = receiver {
+                        walk_expr(body, *recv, maps);
+                    }
+                    for arg in args {
+                        walk_expr(body, *arg, maps);
+                    }
+                }
+                ExprKind::Invalid { children } => {
+                    for child in children {
+                        walk_expr(body, *child, maps);
+                    }
+                }
+            }
+        }
+
+        walk_stmt(body, body.root(), &mut maps);
+        maps
+    }
+}
+
+fn span_of_range(range: TextRange) -> Span {
+    Span::new(range.start, range.end)
+}
+
+fn collect_mutating_local_accesses(
+    selection_statements: &[ast::Statement],
+    selection: TextRange,
+    flow_maps: &FlowMaps,
+    reads: &mut Vec<(LocalId, Span)>,
+    writes: &mut HashSet<LocalId>,
+) {
+    // Detect mutating operations (`x++`, `x += 1`, etc) in the selection.
+    //
+    // The flow IR lowering currently models all `AssignmentExpression`s as a write, but does not
+    // model the implicit read in compound assignments and does not model unary `++/--` as writes.
+    // We patch these up using syntax + best-effort flow span mapping.
+    for stmt in selection_statements {
+        for expr in stmt
+            .syntax()
+            .descendants()
+            .filter_map(ast::Expression::cast)
+        {
+            let expr_span = span_of_range(syntax_range(expr.syntax()));
+            if !span_within_range(expr_span, selection) {
+                continue;
+            }
+
+            match expr {
+                ast::Expression::AssignmentExpression(assign) => {
+                    let op = assignment_operator(&assign);
+                    let is_compound = op.is_some_and(|op| op != SyntaxKind::Eq);
+                    if !is_compound {
+                        continue;
+                    }
+
+                    let lhs_span = assign
+                        .lhs()
+                        .map(|lhs| span_of_range(syntax_range(lhs.syntax())));
+
+                    // Prefer expression mapping when the LHS was lowered to `ExprKind::Local`.
+                    let local = lhs_span
+                        .and_then(|span| flow_maps.expr_span_to_local.get(&span).copied())
+                        // Expression statements lower to `StmtKind::Assign` and may skip lowering
+                        // the LHS entirely. Fall back to statement span mapping in that case.
+                        .or_else(|| {
+                            assign
+                                .syntax()
+                                .ancestors()
+                                .find_map(ast::ExpressionStatement::cast)
+                                .map(|stmt| span_of_range(syntax_range(stmt.syntax())))
+                                .and_then(|span| {
+                                    flow_maps.assign_target_by_stmt_span.get(&span).copied()
+                                })
+                        });
+
+                    if let Some(local) = local {
+                        // Compound assignments read and write the target local.
+                        reads.push((local, lhs_span.unwrap_or(expr_span)));
+                        writes.insert(local);
+                    }
+                }
+                ast::Expression::UnaryExpression(unary) if is_inc_dec(&unary) => {
+                    let Some(operand) = unary.operand() else {
+                        continue;
+                    };
+                    let operand_span = span_of_range(syntax_range(operand.syntax()));
+                    if !span_within_range(operand_span, selection) {
+                        continue;
+                    }
+                    if let Some(local) = flow_maps.expr_span_to_local.get(&operand_span).copied() {
+                        // `x++` / `++x` / `x--` / `--x` are read+write operations on locals.
+                        reads.push((local, operand_span));
+                        writes.insert(local);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn assignment_operator(assign: &ast::AssignmentExpression) -> Option<SyntaxKind> {
+    assign
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.kind())
+        .find(|kind| {
+            matches!(
+                kind,
+                SyntaxKind::Eq
+                    | SyntaxKind::PlusEq
+                    | SyntaxKind::MinusEq
+                    | SyntaxKind::StarEq
+                    | SyntaxKind::SlashEq
+                    | SyntaxKind::PercentEq
+                    | SyntaxKind::AmpEq
+                    | SyntaxKind::PipeEq
+                    | SyntaxKind::CaretEq
+                    | SyntaxKind::LeftShiftEq
+                    | SyntaxKind::RightShiftEq
+                    | SyntaxKind::UnsignedRightShiftEq
+            )
+        })
+}
+
+fn is_inc_dec(unary: &ast::UnaryExpression) -> bool {
+    nova_syntax::ast::support::token(unary.syntax(), SyntaxKind::PlusPlus).is_some()
+        || nova_syntax::ast::support::token(unary.syntax(), SyntaxKind::MinusMinus).is_some()
+}
+
 fn collect_reads_writes_in_flow_selection(
     body: &Body,
     selection: TextRange,
+    selection_statements: &[ast::Statement],
 ) -> (Vec<(LocalId, Span)>, HashSet<LocalId>) {
     let mut reads: Vec<(LocalId, Span)> = Vec::new();
     let mut writes: HashSet<LocalId> = HashSet::new();
 
     collect_reads_writes_in_stmt(body, body.root(), selection, &mut reads, &mut writes);
+    let flow_maps = FlowMaps::build(body);
+    collect_mutating_local_accesses(
+        selection_statements,
+        selection,
+        &flow_maps,
+        &mut reads,
+        &mut writes,
+    );
 
     // Dedup reads by local id, in first-use order (expression span start).
     reads.sort_by(|a, b| {

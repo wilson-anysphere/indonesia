@@ -3688,3 +3688,129 @@ interface I {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn extract_method_inc_dec_treats_param_as_read_and_write() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        /*start*/x++;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "inc".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int x) {
+        x = inc(x);
+        System.out.println(x);
+    }
+
+    private int inc(int x) {
+        x++;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_compound_assignment_treats_param_as_read_and_write() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        /*start*/x += 1;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "inc".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int x) {
+        x = inc(x);
+        System.out.println(x);
+    }
+
+    private int inc(int x) {
+        x += 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_plain_assignment_does_not_require_uninitialized_local_as_param() {
+    let fixture = r#"
+class C {
+    void m() {
+        int x;
+        /*start*/x = 1;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "init".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        int x;
+        x = init();
+        System.out.println(x);
+    }
+
+    private int init() {
+        int x;
+        x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
