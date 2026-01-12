@@ -3194,7 +3194,11 @@ fn collect_method_candidates(
     name: &str,
 ) -> Vec<CandidateMethod> {
     let mut out = Vec::new();
-    let mut seen_sigs: HashSet<(bool, Vec<Type>)> = HashSet::new();
+    // Track candidates we've already seen by erased signature so we don't return duplicates
+    // from overridden/hiding methods. For intersection types, we may encounter the same method
+    // signature across multiple bounds; in those cases we merge return types to preserve the most
+    // specific/precise result (`Integer` vs `Number`, or an `A & B` intersection).
+    let mut seen_sigs: HashMap<(bool, Vec<Type>), usize> = HashMap::new();
 
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
@@ -3249,9 +3253,17 @@ fn collect_method_candidates(
                     .map(|t| erasure(env, &substitute(t, &subst)))
                     .collect::<Vec<_>>();
                 let sig_key = (method.is_static, erased_params);
-                if !seen_sigs.insert(sig_key) {
+
+                if let Some(&existing) = seen_sigs.get(&sig_key) {
+                    let existing_return = substitute(
+                        &out[existing].method.return_type,
+                        &out[existing].class_subst,
+                    );
+                    let current_return = substitute(&method.return_type, &subst);
+                    out[existing].method.return_type = glb(env, &existing_return, &current_return);
                     continue;
                 }
+                seen_sigs.insert(sig_key, out.len());
                 out.push(CandidateMethod {
                     owner: def,
                     method: method.clone(),

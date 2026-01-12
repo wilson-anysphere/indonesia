@@ -3052,6 +3052,69 @@ class C {
 }
 
 #[test]
+fn intersection_bounds_choose_most_specific_return_type() {
+    let src = r#"
+interface I { Number m(); }
+interface J { Integer m(); }
+class C {
+    <T extends I & J> Integer f(T t) {
+        return t.m();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected intersection-bounded receiver to resolve method; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected covariant intersection return type to avoid mismatch; got {diags:?}"
+    );
+
+    let offset = src.find("t.m()").expect("snippet should contain call") + "t.m".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Integer");
+}
+
+#[test]
+fn intersection_bounds_return_type_can_be_intersection() {
+    let src = r#"
+interface A { }
+interface B { }
+interface I { A m(); }
+interface J { B m(); }
+class C {
+    <T extends I & J> void f(T t) {
+        A a = t.m();
+        B b = t.m();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected intersection-bounded receiver to resolve method; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected intersection return type to be assignable to both bounds; got {diags:?}"
+    );
+
+    let offset = src.find("t.m()").expect("snippet should contain call") + "t.m".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "A & B");
+}
+
+#[test]
 fn lambda_param_type_is_inferred_from_function_target() {
     let src = r#"
  import java.util.function.Function;
