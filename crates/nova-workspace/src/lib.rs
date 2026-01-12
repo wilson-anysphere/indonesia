@@ -19,8 +19,10 @@ use std::time::Instant;
 use walkdir::WalkDir;
 
 mod engine;
+mod watch;
 
-pub use engine::{IndexProgress, WorkspaceEvent, WorkspaceStatus};
+pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
+pub use watch::{ChangeCategory, EventNormalizer, NormalizedEvent, WatchConfig};
 
 /// A minimal, library-first backend for the `nova` CLI.
 ///
@@ -91,9 +93,13 @@ impl Workspace {
             persistence: PersistenceConfig::from_env(),
             memory: memory.clone(),
         };
+        let engine = Arc::new(engine::WorkspaceEngine::new(engine_config));
+        engine
+            .set_workspace_root(&root)
+            .with_context(|| format!("failed to initialize workspace at {}", root.display()))?;
         Ok(Self {
             root,
-            engine: Arc::new(engine::WorkspaceEngine::new(engine_config)),
+            engine,
             memory,
             symbol_searcher,
         })
@@ -161,6 +167,14 @@ impl Workspace {
 
     pub fn debug_configurations(&self) -> Vec<nova_ide::DebugConfiguration> {
         self.engine.debug_configurations(&self.root)
+    }
+
+    pub fn apply_filesystem_events(&self, events: Vec<NormalizedEvent>) {
+        self.engine.apply_filesystem_events(events);
+    }
+
+    pub fn start_watching(&self) -> Result<WatcherHandle> {
+        self.engine.start_watching()
     }
 
     fn java_files_in(&self, root: &Path) -> Result<Vec<PathBuf>> {
@@ -1260,12 +1274,6 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
-pub mod live;
-
-pub use live::{
-    WatcherHandle, Workspace as LiveWorkspace, WorkspaceClient,
-    WorkspaceConfig as LiveWorkspaceConfig,
-};
 fn find_project_root(start: &Path) -> PathBuf {
     nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }
