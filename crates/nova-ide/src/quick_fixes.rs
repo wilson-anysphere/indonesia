@@ -252,7 +252,7 @@ fn extract_identifier_from_snippet(snippet: &str) -> Option<String> {
     }
 }
 
-fn is_java_identifier(s: &str) -> bool {
+pub(crate) fn is_java_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
         return false;

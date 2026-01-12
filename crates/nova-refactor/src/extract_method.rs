@@ -363,7 +363,9 @@ fn find_best_expr_in_stmt(
                 find_best_expr_in_stmt(body, *finally, offset, owner, best);
             }
         }
-        HirStmt::Assert { condition, message, .. } => {
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
             find_best_expr_in_expr(body, *condition, offset, owner, best);
             if let Some(message) = message {
                 find_best_expr_in_expr(body, *message, offset, owner, best);
@@ -480,10 +482,6 @@ fn find_best_expr_in_expr(
             LambdaBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
             LambdaBody::Block(stmt) => find_best_expr_in_stmt(body, *stmt, offset, owner, best),
         },
-        HirExpr::Switch { selector, body: b, .. } => {
-            find_best_expr_in_expr(body, *selector, offset, owner, best);
-            find_best_expr_in_stmt(body, *b, offset, owner, best);
-        }
         HirExpr::Name { .. }
         | HirExpr::Literal { .. }
         | HirExpr::Null { .. }
