@@ -130,3 +130,11 @@ For convenience, you can also run:
 
 That script generates `cargo metadata` once and passes it to `nova-devtools check-repo-invariants`
 for speed.
+
+If you want to do that manually:
+
+```bash
+tmp="$(mktemp)"
+cargo metadata --format-version=1 --no-deps --locked >"$tmp"
+cargo run -p nova-devtools -- check-repo-invariants --metadata-path "$tmp"
+```

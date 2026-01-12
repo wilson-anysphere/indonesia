@@ -179,7 +179,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - `crates/nova-devtools/src/check_arch_map.rs` (`check_arch_map::check`) — validates `docs/architecture-map.md` coverage + quick-link path freshness.
   - `crates/nova-devtools/src/check_protocol_extensions.rs` (`check_protocol_extensions::check`) — validates `docs/protocol-extensions.md` against `nova-lsp` constants + VS Code client usage.
   - `crates/nova-devtools/src/graph.rs` (`graph::generate`) — emits a DOT/GraphViz dependency graph annotated by layer.
-  - `crates/nova-devtools/src/main.rs` — CLI wrapper used by CI (`cargo run -p nova-devtools -- <command>`).
+  - `crates/nova-devtools/src/main.rs` — CLI entrypoint (including `nova-devtools check-repo-invariants` meta command used by CI).
   - `crate-layers.toml` — policy + layer mapping configuration.
   - `scripts/check-deps.sh` — convenience wrapper for `check-deps`.
   - `scripts/check-repo-invariants.sh` — convenience wrapper to run the full suite (CI-equivalent).
