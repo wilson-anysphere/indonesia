@@ -1826,6 +1826,49 @@ fn collect_declared_types(
             .to_string();
         types.insert(span_of_token(&name_tok), ty_text);
     }
+
+    // Variables introduced by classic `for` headers (e.g. `for (int i = 0; ...)`) and enhanced-for
+    // headers (`for (T x : xs)`) are parsed as `Type` + `VariableDeclaratorList`, not as ordinary
+    // `LocalVariableDeclarationStatement`s.
+    for for_stmt in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::ForStatement::cast)
+    {
+        let Some(header) = for_stmt.header() else {
+            continue;
+        };
+
+        let (Some(ty), Some(list)) = (
+            header.syntax().children().find_map(ast::Type::cast),
+            header
+                .syntax()
+                .children()
+                .find_map(ast::VariableDeclaratorList::cast),
+        ) else {
+            continue;
+        };
+
+        let ty_text = slice_syntax(source, ty.syntax())
+            .unwrap_or("Object")
+            .trim()
+            .to_string();
+        if ty_text.trim().is_empty() {
+            continue;
+        }
+
+        for decl in list.declarators() {
+            let Some(name_tok) = decl.name_token() else {
+                continue;
+            };
+            let name_span = span_of_token(&name_tok);
+            types.insert(name_span, ty_text.clone());
+
+            if let Some(initializer) = decl.initializer() {
+                initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
+            }
+        }
+    }
     DeclaredTypes {
         types,
         initializer_offsets,
