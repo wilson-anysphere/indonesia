@@ -37,7 +37,7 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │  ✓ Inlay hints                                                  │
 │  ✓ Hover                                                        │
 │  ✓ Signature help                                               │
-│  ○ Find references                                              │
+│  ✓ Find references                                              │
 │  ✓ Document highlight                                           │
 │  ✓ Folding range                                                │
 │  ✓ Selection range                                              │
@@ -113,6 +113,7 @@ fn handle_request(method: &str, params: serde_json::Value) -> serde_json::Value 
         "textDocument/completion" => handle_completion(params),
         "textDocument/hover" => handle_hover(params),
         "textDocument/signatureHelp" => handle_signature_help(params),
+        "textDocument/references" => handle_references(params),
         "completionItem/resolve" => handle_completion_resolve(params),
         "textDocument/semanticTokens/full" => handle_semantic_tokens_full(params),
         "textDocument/semanticTokens/full/delta" => handle_semantic_tokens_full_delta(params),
