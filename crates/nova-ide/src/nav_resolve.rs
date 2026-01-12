@@ -448,6 +448,22 @@ impl Resolver {
     pub(crate) fn resolve_at(&self, file: FileId, offset: usize) -> Option<ResolvedSymbol> {
         let parsed = self.index.file(file)?;
         let (ident, ident_span) = identifier_at(&parsed.text, offset)?;
+
+        // Import statements (`import p.Foo;`) are a special case: the identifier under the cursor
+        // is part of a qualified name where the "receiver" is typically a package segment, not a
+        // value/type we can resolve via local context. In this context we only attempt to resolve
+        // the simple type name against the workspace index.
+        if is_import_statement_line(&parsed.text, ident_span.start) {
+            if let Some(def) = self.index.resolve_type_definition(&ident) {
+                return Some(ResolvedSymbol {
+                    name: ident,
+                    kind: ResolvedKind::Type,
+                    def,
+                });
+            }
+            return None;
+        }
+
         let occurrence = classify_occurrence(&parsed.text, ident_span)?;
         let looks_like_type = matches!(occurrence, OccurrenceKind::Ident)
             && looks_like_type_usage(&parsed.text, ident_span);
@@ -510,15 +526,26 @@ impl Resolver {
                 })
             }
             OccurrenceKind::MemberField { receiver } => {
-                let receiver_ty =
+                if let Some(receiver_ty) =
                     self.index
-                        .resolve_receiver_type(parsed, ident_span.start, &receiver)?;
-                let def = self.index.resolve_field_definition(&receiver_ty, &ident)?;
-                Some(ResolvedSymbol {
-                    name: ident,
-                    kind: ResolvedKind::Field,
-                    def,
-                })
+                        .resolve_receiver_type(parsed, ident_span.start, &receiver)
+                {
+                    let def = self.index.resolve_field_definition(&receiver_ty, &ident)?;
+                    Some(ResolvedSymbol {
+                        name: ident,
+                        kind: ResolvedKind::Field,
+                        def,
+                    })
+                } else {
+                    // Best-effort fallback for qualified type references like `p.Foo`:
+                    // if the "receiver" doesn't resolve to a value/type (common for package
+                    // segments), try resolving the identifier as a type name.
+                    self.index.resolve_type_definition(&ident).map(|def| ResolvedSymbol {
+                        name: ident,
+                        kind: ResolvedKind::Type,
+                        def,
+                    })
+                }
             }
             OccurrenceKind::LocalCall => {
                 let receiver_ty =
@@ -671,6 +698,29 @@ fn classify_occurrence(text: &str, ident_span: Span) -> Option<OccurrenceKind> {
         (None, _, true) => Some(OccurrenceKind::LocalCall),
         (None, _, false) => Some(OccurrenceKind::Ident),
     }
+}
+
+fn is_import_statement_line(text: &str, offset: usize) -> bool {
+    let bytes = text.as_bytes();
+    let offset = offset.min(bytes.len());
+
+    let mut line_start = offset;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    let mut line_end = offset;
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+
+    let line = &text[line_start..line_end];
+    let trimmed = line.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let Some(rest) = trimmed.strip_prefix("import") else {
+        return false;
+    };
+
+    rest.is_empty() || rest.chars().next().is_some_and(|c| c.is_ascii_whitespace())
 }
 
 fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<String> {
