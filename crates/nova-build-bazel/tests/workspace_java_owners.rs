@@ -278,6 +278,38 @@ fn path_to_label_errors_for_file_outside_workspace() {
     );
 }
 
+#[test]
+fn path_to_label_errors_when_relative_path_escapes_workspace_root() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let err = workspace
+        .workspace_file_label(Path::new("..").join("outside").join("Hello.java").as_path())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("path escapes workspace root"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn owning_targets_errors_when_relative_path_escapes_workspace_root() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let err = workspace
+        .java_owning_targets_for_file(Path::new("..").join("outside").join("Hello.java").as_path())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("path escapes workspace root"),
+        "unexpected error: {err}"
+    );
+}
+
 fn minimal_java_package(workspace_root: &Path) -> PathBuf {
     std::fs::write(workspace_root.join("WORKSPACE"), "# test\n").unwrap();
     write_file(&workspace_root.join("java/BUILD"), "# java package\n");
