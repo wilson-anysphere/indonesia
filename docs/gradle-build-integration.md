@@ -171,8 +171,10 @@ and **skipping** these directories:
 - `.idea/`
 
 For **Gradle composite builds**, Nova also includes build inputs from any `includeBuild(...)` roots
-referenced in `settings.gradle(.kts)` (best-effort parse). This ensures changes in included builds
-can invalidate the snapshot.
+referenced in `settings.gradle(.kts)` (best-effort parse) **when the referenced directory exists and
+looks like a Gradle build** (i.e. it contains `settings.gradle(.kts)` and/or `build.gradle(.kts)`).
+This reduces false positives when a workspace has `includeBuild(...)` directives pointing at
+non-build directories. It also ensures changes in included builds can invalidate the snapshot.
 
 Included inputs (current implementation, shared via `nova-build-model`):
 
@@ -286,7 +288,7 @@ substitution semantics).
 In heuristic mode, `nova-project`:
 
 - parses `includeBuild(...)` roots from `settings.gradle(.kts)` and includes each build root as an
-  additional Gradle module,
+  additional Gradle module (when the referenced directory exists and contains Gradle marker files),
 - assigns deterministic synthetic Gradle project paths (e.g. `:__includedBuild_build-logic`) and
   module ids (e.g. `gradle::__includedBuild_build-logic`),
 - parses the included build’s own `settings.gradle(.kts)` (when present) and discovers subprojects
