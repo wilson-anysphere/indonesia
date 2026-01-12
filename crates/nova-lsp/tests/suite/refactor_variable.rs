@@ -793,6 +793,58 @@ class C {
 }
 
 #[test]
+fn inline_variable_inline_all_not_offered_when_unindexed_qualified_usage_exists() {
+    let source = r#"
+class C {
+    void m() {
+        String a = "hi";
+        Runnable r = new Runnable() { public void run() { System.out.println(a.length()); } };
+        System.out.println(a);
+    }
+}
+"#;
+
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    // Place the cursor on the indexed (non-anonymous-class) usage; the usage inside the anonymous
+    // class body is intentionally unindexed.
+    let offset = source.find("println(a);").expect("println call") + "println(".len();
+    let position = offset_to_position(source, offset);
+
+    let actions = inline_variable_code_actions(&uri, source, position);
+    assert_eq!(actions.len(), 1, "inline-all must not be offered");
+
+    let single = actions
+        .into_iter()
+        .find_map(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Inline variable" =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("inline variable action");
+
+    let edit = single.edit.expect("edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for uri");
+    let actual = apply_lsp_edits(source, edits);
+
+    assert!(
+        actual.contains("String a = \"hi\";"),
+        "declaration must remain (unknown usage exists)"
+    );
+    assert!(
+        actual.contains("System.out.println(\"hi\");"),
+        "selected usage should be inlined: {actual}"
+    );
+    assert!(
+        actual.contains("System.out.println(a.length());"),
+        "unindexed usage must remain untouched: {actual}"
+    );
+}
+
+#[test]
 fn inline_variable_not_offered_outside_local_identifier() {
     let source = r#"
 class C {
