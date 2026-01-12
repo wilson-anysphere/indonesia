@@ -1549,6 +1549,27 @@ class C {
 }
 
 #[test]
+fn static_context_allows_instance_field_access_via_explicit_receiver() {
+    let src = r#"
+class C {
+    int x;
+    static int m() {
+        C c = new C();
+        c.x = 1;
+        return c.x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected explicit receiver field access to be allowed in a static method; got {diags:?}"
+    );
+}
+
+#[test]
 fn fully_qualified_static_method_call_resolves() {
     let src = r#"
 class C {
