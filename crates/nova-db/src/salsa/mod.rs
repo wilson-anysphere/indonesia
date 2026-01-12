@@ -3006,14 +3006,58 @@ impl Database {
     /// This is best-effort and deliberately avoids deadlocking if memory
     /// enforcement is invoked while holding the database write lock: we only
     /// request cancellation if we can acquire the lock without blocking.
+    ///
+    /// If the write lock is held (e.g. because enforcement is driven from within
+    /// an input write), we schedule a background cancellation request so the
+    /// event isn't silently dropped.
     pub fn register_salsa_cancellation_on_memory_pressure(&self, manager: &MemoryManager) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
         // Only subscribe once per database instance to avoid accumulating duplicate listeners.
         if self.cancellation_on_memory_pressure.set(()).is_err() {
             return;
         }
 
+        // Best-effort "debounce" so we don't spawn unbounded background threads if pressure events
+        // arrive while the DB write lock is contended.
+        let pending_cancellation = Arc::new(AtomicBool::new(false));
+        let request_cancellation: Arc<dyn Fn(Arc<ParkingMutex<RootDatabase>>) + Send + Sync> = {
+            let pending_cancellation = Arc::clone(&pending_cancellation);
+            Arc::new(move |db: Arc<ParkingMutex<RootDatabase>>| {
+                // Fast path: if we can acquire the lock without blocking, request cancellation
+                // synchronously.
+                if let Some(mut guard) = db.try_lock() {
+                    guard.request_cancellation();
+                    return;
+                }
+
+                // If the lock is held (possibly by the current thread), avoid blocking in the
+                // listener to prevent deadlocks. Instead, schedule a background request to run as
+                // soon as the lock is released. Only allow one pending thread at a time.
+                if pending_cancellation
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return;
+                }
+
+                let pending_cancellation_for_thread = Arc::clone(&pending_cancellation);
+                let spawn_result = std::thread::Builder::new()
+                    .name("nova-db-salsa-cancel".to_string())
+                    .spawn(move || {
+                        let mut guard = db.lock();
+                        guard.request_cancellation();
+                        pending_cancellation_for_thread.store(false, Ordering::Release);
+                    });
+                if spawn_result.is_err() {
+                    pending_cancellation.store(false, Ordering::Release);
+                }
+            })
+        };
+
         let db = Arc::downgrade(&self.inner);
         let db_for_initial_check = db.clone();
+        let request_cancellation_for_listener = Arc::clone(&request_cancellation);
         manager.subscribe(Arc::new(move |event: nova_memory::MemoryEvent| {
             // Request cancellation whenever we're under High/Critical pressure.
             if !matches!(
@@ -3027,12 +3071,7 @@ impl Database {
                 return;
             };
 
-            // Avoid blocking in the listener: the current thread may already be holding
-            // the DB lock (e.g. if enforcement is called while writing inputs), in
-            // which case blocking would deadlock.
-            if let Some(mut guard) = db.try_lock() {
-                guard.request_cancellation();
-            };
+            request_cancellation_for_listener(db);
         }));
 
         // Best-effort: if we register this listener while the process is already under high
@@ -3043,9 +3082,7 @@ impl Database {
             MemoryPressure::High | MemoryPressure::Critical
         ) {
             if let Some(db) = db_for_initial_check.upgrade() {
-                if let Some(mut guard) = db.try_lock() {
-                    guard.request_cancellation();
-                }
+                request_cancellation(db);
             }
         }
     }
@@ -3903,6 +3940,61 @@ class Foo {
         assert_query_is_cancelled_by_memory_pressure(manager, db, move |snap| {
             snap.interruptible_work(file, 5_000_000)
         });
+    }
+
+    #[test]
+    fn memory_pressure_event_requests_salsa_cancellation_even_when_db_lock_is_held() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        const ENTER_TIMEOUT: Duration = Duration::from_secs(5);
+        const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(8 * GB));
+        let registration = manager.register_tracker("pressure_test", MemoryCategory::Other);
+
+        let db = Database::new();
+        db.register_salsa_cancellation_on_memory_pressure(&manager);
+
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "class Foo {}");
+
+        let snap = db.snapshot();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _guard =
+                cancellation::test_support::install_entered_long_running_region_sender(entered_tx);
+            catch_cancelled(|| snap.interruptible_work(file, 5_000_000))
+        });
+
+        entered_rx
+            .recv_timeout(ENTER_TIMEOUT)
+            .expect("interruptible_work did not reach a cancellation checkpoint");
+
+        registration
+            .tracker()
+            .set_bytes(manager.budget().total.saturating_mul(2));
+
+        // Hold the write lock while driving the memory event to force the listener's `try_lock` to
+        // fail (the callback runs on the same thread as `enforce()`).
+        let db_lock = db.inner.lock();
+        manager.enforce();
+        drop(db_lock);
+
+        let deadline = Instant::now() + CANCEL_TIMEOUT;
+        while !worker.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            worker.is_finished(),
+            "query did not unwind within {CANCEL_TIMEOUT:?} after memory pressure event while lock held"
+        );
+
+        let result = worker.join().expect("worker thread panicked");
+        assert!(
+            result.is_err(),
+            "expected salsa query to unwind with Cancelled after memory pressure event while lock held"
+        );
     }
 
     #[test]
