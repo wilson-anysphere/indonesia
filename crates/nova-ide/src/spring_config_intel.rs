@@ -156,10 +156,10 @@ fn workspace_fingerprint(
     let mut hasher = DefaultHasher::new();
 
     metadata.is_empty().hash(&mut hasher);
-    let meta_ptr = if metadata.is_empty() {
-        0usize
+    let meta_ptr: *const MetadataIndex = if metadata.is_empty() {
+        std::ptr::null()
     } else {
-        Arc::as_ptr(metadata) as usize
+        Arc::as_ptr(metadata)
     };
     meta_ptr.hash(&mut hasher);
 
@@ -174,7 +174,7 @@ fn workspace_fingerprint(
         // on edits (rather than mutating in-place), so using the content pointer/len is a cheap
         // best-effort invalidation signal.
         text.len().hash(&mut hasher);
-        (text.as_ptr() as usize).hash(&mut hasher);
+        text.as_ptr().hash(&mut hasher);
     }
 
     hasher.finish()
