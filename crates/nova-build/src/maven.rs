@@ -1578,6 +1578,20 @@ fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
 pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_maven_build_files_rec(root, &mut out)?;
+
+    // Best-effort: include aggregator module `pom.xml` files even when module paths point outside
+    // the workspace root (e.g. `<module>../common</module>`) or when module directories are
+    // symlinks (which are otherwise skipped during directory recursion to avoid cycles).
+    //
+    // This ensures `BuildFileFingerprint` invalidates cached Maven results when a module POM
+    // changes, matching `nova-project`'s support for external module roots.
+    for module_rel in discover_maven_modules(root, &out) {
+        let module_pom = root.join(module_rel).join("pom.xml");
+        if module_pom.is_file() {
+            out.push(module_pom);
+        }
+    }
+
     // Stable sort for hashing.
     out.sort_by(|a, b| {
         let ra = a.strip_prefix(root).unwrap_or(a);
@@ -1945,6 +1959,32 @@ mod tests {
         assert_eq!(rel, expected);
     }
 
+    #[test]
+    fn collect_maven_build_files_includes_module_poms_outside_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("root");
+        let external_module = dir.path().join("common");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::create_dir_all(&external_module).unwrap();
+
+        std::fs::write(
+            workspace_root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion><modules><module>../common</module></modules></project>",
+        )
+        .unwrap();
+        std::fs::write(
+            external_module.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        let files = collect_maven_build_files(&workspace_root).unwrap();
+        assert!(
+            files.contains(&workspace_root.join("../common/pom.xml")),
+            "expected external module pom.xml to be included in Maven build file collection; got: {files:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn collect_maven_build_files_skips_symlinked_module_dirs() {
@@ -1974,6 +2014,38 @@ mod tests {
         assert!(
             !rel.contains(&PathBuf::from("linked-module/pom.xml")),
             "did not expect Maven build file collector to follow directory symlinks"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_maven_build_files_includes_symlinked_module_dirs_when_declared_in_pom() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let real_module = dir.path().join("module-a-real");
+        std::fs::create_dir_all(&real_module).unwrap();
+        std::fs::write(
+            real_module.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion><modules><module>module-a</module></modules></project>",
+        )
+        .unwrap();
+
+        symlink(&real_module, root.join("module-a")).unwrap();
+
+        let files = collect_maven_build_files(&root).unwrap();
+        assert!(
+            files.contains(&root.join("module-a/pom.xml")),
+            "expected declared symlinked module pom.xml to be included in Maven build file collection; got: {files:?}"
         );
     }
 
