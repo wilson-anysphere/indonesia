@@ -500,7 +500,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const dir = path.dirname(resolvedConfigPath);
         const base = path.basename(resolvedConfigPath);
         fileWatchers.push(
-          vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), base)),
+          vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(uriForWorkspacePath(workspaceFolder, dir), base)),
         );
       }
     }

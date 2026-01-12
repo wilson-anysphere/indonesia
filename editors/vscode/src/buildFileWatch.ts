@@ -19,6 +19,47 @@ type IsMethodNotFoundError = (err: unknown) => boolean;
 
 type BuildTool = 'auto' | 'maven' | 'gradle';
 
+function uriForWorkspacePath(workspaceFolder: vscode.WorkspaceFolder, fsPath: string): vscode.Uri {
+  const uri = vscode.Uri.file(fsPath);
+  // Preserve workspace scheme/authority for remote workspaces so watcher base URIs match the
+  // workspace filesystem provider.
+  return workspaceFolder.uri.scheme === 'file'
+    ? uri
+    : uri.with({ scheme: workspaceFolder.uri.scheme, authority: workspaceFolder.uri.authority });
+}
+
+function resolveWorkspaceFolderForUri(uri: vscode.Uri): vscode.WorkspaceFolder | undefined {
+  const direct = vscode.workspace.getWorkspaceFolder(uri);
+  if (direct) {
+    return direct;
+  }
+
+  const filePath = uri.fsPath;
+  if (!filePath) {
+    return undefined;
+  }
+
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  let best: vscode.WorkspaceFolder | undefined;
+  for (const folder of folders) {
+    const root = folder.uri.fsPath;
+    if (!root) {
+      continue;
+    }
+    const rel = path.relative(root, filePath);
+    const isWithinRoot =
+      rel.length === 0 || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+    if (!isWithinRoot) {
+      continue;
+    }
+    if (!best || root.length > best.uri.fsPath.length) {
+      best = folder;
+    }
+  }
+
+  return best;
+}
+
 export function registerNovaBuildFileWatchers(
   context: vscode.ExtensionContext,
   request: NovaRequest,
@@ -132,7 +173,7 @@ export function registerNovaBuildFileWatchers(
       return;
     }
 
-    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    const folder = resolveWorkspaceFolderForUri(uri);
     if (!folder) {
       return;
     }
@@ -202,7 +243,7 @@ export function registerNovaBuildFileWatchers(
 
     const dir = path.dirname(resolvedConfigPath);
     const base = path.basename(resolvedConfigPath);
-    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), base));
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(uriForWorkspacePath(workspaceFolder, dir), base));
     context.subscriptions.push(watcher);
     const schedule = () => scheduleReload(workspaceFolder);
     watcher.onDidCreate(() => schedule(), undefined, context.subscriptions);
