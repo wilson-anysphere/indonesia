@@ -1775,6 +1775,9 @@ Nova’s AI code actions are surfaced to clients as standard LSP `workspace/exec
 (emitted by `textDocument/codeAction` in `crates/nova-lsp/src/main.rs`; argument types are defined in
 `crates/nova-ide/src/ai.rs`).
 
+The server advertises these command IDs via the standard LSP capability:
+`initializeResult.capabilities.executeCommandProvider.commands`.
+
 These commands are intended to support **patch-based code edits**. When patch edits are allowed by
 privacy policy, the server returns a `WorkspaceEdit` and also asks the client to apply it via
 `workspace/applyEdit` (similar to Safe Delete / Organize Imports).
@@ -1783,6 +1786,10 @@ Clients should support both:
 
 1) the returned JSON-RPC response object, and
 2) the `workspace/applyEdit` side-effect when `applied=true`.
+
+Compatibility note: older Nova builds (and some privacy-gated scenarios) may return a JSON string
+result (a generated snippet) instead of a patch-based `{applied,edit}` response. Clients should
+gracefully handle both response shapes.
 
 #### `nova.ai.generateMethodBody`
 
@@ -1829,8 +1836,8 @@ returns:
 { "applied": false }
 ```
 
-Compatibility note: older servers may return a JSON string result (the generated snippet) instead
-of an `{applied,edit}` object.
+If patch edits are blocked by privacy policy (or unsupported by the server), the command may instead
+return a JSON string result (the generated snippet) so clients can still present it to the user.
 
 ##### Side effects
 
@@ -1889,6 +1896,9 @@ Same shape as `nova.ai.generateMethodBody`:
 ```json
 { "applied": false }
 ```
+
+If patch edits are blocked by privacy policy (or unsupported by the server), the command may instead
+return a JSON string result (the generated snippet).
 
 ##### Side effects
 
