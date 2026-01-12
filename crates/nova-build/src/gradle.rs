@@ -7,8 +7,11 @@ use crate::{
 use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use zip::ZipArchive;
 
 const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
@@ -811,6 +814,45 @@ NOVA_JSON_END
             ]
         );
     }
+
+    #[test]
+    fn gradle_java_compile_config_infers_module_path_and_enable_preview() {
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let payload = serde_json::json!({
+            "compileClasspath": [
+                named.to_string_lossy(),
+                automatic.to_string_lossy(),
+                dep.to_string_lossy(),
+            ],
+            "testCompileClasspath": [],
+            "mainSourceRoots": [],
+            "testSourceRoots": [],
+            "mainOutputDirs": ["/out/main"],
+            "testOutputDirs": ["/out/test"],
+            "compileCompilerArgs": ["--enable-preview"],
+            "testCompilerArgs": [],
+            "inferModulePath": true,
+        });
+
+        let out = format!(
+            "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+            serde_json::to_string(&payload).unwrap()
+        );
+
+        let parsed = parse_gradle_java_compile_config_json(&out).expect("parse json");
+        let cfg = normalize_gradle_java_compile_config(
+            parsed,
+            PathBuf::from("/fallback/main"),
+            PathBuf::from("/fallback/test"),
+        );
+
+        assert!(cfg.enable_preview);
+        assert_eq!(cfg.module_path, vec![named, automatic]);
+    }
 }
 
 pub fn parse_gradle_classpath_output(output: &str) -> Vec<PathBuf> {
@@ -1037,6 +1079,12 @@ struct GradleJavaCompileConfigJson {
     target_compatibility: Option<String>,
     #[serde(default)]
     toolchain_language_version: Option<String>,
+    #[serde(default)]
+    compile_compiler_args: Option<Vec<String>>,
+    #[serde(default)]
+    test_compiler_args: Option<Vec<String>>,
+    #[serde(default)]
+    infer_module_path: Option<bool>,
 }
 
 fn parse_gradle_java_compile_config_json(output: &str) -> Result<GradleJavaCompileConfigJson> {
@@ -1049,13 +1097,28 @@ fn normalize_gradle_java_compile_config(
     main_output_fallback: PathBuf,
     test_output_fallback: PathBuf,
 ) -> JavaCompileConfig {
-    let mut main_output_dirs = strings_to_paths(parsed.main_output_dirs);
+    let GradleJavaCompileConfigJson {
+        compile_classpath,
+        test_compile_classpath,
+        main_source_roots,
+        test_source_roots,
+        main_output_dirs,
+        test_output_dirs,
+        source_compatibility,
+        target_compatibility,
+        toolchain_language_version,
+        compile_compiler_args,
+        test_compiler_args,
+        infer_module_path,
+    } = parsed;
+
+    let mut main_output_dirs = strings_to_paths(main_output_dirs);
     dedupe_paths(&mut main_output_dirs);
     if main_output_dirs.is_empty() {
         main_output_dirs.push(main_output_fallback);
     }
 
-    let mut test_output_dirs = strings_to_paths(parsed.test_output_dirs);
+    let mut test_output_dirs = strings_to_paths(test_output_dirs);
     dedupe_paths(&mut test_output_dirs);
     if test_output_dirs.is_empty() {
         test_output_dirs.push(test_output_fallback);
@@ -1064,35 +1127,210 @@ fn normalize_gradle_java_compile_config(
     let main_output_dir = main_output_dirs.first().cloned();
     let test_output_dir = test_output_dirs.first().cloned();
 
+    let mut resolved_compile_classpath = strings_to_paths(compile_classpath);
+    dedupe_paths(&mut resolved_compile_classpath);
+
+    let mut resolved_test_compile_classpath = strings_to_paths(test_compile_classpath);
+    dedupe_paths(&mut resolved_test_compile_classpath);
+
     let mut compile_classpath = Vec::new();
     compile_classpath.extend(main_output_dirs.clone());
-    compile_classpath.extend(strings_to_paths(parsed.compile_classpath));
+    compile_classpath.extend(resolved_compile_classpath.clone());
     dedupe_paths(&mut compile_classpath);
 
     let mut test_classpath = Vec::new();
     test_classpath.extend(test_output_dirs);
     test_classpath.extend(main_output_dirs);
-    test_classpath.extend(strings_to_paths(parsed.test_compile_classpath));
+    test_classpath.extend(resolved_test_compile_classpath);
     dedupe_paths(&mut test_classpath);
 
-    let mut main_source_roots = strings_to_paths(parsed.main_source_roots);
-    let mut test_source_roots = strings_to_paths(parsed.test_source_roots);
+    let mut main_source_roots = strings_to_paths(main_source_roots);
+    let mut test_source_roots = strings_to_paths(test_source_roots);
     dedupe_paths(&mut main_source_roots);
     dedupe_paths(&mut test_source_roots);
+
+    let enable_preview = compile_compiler_args
+        .as_deref()
+        .is_some_and(compiler_args_enable_preview)
+        || test_compiler_args
+            .as_deref()
+            .is_some_and(compiler_args_enable_preview);
+
+    let should_infer_module_path = infer_module_path == Some(true)
+        || compile_compiler_args
+            .as_deref()
+            .is_some_and(compiler_args_looks_like_jpms)
+        || main_source_roots_have_module_info(&main_source_roots);
+
+    let module_path = if should_infer_module_path {
+        infer_module_path_entries(&resolved_compile_classpath)
+    } else {
+        Vec::new()
+    };
 
     JavaCompileConfig {
         compile_classpath,
         test_classpath,
-        module_path: Vec::new(),
+        module_path,
         main_source_roots,
         test_source_roots,
         main_output_dir,
         test_output_dir,
-        source: parsed.source_compatibility,
-        target: parsed.target_compatibility,
-        release: parsed.toolchain_language_version,
-        enable_preview: false,
+        source: source_compatibility,
+        target: target_compatibility,
+        release: toolchain_language_version,
+        enable_preview,
     }
+}
+
+fn compiler_args_enable_preview(args: &[String]) -> bool {
+    args.iter().any(|arg| arg.trim() == "--enable-preview")
+}
+
+fn compiler_args_looks_like_jpms(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let arg = arg.trim();
+        [
+            "--module-path",
+            "-p",
+            "--add-modules",
+            "--patch-module",
+            "--add-reads",
+            "--add-exports",
+            "--add-opens",
+            "--limit-modules",
+            "--upgrade-module-path",
+            "--module",
+            "-m",
+            "--module-source-path",
+        ]
+        .iter()
+        .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
+    })
+}
+
+fn main_source_roots_have_module_info(main_source_roots: &[PathBuf]) -> bool {
+    main_source_roots
+        .iter()
+        .any(|root| root.join("module-info.java").is_file())
+}
+
+fn infer_module_path_entries(classpath: &[PathBuf]) -> Vec<PathBuf> {
+    let mut module_path = Vec::new();
+    for entry in classpath {
+        if stable_module_path_entry(entry) {
+            module_path.push(entry.clone());
+        }
+    }
+    dedupe_paths(&mut module_path);
+    module_path
+}
+
+fn stable_module_path_entry(path: &Path) -> bool {
+    if path.is_dir() {
+        return directory_contains_module_info(path) || directory_has_automatic_module_name(path);
+    }
+    if !path.is_file() {
+        return false;
+    }
+
+    archive_is_stable_module(path)
+}
+
+fn directory_contains_module_info(dir: &Path) -> bool {
+    dir.join("module-info.class").is_file()
+        || dir.join("META-INF/versions/9/module-info.class").is_file()
+}
+
+fn directory_has_automatic_module_name(dir: &Path) -> bool {
+    let manifest_path = dir.join("META-INF/MANIFEST.MF");
+    let Ok(bytes) = std::fs::read(&manifest_path) else {
+        return false;
+    };
+    let manifest = String::from_utf8_lossy(&bytes);
+    manifest_main_attribute(&manifest, "Automatic-Module-Name").is_some_and(|name| !name.is_empty())
+}
+
+fn archive_is_stable_module(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let Ok(mut archive) = ZipArchive::new(file) else {
+        return false;
+    };
+
+    if archive.by_name("module-info.class").is_ok() {
+        return true;
+    }
+    if archive
+        .by_name("META-INF/versions/9/module-info.class")
+        .is_ok()
+    {
+        return true;
+    }
+
+    zip_manifest_main_attribute(&mut archive, "Automatic-Module-Name")
+        .is_some_and(|name| !name.is_empty())
+}
+
+fn zip_manifest_main_attribute<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    key: &str,
+) -> Option<String> {
+    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
+        Ok(file) => file,
+        Err(zip::result::ZipError::FileNotFound) => return None,
+        Err(_) => return None,
+    };
+
+    let mut bytes = Vec::with_capacity(file.size() as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return None;
+    }
+    let manifest = String::from_utf8_lossy(&bytes);
+    manifest_main_attribute(&manifest, key)
+}
+
+fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
+    let mut current_key: Option<&str> = None;
+    let mut current_value = String::new();
+
+    for line in manifest.lines() {
+        let line = line.trim_end_matches('\r');
+
+        // The first empty line terminates the main attributes section.
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some(rest) = line.strip_prefix(' ') {
+            if current_key.is_some() {
+                current_value.push_str(rest);
+            }
+            continue;
+        }
+
+        if let Some(k) = current_key.take() {
+            if k.trim().eq_ignore_ascii_case(key) {
+                return Some(current_value.trim().to_string());
+            }
+        }
+        current_value.clear();
+
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        current_key = Some(k);
+        current_value.push_str(v.trim_start());
+    }
+
+    if let Some(k) = current_key {
+        if k.trim().eq_ignore_ascii_case(key) {
+            return Some(current_value.trim().to_string());
+        }
+    }
+
+    None
 }
 
 fn extract_nova_json_block(output: &str) -> Result<String> {
@@ -1222,23 +1460,48 @@ allprojects { proj ->
                 sourceSets = proj.extensions.findByName("sourceSets")
             } catch (Exception ignored) {}
 
-            if (sourceSets != null) {
-                def main = sourceSets.findByName("main")
-                def test = sourceSets.findByName("test")
-                payload.mainSourceRoots = (main != null) ? main.java.srcDirs.collect { it.absolutePath } : null
-                payload.testSourceRoots = (test != null) ? test.java.srcDirs.collect { it.absolutePath } : null
-                payload.mainOutputDirs = (main != null) ? main.output.classesDirs.files.collect { it.absolutePath } : null
-                payload.testOutputDirs = (test != null) ? test.output.classesDirs.files.collect { it.absolutePath } : null
-            } else {
-                payload.mainSourceRoots = null
-                payload.testSourceRoots = null
-                payload.mainOutputDirs = null
-                payload.testOutputDirs = null
-            }
+             if (sourceSets != null) {
+                 def main = sourceSets.findByName("main")
+                 def test = sourceSets.findByName("test")
+                 payload.mainSourceRoots = (main != null) ? main.java.srcDirs.collect { it.absolutePath } : null
+                 payload.testSourceRoots = (test != null) ? test.java.srcDirs.collect { it.absolutePath } : null
+                 payload.mainOutputDirs = (main != null) ? main.output.classesDirs.files.collect { it.absolutePath } : null
+                 payload.testOutputDirs = (test != null) ? test.output.classesDirs.files.collect { it.absolutePath } : null
+             } else {
+                 payload.mainSourceRoots = null
+                 payload.testSourceRoots = null
+                 payload.mainOutputDirs = null
+                 payload.testOutputDirs = null
+             }
 
-            def sourceCompat = null
-            def targetCompat = null
-            def toolchainLang = null
+             payload.compileCompilerArgs = null
+             payload.testCompilerArgs = null
+             payload.inferModulePath = null
+ 
+             try {
+                 def t = proj.tasks.findByName("compileJava")
+                 if (t instanceof org.gradle.api.tasks.compile.JavaCompile) {
+                     try {
+                         payload.compileCompilerArgs = t.options.compilerArgs
+                     } catch (Throwable ignored) {}
+                     try {
+                         payload.inferModulePath = t.modularity.inferModulePath
+                     } catch (Throwable ignored) {}
+                 }
+             } catch (Throwable ignored) {}
+ 
+             try {
+                 def t = proj.tasks.findByName("compileTestJava")
+                 if (t instanceof org.gradle.api.tasks.compile.JavaCompile) {
+                     try {
+                         payload.testCompilerArgs = t.options.compilerArgs
+                     } catch (Throwable ignored) {}
+                 }
+             } catch (Throwable ignored) {}
+ 
+             def sourceCompat = null
+             def targetCompat = null
+             def toolchainLang = null
 
             def javaExt = null
             try {

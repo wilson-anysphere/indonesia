@@ -3383,6 +3383,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "zip 0.6.6",
 ]
 
 [[package]]
