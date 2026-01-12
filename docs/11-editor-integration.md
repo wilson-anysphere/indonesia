@@ -216,6 +216,7 @@ Notes for client authors:
 │                                                                  │
 │  BUILD STATUS / DIAGNOSTICS                                       │
 │  • nova/build/targetClasspath                                    │
+│  • nova/build/fileClasspath                                      │
 │  • nova/build/status                                             │
 │  • nova/build/diagnostics                                        │
 │                                                                  │
