@@ -885,11 +885,18 @@ fn fuzzy_rank_workspace_symbols(
     indexes_changed: bool,
 ) -> (Vec<WorkspaceSymbol>, SearchStats) {
     if query.is_empty() {
+        let mut ranked = Vec::new();
+        for (name, locations) in symbols.symbols.iter().take(limit) {
+            ranked.push(WorkspaceSymbol {
+                name: name.clone(),
+                locations: locations.clone(),
+            });
+        }
         return (
-            Vec::new(),
+            ranked,
             SearchStats {
                 strategy: CandidateStrategy::FullScan,
-                candidates_considered: 0,
+                candidates_considered: symbols.symbols.len(),
             },
         );
     }
@@ -918,11 +925,84 @@ fn fuzzy_rank_workspace_symbols_sharded(
     indexes_changed: bool,
 ) -> (Vec<WorkspaceSymbol>, SearchStats) {
     if query.is_empty() {
+        use std::cmp::Ordering;
+        use std::collections::BinaryHeap;
+
+        #[derive(Copy, Clone, Eq, PartialEq)]
+        struct ShardKey<'a> {
+            name: &'a str,
+            shard_idx: usize,
+        }
+
+        impl Ord for ShardKey<'_> {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.name
+                    .cmp(other.name)
+                    .then_with(|| self.shard_idx.cmp(&other.shard_idx))
+            }
+        }
+
+        impl PartialOrd for ShardKey<'_> {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut iters: Vec<_> = shards
+            .iter()
+            .map(|shard| shard.symbols.symbols.keys())
+            .collect();
+
+        let mut heap = BinaryHeap::<std::cmp::Reverse<ShardKey<'_>>>::new();
+        for (shard_idx, iter) in iters.iter_mut().enumerate() {
+            if let Some(name) = iter.next() {
+                heap.push(std::cmp::Reverse(ShardKey {
+                    name: name.as_str(),
+                    shard_idx,
+                }));
+            }
+        }
+
+        let mut names = Vec::new();
+        let mut last_name: Option<&str> = None;
+        while let Some(std::cmp::Reverse(entry)) = heap.pop() {
+            if last_name != Some(entry.name) {
+                names.push(entry.name.to_string());
+                last_name = Some(entry.name);
+                if names.len() >= limit {
+                    break;
+                }
+            }
+
+            if let Some(next_name) = iters[entry.shard_idx].next() {
+                heap.push(std::cmp::Reverse(ShardKey {
+                    name: next_name.as_str(),
+                    shard_idx: entry.shard_idx,
+                }));
+            }
+        }
+
+        let mut ranked = Vec::with_capacity(names.len());
+        for name in names {
+            let mut locations = Vec::new();
+            for shard in shards {
+                if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
+                    locations.extend(found.iter().cloned());
+                }
+            }
+            if !locations.is_empty() {
+                ranked.push(WorkspaceSymbol { name, locations });
+            }
+        }
+
         return (
-            Vec::new(),
+            ranked,
             SearchStats {
                 strategy: CandidateStrategy::FullScan,
-                candidates_considered: 0,
+                candidates_considered: shards
+                    .iter()
+                    .map(|shard| shard.symbols.symbols.len())
+                    .sum(),
             },
         );
     }

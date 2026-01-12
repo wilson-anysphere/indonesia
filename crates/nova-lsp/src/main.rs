@@ -2893,9 +2893,6 @@ fn handle_workspace_symbol(
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
 
     let query = params.query.trim();
-    if query.is_empty() {
-        return Ok(serde_json::Value::Array(Vec::new()));
-    }
 
     if state.workspace.is_none() {
         let project_root = state.project_root.clone().ok_or_else(|| {

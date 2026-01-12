@@ -77,7 +77,7 @@ fn stdio_server_supports_workspace_symbol_requests() {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "workspace/symbol",
-            "params": { "query": "Foo" }
+            "params": { "query": "" }
         }),
     );
     let resp = read_response_with_id(&mut stdout, 2);
@@ -92,14 +92,40 @@ fn stdio_server_supports_workspace_symbol_requests() {
                 && value.pointer("/location/uri").and_then(|v| v.as_str())
                     == Some(file_uri.as_str())
         }),
-        "expected to find Foo symbol pointing at Foo.java"
+        "expected to find Foo symbol pointing at Foo.java when query is empty"
     );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/symbol",
+            "params": { "query": "Foo" }
+        }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    let resp = read_response_with_id(&mut stdout, 3);
+    let results = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("workspace/symbol result array");
+
+    assert!(
+        results.iter().any(|value| {
+            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
+                && value
+                    .pointer("/location/uri")
+                    .and_then(|v| v.as_str())
+                    == Some(file_uri.as_str())
+        }),
+        "expected to find Foo symbol pointing at Foo.java when query is Foo"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
