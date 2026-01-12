@@ -1067,6 +1067,78 @@ class A {
 }
 
 #[test]
+fn extract_constant_infers_type_from_enclosing_declaration() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        double x = /*[*/Math.PI/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final double VALUE = Math.PI;
+
+    void m() {
+        double x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_long_for_long_expression_without_literals() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static long a = 1L;
+    static long b = 2L;
+
+    void m() {
+        long x = /*[*/a + b/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final long VALUE = A.a + A.b;
+
+    static long a = 1L;
+    static long b = 2L;
+
+    void m() {
+        long x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn extract_field_rejects_lambda_expression() {
     let (code, range) = fixture_range(
         r#"
@@ -1149,4 +1221,135 @@ class A {
 
     let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
     assert_eq!(err, ExtractError::DependsOnLocal);
+}
+
+#[test]
+fn extract_field_infers_type_from_enclosing_declaration() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    int foo = 1;
+
+    void m() {
+        int x = /*[*/this.foo/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private final int value = this.foo;
+
+    int foo = 1;
+
+    void m() {
+        int x = value;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_field_infers_long_for_long_expression_without_literals() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    long a = 1L;
+    long b = 2L;
+
+    void m() {
+        long x = /*[*/a + b/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private final long value = this.a + this.b;
+
+    long a = 1L;
+    long b = 2L;
+
+    void m() {
+        long x = value;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_field_infers_type_from_return_statement() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    long a = 1L;
+    long b = 2L;
+
+    long m() {
+        return /*[*/a + b/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private final long value = this.a + this.b;
+
+    long a = 1L;
+    long b = 2L;
+
+    long m() {
+        return value;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_field_rejects_method_type_parameter_type() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    <T> void m() {
+        T x = /*[*/null/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::TypeNotInClassScope);
 }

@@ -28,6 +28,8 @@ pub enum ExtractError {
     NotStaticSafe,
     #[error("expression is not contained in a class body")]
     NotInClass,
+    #[error("expression type is not valid at class member scope")]
+    TypeNotInClassScope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,8 +138,7 @@ fn extract_impl(
         ExtractKind::Field => qualify_field_initializer_expr(source, &expr, &class_body),
         ExtractKind::Constant => qualify_constant_initializer_expr(source, &expr, &class_body)?,
     };
-    let expr_type = infer_expr_type(source, &expr, &field_types, class_name.as_deref())
-        .unwrap_or_else(|| "Object".to_string());
+    let expr_type = infer_member_type(source, &expr, &field_types, class_name.as_deref())?;
 
     let existing_names = collect_field_names(&class_body);
     let suggested = match kind {
@@ -708,6 +709,48 @@ fn receiver_head_name(receiver: &ast::Expression) -> Option<String> {
     }
 }
 
+fn infer_member_type(
+    source: &str,
+    expr: &ast::Expression,
+    field_types: &HashMap<String, String>,
+    class_name: Option<&str>,
+) -> Result<String, ExtractError> {
+    let inferred = infer_expr_type(source, expr, field_types, class_name);
+    let ctx = infer_type_from_enclosing_declaration(expr);
+
+    if let Some((ctx_ty, ctx_safe)) = ctx {
+        if !ctx_safe {
+            if inferred.as_deref().is_some_and(|ty| ty != "Object") {
+                return Ok(inferred.unwrap());
+            }
+            return Err(ExtractError::TypeNotInClassScope);
+        }
+
+        if inferred.is_none() || inferred.as_deref() == Some("Object") {
+            return Ok(ctx_ty);
+        }
+
+        let inferred_ty = inferred.as_deref().unwrap();
+        if inferred_ty != ctx_ty
+            && is_numeric_primitive(inferred_ty)
+            && is_numeric_primitive(&ctx_ty)
+        {
+            // Prefer the enclosing declared type to avoid narrowing errors like:
+            // `long x = a + b` becoming `int value = a + b`.
+            return Ok(ctx_ty);
+        }
+    }
+
+    Ok(inferred.unwrap_or_else(|| "Object".to_string()))
+}
+
+fn is_numeric_primitive(ty: &str) -> bool {
+    matches!(
+        ty,
+        "byte" | "short" | "int" | "long" | "float" | "double" | "char"
+    )
+}
+
 fn infer_expr_type(
     _source: &str,
     expr: &ast::Expression,
@@ -730,12 +773,13 @@ fn infer_expr_type(
         tokens: impl Iterator<Item = nova_syntax::SyntaxToken>,
         field_types: &HashMap<String, String>,
         class_name: Option<&str>,
-    ) -> String {
+    ) -> Option<String> {
         let mut saw_string = false;
         let mut saw_boolean = false;
         let mut saw_double = false;
         let mut saw_float = false;
         let mut saw_long = false;
+        let mut saw_int = false;
         let mut prev_non_trivia: Option<SyntaxKind> = None;
         let mut last_ident: Option<String> = None;
         let mut dot_receiver_ident: Option<String> = None;
@@ -759,6 +803,7 @@ fn infer_expr_type(
                 SyntaxKind::DoubleLiteral => saw_double = true,
                 SyntaxKind::FloatLiteral => saw_float = true,
                 SyntaxKind::LongLiteral => saw_long = true,
+                SyntaxKind::IntLiteral | SyntaxKind::CharLiteral => saw_int = true,
                 SyntaxKind::Dot => {
                     dot_receiver_ident = last_ident.clone();
                     dot_receiver_is_this = prev_non_trivia == Some(SyntaxKind::ThisKw);
@@ -782,6 +827,14 @@ fn infer_expr_type(
                                 "double" | "Double" => saw_double = true,
                                 "float" | "Float" => saw_float = true,
                                 "long" | "Long" => saw_long = true,
+                                "byte"
+                                | "Byte"
+                                | "short"
+                                | "Short"
+                                | "int"
+                                | "Integer"
+                                | "char"
+                                | "Character" => saw_int = true,
                                 _ => {}
                             }
                         }
@@ -799,17 +852,19 @@ fn infer_expr_type(
         }
 
         if saw_string {
-            "String".to_string()
+            Some("String".to_string())
         } else if saw_boolean {
-            "boolean".to_string()
+            Some("boolean".to_string())
         } else if saw_double {
-            "double".to_string()
+            Some("double".to_string())
         } else if saw_float {
-            "float".to_string()
+            Some("float".to_string())
         } else if saw_long {
-            "long".to_string()
+            Some("long".to_string())
+        } else if saw_int {
+            Some("int".to_string())
         } else {
-            "int".to_string()
+            None
         }
     }
 
@@ -946,34 +1001,17 @@ fn infer_expr_type(
                 .syntax()
                 .descendants_with_tokens()
                 .filter_map(|el| el.into_token());
-            Some(infer_type_from_tokens(
-                then_tokens.chain(else_tokens),
-                field_types,
-                class_name,
-            ))
+            infer_type_from_tokens(then_tokens.chain(else_tokens), field_types, class_name)
         }
         ast::Expression::BinaryExpression(_)
         | ast::Expression::UnaryExpression(_)
-        | ast::Expression::ParenthesizedExpression(_) => {
-            // Best-effort: scan descendant tokens and infer a conservative type based on
-            // common literal/operator cues.
-            //
-            // Precedence:
-            // - If any String literal/text block appears => String
-            // - Else if any boolean literal/operator appears => boolean
-            // - Else numeric:
-            //   - If any double literal appears => double
-            //   - Else if any float literal appears => float
-            //   - Else if any long literal appears => long
-            //   - Else => int
-            Some(infer_type_from_tokens(
-                expr.syntax()
-                    .descendants_with_tokens()
-                    .filter_map(|el| el.into_token()),
-                field_types,
-                class_name,
-            ))
-        }
+        | ast::Expression::ParenthesizedExpression(_) => infer_type_from_tokens(
+            expr.syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token()),
+            field_types,
+            class_name,
+        ),
         _ => None,
     }
 }
@@ -1017,6 +1055,208 @@ fn enclosing_type_name(body: &ast::ClassBody) -> Option<String> {
             None
         }
     })
+}
+
+fn infer_type_from_enclosing_declaration(expr: &ast::Expression) -> Option<(String, bool)> {
+    let expr_core = strip_outer_parens(expr);
+    let expr_range = syntax_range(expr_core.syntax());
+
+    for node in expr.syntax().ancestors() {
+        let Some(declarator) = ast::VariableDeclarator::cast(node.clone()) else {
+            continue;
+        };
+        let Some(initializer) = declarator.initializer() else {
+            continue;
+        };
+
+        let init_core = strip_outer_parens(&initializer);
+        let init_range = syntax_range(init_core.syntax());
+        if init_range != expr_range {
+            continue;
+        }
+
+        for ancestor in declarator.syntax().ancestors() {
+            if let Some(local) = ast::LocalVariableDeclarationStatement::cast(ancestor.clone()) {
+                let ty = local.ty()?;
+                let rendered = render_java_type(ty.syntax());
+                if rendered == "var" {
+                    return None;
+                }
+                let safe = type_is_safe_for_member(ty.syntax(), expr.syntax());
+                return Some((rendered, safe));
+            }
+
+            if let Some(field) = ast::FieldDeclaration::cast(ancestor) {
+                let ty = field.ty()?;
+                let rendered = render_java_type(ty.syntax());
+                return Some((rendered, true));
+            }
+        }
+    }
+
+    infer_type_from_enclosing_return(expr, expr_range)
+}
+
+fn infer_type_from_enclosing_return(
+    expr: &ast::Expression,
+    expr_range: TextRange,
+) -> Option<(String, bool)> {
+    for node in expr.syntax().ancestors() {
+        let Some(return_stmt) = ast::ReturnStatement::cast(node.clone()) else {
+            continue;
+        };
+        let Some(return_expr) = return_stmt.expression() else {
+            continue;
+        };
+        let return_core = strip_outer_parens(&return_expr);
+        if syntax_range(return_core.syntax()) != expr_range {
+            continue;
+        }
+
+        let method = return_stmt.syntax().ancestors().find_map(ast::MethodDeclaration::cast)?;
+        let return_ty = method.syntax().children().find_map(ast::Type::cast)?;
+        let rendered = render_java_type(return_ty.syntax());
+        if rendered == "void" {
+            return None;
+        }
+        let safe = type_is_safe_for_member(return_ty.syntax(), expr.syntax());
+        return Some((rendered, safe));
+    }
+
+    None
+}
+
+fn strip_outer_parens(expr: &ast::Expression) -> ast::Expression {
+    let mut current = expr.clone();
+    loop {
+        let ast::Expression::ParenthesizedExpression(paren) = current else {
+            return current;
+        };
+        let Some(inner) = paren.expression() else {
+            return ast::Expression::ParenthesizedExpression(paren);
+        };
+        current = inner;
+    }
+}
+
+fn type_is_safe_for_member(ty: &nova_syntax::SyntaxNode, expr: &nova_syntax::SyntaxNode) -> bool {
+    let Some(container) = enclosing_executable_container(expr) else {
+        return true;
+    };
+
+    let mut unsafe_names = HashSet::new();
+    unsafe_names.extend(collect_method_type_parameter_names(&container));
+    unsafe_names.extend(collect_local_type_names(&container));
+    if unsafe_names.is_empty() {
+        return true;
+    }
+
+    !ty.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| tok.kind().is_identifier_like())
+        .any(|tok| unsafe_names.contains(tok.text()))
+}
+
+fn collect_method_type_parameter_names(container: &nova_syntax::SyntaxNode) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    let type_params = if let Some(method) = ast::MethodDeclaration::cast(container.clone()) {
+        method.type_parameters()
+    } else if let Some(ctor) = ast::ConstructorDeclaration::cast(container.clone()) {
+        ctor.type_parameters()
+    } else if let Some(ctor) = ast::CompactConstructorDeclaration::cast(container.clone()) {
+        ctor.type_parameters()
+    } else {
+        None
+    };
+
+    let Some(type_params) = type_params else {
+        return out;
+    };
+
+    for param in type_params.type_parameters() {
+        if let Some(name) = param.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+
+    out
+}
+
+fn collect_local_type_names(container: &nova_syntax::SyntaxNode) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    for decl in container.descendants().filter_map(ast::ClassDeclaration::cast) {
+        if let Some(name) = decl.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+    for decl in container
+        .descendants()
+        .filter_map(ast::InterfaceDeclaration::cast)
+    {
+        if let Some(name) = decl.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+    for decl in container.descendants().filter_map(ast::EnumDeclaration::cast) {
+        if let Some(name) = decl.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+    for decl in container.descendants().filter_map(ast::RecordDeclaration::cast) {
+        if let Some(name) = decl.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+    for decl in container
+        .descendants()
+        .filter_map(ast::AnnotationTypeDeclaration::cast)
+    {
+        if let Some(name) = decl.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+
+    out
+}
+
+fn render_java_type(node: &nova_syntax::SyntaxNode) -> String {
+    // We want Java-source-like but stable output. We therefore drop trivia and insert spaces only
+    // when necessary for the token stream to remain readable/valid.
+    let mut out = String::new();
+    let mut prev_kind: Option<SyntaxKind> = None;
+    let mut prev_was_word = false;
+
+    for tok in node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        let kind = tok.kind();
+        if kind.is_trivia() || kind == SyntaxKind::Eof {
+            continue;
+        }
+
+        let is_word = kind.is_keyword() || kind.is_identifier_like();
+        let needs_space = !out.is_empty()
+            && ((prev_was_word && is_word)
+                || (prev_kind == Some(SyntaxKind::Question) && is_word)
+                || (kind == SyntaxKind::At
+                    && (prev_was_word || prev_kind == Some(SyntaxKind::RBracket))));
+
+        if needs_space {
+            out.push(' ');
+        }
+        out.push_str(tok.text());
+        prev_kind = Some(kind);
+        prev_was_word = is_word;
+    }
+
+    if out.is_empty() {
+        "Object".to_string()
+    } else {
+        out
+    }
 }
 
 fn collect_field_names(body: &ast::ClassBody) -> HashSet<String> {

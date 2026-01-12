@@ -1334,7 +1334,7 @@ fn type_mismatch_quick_fixes(
     source: &str,
     uri: &lsp_types::Uri,
     selection: Span,
-    diagnostics: &[nova_types::Diagnostic],
+    diagnostics: &[Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn cast_replacement(expected: &str, expr: &str) -> String {
         // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
