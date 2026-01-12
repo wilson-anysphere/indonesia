@@ -114,6 +114,11 @@ jobs:
           cargo bench --locked -p nova-format --bench format
           cargo bench --locked -p nova-refactor --bench refactor
           cargo bench --locked -p nova-classpath --bench index
+          if [ -f crates/nova-ide/benches/completion.rs ]; then
+            cargo bench --locked -p nova-ide --bench completion
+          else
+            echo "Skipping nova-ide completion benchmark (not present in baseline revision)."
+          fi
           cargo run --locked -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out "${GITHUB_WORKSPACE}/perf-base.json"
@@ -131,6 +136,7 @@ jobs:
           cargo bench --locked -p nova-format --bench format
           cargo bench --locked -p nova-refactor --bench refactor
           cargo bench --locked -p nova-classpath --bench index
+          cargo bench --locked -p nova-ide --bench completion
           cargo run --locked -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out perf-current.json

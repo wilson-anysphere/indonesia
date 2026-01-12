@@ -3,6 +3,7 @@ name = "nova-cli"
 version.workspace = true
 edition = "2021"
 publish = false
+default-run = "nova"
 
 [[bin]]
 name = "nova"

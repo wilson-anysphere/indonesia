@@ -40,3 +40,9 @@ p95_regression = 0.20
 "classpath_index_build/dep_jar" = { p50_regression = 0.40, p95_regression = 0.80 }
 "classpath_index_build/multirelease_jar" = { p50_regression = 0.40, p95_regression = 0.80 }
 "classpath_index_build/named_module_jmod" = { p50_regression = 0.40, p95_regression = 0.80 }
+
+# IDE completion latency (microbenchmarks; allow a bit more variance than parsing/formatting).
+"ide_completion/member" = { p50_regression = 0.25, p95_regression = 0.50 }
+"ide_completion/import" = { p50_regression = 0.25, p95_regression = 0.50 }
+"ide_completion/type_position" = { p50_regression = 0.25, p95_regression = 0.50 }
+"ide_completion/postfix" = { p50_regression = 0.25, p95_regression = 0.50 }
