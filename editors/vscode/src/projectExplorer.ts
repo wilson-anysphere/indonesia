@@ -1456,13 +1456,18 @@ function extractUri(arg: unknown): vscode.Uri | undefined {
 
   const workspace = (arg as { workspace?: unknown }).workspace;
   const asNestedFolder = asWorkspaceFolder(workspace);
-  if (asNestedFolder) {
-    return asNestedFolder.uri;
-  }
 
   const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
   if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
-    return vscode.Uri.file(projectRoot.trim());
+    const trimmed = projectRoot.trim();
+    // `nova/projectModel` may report a relative projectRoot. When invoked from a unit node we can
+    // resolve it relative to the workspace folder.
+    const resolved = asNestedFolder ? resolvePossiblyRelativePath(asNestedFolder.uri.fsPath, trimmed) : trimmed;
+    return vscode.Uri.file(resolved);
+  }
+
+  if (asNestedFolder) {
+    return asNestedFolder.uri;
   }
 
   return undefined;
