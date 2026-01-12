@@ -327,3 +327,70 @@ fn java_owning_targets_for_file_errors_when_bazel_query_fails() {
         .to_string()
         .contains("bazel query failed while resolving owning java targets"));
 }
+
+#[test]
+fn java_owning_targets_for_file_handles_root_package_labels() {
+    let root = tempdir().unwrap();
+    let build = root.path().join("BUILD");
+    let src = root.path().join("subdir").join("Foo.java");
+
+    write_file(&build, "java_library(name = \"lib\", srcs = glob([\"**/*.java\"]))\n");
+    write_file(&src, "class Foo {}\n");
+
+    let file_label = "//:subdir/Foo.java";
+    let universe = "//:all";
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
+
+    let mut outputs = HashMap::new();
+    outputs.insert(java_expr.clone(), "//:lib\n".to_string());
+
+    let runner = TestRunner::new(outputs);
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner.clone()).unwrap();
+    let owning = workspace.java_owning_targets_for_file(src.as_path()).unwrap();
+    assert_eq!(owning, vec!["//:lib".to_string()]);
+
+    assert_eq!(
+        runner.calls(),
+        vec![vec![
+            "query".to_string(),
+            java_expr,
+            "--output=label".to_string()
+        ]]
+    );
+}
+
+#[test]
+fn java_owning_targets_for_file_uses_nearest_build_file_for_subpackages() {
+    let root = tempdir().unwrap();
+    let parent_build = root.path().join("java").join("BUILD");
+    let sub_build = root.path().join("java").join("sub").join("BUILD");
+    let src = root.path().join("java").join("sub").join("Hello.java");
+
+    write_file(
+        &parent_build,
+        "java_library(name = \"parent_lib\", srcs = glob([\"**/*.java\"]))\n",
+    );
+    write_file(
+        &sub_build,
+        "java_library(name = \"sub_lib\", srcs = [\"Hello.java\"])\n",
+    );
+    write_file(&src, "class Hello {}\n");
+
+    let file_label = "//java/sub:Hello.java";
+    let universe = "//java/sub:all";
+    let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr = format!(
+        r#"kind("java_.* rule", rdeps({universe}, ({file_label} + {filegroups_expr}), 1))"#
+    );
+
+    let mut outputs = HashMap::new();
+    outputs.insert(java_expr.clone(), "//java/sub:sub_lib\n".to_string());
+
+    let runner = TestRunner::new(outputs);
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+    let owning = workspace.java_owning_targets_for_file(src.as_path()).unwrap();
+    assert_eq!(owning, vec!["//java/sub:sub_lib".to_string()]);
+}
