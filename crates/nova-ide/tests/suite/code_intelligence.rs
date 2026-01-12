@@ -2179,14 +2179,15 @@ class A {
 
 #[test]
 fn completion_includes_javadoc_param_snippet() {
-    let (db, file, pos) = fixture(
-        r#"
+    let text_with_caret = r#"
 /**
  * @par<|>
  */
 void m(int x) {}
-"#,
-    );
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+    let text = text_with_caret.replace("<|>", "");
+    let at_offset = text.find("@par").expect("expected @par in fixture");
 
     let items = completions(&db, file, pos);
     let item = items
@@ -2202,6 +2203,8 @@ void m(int x) {}
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
     assert_eq!(edit.new_text, "@param ${1:name} $0");
+    assert_eq!(edit.range.start, offset_to_position(&text, at_offset));
+    assert_eq!(edit.range.end, pos);
 }
 
 #[test]
@@ -2345,14 +2348,15 @@ void m() {}
 
 #[test]
 fn completion_includes_javadoc_inline_link_snippet() {
-    let (db, file, pos) = fixture(
-        r#"
+    let text_with_caret = r#"
 /**
  * {@li<|>
  */
 void m() {}
-"#,
-    );
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+    let text = text_with_caret.replace("<|>", "");
+    let brace_offset = text.find("{@li").expect("expected {@li in fixture");
 
     let items = completions(&db, file, pos);
     let item = items
@@ -2368,18 +2372,21 @@ void m() {}
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
     assert_eq!(edit.new_text, "{@link ${1:TypeOrMember}}$0");
+    assert_eq!(edit.range.start, offset_to_position(&text, brace_offset));
+    assert_eq!(edit.range.end, pos);
 }
 
 #[test]
 fn completion_includes_javadoc_inline_link_snippet_after_open_brace() {
-    let (db, file, pos) = fixture(
-        r#"
+    let text_with_caret = r#"
 /**
  * {<|>
  */
 void m() {}
-"#,
-    );
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+    let text = text_with_caret.replace("<|>", "");
+    let brace_offset = text.find("{").expect("expected { in fixture");
 
     let items = completions(&db, file, pos);
     let item = items
@@ -2395,6 +2402,8 @@ void m() {}
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
     assert_eq!(edit.new_text, "{@link ${1:TypeOrMember}}$0");
+    assert_eq!(edit.range.start, offset_to_position(&text, brace_offset));
+    assert_eq!(edit.range.end, pos);
 }
 
 #[test]
