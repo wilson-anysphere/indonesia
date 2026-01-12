@@ -28,6 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         timeout-minutes: 5
         with:
+          cache-on-failure: true
           workspaces: |
             . -> target
             fuzz -> target
