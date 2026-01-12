@@ -319,9 +319,46 @@ class A {
 
     let edit = action.edit.as_ref().expect("expected workspace edit");
     let changes = edit.changes.as_ref().expect("expected changes map");
-    let edits = changes.get(&uri).expect("expected edit for the same document");
+    let edits = changes
+        .get(&uri)
+        .expect("expected edit for the same document");
     assert_eq!(edits.len(), 1, "expected a single text edit");
 
     assert_eq!(edits[0].range, null_deref_diag.range);
-    assert_eq!(edits[0].new_text, "java.util.Objects.requireNonNull(s).length()");
+    assert_eq!(
+        edits[0].new_text,
+        "java.util.Objects.requireNonNull(s).length()"
+    );
+
+    // Also ensure the quick fix is available via `IdeExtensions::code_actions_lsp`, which
+    // recomputes the minimal diagnostics needed for quick fixes.
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let selection_span = Span::new(start, end);
+    let ide_actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection_span));
+
+    let ide_action = ide_actions
+        .iter()
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action)
+                if action.title == "Wrap with Objects.requireNonNull" =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("expected Objects.requireNonNull quick fix from IdeExtensions");
+    assert_eq!(ide_action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edit = ide_action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes map");
+    let edits = changes
+        .get(&uri)
+        .expect("expected edit for the same document");
+    assert_eq!(edits.len(), 1, "expected a single text edit");
+    assert_eq!(edits[0].range, null_deref_diag.range);
+    assert_eq!(
+        edits[0].new_text,
+        "java.util.Objects.requireNonNull(s).length()"
+    );
 }

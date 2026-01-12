@@ -163,6 +163,34 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     actions.push(CodeActionOrCommand::CodeAction(action));
                 }
             }
+            "FLOW_NULL_DEREF" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
+
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                let Some(expr_text) = source.get(diag_span.start..diag_span.end) else {
+                    continue;
+                };
+                let Some((receiver, rest)) = split_member_access(expr_text) else {
+                    continue;
+                };
+                let receiver = receiver.trim();
+                if receiver.is_empty() {
+                    continue;
+                }
+
+                let replacement = format!("java.util.Objects.requireNonNull({receiver}){rest}");
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Wrap with Objects.requireNonNull".to_string(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(single_replace_edit(uri, source, diag_span, replacement)),
+                    ..Default::default()
+                }));
+            }
             "return-mismatch" => {
                 let Some(diag_span) = diag.span else {
                     continue;
@@ -277,6 +305,38 @@ pub(crate) fn spans_intersect(a: Span, b: Span) -> bool {
     }
 
     a_start < b_end && b_start < a_end
+}
+
+/// Split `expr` into `(receiver, rest)` at the last top-level `.`.
+///
+/// `rest` includes the `.` and the member/call suffix.
+fn split_member_access(expr: &str) -> Option<(&str, &str)> {
+    let mut paren_depth = 0u32;
+    let mut bracket_depth = 0u32;
+    let mut brace_depth = 0u32;
+    let mut last_dot: Option<usize> = None;
+
+    for (idx, ch) in expr.char_indices() {
+        match ch {
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth = brace_depth.saturating_add(1),
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '.' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                last_dot = Some(idx);
+            }
+            _ => {}
+        }
+    }
+
+    let dot = last_dot?;
+    let (receiver, rest) = expr.split_at(dot);
+    if rest == "." {
+        return None;
+    }
+    Some((receiver, rest))
 }
 
 fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
