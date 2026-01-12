@@ -80,7 +80,7 @@ mod tests {
 Cross-crate tests in `tests/` directory:
 
 ```rust
-// crates/nova-types/tests/inference.rs
+// crates/nova-types/tests/suite/jls_inference.rs (run via crates/nova-types/tests/harness.rs)
 
 #[test]
 fn diamond_inference() {
