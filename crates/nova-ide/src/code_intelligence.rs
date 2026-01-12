@@ -2131,28 +2131,35 @@ fn import_path_completions(
         }
 
         let parent_prefix = format!("{parent}.");
-        if let Ok(names) = jdk.class_names_with_prefix(&parent_prefix) {
-            let mut added = 0usize;
-            for name in names {
-                if added >= MAX_IMPORT_JDK_TYPES {
-                    break;
-                }
-                if !name.starts_with(&parent_prefix) {
-                    continue;
-                }
-                let rest = &name[parent_prefix.len()..];
-                // Only expose direct members, not subpackages.
-                if rest.contains('.') || rest.contains('$') {
-                    continue;
-                }
-                items.push(CompletionItem {
-                    label: rest.to_string(),
-                    kind: Some(CompletionItemKind::CLASS),
-                    detail: Some(name),
-                    ..Default::default()
-                });
-                added += 1;
+        // Avoid allocating a potentially large `Vec<String>` of all JDK types in `parent` just to
+        // scan for direct members.
+        let fallback_jdk = JdkIndex::new();
+        let class_names: &[String] = jdk
+            .all_binary_class_names()
+            .or_else(|_| fallback_jdk.all_binary_class_names())
+            .unwrap_or(&[]);
+
+        let start = class_names.partition_point(|name| name.as_str() < parent_prefix.as_str());
+        let mut added = 0usize;
+        for name in &class_names[start..] {
+            if added >= MAX_IMPORT_JDK_TYPES {
+                break;
             }
+            if !name.starts_with(parent_prefix.as_str()) {
+                break;
+            }
+            let rest = &name[parent_prefix.len()..];
+            // Only expose direct members, not subpackages.
+            if rest.contains('.') || rest.contains('$') {
+                continue;
+            }
+            items.push(CompletionItem {
+                label: rest.to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(name.to_owned()),
+                ..Default::default()
+            });
+            added += 1;
         }
     }
 
