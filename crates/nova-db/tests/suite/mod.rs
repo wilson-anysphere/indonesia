@@ -5,6 +5,7 @@ mod hir_lowering;
 mod java_parse_no_reparse;
 mod parse_java_incremental;
 mod line_index;
+mod parse_java_incremental;
 mod project_database;
 mod resolve;
 mod resilience_broken_code;
