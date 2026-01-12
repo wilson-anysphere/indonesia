@@ -452,6 +452,14 @@ impl JdkIndex {
             .map(|name| name.as_str()))
     }
 
+    /// Iterate all class binary names in this index, in stable sorted order.
+    ///
+    /// This is a convenience alias for [`JdkIndex::iter_binary_class_names`] to mirror the
+    /// `nova-classpath` API naming.
+    pub fn iter_binary_names(&self) -> Result<impl Iterator<Item = &str> + '_, JdkIndexError> {
+        self.iter_binary_class_names()
+    }
+
     /// All static member names (methods + fields) on `owner` that start with `prefix`.
     ///
     /// `owner` should be a binary type name such as `java.lang.Math` (or a `/`-separated internal
