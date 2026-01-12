@@ -1693,6 +1693,46 @@ fn rename_shadowing_conflict_detected_in_nested_block_scope() {
 }
 
 #[test]
+fn rename_type_from_constructor_declaration_renames_constructors() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {
+  Foo() {}
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Foo()").unwrap() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at constructor name");
+    assert_eq!(db.symbol_kind(symbol), Some(nova_refactor::JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("class Bar"),
+        "expected class name to be renamed: {after}"
+    );
+    assert!(
+        after.contains("Bar()"),
+        "expected constructor name to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("Foo"),
+        "expected Foo to be fully renamed: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

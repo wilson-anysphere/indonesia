@@ -779,7 +779,12 @@ fn collect_call_site_updates(
             && inferred_arg_types
                 .iter()
                 .zip(old_param_types.iter())
-                .any(|(arg_ty, param_ty)| matches!(arg_ty, Some(t) if t != param_ty))
+                .any(|(arg_ty, param_ty)| {
+                    matches!(
+                        arg_ty,
+                        Some(t) if !types_equivalent_ignoring_whitespace(t, param_ty)
+                    )
+                })
         {
             continue;
         }
@@ -949,12 +954,24 @@ fn param_types_match_expected(param_types: &[String], expected: &[Option<String>
     }
     for (actual, exp) in param_types.iter().zip(expected.iter()) {
         if let Some(t) = exp {
-            if actual != t {
+            if !types_equivalent_ignoring_whitespace(actual, t) {
                 return false;
             }
         }
     }
     true
+}
+
+fn types_equivalent_ignoring_whitespace(a: &str, b: &str) -> bool {
+    let mut ia = a.chars().filter(|c| !c.is_whitespace());
+    let mut ib = b.chars().filter(|c| !c.is_whitespace());
+    loop {
+        match (ia.next(), ib.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x == y => continue,
+            _ => return false,
+        }
+    }
 }
 
 fn rewrite_types_for_call(
@@ -1104,6 +1121,89 @@ fn is_type_token_char(b: u8) -> bool {
     (b as char).is_ascii_alphanumeric()
         || b.is_ascii_whitespace()
         || matches!(b, b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?')
+}
+
+fn extract_type_token_suffix(prefix: &str) -> Option<&str> {
+    let bytes = prefix.as_bytes();
+    let mut end = prefix.len();
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+
+    let mut start = end;
+    let mut depth_angle: i32 = 0;
+    while start > 0 {
+        let b = bytes[start - 1];
+        if b.is_ascii_whitespace() {
+            if depth_angle > 0 {
+                start -= 1;
+                continue;
+            }
+            break;
+        }
+
+        match b {
+            b'>' => {
+                depth_angle += 1;
+                start -= 1;
+                continue;
+            }
+            b'<' => {
+                if depth_angle > 0 {
+                    depth_angle -= 1;
+                }
+                start -= 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if is_type_token_char(b) {
+            start -= 1;
+            continue;
+        }
+        break;
+    }
+
+    let ty = prefix[start..end].trim();
+    (!ty.is_empty()).then_some(ty)
+}
+
+fn normalize_type_whitespace(ty: &str) -> String {
+    let mut out = String::new();
+    for part in ty.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
+fn is_reference_type_token(ty: &str) -> bool {
+    if ty.is_empty() {
+        return false;
+    }
+    let mut base = ty.trim();
+
+    // Strip generic arguments.
+    if let Some((head, _)) = base.split_once('<') {
+        base = head.trim_end();
+    }
+
+    // Strip array suffixes.
+    while let Some(stripped) = base.strip_suffix("[]") {
+        base = stripped.trim_end();
+    }
+
+    base.rsplit('.')
+        .next()
+        .and_then(|seg| seg.chars().next())
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
 }
 
 fn is_plausible_type_token(ty: &str) -> bool {
@@ -1267,21 +1367,14 @@ fn infer_var_type_in_scope(text: &str, offset: usize, var_name: &str) -> Option<
     let needle = format!(" {}", var_name);
     let mut search_pos = before.len();
     while let Some(pos) = before[..search_pos].rfind(&needle) {
-        let prefix = &before[..pos];
-        let prefix = prefix.trim_end();
-        let type_start = prefix
-            .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
-            .map(|p| p + 1)
-            .unwrap_or(0);
-        let ty = &prefix[type_start..];
-        if !ty.is_empty()
-            && ty
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false)
-        {
-            return Some(ty.to_string());
+        let prefix = before[..pos].trim_end();
+        let Some(ty) = extract_type_token_suffix(prefix) else {
+            search_pos = pos;
+            continue;
+        };
+        let ty = normalize_type_whitespace(ty);
+        if is_reference_type_token(&ty) {
+            return Some(ty);
         }
         search_pos = pos;
     }
