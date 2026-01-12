@@ -5602,6 +5602,109 @@ class C {
 }
 
 #[test]
+fn catch_allows_classpath_throwable_subclass() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // `com.example.MyException extends java.lang.Throwable` supplied via classpath stubs.
+    let exc_stub = nova_classpath::ClasspathClassStub {
+        binary_name: "com.example.MyException".to_string(),
+        internal_name: "com/example/MyException".to_string(),
+        access_flags: 0,
+        super_binary_name: Some("java.lang.Throwable".to_string()),
+        interfaces: Vec::new(),
+        signature: None,
+        annotations: Vec::new(),
+        fields: Vec::new(),
+        methods: Vec::new(),
+    };
+    let module_aware =
+        nova_classpath::ModuleAwareClasspathIndex::from_stubs(vec![(exc_stub, None)]);
+    db.set_classpath_index(
+        project,
+        Some(ArcEq::new(Arc::new(module_aware.types.clone()))),
+    );
+
+    let src = r#"
+class C {
+    void m() {
+        try { } catch (com.example.MyException e) { }
+    }
+}
+"#;
+
+    let file = FileId::from_raw(1);
+    set_file(&mut db, project, file, "src/Test.java", src);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "catch-non-throwable"),
+        "expected no catch-non-throwable diagnostic for classpath Throwable subclass; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| !(d.code.as_ref() == "unresolved-type"
+            && d.message.contains("com.example.MyException"))),
+        "expected com.example.MyException to resolve from classpath; got {diags:?}"
+    );
+}
+
+#[test]
+fn throw_allows_classpath_throwable_subclass() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // `com.example.MyException extends java.lang.Throwable` supplied via classpath stubs.
+    let exc_stub = nova_classpath::ClasspathClassStub {
+        binary_name: "com.example.MyException".to_string(),
+        internal_name: "com/example/MyException".to_string(),
+        access_flags: 0,
+        super_binary_name: Some("java.lang.Throwable".to_string()),
+        interfaces: Vec::new(),
+        signature: None,
+        annotations: Vec::new(),
+        fields: Vec::new(),
+        methods: Vec::new(),
+    };
+    let module_aware =
+        nova_classpath::ModuleAwareClasspathIndex::from_stubs(vec![(exc_stub, None)]);
+    db.set_classpath_index(
+        project,
+        Some(ArcEq::new(Arc::new(module_aware.types.clone()))),
+    );
+
+    let src = r#"
+class C {
+    void m() {
+        throw new com.example.MyException();
+    }
+}
+"#;
+
+    let file = FileId::from_raw(1);
+    set_file(&mut db, project, file, "src/Test.java", src);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "throw-non-throwable"),
+        "expected no throw-non-throwable diagnostic for classpath Throwable subclass; got {diags:?}"
+    );
+}
+
+#[test]
 fn diamond_inference_for_new() {
     let src = r#"
 import java.util.*;
