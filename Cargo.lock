@@ -4413,6 +4413,7 @@ dependencies = [
  "async-channel 2.5.0",
  "crossbeam-channel",
  "lsp-types",
+ "nova-build",
  "nova-cache",
  "nova-classpath",
  "nova-config",

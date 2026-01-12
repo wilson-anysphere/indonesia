@@ -17,8 +17,8 @@ use nova_scheduler::CancellationToken;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::text::TextIndex;
 pub use crate::framework_db_adapter::FrameworkIdeDatabase;
+use crate::text::TextIndex;
 
 trait AsDynNovaDb {
     fn as_dyn_nova_db(&self) -> &dyn nova_db::Database;
@@ -97,11 +97,10 @@ where
             return false;
         }
 
-        let applicable =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
-            }))
-            .unwrap_or(false);
+        let applicable = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+        }))
+        .unwrap_or(false);
 
         self.applicability_cache
             .lock()
@@ -287,7 +286,8 @@ where
     }
 }
 
-impl<A> DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerOnTextDbAdapter<A>
+impl<A> DiagnosticProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerOnTextDbAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -316,7 +316,8 @@ where
     }
 }
 
-impl<A> CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerOnTextDbAdapter<A>
+impl<A> CompletionProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerOnTextDbAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -350,7 +351,8 @@ where
     }
 }
 
-impl<A> NavigationProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerOnTextDbAdapter<A>
+impl<A> NavigationProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerOnTextDbAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -373,7 +375,8 @@ where
             Symbol::Class(_) => return Vec::new(),
         };
 
-        let Some(fw_db) = crate::framework_db::framework_db_for_file(ctx.db.clone(), file, &ctx.cancel)
+        let Some(fw_db) =
+            crate::framework_db::framework_db_for_file(ctx.db.clone(), file, &ctx.cancel)
         else {
             return Vec::new();
         };
@@ -400,7 +403,8 @@ where
     }
 }
 
-impl<A> InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerOnTextDbAdapter<A>
+impl<A> InlayHintProvider<dyn nova_db::Database + Send + Sync>
+    for FrameworkAnalyzerOnTextDbAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -1858,7 +1862,11 @@ class A {
             }
 
             fn diagnostics(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<Diagnostic> {
-                vec![Diagnostic::warning("FW", "framework", Some(Span::new(0, 1)))]
+                vec![Diagnostic::warning(
+                    "FW",
+                    "framework",
+                    Some(Span::new(0, 1)),
+                )]
             }
         }
 
@@ -1869,9 +1877,13 @@ class A {
         let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
         let calls = Arc::new(AtomicUsize::new(0));
 
-        let adapter =
-            FrameworkAnalyzerAdapter::new("framework.slow", SlowAppliesToAnalyzer { calls: calls.clone() })
-                .into_arc();
+        let adapter = FrameworkAnalyzerAdapter::new(
+            "framework.slow",
+            SlowAppliesToAnalyzer {
+                calls: calls.clone(),
+            },
+        )
+        .into_arc();
 
         let ctx = ExtensionContext::new(
             Arc::clone(&db),
@@ -1892,7 +1904,8 @@ class A {
 
         // Ensure the slow `applies_to` call happens under the registry watchdog rather than
         // blocking `is_applicable`.
-        let mut registry: ExtensionRegistry<dyn Database + Send + Sync> = ExtensionRegistry::default();
+        let mut registry: ExtensionRegistry<dyn Database + Send + Sync> =
+            ExtensionRegistry::default();
         registry.options_mut().diagnostic_timeout = Duration::from_millis(10);
         registry
             .register_diagnostic_provider(adapter.clone())
@@ -1929,7 +1942,11 @@ class A {
             }
 
             fn diagnostics(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<Diagnostic> {
-                vec![Diagnostic::warning("FW", "framework", Some(Span::new(0, 1)))]
+                vec![Diagnostic::warning(
+                    "FW",
+                    "framework",
+                    Some(Span::new(0, 1)),
+                )]
             }
         }
 
@@ -1940,11 +1957,16 @@ class A {
         let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
         let calls = Arc::new(AtomicUsize::new(0));
 
-        let adapter =
-            FrameworkAnalyzerAdapter::new("framework.panic", PanickingAppliesToAnalyzer { calls: calls.clone() })
-                .into_arc();
+        let adapter = FrameworkAnalyzerAdapter::new(
+            "framework.panic",
+            PanickingAppliesToAnalyzer {
+                calls: calls.clone(),
+            },
+        )
+        .into_arc();
 
-        let mut registry: ExtensionRegistry<dyn Database + Send + Sync> = ExtensionRegistry::default();
+        let mut registry: ExtensionRegistry<dyn Database + Send + Sync> =
+            ExtensionRegistry::default();
         registry
             .register_diagnostic_provider(adapter.clone())
             .unwrap();

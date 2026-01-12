@@ -278,7 +278,9 @@ mod tests {
             root.join("gradle")
                 .join("wrapper")
                 .join("gradle-wrapper.properties"),
-            root.join("gradle").join("wrapper").join("gradle-wrapper.jar"),
+            root.join("gradle")
+                .join("wrapper")
+                .join("gradle-wrapper.jar"),
             root.join("mvnw"),
             root.join("mvnw.cmd"),
             root.join(".mvn")

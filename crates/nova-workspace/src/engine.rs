@@ -21,7 +21,8 @@ use nova_memory::{
     MemoryEvictor, MemoryManager, MemoryPressure, MemoryRegistration, MemoryReport,
 };
 use nova_project::{
-    BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, LoadOptions, OutputDir,
+    OutputDirKind, ProjectConfig, ProjectError, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
 use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, SchedulerConfig};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
@@ -32,12 +33,15 @@ use nova_vfs::{
 };
 use walkdir::WalkDir;
 
-use crate::watch::{
-    categorize_event, ChangeCategory, NormalizedEvent, WatchConfig,
-};
+use nova_build::{BuildManager, CommandRunner};
+
+use crate::watch::{categorize_event, ChangeCategory, NormalizedEvent, WatchConfig};
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
-fn compute_watch_roots(workspace_root: &Path, watch_config: &WatchConfig) -> Vec<(PathBuf, WatchMode)> {
+fn compute_watch_roots(
+    workspace_root: &Path,
+    watch_config: &WatchConfig,
+) -> Vec<(PathBuf, WatchMode)> {
     let mut roots: Vec<(PathBuf, WatchMode)> = Vec::new();
     roots.push((workspace_root.to_path_buf(), WatchMode::Recursive));
 
@@ -122,6 +126,12 @@ pub(crate) struct WorkspaceEngineConfig {
     pub workspace_root: PathBuf,
     pub persistence: PersistenceConfig,
     pub memory: MemoryManager,
+    /// Optional command runner override for build tool integration (Maven/Gradle).
+    ///
+    /// When unset, Nova uses a default runner that executes external commands. In
+    /// `cfg(test)` builds we default to a runner that returns `NotFound` to avoid
+    /// invoking real build tools during unit tests.
+    pub build_runner: Option<Arc<dyn CommandRunner>>,
 }
 
 #[derive(Debug)]
@@ -292,6 +302,8 @@ pub(crate) struct WorkspaceEngine {
     indexes: Arc<Mutex<ProjectIndexes>>,
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
 
+    build_runner: Arc<dyn CommandRunner>,
+
     config: RwLock<EffectiveConfig>,
     scheduler: Scheduler,
     memory: MemoryManager,
@@ -432,6 +444,41 @@ impl MemoryEnforceObserver {
     }
 }
 
+fn default_build_runner() -> Arc<dyn CommandRunner> {
+    #[cfg(test)]
+    {
+        Arc::new(DenyBuildRunner)
+    }
+
+    #[cfg(not(test))]
+    {
+        Arc::new(nova_build::DefaultCommandRunner::default())
+    }
+}
+
+/// Prevent unit tests from invoking real build tools (Maven/Gradle) from the host environment.
+///
+/// Tests that need build-tool output should pass an explicit `build_runner` via
+/// `WorkspaceEngineConfig`.
+#[cfg(test)]
+#[derive(Debug)]
+struct DenyBuildRunner;
+
+#[cfg(test)]
+impl CommandRunner for DenyBuildRunner {
+    fn run(
+        &self,
+        _cwd: &Path,
+        _program: &Path,
+        _args: &[String],
+    ) -> std::io::Result<nova_build::CommandOutput> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "external build tool invocations are disabled in nova-workspace unit tests",
+        ))
+    }
+}
+
 impl WorkspaceEngine {
     pub fn new(config: WorkspaceEngineConfig) -> Self {
         let scheduler = workspace_scheduler();
@@ -439,7 +486,9 @@ impl WorkspaceEngine {
             workspace_root,
             persistence,
             memory,
+            build_runner,
         } = config;
+        let build_runner = build_runner.unwrap_or_else(default_build_runner);
 
         let vfs = Vfs::new(LocalFs::new());
         let open_docs = vfs.open_documents();
@@ -492,6 +541,7 @@ impl WorkspaceEngine {
             query_db,
             indexes,
             indexes_evictor,
+            build_runner,
             config: RwLock::new(EffectiveConfig::default()),
             scheduler,
             memory,
@@ -571,7 +621,10 @@ impl WorkspaceEngine {
     }
 
     pub fn start_watching(self: &Arc<Self>) -> Result<WatcherHandle> {
-        self.start_watching_with_watcher_factory(NotifyFileWatcher::new, WatchDebounceConfig::default())
+        self.start_watching_with_watcher_factory(
+            NotifyFileWatcher::new,
+            WatchDebounceConfig::default(),
+        )
     }
 
     #[cfg(test)]
@@ -623,7 +676,8 @@ impl WorkspaceEngine {
             *self
                 .watcher_command_store
                 .lock()
-                .expect("workspace watcher command store mutex poisoned") = Some(command_tx.clone());
+                .expect("workspace watcher command store mutex poisoned") =
+                Some(command_tx.clone());
         }
 
         let subscribers = Arc::clone(&self.subscribers);
@@ -970,6 +1024,7 @@ impl WorkspaceEngine {
         let vfs = self.vfs.clone();
         let query_db = self.query_db.clone();
         let subscribers = Arc::clone(&self.subscribers);
+        let build_runner = Arc::clone(&self.build_runner);
         let scheduler = self.scheduler.clone();
         let watch_config = Arc::clone(&self.watch_config);
         let watcher_command_store = Arc::clone(&self.watcher_command_store);
@@ -992,17 +1047,17 @@ impl WorkspaceEngine {
                     state.pending_build_changes.drain().collect::<Vec<_>>()
                 };
 
-                if let Err(err) =
-                    reload_project_and_sync(
-                        &root,
-                        &changed,
-                        &vfs,
-                        &query_db,
-                        &project_state,
-                        &watch_config,
-                        &watcher_command_store,
-                    )
-                {
+                if let Err(err) = reload_project_and_sync(
+                    &root,
+                    &changed,
+                    &vfs,
+                    &query_db,
+                    &project_state,
+                    &watch_config,
+                    &watcher_command_store,
+                    &subscribers,
+                    &build_runner,
+                ) {
                     publish_to_subscribers(
                         &subscribers,
                         WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
@@ -1052,6 +1107,8 @@ impl WorkspaceEngine {
             &self.project_state,
             &self.watch_config,
             &self.watcher_command_store,
+            &self.subscribers,
+            &self.build_runner,
         );
 
         // Ensure we drive eviction after loading/updating a potentially large set of files.
@@ -1160,10 +1217,7 @@ impl WorkspaceEngine {
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
         let old_text = self.vfs.read_to_string(path).ok();
-        let evt = match self
-            .vfs
-            .apply_document_changes(path, new_version, changes)
-        {
+        let evt = match self.vfs.apply_document_changes(path, new_version, changes) {
             Ok(evt) => evt,
             Err(err) => {
                 // Best-effort: keep the memory report consistent even when edits fail.
@@ -1312,8 +1366,8 @@ impl WorkspaceEngine {
                 );
 
                 let project = ProjectId::from_raw(0);
-                let project_files: Vec<FileId> = query_db
-                    .with_snapshot(|snap| snap.project_files(project).as_ref().clone());
+                let project_files: Vec<FileId> =
+                    query_db.with_snapshot(|snap| snap.project_files(project).as_ref().clone());
                 let open_files = open_docs.snapshot();
 
                 let files = match degraded {
@@ -1393,9 +1447,9 @@ impl WorkspaceEngine {
                                 break;
                             }
 
-                            let delta = match query_db
-                                .with_snapshot_catch_cancelled(|snap| snap.file_index_delta(*file_id))
-                            {
+                            let delta = match query_db.with_snapshot_catch_cancelled(|snap| {
+                                snap.file_index_delta(*file_id)
+                            }) {
                                 Ok(delta) => delta,
                                 Err(_) => {
                                     cancelled = true;
@@ -1460,7 +1514,10 @@ impl WorkspaceEngine {
                 );
                 publish_to_subscribers(
                     &subscribers,
-                    WorkspaceEvent::IndexProgress(IndexProgress { current: total, total }),
+                    WorkspaceEvent::IndexProgress(IndexProgress {
+                        current: total,
+                        total,
+                    }),
                 );
 
                 if degraded == BackgroundIndexingMode::Full {
@@ -1948,7 +2005,11 @@ fn publish_watch_root_error(
     err: WatchRootError,
 ) {
     match err {
-        WatchRootError::WatchFailed { root, mode: _, error } => {
+        WatchRootError::WatchFailed {
+            root,
+            mode: _,
+            error,
+        } => {
             publish_to_subscribers(
                 subscribers,
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
@@ -2166,6 +2227,207 @@ fn jdk_fingerprint(config: &nova_core::JdkConfig, requested_release: Option<u16>
     Fingerprint::from_bytes(bytes)
 }
 
+fn build_cache_dir(workspace_root: &Path, query_db: &salsa::Database) -> PathBuf {
+    // Prefer Nova's project-hash cache dir when persistence is enabled, so nova-build and other
+    // subsystems share a single on-disk cache root.
+    if let Some(classpath_dir) = query_db.classpath_cache_dir() {
+        if let Some(project_cache_dir) = classpath_dir.parent() {
+            return project_cache_dir.join("build");
+        }
+    }
+
+    workspace_root.join(".nova").join("build-cache")
+}
+
+fn is_build_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        name,
+        "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "settings.gradle"
+            | "settings.gradle.kts"
+            | "gradle.properties"
+            | "gradle-wrapper.properties"
+            | "mvnw"
+            | "mvnw.cmd"
+            | "gradlew"
+            | "gradlew.bat"
+    )
+}
+
+fn should_refresh_build_config(changed_files: &[PathBuf]) -> bool {
+    changed_files.is_empty() || changed_files.iter().any(|path| is_build_file(path))
+}
+
+fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod") => {
+            ClasspathEntryKind::Jar
+        }
+        _ => ClasspathEntryKind::Directory,
+    }
+}
+
+fn classpath_entries_from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<ClasspathEntry> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<(ClasspathEntryKind, PathBuf)> = HashSet::new();
+    for path in paths {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        let kind = classpath_entry_kind_for_path(&path);
+        if seen.insert((kind, path.clone())) {
+            out.push(ClasspathEntry { kind, path });
+        }
+    }
+    out
+}
+
+fn infer_source_root_origin(path: &Path) -> SourceRootOrigin {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    if lower.contains("generated") || lower.contains(".nova") {
+        SourceRootOrigin::Generated
+    } else {
+        SourceRootOrigin::Source
+    }
+}
+
+fn source_roots_from_java_compile_config(
+    base: &ProjectConfig,
+    cfg: &nova_build::JavaCompileConfig,
+) -> Vec<SourceRoot> {
+    fn origin_for_path(
+        base: &ProjectConfig,
+        kind: SourceRootKind,
+        path: &Path,
+    ) -> SourceRootOrigin {
+        base.source_roots
+            .iter()
+            .find(|root| root.kind == kind && root.path == path)
+            .or_else(|| base.source_roots.iter().find(|root| root.path == path))
+            .map(|root| root.origin)
+            .unwrap_or_else(|| infer_source_root_origin(path))
+    }
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<(SourceRootKind, PathBuf)> = HashSet::new();
+
+    for path in &cfg.main_source_roots {
+        let origin = origin_for_path(base, SourceRootKind::Main, path);
+        if seen.insert((SourceRootKind::Main, path.clone())) {
+            out.push(SourceRoot {
+                kind: SourceRootKind::Main,
+                origin,
+                path: path.clone(),
+            });
+        }
+    }
+
+    for path in &cfg.test_source_roots {
+        let origin = origin_for_path(base, SourceRootKind::Test, path);
+        if seen.insert((SourceRootKind::Test, path.clone())) {
+            out.push(SourceRoot {
+                kind: SourceRootKind::Test,
+                origin,
+                path: path.clone(),
+            });
+        }
+    }
+
+    // Preserve any additional roots discovered by `nova-project` (especially
+    // `.nova/apt-cache/generated-roots.json`).
+    for root in &base.source_roots {
+        if seen.insert((root.kind, root.path.clone())) {
+            out.push(root.clone());
+        }
+    }
+
+    out
+}
+
+fn output_dirs_from_java_compile_config(
+    base: &ProjectConfig,
+    cfg: &nova_build::JavaCompileConfig,
+) -> Vec<OutputDir> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<(OutputDirKind, PathBuf)> = HashSet::new();
+
+    if let Some(dir) = &cfg.main_output_dir {
+        if seen.insert((OutputDirKind::Main, dir.clone())) {
+            out.push(OutputDir {
+                kind: OutputDirKind::Main,
+                path: dir.clone(),
+            });
+        }
+    }
+
+    if let Some(dir) = &cfg.test_output_dir {
+        if seen.insert((OutputDirKind::Test, dir.clone())) {
+            out.push(OutputDir {
+                kind: OutputDirKind::Test,
+                path: dir.clone(),
+            });
+        }
+    }
+
+    // Preserve any additional output dirs (e.g. multi-module workspaces) discovered by
+    // `nova-project` heuristics.
+    for dir in &base.output_dirs {
+        if seen.insert((dir.kind, dir.path.clone())) {
+            out.push(dir.clone());
+        }
+    }
+
+    out
+}
+
+fn apply_java_compile_config_to_project_config(
+    mut config: ProjectConfig,
+    cfg: &nova_build::JavaCompileConfig,
+    base: &ProjectConfig,
+) -> ProjectConfig {
+    config.classpath = classpath_entries_from_paths(
+        cfg.compile_classpath
+            .iter()
+            .chain(cfg.test_classpath.iter())
+            .cloned(),
+    );
+    config.module_path = classpath_entries_from_paths(cfg.module_path.iter().cloned());
+    config.source_roots = source_roots_from_java_compile_config(base, cfg);
+    config.output_dirs = output_dirs_from_java_compile_config(base, cfg);
+    config
+}
+
+fn reuse_previous_build_config_fields(
+    mut loaded: ProjectConfig,
+    previous: &ProjectConfig,
+) -> ProjectConfig {
+    loaded.classpath = previous.classpath.clone();
+    loaded.module_path = previous.module_path.clone();
+    loaded.output_dirs = previous.output_dirs.clone();
+
+    // Prefer the previous source roots (which may have been populated from nova-build), but also
+    // incorporate any newly discovered roots from `nova-project` (e.g. apt generated roots).
+    let mut merged = previous.source_roots.clone();
+    let mut seen: HashSet<(SourceRootKind, PathBuf)> = merged
+        .iter()
+        .map(|root| (root.kind, root.path.clone()))
+        .collect();
+    for root in &loaded.source_roots {
+        if seen.insert((root.kind, root.path.clone())) {
+            merged.push(root.clone());
+        }
+    }
+    loaded.source_roots = merged;
+
+    loaded
+}
+
 fn reload_project_and_sync(
     workspace_root: &Path,
     changed_files: &[PathBuf],
@@ -2174,6 +2436,8 @@ fn reload_project_and_sync(
     project_state: &Arc<Mutex<ProjectState>>,
     watch_config: &Arc<RwLock<WatchConfig>>,
     watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
+    subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    build_runner: &Arc<dyn CommandRunner>,
 ) -> Result<()> {
     let (previous_config, mut options, previous_classpath_fingerprint, previous_jdk_fingerprint) = {
         let state = project_state
@@ -2212,19 +2476,60 @@ fn reload_project_and_sync(
         changed_files
     };
 
-    let loaded = match nova_project::reload_project(base_config, &mut options, effective_changed_files)
-    {
-        Ok(config) => config,
-        Err(ProjectError::UnknownProjectType { .. }) => fallback_project_config(workspace_root),
-        Err(err) => {
-            return Err(anyhow::Error::new(err)).with_context(|| {
-                format!(
-                    "failed to load project configuration at {}",
-                    workspace_root.display()
-                )
-            });
+    let mut loaded =
+        match nova_project::reload_project(base_config, &mut options, effective_changed_files) {
+            Ok(config) => config,
+            Err(ProjectError::UnknownProjectType { .. }) => fallback_project_config(workspace_root),
+            Err(err) => {
+                return Err(anyhow::Error::new(err)).with_context(|| {
+                    format!(
+                        "failed to load project configuration at {}",
+                        workspace_root.display()
+                    )
+                });
+            }
+        };
+
+    if matches!(
+        loaded.build_system,
+        BuildSystem::Maven | BuildSystem::Gradle
+    ) {
+        let refresh_build = should_refresh_build_config(changed_files);
+
+        if refresh_build {
+            let cache_dir = build_cache_dir(workspace_root, query_db);
+            let build = BuildManager::with_runner(cache_dir, Arc::clone(build_runner));
+
+            let compile_config = match loaded.build_system {
+                BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
+                BuildSystem::Gradle => build.java_compile_config_gradle(workspace_root, None),
+                _ => unreachable!("build config refresh only applies to Maven/Gradle"),
+            };
+
+            match compile_config {
+                Ok(cfg) => {
+                    // Preserve generated roots and other workspace metadata discovered by
+                    // `nova-project` while replacing classpath/module-path/source roots with the
+                    // build-tool-derived configuration.
+                    let base = loaded.clone();
+                    loaded = apply_java_compile_config_to_project_config(loaded, &cfg, &base);
+                }
+                Err(err) => {
+                    publish_to_subscribers(
+                        subscribers,
+                        WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                            "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
+                        ))),
+                    );
+                }
+            }
+        } else if previous_config.build_system == loaded.build_system
+            && previous_config.workspace_root == loaded.workspace_root
+            && !previous_config.workspace_root.as_os_str().is_empty()
+        {
+            loaded = reuse_previous_build_config_fields(loaded, previous_config.as_ref());
         }
-    };
+    }
 
     let had_classpath_fingerprint = previous_classpath_fingerprint.is_some();
     let config_changed = &loaded != previous_config.as_ref();
@@ -2302,7 +2607,7 @@ fn reload_project_and_sync(
         nova_config::load_for_workspace(workspace_root).unwrap_or_else(|_| {
             // If config loading fails, fall back to defaults; the workspace should still open.
             (nova_config::NovaConfig::default(), None)
-    });
+        });
     let jdk_config = {
         // Nova config paths are expected to be relative to the workspace root when possible.
         // `NovaConfig::jdk_config` returns raw `PathBuf`s from the config file, so resolve them
@@ -2680,6 +2985,7 @@ mod tests {
             workspace_root: project_root.clone(),
             persistence: persistence.clone(),
             memory,
+            build_runner: None,
         });
 
         engine.set_workspace_root(&project_root).unwrap();
@@ -2690,9 +2996,13 @@ mod tests {
             .await
             .expect("timed out waiting for indexing");
 
-        let cache_dir =
-            CacheDir::new(&project_root, CacheConfig { cache_root_override: Some(cache_root) })
-                .expect("cache dir should be computable");
+        let cache_dir = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root),
+            },
+        )
+        .expect("cache dir should be computable");
         let shards_root = cache_dir.indexes_dir().join("shards");
         let manifest_path = shards_root.join("manifest.txt");
         assert!(
@@ -2741,6 +3051,7 @@ mod tests {
             workspace_root: project_root.clone(),
             persistence: persistence.clone(),
             memory,
+            build_runner: None,
         });
         engine.set_workspace_root(&project_root).unwrap();
 
@@ -2770,15 +3081,12 @@ mod tests {
             workspace_root: project_root.clone(),
             persistence,
             memory,
+            build_runner: None,
         });
         engine.set_workspace_root(&project_root).unwrap();
 
         let main_path = project_root.join("src/Main.java");
-        engine.open_document(
-            VfsPath::local(main_path),
-            "class Dirty {}".to_string(),
-            1,
-        );
+        engine.open_document(VfsPath::local(main_path), "class Dirty {}".to_string(), 1);
 
         engine.query_db.clear_query_stats();
 
@@ -2896,7 +3204,11 @@ mod tests {
             BackgroundIndexingMode::Reduced
         );
 
-        let all_files = vec![FileId::from_raw(1), FileId::from_raw(2), FileId::from_raw(3)];
+        let all_files = vec![
+            FileId::from_raw(1),
+            FileId::from_raw(2),
+            FileId::from_raw(3),
+        ];
         let open_files: HashSet<FileId> = HashSet::from([FileId::from_raw(2)]);
         let files = WorkspaceEngine::background_indexing_plan(
             report.degraded.background_indexing,
@@ -2916,6 +3228,7 @@ mod tests {
                 cache: CacheConfig::from_env(),
             },
             memory,
+            build_runner: None,
         })
     }
 
@@ -3000,6 +3313,7 @@ mod tests {
             workspace_root: PathBuf::new(),
             persistence: PersistenceConfig::default(),
             memory: manager.clone(),
+            build_runner: None,
         });
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3025,7 +3339,10 @@ mod tests {
     fn watch_roots_prune_nested_external_roots() {
         let workspace_root = PathBuf::from("/ws");
         let mut config = WatchConfig::new(workspace_root.clone());
-        config.source_roots = vec![PathBuf::from("/ext/src"), PathBuf::from("/ext/src/generated")];
+        config.source_roots = vec![
+            PathBuf::from("/ext/src"),
+            PathBuf::from("/ext/src/generated"),
+        ];
 
         let roots = compute_watch_roots(&workspace_root, &config);
         assert_eq!(
@@ -3042,12 +3359,16 @@ mod tests {
         let workspace_root = PathBuf::from("/ws");
 
         let mut config_a = WatchConfig::new(workspace_root.clone());
-        config_a.source_roots =
-            vec![PathBuf::from("/ext/src"), PathBuf::from("/ext/src/generated")];
+        config_a.source_roots = vec![
+            PathBuf::from("/ext/src"),
+            PathBuf::from("/ext/src/generated"),
+        ];
 
         let mut config_b = WatchConfig::new(workspace_root.clone());
-        config_b.source_roots =
-            vec![PathBuf::from("/ext/src/generated"), PathBuf::from("/ext/src")];
+        config_b.source_roots = vec![
+            PathBuf::from("/ext/src/generated"),
+            PathBuf::from("/ext/src"),
+        ];
 
         assert_eq!(
             compute_watch_roots(&workspace_root, &config_a),
@@ -3127,6 +3448,7 @@ mod tests {
             workspace_root: PathBuf::new(),
             persistence: PersistenceConfig::from_env(),
             memory: memory.clone(),
+            build_runner: None,
         });
 
         engine.indexes_evictor.replace_indexes(indexes);
@@ -3180,7 +3502,10 @@ mod tests {
 
         let mut watch_config = WatchConfig::new(workspace_root.clone());
         watch_config.nova_config_path = nova_config::discover_config_path(&workspace_root);
-        assert_eq!(watch_config.nova_config_path.as_deref(), Some(config_path.as_path()));
+        assert_eq!(
+            watch_config.nova_config_path.as_deref(),
+            Some(config_path.as_path())
+        );
 
         let roots = compute_watch_roots(&workspace_root, &watch_config);
         assert!(roots.contains(&(workspace_root.clone(), WatchMode::Recursive)));
@@ -3252,7 +3577,10 @@ mod tests {
 
         let expected_rel_path = normalize_rel_path("src/./Main.java");
         engine.query_db.with_snapshot(|snap| {
-            assert_eq!(snap.file_rel_path(file_id).as_str(), expected_rel_path.as_str());
+            assert_eq!(
+                snap.file_rel_path(file_id).as_str(),
+                expected_rel_path.as_str()
+            );
 
             let file_path = snap.file_path(file_id).expect("file_path should be set");
             assert!(!file_path.is_empty());
@@ -3457,6 +3785,7 @@ mod tests {
                 cache: CacheConfig::from_env(),
             },
             memory: memory.clone(),
+            build_runner: None,
         });
         let baseline = overlay_bytes(&memory);
 
@@ -3653,14 +3982,12 @@ mod tests {
                 cache: CacheConfig::from_env(),
             },
             memory,
+            build_runner: None,
         });
         engine.set_workspace_root(&root).unwrap();
 
-        let file_id = engine.open_document(
-            VfsPath::local(file_path),
-            "class Main {}".to_string(),
-            1,
-        );
+        let file_id =
+            engine.open_document(VfsPath::local(file_path), "class Main {}".to_string(), 1);
         engine.query_db.with_snapshot(|snap| {
             assert!(
                 !snap.file_is_dirty(file_id),
@@ -3798,6 +4125,7 @@ mod tests {
                 cache: CacheConfig::from_env(),
             },
             memory,
+            build_runner: None,
         });
         {
             let mut state = engine
@@ -4092,6 +4420,264 @@ mod tests {
     }
 
     #[test]
+    fn maven_build_integration_populates_classpath_from_nova_build() {
+        use std::{collections::HashMap, process::ExitStatus};
+
+        #[derive(Debug)]
+        struct MavenEvaluateRoutingRunner {
+            outputs: HashMap<String, nova_build::CommandOutput>,
+        }
+
+        impl MavenEvaluateRoutingRunner {
+            fn new(outputs: HashMap<String, nova_build::CommandOutput>) -> Self {
+                Self { outputs }
+            }
+        }
+
+        impl nova_build::CommandRunner for MavenEvaluateRoutingRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &Path,
+                args: &[String],
+            ) -> std::io::Result<nova_build::CommandOutput> {
+                let expression = args
+                    .iter()
+                    .find_map(|arg| arg.strip_prefix("-Dexpression="))
+                    .unwrap_or_default();
+
+                Ok(self.outputs.get(expression).cloned().unwrap_or_else(|| {
+                    nova_build::CommandOutput {
+                        status: success_status(),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        truncated: false,
+                    }
+                }))
+            }
+        }
+
+        fn success_status() -> ExitStatus {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+        }
+
+        fn list_output(values: &[&str]) -> nova_build::CommandOutput {
+            nova_build::CommandOutput {
+                status: success_status(),
+                stdout: format!("[{}]\n", values.join(", ")),
+                stderr: String::new(),
+                truncated: false,
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            br#"<project><modelVersion>4.0.0</modelVersion></project>"#,
+        )
+        .unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let dep_jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/dep.jar")
+            .canonicalize()
+            .unwrap();
+        let dep_jar_str = dep_jar.to_string_lossy().to_string();
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            list_output(&[dep_jar_str.as_str()]),
+        );
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            list_output(&[dep_jar_str.as_str()]),
+        );
+        outputs.insert(
+            "project.compileSourceRoots".to_string(),
+            list_output(&["src/main/java"]),
+        );
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            list_output(&["src/test/java"]),
+        );
+
+        let runner: Arc<dyn nova_build::CommandRunner> =
+            Arc::new(MavenEvaluateRoutingRunner::new(outputs));
+
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+            build_runner: Some(runner),
+        });
+
+        engine.set_workspace_root(&root).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            let project = ProjectId::from_raw(0);
+            let config = snap.project_config(project);
+            assert_eq!(config.build_system, BuildSystem::Maven);
+            assert!(
+                config
+                    .classpath
+                    .iter()
+                    .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == dep_jar),
+                "expected build-derived classpath to include {}",
+                dep_jar.display()
+            );
+
+            let index = snap
+                .classpath_index(project)
+                .expect("classpath index should be built when nova-build provides jars");
+            assert!(
+                index.lookup_binary("com.example.dep.Foo").is_some(),
+                "expected classpath index to contain classes from {}",
+                dep_jar.display()
+            );
+        });
+    }
+
+    #[test]
+    fn gradle_build_integration_populates_classpath_from_nova_build() {
+        use std::process::ExitStatus;
+
+        #[derive(Debug)]
+        struct GradleConfigRunner {
+            stdout: String,
+        }
+
+        impl nova_build::CommandRunner for GradleConfigRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &Path,
+                _args: &[String],
+            ) -> std::io::Result<nova_build::CommandOutput> {
+                Ok(nova_build::CommandOutput {
+                    status: success_status(),
+                    stdout: self.stdout.clone(),
+                    stderr: String::new(),
+                    truncated: false,
+                })
+            }
+        }
+
+        fn success_status() -> ExitStatus {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
+        fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let dep_jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/dep.jar")
+            .canonicalize()
+            .unwrap();
+
+        let json = serde_json::json!({
+            "projectDir": root.to_string_lossy(),
+            "compileClasspath": [dep_jar.to_string_lossy()],
+            "testCompileClasspath": [],
+            "mainSourceRoots": [root.join("src/main/java").to_string_lossy()],
+            "testSourceRoots": [],
+            "mainOutputDirs": [root.join("build/classes/java/main").to_string_lossy()],
+            "testOutputDirs": [root.join("build/classes/java/test").to_string_lossy()],
+            "sourceCompatibility": "17",
+            "targetCompatibility": "17",
+            "toolchainLanguageVersion": "17",
+            "compileCompilerArgs": [],
+            "testCompilerArgs": [],
+            "inferModulePath": false,
+        });
+
+        let stdout = format!(
+            "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+            serde_json::to_string(&json).unwrap()
+        );
+
+        let runner: Arc<dyn nova_build::CommandRunner> = Arc::new(GradleConfigRunner { stdout });
+
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+            build_runner: Some(runner),
+        });
+
+        engine.set_workspace_root(&root).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            let project = ProjectId::from_raw(0);
+            let config = snap.project_config(project);
+            assert_eq!(config.build_system, BuildSystem::Gradle);
+            assert!(
+                config
+                    .classpath
+                    .iter()
+                    .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == dep_jar),
+                "expected build-derived classpath to include {}",
+                dep_jar.display()
+            );
+
+            let index = snap
+                .classpath_index(project)
+                .expect("classpath index should be built when nova-build provides jars");
+            assert!(
+                index.lookup_binary("com.example.dep.Foo").is_some(),
+                "expected classpath index to contain classes from {}",
+                dep_jar.display()
+            );
+        });
+    }
+
+    #[test]
     fn project_reload_rebuilds_classpath_index_when_target_release_changes() {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
@@ -4153,11 +4739,7 @@ mod tests {
         fs::write(src_dir.join("Main.java"), "class Main {}".as_bytes()).unwrap();
 
         let module_info = root.join("module-info.java");
-        fs::write(
-            &module_info,
-            "module com.example.one { }".as_bytes(),
-        )
-        .unwrap();
+        fs::write(&module_info, "module com.example.one { }".as_bytes()).unwrap();
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
@@ -4172,7 +4754,10 @@ mod tests {
 
         engine.query_db.with_snapshot(|snap| {
             let config = snap.project_config(project);
-            let workspace = config.jpms_workspace.as_ref().expect("jpms workspace present");
+            let workspace = config
+                .jpms_workspace
+                .as_ref()
+                .expect("jpms workspace present");
             assert!(workspace.graph.get(&old_name).is_some());
         });
 
@@ -4184,7 +4769,10 @@ mod tests {
             assert_eq!(config.jpms_modules.len(), 1);
             assert_eq!(config.jpms_modules[0].name.as_str(), "com.example.two");
 
-            let workspace = config.jpms_workspace.as_ref().expect("jpms workspace present");
+            let workspace = config
+                .jpms_workspace
+                .as_ref()
+                .expect("jpms workspace present");
             assert!(workspace.graph.get(&old_name).is_none());
             assert!(workspace.graph.get(&config.jpms_modules[0].name).is_some());
         });
@@ -4297,11 +4885,14 @@ mod tests {
             .expect("workspace watch config lock poisoned")
             .clone();
         assert!(
-            !stale_config.source_roots.is_empty() || !stale_config.generated_source_roots.is_empty(),
+            !stale_config.source_roots.is_empty()
+                || !stale_config.generated_source_roots.is_empty(),
             "expected Maven workspace to have configured roots"
         );
         assert!(
-            !stale_config.generated_source_roots.contains(&generated_root),
+            !stale_config
+                .generated_source_roots
+                .contains(&generated_root),
             "test expects custom generated root to be absent before reload"
         );
         assert_eq!(categorize_event(&stale_config, &event), None);
@@ -4321,7 +4912,11 @@ mod tests {
             }]
         });
         let snapshot_path = snapshot_dir.join("generated-roots.json");
-        fs::write(&snapshot_path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
+        fs::write(
+            &snapshot_path,
+            serde_json::to_string_pretty(&snapshot).unwrap(),
+        )
+        .unwrap();
 
         engine.reload_project_now(&[snapshot_path]).unwrap();
 
@@ -4331,7 +4926,9 @@ mod tests {
             .expect("workspace watch config lock poisoned")
             .clone();
         assert!(
-            current_config.generated_source_roots.contains(&generated_root),
+            current_config
+                .generated_source_roots
+                .contains(&generated_root),
             "expected watcher config to include newly generated root"
         );
         assert_eq!(
@@ -4446,12 +5043,19 @@ mod tests {
         let engine = workspace.engine_for_tests();
         let vfs_path = VfsPath::local(file.clone());
 
-        let file_id = workspace.open_document(vfs_path.clone(), "class Main { int x; }".to_string(), 1);
-        let text_arc = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let file_id =
+            workspace.open_document(vfs_path.clone(), "class Main { int x; }".to_string(), 1);
+        let text_arc = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
 
-        let first = engine.query_db.with_snapshot(|snap| snap.parse_java(file_id));
+        let first = engine
+            .query_db
+            .with_snapshot(|snap| snap.parse_java(file_id));
         engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
-        let second = engine.query_db.with_snapshot(|snap| snap.parse_java(file_id));
+        let second = engine
+            .query_db
+            .with_snapshot(|snap| snap.parse_java(file_id));
         assert!(
             Arc::ptr_eq(&first, &second),
             "expected parse_java results to be reused for open documents across memo eviction"
@@ -4461,7 +5065,9 @@ mod tests {
         workspace.close_document(&vfs_path);
         engine.query_db.set_file_content(file_id, text_arc);
         engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
-        let third = engine.query_db.with_snapshot(|snap| snap.parse_java(file_id));
+        let third = engine
+            .query_db
+            .with_snapshot(|snap| snap.parse_java(file_id));
         assert!(
             !Arc::ptr_eq(&first, &third),
             "expected parse_java results to be recomputed for closed documents after memo eviction"
@@ -4472,7 +5078,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
         fs::create_dir_all(project_root.join("src")).unwrap();
-        fs::write(project_root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let project_root = project_root.canonicalize().unwrap();
         let file = project_root.join("src/Main.java");
@@ -4494,7 +5104,9 @@ mod tests {
         fs::write(&file, updated.as_bytes()).unwrap();
         handle
             .push(WatchEvent::Changes {
-                changes: vec![FileChange::Modified { path: vfs_path.clone() }],
+                changes: vec![FileChange::Modified {
+                    path: vfs_path.clone(),
+                }],
             })
             .unwrap();
 

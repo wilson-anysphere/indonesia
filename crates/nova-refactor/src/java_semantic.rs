@@ -377,7 +377,8 @@ impl RefactorJavaDatabase {
 
         // Populate method-group mappings for overloads and attach additional declaration spans.
         for group in &method_groups {
-            let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(group.representative))
+            let Some(&symbol) =
+                resolution_to_symbol.get(&ResolutionKey::Method(group.representative))
             else {
                 continue;
             };
@@ -550,9 +551,7 @@ fn refactor_local_scope(
     local_scope: nova_resolve::ScopeId,
 ) -> nova_resolve::ScopeId {
     let (owner, let_stmt_id) = match scope_result.scopes.scope(local_scope).kind() {
-        ScopeKind::Block { owner, stmt }
-            if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. }) =>
-        {
+        ScopeKind::Block { owner, stmt } if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. }) => {
             (*owner, *stmt)
         }
         _ => {
@@ -722,13 +721,10 @@ fn collect_type_candidates(
             }
             Member::Constructor(ctor_id) => {
                 let ctor = tree.constructor(*ctor_id);
-                type_constructor_refs
-                    .entry(item)
-                    .or_default()
-                    .push((
-                        file.clone(),
-                        TextRange::new(ctor.name_range.start, ctor.name_range.end),
-                    ));
+                type_constructor_refs.entry(item).or_default().push((
+                    file.clone(),
+                    TextRange::new(ctor.name_range.start, ctor.name_range.end),
+                ));
             }
             Member::Type(child) => {
                 let child_id = item_to_item_id(*child);
@@ -751,7 +747,11 @@ fn collect_type_candidates(
 
     // Method groups (overloads) – one symbol per (containing type, method name).
     for (name, mut methods) in methods_by_name {
-        methods.sort_by(|a, b| a.1.start.cmp(&b.1.start).then_with(|| a.1.end.cmp(&b.1.end)));
+        methods.sort_by(|a, b| {
+            a.1.start
+                .cmp(&b.1.start)
+                .then_with(|| a.1.end.cmp(&b.1.end))
+        });
 
         let Some(&(representative, rep_range)) = methods.first() else {
             continue;
@@ -1031,8 +1031,11 @@ fn record_body_references(
         Some(TypeResolution::Source(item))
     }
             hir::Expr::Name { name, .. } => {
-                let resolved =
-                    resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))?;
+                let resolved = resolver.resolve_name(
+                    &scope_result.scopes,
+                    scope,
+                    &Name::from(name.as_str()),
+                )?;
                 match resolved {
                     Resolution::Type(ty) => Some(ty),
                     Resolution::Local(local_ref) => {
@@ -1214,11 +1217,7 @@ fn record_body_references(
                 let Some(def) = workspace_def_map.type_def(item) else {
                     return;
                 };
-                let Some(field) = def
-                    .fields
-                    .get(&Name::from(name.as_str()))
-                    .map(|f| f.id)
-                else {
+                let Some(field) = def.fields.get(&Name::from(name.as_str())).map(|f| f.id) else {
                     return;
                 };
                 let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
@@ -1263,8 +1262,7 @@ fn record_body_references(
                     let Some(method) = method else {
                         return;
                     };
-                    let Some(&symbol) =
-                        resolution_to_symbol.get(&ResolutionKey::Method(method))
+                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
                     else {
                         return;
                     };
@@ -1316,9 +1314,15 @@ fn record_body_references(
                 name_range,
                 ..
             } => {
-                let Some(receiver_ty) =
-                    receiver_type(owner, body, *receiver, scope_result, resolver, item_trees, tree)
-                else {
+                let Some(receiver_ty) = receiver_type(
+                    owner,
+                    body,
+                    *receiver,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    tree,
+                ) else {
                     return;
                 };
                 let TypeResolution::Source(item) = receiver_ty else {
@@ -1377,7 +1381,9 @@ fn record_body_references(
                 }
             }
             hir::Stmt::While { body: inner, .. } => walk_stmt(body, *inner, f),
-            hir::Stmt::For { init, body: inner, .. } => {
+            hir::Stmt::For {
+                init, body: inner, ..
+            } => {
                 for stmt in init {
                     walk_stmt(body, *stmt, f);
                 }

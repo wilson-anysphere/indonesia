@@ -18,6 +18,7 @@ nova-ide = { path = "../nova-ide" }
 nova-index = { path = "../nova-index" }
 nova-memory = { path = "../nova-memory" }
 nova-project = { path = "../nova-project" }
+nova-build = { path = "../nova-build" }
 nova-scheduler = { path = "../nova-scheduler" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }

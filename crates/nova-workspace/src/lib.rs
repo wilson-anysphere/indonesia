@@ -73,6 +73,7 @@ impl Workspace {
                 cache: CacheConfig::from_env(),
             },
             memory: memory.clone(),
+            build_runner: None,
         };
         Self {
             root: PathBuf::new(),
@@ -1735,6 +1736,7 @@ impl Workspace {
             workspace_root: root.clone(),
             persistence,
             memory: memory.clone(),
+            build_runner: None,
         };
         let engine = Arc::new(engine::WorkspaceEngine::new(engine_config));
         engine
