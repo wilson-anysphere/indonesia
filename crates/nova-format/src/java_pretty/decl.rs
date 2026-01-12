@@ -186,6 +186,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                     pending_ws = Some(pending_ws.map_or(new_ws, |ws| ws.merge(new_ws)));
                 }
                 SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                    let had_ws = pending_ws.is_some();
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
                     }
@@ -196,6 +197,32 @@ impl<'a> JavaPrettyFormatter<'a> {
                         SyntaxKind::DocComment => CommentKind::Doc,
                         _ => unreachable!("unexpected comment token kind"),
                     };
+
+                    if kind == CommentKind::Line {
+                        // `fmt_comment` always terminates line comments with a hardline. When
+                        // emitting verbatim tokens for brace bodies we want the caller to control
+                        // the final newline (e.g. avoid an extra blank line before `}`), so we
+                        // print the comment text directly and enqueue a pending newline.
+                        if has_content && !had_ws {
+                            // Ensure we don't glue `//` to the previous token when the source
+                            // omits whitespace (`int x;// comment`).
+                            parts.push(Doc::text(" "));
+                        }
+
+                        let raw = self
+                            .source
+                            .get(tok_start as usize..tok_end as usize)
+                            .unwrap_or("");
+                        let text = raw.trim_end_matches(['\r', '\n']);
+                        parts.push(Doc::text(text));
+                        has_content = true;
+
+                        let newline = PendingWs::Hardlines(1);
+                        pending_ws =
+                            Some(pending_ws.map_or(newline, |existing| existing.merge(newline)));
+                        consumes_next_line_break = false;
+                        continue;
+                    }
 
                     let comment = Comment {
                         kind,
@@ -209,12 +236,11 @@ impl<'a> JavaPrettyFormatter<'a> {
 
                     parts.push(fmt_comment(&ctx, &comment, self.source));
                     has_content = true;
-                    consumes_next_line_break = matches!(kind, CommentKind::Line | CommentKind::Doc);
- 
+                    consumes_next_line_break = kind == CommentKind::Doc;
                     // Ensure block comments cannot glue to the following token when the source has
                     // no whitespace between them (e.g. `/* comment */int x;`).
                     //
-                    // Note: doc/line comments already end with a hardline via `fmt_comment`.
+                    // Note: doc comments already end with a hardline via `fmt_comment`.
                     if kind == CommentKind::Block {
                         let ws = PendingWs::Space;
                         pending_ws = Some(pending_ws.map_or(ws, |existing| existing.merge(ws)));
@@ -224,12 +250,6 @@ impl<'a> JavaPrettyFormatter<'a> {
                     consumes_next_line_break = false;
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
-                    }
-
-                    if tok.kind() == SyntaxKind::LineComment && has_content && pending_ws.is_none() {
-                        // Ensure we don't glue `//` to the previous token when the source omits
-                        // whitespace (`int x;// comment`).
-                        parts.push(Doc::text(" "));
                     }
 
                     let token_doc = match tok.kind() {
