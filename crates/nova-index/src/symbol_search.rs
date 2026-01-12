@@ -17,6 +17,11 @@ thread_local! {
         RefCell::new(TrigramCandidateScratch::default());
 }
 
+#[cfg(feature = "unicode")]
+thread_local! {
+    static UNICODE_QUERY_BUF: RefCell<String> = RefCell::new(String::new());
+}
+
 /// A single symbol definition within the workspace.
 ///
 /// This is re-exported from `nova-index` as [`crate::SearchSymbol`].
@@ -216,6 +221,50 @@ fn starts_with_case_insensitive(candidate: &[u8], query: &[u8]) -> bool {
     true
 }
 
+#[cfg(feature = "unicode")]
+const UNICODE_PREFIX1_BUCKETS: usize = 1024;
+
+#[cfg(feature = "unicode")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prefix1Key {
+    Ascii(u8),
+    Unicode(usize),
+}
+
+#[cfg(feature = "unicode")]
+#[inline]
+fn hash_prefix1_unicode(ch: char) -> usize {
+    // Simple stable 32-bit FNV-1a hash (same constants as `nova-fuzzy`'s trigram hashing).
+    const OFFSET_BASIS: u32 = 0x811c9dc5;
+    const PRIME: u32 = 0x0100_0193;
+
+    let mut h = OFFSET_BASIS;
+    for byte in (ch as u32).to_le_bytes() {
+        h ^= byte as u32;
+        h = h.wrapping_mul(PRIME);
+    }
+
+    // `UNICODE_PREFIX1_BUCKETS` is a power of two.
+    (h as usize) & (UNICODE_PREFIX1_BUCKETS - 1)
+}
+
+#[cfg(feature = "unicode")]
+#[inline]
+fn prefix1_key_from_first_folded_char(ch: char) -> Prefix1Key {
+    if ch.is_ascii() {
+        Prefix1Key::Ascii((ch as u8).to_ascii_lowercase())
+    } else {
+        Prefix1Key::Unicode(hash_prefix1_unicode(ch))
+    }
+}
+
+#[cfg(feature = "unicode")]
+#[inline]
+fn prefix1_key_for_candidate(s: &str) -> Option<Prefix1Key> {
+    let ch = nova_fuzzy::nfkc_casefold_first_char(s)?;
+    Some(prefix1_key_from_first_folded_char(ch))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateStrategy {
     Prefix,
@@ -239,14 +288,23 @@ pub struct SymbolSearchIndex {
     symbols: Vec<SymbolEntry>,
     trigram: TrigramIndex,
     /// Maps first ASCII-lowercased byte (from either `name` or `qualified_name`) to symbol ids.
-    prefix1: Vec<Vec<SymbolId>>,
+    ///
+    /// When `feature = "unicode"` is enabled, this is keyed by the *first Unicode scalar
+    /// value after NFKC normalization + Unicode case folding* if that folded value is ASCII.
+    /// Non-ASCII folded prefixes live in [`Self::prefix1_unicode`].
+    prefix1_ascii: Vec<Vec<SymbolId>>,
+    /// Maps first folded Unicode scalar value (NFKC + case fold) hashed into a small keyspace.
+    #[cfg(feature = "unicode")]
+    prefix1_unicode: Vec<Vec<SymbolId>>,
 }
 
 impl SymbolSearchIndex {
     pub fn build(symbols: Vec<Symbol>) -> Self {
         let mut entries = Vec::with_capacity(symbols.len());
         let mut builder = TrigramIndexBuilder::new();
-        let mut prefix1: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
+        let mut prefix1_ascii: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
+        #[cfg(feature = "unicode")]
+        let mut prefix1_unicode: Vec<Vec<SymbolId>> = vec![Vec::new(); UNICODE_PREFIX1_BUCKETS];
 
         for (id, sym) in symbols.into_iter().enumerate() {
             let entry = SymbolEntry::new(sym);
@@ -260,27 +318,69 @@ impl SymbolSearchIndex {
                 builder.insert(id, &entry.symbol.name);
             }
 
-            let name_key = entry
-                .symbol
-                .name
-                .as_bytes()
-                .first()
-                .map(|&b0| b0.to_ascii_lowercase());
-
-            if let Some(key) = name_key {
-                prefix1[key as usize].push(id);
-            }
-
-            if entry.qualified_name_differs {
-                let qualified_key = entry
+            #[cfg(not(feature = "unicode"))]
+            {
+                let name_key = entry
                     .symbol
-                    .qualified_name
+                    .name
                     .as_bytes()
                     .first()
                     .map(|&b0| b0.to_ascii_lowercase());
-                if let Some(key) = qualified_key {
-                    if Some(key) != name_key {
-                        prefix1[key as usize].push(id);
+                if let Some(key) = name_key {
+                    prefix1_ascii[key as usize].push(id);
+                }
+
+                if entry.qualified_name_differs {
+                    let qualified_key = entry
+                        .symbol
+                        .qualified_name
+                        .as_bytes()
+                        .first()
+                        .map(|&b0| b0.to_ascii_lowercase());
+                    if let Some(key) = qualified_key {
+                        if Some(key) != name_key {
+                            prefix1_ascii[key as usize].push(id);
+                        }
+                    }
+                }
+            }
+
+            #[cfg(feature = "unicode")]
+            {
+                #[inline]
+                fn push_prefix_id(
+                    ascii: &mut [Vec<SymbolId>],
+                    unicode: &mut [Vec<SymbolId>],
+                    key: Prefix1Key,
+                    id: SymbolId,
+                ) {
+                    match key {
+                        Prefix1Key::Ascii(b) => ascii[b as usize].push(id),
+                        Prefix1Key::Unicode(ix) => unicode[ix].push(id),
+                    }
+                }
+
+                let name_key = prefix1_key_for_candidate(&entry.symbol.name);
+                if let Some(key) = name_key {
+                    push_prefix_id(
+                        prefix1_ascii.as_mut_slice(),
+                        prefix1_unicode.as_mut_slice(),
+                        key,
+                        id,
+                    );
+                }
+
+                if entry.qualified_name_differs {
+                    let qualified_key = prefix1_key_for_candidate(&entry.symbol.qualified_name);
+                    if let Some(key) = qualified_key {
+                        if Some(key) != name_key {
+                            push_prefix_id(
+                                prefix1_ascii.as_mut_slice(),
+                                prefix1_unicode.as_mut_slice(),
+                                key,
+                                id,
+                            );
+                        }
                     }
                 }
             }
@@ -293,7 +393,9 @@ impl SymbolSearchIndex {
         Self {
             symbols: entries,
             trigram,
-            prefix1,
+            prefix1_ascii,
+            #[cfg(feature = "unicode")]
+            prefix1_unicode,
         }
     }
 
@@ -315,9 +417,20 @@ impl SymbolSearchIndex {
 
         bytes = bytes.saturating_add(self.trigram.estimated_bytes());
 
-        bytes = bytes.saturating_add((self.prefix1.capacity() * size_of::<Vec<SymbolId>>()) as u64);
-        for bucket in &self.prefix1 {
+        bytes = bytes
+            .saturating_add((self.prefix1_ascii.capacity() * size_of::<Vec<SymbolId>>()) as u64);
+        for bucket in &self.prefix1_ascii {
             bytes = bytes.saturating_add((bucket.capacity() * size_of::<SymbolId>()) as u64);
+        }
+
+        #[cfg(feature = "unicode")]
+        {
+            bytes = bytes.saturating_add(
+                (self.prefix1_unicode.capacity() * size_of::<Vec<SymbolId>>()) as u64,
+            );
+            for bucket in &self.prefix1_unicode {
+                bytes = bytes.saturating_add((bucket.capacity() * size_of::<SymbolId>()) as u64);
+            }
         }
 
         bytes
@@ -514,6 +627,7 @@ impl SymbolSearchIndex {
         self.search_with_stats(query, limit).0
     }
 
+    #[cfg(not(feature = "unicode"))]
     fn candidate_source<'a>(
         &'a self,
         query: &str,
@@ -527,7 +641,7 @@ impl SymbolSearchIndex {
 
         if q_bytes.len() < 3 {
             let key = q_bytes[0].to_ascii_lowercase();
-            let bucket = &self.prefix1[key as usize];
+            let bucket = &self.prefix1_ascii[key as usize];
             if !bucket.is_empty() {
                 (
                     CandidateStrategy::Prefix,
@@ -549,7 +663,105 @@ impl SymbolSearchIndex {
                 // substring match exists. Fall back to a (bounded) scan to still
                 // support acronym-style queries.
                 let key = q_bytes[0].to_ascii_lowercase();
-                let bucket = &self.prefix1[key as usize];
+                let bucket = &self.prefix1_ascii[key as usize];
+                if !bucket.is_empty() {
+                    (
+                        CandidateStrategy::Prefix,
+                        bucket.len(),
+                        CandidateSource::Ids(bucket),
+                    )
+                } else {
+                    let scan_limit = 50_000usize.min(self.symbols.len());
+                    (
+                        CandidateStrategy::FullScan,
+                        scan_limit,
+                        CandidateSource::FullScan(scan_limit),
+                    )
+                }
+            } else {
+                (
+                    CandidateStrategy::Trigram,
+                    trigram_candidates.len(),
+                    CandidateSource::Ids(trigram_candidates),
+                )
+            }
+        }
+    }
+
+    #[cfg(feature = "unicode")]
+    fn candidate_source<'a>(
+        &'a self,
+        query: &str,
+        q_bytes: &[u8],
+        trigram_scratch: &'a mut TrigramCandidateScratch,
+    ) -> (CandidateStrategy, usize, CandidateSource<'a>) {
+        debug_assert!(
+            !q_bytes.is_empty(),
+            "candidate_source should not be called for empty queries"
+        );
+
+        #[inline]
+        fn bucket_for_key<'a>(
+            index: &'a SymbolSearchIndex,
+            key: Prefix1Key,
+        ) -> &'a Vec<SymbolId> {
+            match key {
+                Prefix1Key::Ascii(b) => &index.prefix1_ascii[b as usize],
+                Prefix1Key::Unicode(ix) => &index.prefix1_unicode[ix],
+            }
+        }
+
+        // Use the same NFKC+casefold preprocessing as `nova-fuzzy`'s Unicode matcher
+        // to decide whether trigram filtering can apply (>= 3 folded graphemes)
+        // and to compute the first-character prefix bucket key.
+        let (first_char, query_len) = if query.is_ascii() {
+            (
+                Some(q_bytes[0].to_ascii_lowercase() as char),
+                q_bytes.len(),
+            )
+        } else {
+            UNICODE_QUERY_BUF.with(|buf| {
+                let mut buf = buf.borrow_mut();
+                nova_fuzzy::nfkc_casefold_first_char_and_grapheme_len(query, &mut buf)
+            })
+        };
+
+        let Some(first_char) = first_char else {
+            // The query is non-empty but folding could theoretically yield an empty
+            // string in degenerate cases. Fall back to a bounded scan.
+            let scan_limit = 50_000usize.min(self.symbols.len());
+            return (
+                CandidateStrategy::FullScan,
+                scan_limit,
+                CandidateSource::FullScan(scan_limit),
+            );
+        };
+
+        let key = prefix1_key_from_first_folded_char(first_char);
+
+        if query_len < 3 {
+            let bucket = bucket_for_key(self, key);
+            if !bucket.is_empty() {
+                (
+                    CandidateStrategy::Prefix,
+                    bucket.len(),
+                    CandidateSource::Ids(bucket),
+                )
+            } else {
+                let scan_limit = 50_000usize.min(self.symbols.len());
+                (
+                    CandidateStrategy::FullScan,
+                    scan_limit,
+                    CandidateSource::FullScan(scan_limit),
+                )
+            }
+        } else {
+            let trigram_candidates = self.trigram.candidates_with_scratch(query, trigram_scratch);
+            if trigram_candidates.is_empty() {
+                // For longer queries, a missing trigram intersection likely means no
+                // substring match exists. Fall back to a (bounded) scan to still
+                // support acronym-style queries.
+                let bucket = bucket_for_key(self, key);
                 if !bucket.is_empty() {
                     (
                         CandidateStrategy::Prefix,
@@ -1077,6 +1289,55 @@ mod tests {
         let (_results, stats) = index.search_with_stats("Hash", 10);
         assert_eq!(stats.strategy, CandidateStrategy::Trigram);
         assert!(stats.candidates_considered > 0);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_casefold_prefix_match_strasse() {
+        // With `feature = "unicode"`, Unicode case folding should make "strasse"
+        // match "Straße" as a prefix (ß expands to "ss").
+        let index = SymbolSearchIndex::build(vec![sym("Straße", "Straße")]);
+
+        let results = index.search("strasse", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "Straße");
+        assert_eq!(results[0].score.kind, MatchKind::Prefix);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_short_queries_use_prefix_strategy_by_graphemes() {
+        // "👩‍💻" is a single extended grapheme cluster but multiple UTF-8 bytes and
+        // multiple Unicode scalar values. We should still treat it as a short query
+        // and skip trigram filtering.
+        let index = SymbolSearchIndex::build(vec![sym("👩‍💻Thing", "👩‍💻Thing")]);
+
+        let (results, stats) = index.search_with_stats("👩‍💻", 10);
+        assert_eq!(stats.strategy, CandidateStrategy::Prefix);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "👩‍💻Thing");
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_prefix_bucket_uses_folded_first_character() {
+        // Regression test for the prefix bucket keying logic:
+        // - "ßeta" folds to "sseta" and should be bucketed under 's'.
+        // - The query "s" must still find the match, even if the matching symbol is
+        //   beyond the bounded full-scan window.
+        let mut symbols = Vec::with_capacity(50_001);
+        for _ in 0..50_000 {
+            symbols.push(sym("aaaa", "aaaa"));
+        }
+        symbols.push(sym("ßeta", "ßeta"));
+
+        let index = SymbolSearchIndex::build(symbols);
+        let (results, stats) = index.search_with_stats("s", 10);
+        assert_eq!(stats.strategy, CandidateStrategy::Prefix);
+        assert!(
+            results.iter().any(|r| r.symbol.name == "ßeta"),
+            "expected folded-prefix query to match ßeta, got: {results:?}"
+        );
     }
 
     #[test]

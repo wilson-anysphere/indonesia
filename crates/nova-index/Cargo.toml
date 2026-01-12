@@ -23,6 +23,11 @@ thiserror = "1"
 tempfile = "3"
 criterion = "0.5"
 
+[features]
+# Enables Unicode-aware workspace symbol search by forwarding to `nova-fuzzy`'s
+# Unicode matching implementation.
+unicode = ["nova-fuzzy/unicode"]
+
 [[bench]]
 name = "mmap_storage"
 harness = false

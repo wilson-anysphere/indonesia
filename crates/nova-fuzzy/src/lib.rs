@@ -39,3 +39,51 @@ mod unicode_folding;
 
 pub use scoring::{fuzzy_match, FuzzyMatcher, MatchKind, MatchScore, RankKey};
 pub use trigram::{Trigram, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
+
+#[cfg(feature = "unicode")]
+use unicode_casefold::UnicodeCaseFold;
+#[cfg(feature = "unicode")]
+use unicode_normalization::UnicodeNormalization;
+#[cfg(feature = "unicode")]
+use unicode_segmentation::UnicodeSegmentation;
+
+/// Returns the first Unicode scalar value of `input` after NFKC normalization and
+/// Unicode case folding.
+///
+/// This is a small helper for higher-level indexing layers (e.g. prefix buckets)
+/// that need to stay consistent with `nova-fuzzy`'s Unicode matching semantics.
+#[cfg(feature = "unicode")]
+pub fn nfkc_casefold_first_char(input: &str) -> Option<char> {
+    if input.is_ascii() {
+        return input
+            .as_bytes()
+            .first()
+            .map(|&b0| b0.to_ascii_lowercase() as char);
+    }
+
+    input.nfkc().case_fold().next()
+}
+
+/// Returns `(first_char, grapheme_len)` for `input` after NFKC normalization and
+/// Unicode case folding.
+///
+/// The grapheme count is computed over the folded string using extended grapheme
+/// clusters (the same scoring unit used by the Unicode fuzzy matcher).
+#[cfg(feature = "unicode")]
+pub fn nfkc_casefold_first_char_and_grapheme_len(
+    input: &str,
+    buf: &mut String,
+) -> (Option<char>, usize) {
+    if input.is_ascii() {
+        let bytes = input.as_bytes();
+        let first = bytes
+            .first()
+            .map(|&b0| b0.to_ascii_lowercase() as char);
+        return (first, bytes.len());
+    }
+
+    unicode_folding::fold_nfkc_casefold(input, buf);
+    let first = buf.chars().next();
+    let grapheme_len = buf.graphemes(true).count();
+    (first, grapheme_len)
+}
