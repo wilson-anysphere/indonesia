@@ -1,0 +1,3 @@
+rootProject.name = 'gradle-multi-java-config'
+include ':app', ':lib'
+

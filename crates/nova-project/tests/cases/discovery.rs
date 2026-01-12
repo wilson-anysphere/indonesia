@@ -555,6 +555,25 @@ fn loads_gradle_custom_source_sets_workspace() {
 }
 
 #[test]
+fn loads_gradle_workspace_java_config_max_across_modules() {
+    let root = testdata_path("gradle-multi-java-config");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.java.source, JavaVersion(17));
+    assert_eq!(config.java.target, JavaVersion(17));
+
+    let config2 =
+        load_project_with_options(&root, &options).expect("load gradle project again");
+    assert_eq!(config, config2);
+}
+
+#[test]
 fn loads_gradle_toolchain_language_version() {
     let root = testdata_path("gradle-toolchain-only");
     let gradle_home = tempdir().expect("tempdir");

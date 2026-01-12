@@ -1,0 +1,7 @@
+plugins {
+    id 'java'
+}
+
+sourceCompatibility = '8'
+targetCompatibility = '8'
+

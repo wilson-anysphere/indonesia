@@ -1,0 +1,9 @@
+sourceCompatibility = '11'
+targetCompatibility = '11'
+
+allprojects {
+    repositories {
+        mavenCentral()
+    }
+}
+
