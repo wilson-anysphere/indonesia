@@ -710,8 +710,13 @@ pub struct InterfaceTypeInvokeMethodCall {
 // JDWP error codes (subset).
 const ERROR_THREAD_NOT_SUSPENDED: u16 = 13;
 const ERROR_NOT_IMPLEMENTED: u16 = 99;
-const THREAD_ID: u64 = 0x8000_0000_0000_1001;
-const WORKER_THREAD_ID: u64 = 0x1002;
+pub const THREAD_ID: u64 = 0x8000_0000_0000_1001;
+pub const WORKER_THREAD_ID: u64 = 0x1002;
+
+pub const TOP_LEVEL_THREAD_GROUP_ID: u64 = 0x8000_0000_0000_2001;
+pub const NESTED_THREAD_GROUP_ID: u64 = 0x2002;
+pub const TOP_LEVEL_THREAD_GROUP_NAME: &str = "mock-root";
+pub const NESTED_THREAD_GROUP_NAME: &str = "mock-nested";
 const FRAME_ID: u64 = 0x2001;
 const CLASS_ID: u64 = 0x3001;
 const FOO_CLASS_ID: u64 = 0x3002;
@@ -969,6 +974,13 @@ async fn handle_packet(
             }
             (0, w.into_vec())
         }
+        // VirtualMachine.TopLevelThreadGroups
+        (1, 5) => {
+            let mut w = JdwpWriter::new();
+            w.write_u32(1);
+            w.write_object_id(TOP_LEVEL_THREAD_GROUP_ID, sizes);
+            (0, w.into_vec())
+        }
         // VirtualMachine.ClassesBySignature
         (1, 2) => {
             let signature = r.read_string().unwrap_or_default();
@@ -1131,9 +1143,14 @@ async fn handle_packet(
         }
         // ThreadReference.Name
         (11, 1) => {
-            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let thread_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_string("main");
+            let name = match thread_id {
+                THREAD_ID => "main",
+                WORKER_THREAD_ID => "worker",
+                _ => "thread",
+            };
+            w.write_string(name);
             (0, w.into_vec())
         }
         // ThreadReference.Suspend
@@ -1155,6 +1172,13 @@ async fn handle_packet(
             // `ThreadStatus.MONITOR` + `SuspendStatus.SUSPENDED`.
             w.write_u32(3);
             w.write_u32(1);
+            (0, w.into_vec())
+        }
+        // ThreadReference.ThreadGroup
+        (11, 5) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_object_id(TOP_LEVEL_THREAD_GROUP_ID, sizes);
             (0, w.into_vec())
         }
         // ThreadReference.Frames
@@ -1245,6 +1269,52 @@ async fn handle_packet(
                 w.write_i32(2);
                 (0, w.into_vec())
             }
+        }
+        // ThreadGroupReference.Name
+        (12, 1) => {
+            let group_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            let name = match group_id {
+                TOP_LEVEL_THREAD_GROUP_ID => TOP_LEVEL_THREAD_GROUP_NAME,
+                NESTED_THREAD_GROUP_ID => NESTED_THREAD_GROUP_NAME,
+                _ => "unknown",
+            };
+            w.write_string(name);
+            (0, w.into_vec())
+        }
+        // ThreadGroupReference.Parent
+        (12, 2) => {
+            let group_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            let parent_id = match group_id {
+                NESTED_THREAD_GROUP_ID => TOP_LEVEL_THREAD_GROUP_ID,
+                _ => 0,
+            };
+            w.write_object_id(parent_id, sizes);
+            (0, w.into_vec())
+        }
+        // ThreadGroupReference.Children
+        (12, 3) => {
+            let group_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            match group_id {
+                TOP_LEVEL_THREAD_GROUP_ID => {
+                    w.write_u32(1);
+                    w.write_object_id(NESTED_THREAD_GROUP_ID, sizes);
+                    w.write_u32(2);
+                    w.write_object_id(THREAD_ID, sizes);
+                    w.write_object_id(WORKER_THREAD_ID, sizes);
+                }
+                NESTED_THREAD_GROUP_ID => {
+                    w.write_u32(0);
+                    w.write_u32(0);
+                }
+                _ => {
+                    w.write_u32(0);
+                    w.write_u32(0);
+                }
+            }
+            (0, w.into_vec())
         }
         // ReferenceType.SourceFile
         (2, 7) => {

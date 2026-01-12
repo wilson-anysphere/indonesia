@@ -24,7 +24,7 @@ use super::{
         ClassInfo, FieldId, FieldInfo, FieldInfoWithGeneric, FrameId, FrameInfo,
         JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpEventEnvelope, JdwpIdSizes, JdwpValue,
         LineTable, LineTableEntry, Location, MethodId, MethodInfo, MethodInfoWithGeneric,
-        MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo,
+        MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadGroupId, ThreadId, VariableInfo,
         VariableInfoWithGeneric, VmClassPaths, EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_PREPARE,
         EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
         EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
@@ -389,6 +389,19 @@ impl JdwpClient {
         Ok(threads)
     }
 
+    /// VirtualMachine.TopLevelThreadGroups (1, 5)
+    pub async fn virtual_machine_top_level_thread_groups(&self) -> Result<Vec<ThreadGroupId>> {
+        let payload = self.send_command_raw(1, 5, Vec::new()).await?;
+        let sizes = self.id_sizes().await;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut groups = Vec::with_capacity(count);
+        for _ in 0..count {
+            groups.push(r.read_object_id(&sizes)?);
+        }
+        Ok(groups)
+    }
+
     pub async fn thread_name(&self, thread: ThreadId) -> Result<String> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
@@ -426,6 +439,16 @@ impl JdwpClient {
         let thread_status = r.read_u32()?;
         let suspend_status = r.read_u32()?;
         Ok((thread_status, suspend_status))
+    }
+
+    /// ThreadReference.ThreadGroup (11, 5)
+    pub async fn thread_reference_thread_group(&self, thread: ThreadId) -> Result<ThreadGroupId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 5, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
     }
 
     /// ThreadReference.FrameCount (11, 7)
@@ -513,6 +536,55 @@ impl JdwpClient {
             frames.push(FrameInfo { frame_id, location });
         }
         Ok(frames)
+    }
+
+    /// ThreadGroupReference.Name (12, 1)
+    pub async fn thread_group_reference_name(&self, group: ThreadGroupId) -> Result<String> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(group, &sizes);
+        let payload = self.send_command_raw(12, 1, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_string()
+    }
+
+    /// ThreadGroupReference.Parent (12, 2)
+    pub async fn thread_group_reference_parent(
+        &self,
+        group: ThreadGroupId,
+    ) -> Result<ThreadGroupId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(group, &sizes);
+        let payload = self.send_command_raw(12, 2, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
+    }
+
+    /// ThreadGroupReference.Children (12, 3)
+    pub async fn thread_group_reference_children(
+        &self,
+        group: ThreadGroupId,
+    ) -> Result<(Vec<ThreadGroupId>, Vec<ThreadId>)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(group, &sizes);
+        let payload = self.send_command_raw(12, 3, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+
+        let group_count = r.read_u32()? as usize;
+        let mut groups = Vec::with_capacity(group_count);
+        for _ in 0..group_count {
+            groups.push(r.read_object_id(&sizes)?);
+        }
+
+        let thread_count = r.read_u32()? as usize;
+        let mut threads = Vec::with_capacity(thread_count);
+        for _ in 0..thread_count {
+            threads.push(r.read_object_id(&sizes)?);
+        }
+
+        Ok((groups, threads))
     }
 
     pub async fn all_classes(&self) -> Result<Vec<ClassInfo>> {
@@ -1982,6 +2054,8 @@ mod tests {
     use super::{EventModifier, JdwpClient, JdwpClientConfig};
     use crate::wire::mock::{
         DelayedReply, MockEventRequestModifier, MockJdwpServer, MockJdwpServerConfig,
+        NESTED_THREAD_GROUP_ID, THREAD_ID, TOP_LEVEL_THREAD_GROUP_ID, TOP_LEVEL_THREAD_GROUP_NAME,
+        WORKER_THREAD_ID,
     };
     use crate::wire::types::{
         JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, EVENT_KIND_BREAKPOINT,
@@ -3098,5 +3172,33 @@ mod tests {
 
         let calls = server.dispose_objects_calls().await;
         assert_eq!(calls, vec![vec![(0x1122_3344, 1), (0x5566_7788, 2)]]);
+    }
+
+    #[tokio::test]
+    async fn jdwp_client_can_fetch_thread_groups() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let groups = client
+            .virtual_machine_top_level_thread_groups()
+            .await
+            .unwrap();
+        assert!(!groups.is_empty());
+        assert_eq!(groups, vec![TOP_LEVEL_THREAD_GROUP_ID]);
+
+        let group = groups[0];
+        let (child_groups, child_threads) = client
+            .thread_group_reference_children(group)
+            .await
+            .unwrap();
+        assert!(child_groups.contains(&NESTED_THREAD_GROUP_ID));
+        assert!(child_threads.contains(&THREAD_ID));
+        assert!(child_threads.contains(&WORKER_THREAD_ID));
+
+        let thread_group = client.thread_reference_thread_group(THREAD_ID).await.unwrap();
+        assert_eq!(thread_group, group);
+
+        let name = client.thread_group_reference_name(group).await.unwrap();
+        assert_eq!(name, TOP_LEVEL_THREAD_GROUP_NAME);
     }
 }

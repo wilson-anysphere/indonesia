@@ -4,6 +4,7 @@ use thiserror::Error;
 
 pub type ObjectId = u64;
 pub type ThreadId = u64;
+pub type ThreadGroupId = u64;
 pub type ReferenceTypeId = u64;
 pub type MethodId = u64;
 pub type FieldId = u64;
