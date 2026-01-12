@@ -56,5 +56,6 @@ If a decision changes:
  8. [0008 — Distributed mode security (router↔worker)](0008-distributed-mode-security.md)
  9. [0009 — Router↔worker remote RPC protocol (v3)](0009-remote-rpc-protocol.md)
  10. [0010 — Extension system (native + WASM providers)](0010-extension-system.md) — practical guide: [`docs/extensions/README.md`](../extensions/README.md)
-11. [0011 — Stable `ClassId` and project-level type environments](0011-stable-classid-and-project-type-environments.md)
-12. [0012 — `ClassId` stability and interning policy](0012-classid-interning.md)
+ 11. [0011 — Stable `ClassId` and project-level type environments](0011-stable-classid-and-project-type-environments.md)
+ 12. [0012 — `ClassId` stability and interning policy](0012-classid-interning.md)
+13. [0013 — Wire adapter stream-debug evaluation strategy](0013-stream-debug-evaluation-strategy.md)

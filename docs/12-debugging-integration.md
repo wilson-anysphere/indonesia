@@ -399,6 +399,8 @@ impl NovaDebugAdapter {
 
 ### Stream Debugger
 
+**Implementation note:** The wire adapter’s `nova/streamDebug` execution strategy (current MVP behavior, constraints, and the compile+inject roadmap) is tracked in [ADR 0013](adr/0013-stream-debug-evaluation-strategy.md).
+
 ```rust
 impl NovaDebugAdapter {
     /// Debug Java Streams step by step
