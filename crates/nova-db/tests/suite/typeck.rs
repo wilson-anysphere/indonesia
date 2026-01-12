@@ -5231,7 +5231,7 @@ fn source_varargs_method_call_resolves() {
     let src = r#"
 class C {
     static void foo(int... xs) {}
-    void m() { foo(1, 2); }
+    static void m() { foo(1, 2, 3); }
 }
 "#;
 
