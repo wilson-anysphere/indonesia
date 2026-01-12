@@ -394,6 +394,21 @@ fn analyzer_registry_with_cancel_short_circuits_before_applies_to_when_already_c
 
     let diags = registry.framework_diagnostics_with_cancel(&db, file, &cancel);
     assert!(diags.is_empty());
+
+    let ctx = CompletionContext {
+        project,
+        file,
+        offset: 0,
+    };
+    let completions = registry.framework_completions_with_cancel(&db, &ctx, &cancel);
+    assert!(completions.is_empty());
+
+    let nav = registry.framework_navigation_targets_with_cancel(&db, &Symbol::File(file), &cancel);
+    assert!(nav.is_empty());
+
+    let hints = registry.framework_inlay_hints_with_cancel(&db, file, &cancel);
+    assert!(hints.is_empty());
+
     assert_eq!(
         applies_to_calls.load(Ordering::SeqCst),
         0,
@@ -411,9 +426,9 @@ fn analyzer_registry_traps_panicking_analyzers_and_continues() {
         }
     }
 
-    struct PanicsInDiagnostics;
+    struct PanicsInHooks;
 
-    impl FrameworkAnalyzer for PanicsInDiagnostics {
+    impl FrameworkAnalyzer for PanicsInHooks {
         fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
             true
         }
@@ -425,6 +440,33 @@ fn analyzer_registry_traps_panicking_analyzers_and_continues() {
             _cancel: &CancellationToken,
         ) -> Vec<Diagnostic> {
             panic!("boom in diagnostics_with_cancel");
+        }
+
+        fn completions_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _ctx: &CompletionContext,
+            _cancel: &CancellationToken,
+        ) -> Vec<CompletionItem> {
+            panic!("boom in completions_with_cancel");
+        }
+
+        fn navigation_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _symbol: &Symbol,
+            _cancel: &CancellationToken,
+        ) -> Vec<NavigationTarget> {
+            panic!("boom in navigation_with_cancel");
+        }
+
+        fn inlay_hints_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<InlayHint> {
+            panic!("boom in inlay_hints_with_cancel");
         }
     }
 
@@ -443,6 +485,44 @@ fn analyzer_registry_traps_panicking_analyzers_and_continues() {
         ) -> Vec<Diagnostic> {
             vec![Diagnostic::warning("GOOD", "ok", None)]
         }
+
+        fn completions_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _ctx: &CompletionContext,
+            _cancel: &CancellationToken,
+        ) -> Vec<CompletionItem> {
+            vec![CompletionItem::new("GOOD_COMP")]
+        }
+
+        fn navigation_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            symbol: &Symbol,
+            _cancel: &CancellationToken,
+        ) -> Vec<NavigationTarget> {
+            let file = match *symbol {
+                Symbol::File(file) => file,
+                Symbol::Class(_) => nova_vfs::FileId::from_raw(0),
+            };
+            vec![NavigationTarget {
+                file,
+                span: None,
+                label: "GOOD_NAV".to_string(),
+            }]
+        }
+
+        fn inlay_hints_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<InlayHint> {
+            vec![InlayHint {
+                span: None,
+                label: "GOOD_HINT".to_string(),
+            }]
+        }
     }
 
     let mut db = MemoryDatabase::new();
@@ -451,7 +531,7 @@ fn analyzer_registry_traps_panicking_analyzers_and_continues() {
 
     let mut registry = AnalyzerRegistry::new();
     registry.register(Box::new(PanicsInAppliesTo));
-    registry.register(Box::new(PanicsInDiagnostics));
+    registry.register(Box::new(PanicsInHooks));
     registry.register(Box::new(GoodAnalyzer));
 
     let cancel = CancellationToken::new();
@@ -459,4 +539,293 @@ fn analyzer_registry_traps_panicking_analyzers_and_continues() {
 
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].code, "GOOD");
+
+    let ctx = CompletionContext {
+        project,
+        file,
+        offset: 0,
+    };
+    let completions = registry.framework_completions_with_cancel(&db, &ctx, &cancel);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].label, "GOOD_COMP");
+
+    let nav = registry.framework_navigation_targets_with_cancel(&db, &Symbol::File(file), &cancel);
+    assert_eq!(nav.len(), 1);
+    assert_eq!(nav[0].label, "GOOD_NAV");
+
+    let hints = registry.framework_inlay_hints_with_cancel(&db, file, &cancel);
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "GOOD_HINT");
+}
+
+#[test]
+fn analyzer_registry_completions_stop_before_applies_to_after_cancellation() {
+    struct CancellingAnalyzer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for CancellingAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn completions_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _ctx: &CompletionContext,
+            cancel: &CancellationToken,
+        ) -> Vec<CompletionItem> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            cancel.cancel();
+            vec![CompletionItem::new("CANCEL_COMP")]
+        }
+    }
+
+    struct SecondAnalyzer {
+        applies_to_calls: Arc<AtomicUsize>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for SecondAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            self.applies_to_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn completions_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _ctx: &CompletionContext,
+            _cancel: &CancellationToken,
+        ) -> Vec<CompletionItem> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            vec![CompletionItem::new("SECOND_COMP")]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_applies_to_calls = Arc::new(AtomicUsize::new(0));
+    let second_calls = Arc::new(AtomicUsize::new(0));
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(CancellingAnalyzer {
+        calls: Arc::clone(&first_calls),
+    }));
+    registry.register(Box::new(SecondAnalyzer {
+        applies_to_calls: Arc::clone(&second_applies_to_calls),
+        calls: Arc::clone(&second_calls),
+    }));
+
+    let ctx = CompletionContext {
+        project,
+        file,
+        offset: 0,
+    };
+
+    let cancel = CancellationToken::new();
+    let completions = registry.framework_completions_with_cancel(&db, &ctx, &cancel);
+
+    assert!(cancel.is_cancelled());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].label, "CANCEL_COMP");
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        second_applies_to_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop before calling applies_to after cancellation"
+    );
+    assert_eq!(
+        second_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop after cancellation"
+    );
+}
+
+#[test]
+fn analyzer_registry_navigation_stops_before_applies_to_after_cancellation() {
+    struct CancellingAnalyzer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for CancellingAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn navigation_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            symbol: &Symbol,
+            cancel: &CancellationToken,
+        ) -> Vec<NavigationTarget> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            cancel.cancel();
+            let file = match *symbol {
+                Symbol::File(file) => file,
+                Symbol::Class(_) => nova_vfs::FileId::from_raw(0),
+            };
+            vec![NavigationTarget {
+                file,
+                span: None,
+                label: "CANCEL_NAV".to_string(),
+            }]
+        }
+    }
+
+    struct SecondAnalyzer {
+        applies_to_calls: Arc<AtomicUsize>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for SecondAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            self.applies_to_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn navigation_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            symbol: &Symbol,
+            _cancel: &CancellationToken,
+        ) -> Vec<NavigationTarget> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let file = match *symbol {
+                Symbol::File(file) => file,
+                Symbol::Class(_) => nova_vfs::FileId::from_raw(0),
+            };
+            vec![NavigationTarget {
+                file,
+                span: None,
+                label: "SECOND_NAV".to_string(),
+            }]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_applies_to_calls = Arc::new(AtomicUsize::new(0));
+    let second_calls = Arc::new(AtomicUsize::new(0));
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(CancellingAnalyzer {
+        calls: Arc::clone(&first_calls),
+    }));
+    registry.register(Box::new(SecondAnalyzer {
+        applies_to_calls: Arc::clone(&second_applies_to_calls),
+        calls: Arc::clone(&second_calls),
+    }));
+
+    let cancel = CancellationToken::new();
+    let nav =
+        registry.framework_navigation_targets_with_cancel(&db, &Symbol::File(file), &cancel);
+
+    assert!(cancel.is_cancelled());
+    assert_eq!(nav.len(), 1);
+    assert_eq!(nav[0].label, "CANCEL_NAV");
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        second_applies_to_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop before calling applies_to after cancellation"
+    );
+    assert_eq!(
+        second_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop after cancellation"
+    );
+}
+
+#[test]
+fn analyzer_registry_inlay_hints_stop_before_applies_to_after_cancellation() {
+    struct CancellingAnalyzer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for CancellingAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn inlay_hints_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            cancel: &CancellationToken,
+        ) -> Vec<InlayHint> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            cancel.cancel();
+            vec![InlayHint {
+                span: None,
+                label: "CANCEL_HINT".to_string(),
+            }]
+        }
+    }
+
+    struct SecondAnalyzer {
+        applies_to_calls: Arc<AtomicUsize>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FrameworkAnalyzer for SecondAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            self.applies_to_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn inlay_hints_with_cancel(
+            &self,
+            _db: &dyn nova_framework::Database,
+            _file: nova_vfs::FileId,
+            _cancel: &CancellationToken,
+        ) -> Vec<InlayHint> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            vec![InlayHint {
+                span: None,
+                label: "SECOND_HINT".to_string(),
+            }]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file(project);
+
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_applies_to_calls = Arc::new(AtomicUsize::new(0));
+    let second_calls = Arc::new(AtomicUsize::new(0));
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(CancellingAnalyzer {
+        calls: Arc::clone(&first_calls),
+    }));
+    registry.register(Box::new(SecondAnalyzer {
+        applies_to_calls: Arc::clone(&second_applies_to_calls),
+        calls: Arc::clone(&second_calls),
+    }));
+
+    let cancel = CancellationToken::new();
+    let hints = registry.framework_inlay_hints_with_cancel(&db, file, &cancel);
+
+    assert!(cancel.is_cancelled());
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "CANCEL_HINT");
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        second_applies_to_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop before calling applies_to after cancellation"
+    );
+    assert_eq!(
+        second_calls.load(Ordering::SeqCst),
+        0,
+        "expected registry to stop after cancellation"
+    );
 }
