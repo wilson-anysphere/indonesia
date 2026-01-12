@@ -133,6 +133,7 @@ mod diagnostic_tests {
 pub struct CompletionItem {
     pub label: String,
     pub detail: Option<String>,
+    pub replace_span: Option<Span>,
 }
 
 impl CompletionItem {
@@ -140,6 +141,7 @@ impl CompletionItem {
         Self {
             label: label.into(),
             detail: None,
+            replace_span: None,
         }
     }
 }

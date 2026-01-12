@@ -162,10 +162,22 @@ where
         let extension_items = self
             .completions(cancel, file, offset)
             .into_iter()
-            .map(|item| lsp_types::CompletionItem {
-                label: item.label,
-                detail: item.detail,
-                ..lsp_types::CompletionItem::default()
+            .map(|item| {
+                let label = item.label;
+                let mut out = lsp_types::CompletionItem {
+                    label: label.clone(),
+                    detail: item.detail,
+                    ..lsp_types::CompletionItem::default()
+                };
+
+                if let Some(span) = item.replace_span {
+                    out.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                        range: crate::text::span_to_lsp_range(text, span),
+                        new_text: label,
+                    }));
+                }
+
+                out
             });
 
         completions.extend(extension_items);
@@ -316,10 +328,22 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let extension_items = self
             .completions(cancel, file, offset)
             .into_iter()
-            .map(|item| lsp_types::CompletionItem {
-                label: item.label,
-                detail: item.detail,
-                ..lsp_types::CompletionItem::default()
+            .map(|item| {
+                let label = item.label;
+                let mut out = lsp_types::CompletionItem {
+                    label: label.clone(),
+                    detail: item.detail,
+                    ..lsp_types::CompletionItem::default()
+                };
+
+                if let Some(span) = item.replace_span {
+                    out.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                        range: crate::text::span_to_lsp_range(text, span),
+                        new_text: label,
+                    }));
+                }
+
+                out
             });
 
         completions.extend(extension_items);

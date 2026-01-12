@@ -279,6 +279,7 @@ pub(crate) fn profile_completion_items_with_cancel(
             .map(|profile| CompletionItem {
                 label: profile.clone(),
                 detail: None,
+                replace_span: None,
             }),
     );
     items.sort_by(|a, b| a.label.cmp(&b.label));
@@ -649,6 +650,7 @@ fn discovered_profile_completions(
         .map(|profile| CompletionItem {
             label: profile,
             detail: None,
+            replace_span: None,
         })
         .collect()
 }

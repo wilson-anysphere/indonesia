@@ -3,6 +3,7 @@ mod framework_harness;
 use std::path::{Path, PathBuf};
 
 use framework_harness::{fixture_multi, ide_with_default_registry};
+use lsp_types::CompletionTextEdit;
 use nova_db::{Database as _, InMemoryFileStore};
 use nova_framework_quarkus::CDI_UNSATISFIED_CODE;
 use nova_framework_spring::SPRING_NO_BEAN;
@@ -113,8 +114,129 @@ class UserRepository {
 }
 
 #[test]
+fn spring_value_completions_replace_full_placeholder_prefix_via_ide_extensions() {
+    use framework_harness::offset_to_position;
+
+    let config_path = PathBuf::from("/spring-value/src/main/resources/application.properties");
+    let java_path = PathBuf::from("/spring-value/src/main/java/C.java");
+
+    let config_text = "server.port=8080\n".to_string();
+    let java_text = r#"import org.springframework.beans.factory.annotation.Value;
+class C {
+  @Value("${server.p<|>}")
+  String port;
+}
+"#;
+
+    let fixture = fixture_multi(java_path, java_text, vec![(config_path, config_text)]);
+    let items = fixture
+        .ide
+        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let item = items
+        .iter()
+        .find(|item| item.label == "server.port")
+        .expect("expected Spring completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    let key_start = fixture
+        .text
+        .find("server.p")
+        .expect("expected placeholder prefix in fixture");
+
+    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(edit.range.end, fixture.position);
+}
+
+#[test]
+fn spring_properties_key_completions_replace_full_key_prefix_via_ide_extensions() {
+    use framework_harness::offset_to_position;
+
+    let config_path = PathBuf::from("/spring-props/src/main/resources/application.properties");
+    let java_path = PathBuf::from("/spring-props/src/main/java/Dummy.java");
+
+    let config_text = r#"server.port=8080
+server.p<|>
+"#;
+    let java_text = "import org.springframework.stereotype.Component;\n@Component class Dummy {}\n";
+
+    let fixture = fixture_multi(
+        config_path,
+        config_text,
+        vec![(java_path, java_text.to_string())],
+    );
+
+    let items = fixture
+        .ide
+        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let item = items
+        .iter()
+        .find(|item| item.label == "server.port")
+        .expect("expected Spring completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    let key_start = fixture
+        .text
+        .rfind("server.p")
+        .expect("expected server.p key in fixture");
+    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(edit.range.end, fixture.position);
+}
+
+#[test]
+fn spring_yaml_key_completions_replace_full_segment_prefix_via_ide_extensions() {
+    use framework_harness::offset_to_position;
+
+    let config_path = PathBuf::from("/spring-yaml/src/main/resources/application.yml");
+    let java_path = PathBuf::from("/spring-yaml/src/main/java/Dummy.java");
+
+    let config_text = r#"spring:
+  main:
+    banner-mode: console
+    banner-m<|>
+"#;
+    let java_text = "import org.springframework.stereotype.Component;\n@Component class Dummy {}\n";
+
+    let fixture = fixture_multi(
+        config_path,
+        config_text,
+        vec![(java_path, java_text.to_string())],
+    );
+
+    let items = fixture
+        .ide
+        .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let item = items
+        .iter()
+        .find(|item| item.label == "banner-mode")
+        .expect("expected Spring completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    let key_start = fixture
+        .text
+        .rfind("banner-m")
+        .expect("expected banner-m key in fixture");
+    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(edit.range.end, fixture.position);
+}
+
+#[test]
 fn micronaut_value_completions_are_surfaced_via_ide_extensions() {
-    let config_path = PathBuf::from("/micronaut-value/src/main/resources/application.properties");
+    use framework_harness::offset_to_position;
+
+    let config_path =
+        PathBuf::from("/micronaut-value/src/main/resources/application.properties");
     let java_path = PathBuf::from("/micronaut-value/src/main/java/com/example/A.java");
 
     let config_text = "greeting.message=Hello\n".to_string();
@@ -137,6 +259,21 @@ class A {
         labels.contains(&"greeting.message"),
         "expected Micronaut @Value completions to include greeting.message; got {labels:?}"
     );
+
+    let item = items
+        .iter()
+        .find(|item| item.label == "greeting.message")
+        .expect("expected Micronaut completion item");
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    let key_start = fixture
+        .text
+        .find("greeting.")
+        .expect("expected placeholder prefix in fixture");
+    assert_eq!(edit.range.start, offset_to_position(&fixture.text, key_start));
+    assert_eq!(edit.range.end, fixture.position);
 }
 
 #[test]

@@ -13,10 +13,12 @@ pub fn qualifier_completions(model: &BeanModel) -> Vec<CompletionItem> {
             std::iter::once(CompletionItem {
                 label: b.name.clone(),
                 detail: Some(b.ty.clone()),
+                replace_span: None,
             })
             .chain(b.qualifiers.iter().map(|q| CompletionItem {
                 label: q.clone(),
                 detail: Some(b.ty.clone()),
+                replace_span: None,
             }))
         })
         .collect();
@@ -34,6 +36,7 @@ pub fn profile_completions() -> Vec<CompletionItem> {
         .map(|p| CompletionItem {
             label: p.to_string(),
             detail: None,
+            replace_span: None,
         })
         .collect()
 }
@@ -76,6 +79,7 @@ pub fn value_completions(keys: &BTreeSet<String>) -> Vec<CompletionItem> {
         .map(|k| CompletionItem {
             label: k.clone(),
             detail: None,
+            replace_span: None,
         })
         .collect()
 }

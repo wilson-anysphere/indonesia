@@ -29,6 +29,7 @@ pub fn completions(java_source: &str, offset: usize) -> Vec<CompletionItem> {
         .map(|item| CompletionItem {
             label: item.label,
             detail: item.detail,
+            replace_span: None,
         })
         .collect()
 }

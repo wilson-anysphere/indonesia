@@ -568,6 +568,7 @@ fn ptr_len_roundtrip_and_basic_call_works() {
         vec![CompletionItem {
             label: "from-wasm".to_string(),
             detail: None,
+            replace_span: None,
         }]
     );
 }

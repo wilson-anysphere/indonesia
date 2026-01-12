@@ -533,6 +533,7 @@ pub fn completions_for_value_placeholder(
             items.push(CompletionItem {
                 label: meta.name.clone(),
                 detail: property_completion_detail(meta),
+                replace_span: None,
             });
         }
     }
@@ -549,6 +550,7 @@ pub fn completions_for_value_placeholder(
             items.push(CompletionItem {
                 label: key,
                 detail: None,
+                replace_span: None,
             });
         }
     }
@@ -627,6 +629,7 @@ pub fn completions_for_properties_file(
                     items.push(CompletionItem {
                         label: value,
                         detail: None,
+                        replace_span: None,
                     });
                 }
             }
@@ -641,6 +644,7 @@ pub fn completions_for_properties_file(
             items.push(CompletionItem {
                 label: meta.name.clone(),
                 detail: property_completion_detail(meta),
+                replace_span: None,
             });
         }
     }
@@ -657,6 +661,7 @@ pub fn completions_for_properties_file(
             items.push(CompletionItem {
                 label: key,
                 detail: None,
+                replace_span: None,
             });
         }
     }
@@ -692,6 +697,7 @@ pub fn completions_for_yaml_file(
                 .map(|value| CompletionItem {
                     label: value,
                     detail: None,
+                    replace_span: None,
                 })
                 .collect();
         }
@@ -721,6 +727,7 @@ pub fn completions_for_yaml_file(
                 items.push(CompletionItem {
                     label: segment,
                     detail,
+                    replace_span: None,
                 });
             }
         }
@@ -739,6 +746,7 @@ pub fn completions_for_yaml_file(
                 items.push(CompletionItem {
                     label: segment,
                     detail: None,
+                    replace_span: None,
                 });
             }
         }

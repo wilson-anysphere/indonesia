@@ -215,12 +215,20 @@ pub fn framework_completions(
             if !workspace.is_spring {
                 return Vec::new();
             }
-            return nova_framework_spring::completions_for_properties_file(
+            let mut items = nova_framework_spring::completions_for_properties_file(
                 path,
                 text,
                 offset,
                 workspace.index.as_ref(),
             );
+            if let Some(span) =
+                nova_framework_spring::completion_span_for_properties_file(path, text, offset)
+            {
+                for item in &mut items {
+                    item.replace_span = Some(span);
+                }
+            }
+            return items;
         }
 
         if is_application_yaml(path) {
@@ -229,12 +237,18 @@ pub fn framework_completions(
             if !workspace.is_spring {
                 return Vec::new();
             }
-            return nova_framework_spring::completions_for_yaml_file(
+            let mut items = nova_framework_spring::completions_for_yaml_file(
                 path,
                 text,
                 offset,
                 workspace.index.as_ref(),
             );
+            if let Some(span) = nova_framework_spring::completion_span_for_yaml_file(text, offset) {
+                for item in &mut items {
+                    item.replace_span = Some(span);
+                }
+            }
+            return items;
         }
     }
 
@@ -269,12 +283,19 @@ pub fn framework_completions(
                 let root = project_root_for_path(path);
                 let workspace = WORKSPACE_CACHE.spring_workspace(db, &root, cancel);
                 if workspace.is_spring {
-                    let items = nova_framework_spring::completions_for_value_placeholder(
+                    let mut items = nova_framework_spring::completions_for_value_placeholder(
                         text,
                         offset,
                         workspace.index.as_ref(),
                     );
                     if !items.is_empty() {
+                        if let Some(span) =
+                            nova_framework_spring::completion_span_for_value_placeholder(text, offset)
+                        {
+                            for item in &mut items {
+                                item.replace_span = Some(span);
+                            }
+                        }
                         return items;
                     }
                 }
@@ -285,12 +306,19 @@ pub fn framework_completions(
         if let Some(analysis) =
             crate::micronaut_intel::analysis_for_file_with_cancel(db, file, cancel)
         {
-            let items = nova_framework_micronaut::completions_for_value_placeholder(
+            let mut items = nova_framework_micronaut::completions_for_value_placeholder(
                 text,
                 offset,
                 &analysis.config_keys,
             );
             if !items.is_empty() {
+                if let Some(span) =
+                    nova_framework_spring::completion_span_for_value_placeholder(text, offset)
+                {
+                    for item in &mut items {
+                        item.replace_span = Some(span);
+                    }
+                }
                 return items;
             }
         }

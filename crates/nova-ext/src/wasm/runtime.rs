@@ -731,6 +731,7 @@ where
             .map(|item| CompletionItem {
                 label: item.label,
                 detail: item.detail,
+                replace_span: None,
             })
             .collect())
     }
