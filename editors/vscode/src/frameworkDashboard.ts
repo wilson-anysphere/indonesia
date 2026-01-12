@@ -48,7 +48,7 @@ function joinPathForUri(base: vscode.Uri, relativePath: string): vscode.Uri {
   return vscode.Uri.joinPath(base, ...segments);
 }
 
-function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; projectRoot?: string }): vscode.Uri | undefined {
+export function uriFromFileLike(value: unknown, opts?: { baseUri?: vscode.Uri; projectRoot?: string }): vscode.Uri | undefined {
   if (value instanceof vscode.Uri) {
     return value;
   }

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import * as path from 'node:path';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
+import { uriFromFileLike } from './frameworkDashboard';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
 
@@ -123,7 +123,7 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
           return;
         }
 
-        await navigateToFrameworkItem(picked);
+        await navigateToFrameworkItem(picked, workspaceFolder.uri);
       } catch (err) {
         if (isSafeModeError(err)) {
           await showSafeModeError();
@@ -399,8 +399,8 @@ function validateMicronautSchemaVersion(schemaVersion: unknown, method: string):
   }
 }
 
-async function navigateToFrameworkItem(item: FrameworkPickItem): Promise<void> {
-  const uri = resolveProjectFileUri(item.projectRoot, item.file);
+async function navigateToFrameworkItem(item: FrameworkPickItem, baseUri: vscode.Uri): Promise<void> {
+  const uri = uriFromFileLike(item.file, { baseUri, projectRoot: item.projectRoot });
   if (!uri) {
     void vscode.window.showErrorMessage('Nova: Could not resolve source location for this item.');
     return;
@@ -427,18 +427,6 @@ function clampLineIndex(line: number, lineCount: number): number {
     return 0;
   }
   return Math.max(0, Math.min(line, lineCount - 1));
-}
-
-function resolveProjectFileUri(projectRoot: string, file: string): vscode.Uri | undefined {
-  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
-    return undefined;
-  }
-  if (typeof file !== 'string' || file.length === 0) {
-    return undefined;
-  }
-
-  const filePath = path.isAbsolute(file) ? file : path.join(projectRoot, file);
-  return vscode.Uri.file(filePath);
 }
 
 function utf8SpanToRange(document: vscode.TextDocument, span: MicronautSpan): vscode.Range {
