@@ -96,6 +96,42 @@ class C {
 }
 
 #[test]
+fn return_in_instance_initializer_is_error() {
+    let src = r#"
+class C {
+  { return; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "return-in-initializer"),
+        "expected return-in-initializer diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn return_in_static_initializer_is_error() {
+    let src = r#"
+class C {
+  static { return; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "return-in-initializer"),
+        "expected return-in-initializer diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn byte_initializer_allows_int_constant() {
     let src = r#"
 class C { void m(){ byte b = 1; } }

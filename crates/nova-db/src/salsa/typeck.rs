@@ -1343,6 +1343,17 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let _ = self.infer_expr(loader, *expr);
             }
             HirStmt::Return { expr, range } => {
+                if matches!(self.owner, DefWithBodyId::Initializer(_)) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "return-in-initializer",
+                        "`return` is not allowed in initializer blocks",
+                        Some(*range),
+                    ));
+                    if let Some(expr) = expr {
+                        let _ = self.infer_expr(loader, *expr);
+                    }
+                    return;
+                }
                 let Some(expr) = expr else {
                     if *expected_return == Type::Void || expected_return.is_errorish() {
                         return;
