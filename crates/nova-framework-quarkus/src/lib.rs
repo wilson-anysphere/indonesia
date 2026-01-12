@@ -259,7 +259,8 @@ fn collect_project_java_files(
     files.sort();
     files.dedup();
 
-    let mut java_files = Vec::<FileId>::new();
+    let mut java_files_with_paths = Vec::<(String, FileId)>::new();
+    let mut pathless_current: Option<FileId> = None;
     let mut had_paths = false;
     let mut missing_paths = false;
 
@@ -274,6 +275,12 @@ fn collect_project_java_files(
                 {
                     continue;
                 }
+
+                if db.file_text(file).is_none() {
+                    continue;
+                }
+
+                java_files_with_paths.push((path.to_string_lossy().to_string(), file));
             }
             None => {
                 missing_paths = true;
@@ -281,12 +288,20 @@ fn collect_project_java_files(
                 if file != current_file {
                     continue;
                 }
+
+                if db.file_text(file).is_none() {
+                    continue;
+                }
+
+                pathless_current = Some(file);
             }
         }
+    }
 
-        if db.file_text(file).is_none() {
-            continue;
-        };
+    java_files_with_paths.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let mut java_files: Vec<FileId> = java_files_with_paths.into_iter().map(|(_, f)| f).collect();
+    if let Some(file) = pathless_current {
         java_files.push(file);
     }
 
