@@ -426,7 +426,10 @@ pub(crate) fn load_gradle_project(
             module_ref
                 .project_path
                 .trim_start_matches(':')
-                .replace(':', "/")
+                .rsplit(':')
+                .next()
+                .unwrap_or(&module_ref.project_path)
+                .to_string()
         };
 
         modules.push(Module {

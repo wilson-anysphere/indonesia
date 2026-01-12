@@ -108,7 +108,11 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspace_root = tmp.path();
 
-    std::fs::write(workspace_root.join("settings.gradle"), "include(':app')\n").unwrap();
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "include(':app')\nproject(':app').projectDir = file('modules/app')\n",
+    )
+    .unwrap();
     std::fs::write(workspace_root.join("build.gradle"), "").unwrap();
 
     // Extra build files that `nova-build` includes in the Gradle build fingerprint. Prior to
