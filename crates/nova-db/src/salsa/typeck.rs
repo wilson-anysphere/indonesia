@@ -1357,7 +1357,7 @@ fn resolve_method_call_demand(
                         visit_expr(body, *expr_id, parent_expr, visited_expr);
                     }
                     LambdaBody::Block(stmt_id) => {
-                        visit_stmt(body, *stmt_id, parent_expr, visited_expr);
+                        visit_stmt(body, *stmt_id, Some(expr), parent_expr, visited_expr);
                     }
                 },
                 HirExpr::Name { .. }
@@ -1372,31 +1372,50 @@ fn resolve_method_call_demand(
         fn visit_stmt(
             body: &HirBody,
             stmt: nova_hir::hir::StmtId,
+            enclosing_expr: Option<HirExprId>,
             parent_expr: &mut [Option<HirExprId>],
             visited_expr: &mut [bool],
         ) {
+            let set_expr_parent = |parent_expr: &mut [Option<HirExprId>],
+                                   enclosing_expr: Option<HirExprId>,
+                                   child: HirExprId| {
+                let Some(enclosing) = enclosing_expr else {
+                    return;
+                };
+                if child.idx() < parent_expr.len() && parent_expr[child.idx()].is_none() {
+                    parent_expr[child.idx()] = Some(enclosing);
+                }
+            };
+
             match &body.stmts[stmt] {
                 HirStmt::Block { statements, .. } => {
                     for stmt in statements {
-                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                        visit_stmt(body, *stmt, enclosing_expr, parent_expr, visited_expr);
                     }
                 }
                 HirStmt::Let { initializer, .. } => {
                     if let Some(expr) = initializer {
+                        set_expr_parent(parent_expr, enclosing_expr, *expr);
                         visit_expr(body, *expr, parent_expr, visited_expr);
                     }
                 }
-                HirStmt::Expr { expr, .. } => visit_expr(body, *expr, parent_expr, visited_expr),
+                HirStmt::Expr { expr, .. } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *expr);
+                    visit_expr(body, *expr, parent_expr, visited_expr)
+                }
                 HirStmt::Assert {
                     condition, message, ..
                 } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *condition);
                     visit_expr(body, *condition, parent_expr, visited_expr);
                     if let Some(expr) = message {
+                        set_expr_parent(parent_expr, enclosing_expr, *expr);
                         visit_expr(body, *expr, parent_expr, visited_expr);
                     }
                 }
                 HirStmt::Return { expr, .. } => {
                     if let Some(expr) = expr {
+                        set_expr_parent(parent_expr, enclosing_expr, *expr);
                         visit_expr(body, *expr, parent_expr, visited_expr);
                     }
                 }
@@ -1406,17 +1425,19 @@ fn resolve_method_call_demand(
                     else_branch,
                     ..
                 } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *condition);
                     visit_expr(body, *condition, parent_expr, visited_expr);
-                    visit_stmt(body, *then_branch, parent_expr, visited_expr);
+                    visit_stmt(body, *then_branch, enclosing_expr, parent_expr, visited_expr);
                     if let Some(stmt) = else_branch {
-                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                        visit_stmt(body, *stmt, enclosing_expr, parent_expr, visited_expr);
                     }
                 }
                 HirStmt::While {
                     condition, body: b, ..
                 } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *condition);
                     visit_expr(body, *condition, parent_expr, visited_expr);
-                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    visit_stmt(body, *b, enclosing_expr, parent_expr, visited_expr);
                 }
                 HirStmt::For {
                     init,
@@ -1426,31 +1447,36 @@ fn resolve_method_call_demand(
                     ..
                 } => {
                     for stmt in init {
-                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                        visit_stmt(body, *stmt, enclosing_expr, parent_expr, visited_expr);
                     }
                     if let Some(expr) = condition {
+                        set_expr_parent(parent_expr, enclosing_expr, *expr);
                         visit_expr(body, *expr, parent_expr, visited_expr);
                     }
                     for expr in update {
+                        set_expr_parent(parent_expr, enclosing_expr, *expr);
                         visit_expr(body, *expr, parent_expr, visited_expr);
                     }
-                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    visit_stmt(body, *b, enclosing_expr, parent_expr, visited_expr);
                 }
                 HirStmt::ForEach {
                     iterable, body: b, ..
                 } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *iterable);
                     visit_expr(body, *iterable, parent_expr, visited_expr);
-                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    visit_stmt(body, *b, enclosing_expr, parent_expr, visited_expr);
                 }
                 HirStmt::Synchronized { expr, body: b, .. } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *expr);
                     visit_expr(body, *expr, parent_expr, visited_expr);
-                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    visit_stmt(body, *b, enclosing_expr, parent_expr, visited_expr);
                 }
                 HirStmt::Switch {
                     selector, body: b, ..
                 } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *selector);
                     visit_expr(body, *selector, parent_expr, visited_expr);
-                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    visit_stmt(body, *b, enclosing_expr, parent_expr, visited_expr);
                 }
                 HirStmt::Try {
                     body: b,
@@ -1458,20 +1484,23 @@ fn resolve_method_call_demand(
                     finally,
                     ..
                 } => {
-                    visit_stmt(body, *b, parent_expr, visited_expr);
+                    visit_stmt(body, *b, enclosing_expr, parent_expr, visited_expr);
                     for catch in catches {
-                        visit_stmt(body, catch.body, parent_expr, visited_expr);
+                        visit_stmt(body, catch.body, enclosing_expr, parent_expr, visited_expr);
                     }
                     if let Some(stmt) = finally {
-                        visit_stmt(body, *stmt, parent_expr, visited_expr);
+                        visit_stmt(body, *stmt, enclosing_expr, parent_expr, visited_expr);
                     }
                 }
-                HirStmt::Throw { expr, .. } => visit_expr(body, *expr, parent_expr, visited_expr),
+                HirStmt::Throw { expr, .. } => {
+                    set_expr_parent(parent_expr, enclosing_expr, *expr);
+                    visit_expr(body, *expr, parent_expr, visited_expr)
+                }
                 HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
             }
         }
 
-        visit_stmt(&body, body.root, &mut parent_expr, &mut visited_expr);
+        visit_stmt(&body, body.root, None, &mut parent_expr, &mut visited_expr);
 
         // Map "expected types" for expression roots that are directly target-typed by a statement.
         let mut expected_roots: Vec<Option<Type>> = vec![None; body.exprs.len()];
