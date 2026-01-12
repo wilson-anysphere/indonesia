@@ -541,6 +541,12 @@ mod notify_impl {
         events_rx: channel::Receiver<WatchMessage>,
         stop_tx: channel::Sender<()>,
         thread: Option<std::thread::JoinHandle<()>>,
+        #[cfg(test)]
+        raw_tx_for_tests: channel::Sender<notify::Result<notify::Event>>,
+        #[cfg(test)]
+        overflowed_for_tests: Arc<AtomicBool>,
+        #[cfg(test)]
+        start_tx_for_tests: channel::Sender<()>,
     }
 
     #[cfg(feature = "watch-notify")]
@@ -549,6 +555,30 @@ mod notify_impl {
             Self::new_with_capacities(RAW_QUEUE_CAPACITY, EVENTS_QUEUE_CAPACITY)
         }
 
+        #[cfg(test)]
+        fn new_with_capacities_for_tests(
+            raw_queue_capacity: usize,
+            events_queue_capacity: usize,
+        ) -> io::Result<Self> {
+            Self::new_with_capacities_impl(raw_queue_capacity, events_queue_capacity, false)
+        }
+
+        #[cfg(test)]
+        fn start_for_tests(&self) {
+            // Best-effort: if the watcher is already started this will either do nothing or error.
+            let _ = self.start_tx_for_tests.try_send(());
+        }
+
+        #[cfg(test)]
+        fn inject_raw_event_for_tests(&self, event: notify::Result<notify::Event>) {
+            try_send_or_overflow(
+                &self.raw_tx_for_tests,
+                self.overflowed_for_tests.as_ref(),
+                event,
+            );
+        }
+
+        #[cfg(not(test))]
         fn new_with_capacities(
             raw_queue_capacity: usize,
             events_queue_capacity: usize,
@@ -577,6 +607,63 @@ mod notify_impl {
                 events_rx,
                 stop_tx,
                 thread: Some(thread),
+            })
+        }
+
+        #[cfg(test)]
+        fn new_with_capacities(
+            raw_queue_capacity: usize,
+            events_queue_capacity: usize,
+        ) -> io::Result<Self> {
+            Self::new_with_capacities_impl(raw_queue_capacity, events_queue_capacity, true)
+        }
+
+        #[cfg(test)]
+        fn new_with_capacities_impl(
+            raw_queue_capacity: usize,
+            events_queue_capacity: usize,
+            auto_start: bool,
+        ) -> io::Result<Self> {
+            let (raw_tx, raw_rx) =
+                channel::bounded::<notify::Result<notify::Event>>(raw_queue_capacity);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(events_queue_capacity);
+            let (stop_tx, stop_rx) = channel::bounded::<()>(0);
+            let (start_tx, start_rx) = channel::bounded::<()>(1);
+
+            if auto_start {
+                let _ = start_tx.try_send(());
+            }
+
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let raw_tx_cb = raw_tx.clone();
+            let overflowed_cb = Arc::clone(&overflowed);
+            let watcher = notify::recommended_watcher(move |res| {
+                try_send_or_overflow(&raw_tx_cb, overflowed_cb.as_ref(), res);
+            })
+            .map_err(notify_error_to_io)?;
+
+            let stop_rx_for_start = stop_rx.clone();
+            let thread_overflowed = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                // Deterministic tests sometimes need to overflow the raw queue before we start
+                // draining it, so allow the thread to block on a "start" signal. `Drop` still works
+                // because we also listen for `stop`.
+                channel::select! {
+                    recv(start_rx) -> _ => {},
+                    recv(stop_rx_for_start) -> _ => return,
+                }
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, thread_overflowed)
+            });
+
+            Ok(Self {
+                watcher,
+                events_rx,
+                stop_tx,
+                thread: Some(thread),
+                raw_tx_for_tests: raw_tx,
+                overflowed_for_tests: overflowed,
+                start_tx_for_tests: start_tx,
             })
         }
     }
@@ -615,6 +702,36 @@ mod notify_impl {
         use super::*;
 
         use notify::event::{ModifyKind, RenameMode};
+
+        #[cfg(feature = "watch-notify")]
+        #[test]
+        fn emits_rescan_when_raw_queue_overflows_via_notify_watcher() {
+            use notify::EventKind;
+
+            // Use an extremely small raw queue to deterministically trigger overflow.
+            let watcher = NotifyFileWatcher::new_with_capacities_for_tests(1, 16)
+                .expect("failed to construct NotifyFileWatcher");
+
+            let event = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Any),
+                paths: vec![PathBuf::from("/tmp/A.java")],
+                attrs: Default::default(),
+            };
+
+            // Fill the raw queue, then overflow it before the drain loop starts.
+            watcher.inject_raw_event_for_tests(Ok(event.clone()));
+            watcher.inject_raw_event_for_tests(Ok(event));
+            assert!(watcher.overflowed_for_tests.load(Ordering::Acquire));
+
+            watcher.start_for_tests();
+
+            let msg = watcher
+                .receiver()
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert_eq!(msg, WatchEvent::Rescan);
+        }
 
         #[test]
         fn emits_rescan_when_raw_queue_overflows() {
