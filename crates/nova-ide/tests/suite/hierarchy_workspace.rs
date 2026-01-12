@@ -188,6 +188,48 @@ class B { void foo(){ A a = new A(); a.$0bar(); } }
 }
 
 #[test]
+fn prepare_call_hierarchy_on_receiverless_inherited_call_site_resolves_callee_across_files() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /A.java
+class A { void $1bar() {} }
+//- /B.java
+class B extends A { void foo(){ $0bar(); } }
+"#,
+    );
+
+    let file_b = fixture.marker_file(0);
+    let pos_bar = fixture.marker_position(0);
+
+    let items = prepare_call_hierarchy(&fixture.db, file_b, pos_bar)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "bar");
+    assert_eq!(items[0].uri, fixture.marker_uri(1));
+}
+
+#[test]
+fn prepare_call_hierarchy_on_static_call_site_resolves_callee_across_files() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /A.java
+class A { static void $1bar() {} }
+//- /B.java
+class B { void foo(){ A.$0bar(); } }
+"#,
+    );
+
+    let file_b = fixture.marker_file(0);
+    let pos_bar = fixture.marker_position(0);
+
+    let items = prepare_call_hierarchy(&fixture.db, file_b, pos_bar)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "bar");
+    assert_eq!(items[0].uri, fixture.marker_uri(1));
+}
+
+#[test]
 fn call_hierarchy_outgoing_resolves_interface_default_method() {
     let fixture = FileIdFixture::parse(
         r#"
