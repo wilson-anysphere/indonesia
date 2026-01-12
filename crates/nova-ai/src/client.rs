@@ -853,6 +853,7 @@ mod tests {
     use futures::TryStreamExt;
     use nova_config::AiPrivacyConfig;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tracing::{field::Visit, Event};
     use tracing_subscriber::{layer::Context, prelude::*, Layer};
@@ -1254,5 +1255,115 @@ mod tests {
         // Comments should be stripped when anonymization is enabled.
         assert!(msg1.contains("// [REDACTED]"), "{msg1}");
         assert!(!msg1.contains("secret token"), "{msg1}");
+    }
+
+    #[derive(Clone)]
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for CountingProvider {
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok("Pong".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let stream = async_stream::try_stream! {
+                yield "Pong".to_string();
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn audit_logging_does_not_change_cache_key() {
+        // Regression test for an earlier bug where enabling audit logging would apply
+        // `audit::sanitize_prompt_for_audit` *before* sending to the provider, which also changed
+        // the cache key (since cache keys are computed from the provider-visible prompt).
+        //
+        // Here we use a cache shared between two clients and ensure the second request hits the
+        // cache even when audit logging is enabled.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn LlmProvider> = Arc::new(CountingProvider {
+            calls: calls.clone(),
+        });
+
+        let cache = Arc::new(LlmResponseCache::new(CacheSettings {
+            max_entries: 16,
+            ttl: Duration::from_secs(60),
+        }));
+
+        let endpoint = url::Url::parse("http://localhost").expect("valid url");
+        let request = ChatRequest {
+            messages: vec![crate::types::ChatMessage::user(format!("hello {SECRET}"))],
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client_no_audit = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider: provider.clone(),
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint: endpoint.clone(),
+            azure_cache_key: None,
+            cache: Some(cache.clone()),
+            retry: RetryConfig::default(),
+        };
+
+        let privacy = PrivacyFilter::new(&AiPrivacyConfig::default()).expect("privacy filter");
+        let client_with_audit = AiClient {
+            provider_kind: AiProviderKind::Ollama,
+            provider,
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 128,
+            request_timeout: Duration::from_secs(30),
+            audit_enabled: true,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+            endpoint,
+            azure_cache_key: None,
+            cache: Some(cache.clone()),
+            retry: RetryConfig::default(),
+        };
+
+        let out1 = client_no_audit
+            .chat(request.clone(), CancellationToken::new())
+            .await
+            .expect("chat succeeds");
+        let out2 = client_with_audit
+            .chat(request, CancellationToken::new())
+            .await
+            .expect("chat succeeds");
+
+        assert_eq!(out1, "Pong");
+        assert_eq!(out2, "Pong");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "expected second request to hit shared cache despite audit logging"
+        );
     }
 }
