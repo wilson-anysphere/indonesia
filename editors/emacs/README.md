@@ -27,7 +27,7 @@ workspace that is not checked into git (or if you're opening a nested file), `eg
 start `nova-lsp` with the wrong workspace root.
 
 The template provides an opt-in helper that treats common Nova/build-system marker files as project
-roots (`nova.toml`, `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`):
+roots (`nova.toml`, `.nova/`, `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`):
 
 ```elisp
 (nova-project-root-setup)

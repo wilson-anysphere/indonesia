@@ -32,6 +32,7 @@
     ".nova.toml"
     "nova.config.toml"
     ".nova/config.toml"
+    ".nova"
     ;; Maven
     "pom.xml"
     ;; Gradle (Groovy + Kotlin DSL)

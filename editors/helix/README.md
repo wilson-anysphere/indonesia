@@ -25,6 +25,7 @@ roots = [
   ".nova.toml",
   "nova.config.toml",
   ".nova/config.toml",
+  ".nova",
   "pom.xml",
   "build.gradle",
   "build.gradle.kts",
