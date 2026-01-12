@@ -265,8 +265,11 @@ impl NovaServer {
 │                                                                  │
 │  PROJECT MANAGEMENT                                              │
 │  • nova/projectConfiguration - Get project structure            │
+│  • nova/projectModel - Normalized project model                 │
 │  • nova/reloadProject - Force project reload                    │
 │  • nova/buildProject - Trigger build                            │
+│  • nova/build/status - Poll build status                        │
+│  • nova/build/diagnostics - Build diagnostics                   │
 │                                                                  │
 │  JAVA-SPECIFIC                                                   │
 │  • nova/java/classpath - Get classpath info                     │
