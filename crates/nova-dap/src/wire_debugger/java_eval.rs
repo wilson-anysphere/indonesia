@@ -210,8 +210,9 @@ impl Debugger {
         let temp_dir = hot_swap_temp_dir().map_err(|err| {
             DebuggerError::InvalidRequest(format!("failed to create javac output dir: {err}"))
         })?;
+        let output_dir = temp_dir.path().to_path_buf();
 
-        let source_path = temp_dir.path().join(format!("{simple_name}.java"));
+        let source_path = output_dir.join(format!("{simple_name}.java"));
         std::fs::write(&source_path, &source).map_err(|err| {
             DebuggerError::InvalidRequest(format!(
                 "failed to write generated eval source {}: {err}",
@@ -223,7 +224,7 @@ impl Debugger {
         // `--release 8` so the injected helper class can load on older debuggee JVMs.
         let javac = crate::javac::apply_stream_eval_defaults(javac);
         let compiled =
-            match compile_java_to_dir(cancel, &javac, &source_path, temp_dir.path()).await {
+            match compile_java_to_dir(cancel, &javac, &source_path, &output_dir).await {
             Ok(classes) => classes,
             Err(err) => {
                 if cancel.is_cancelled() {
