@@ -301,4 +301,243 @@ describe('build integration polling', () => {
 
     expect(foundQueueingLogic).toBe(true);
   });
+
+  it('runs a pending silent diagnostics refresh after a manual build command finishes', async () => {
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
+    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
+
+    const sourceFile = ts.createSourceFile(buildIntegrationPath, contents, ts.ScriptTarget.ESNext, true);
+
+    const unwrapExpression = (expr: ts.Expression): ts.Expression => {
+      let out = expr;
+      while (true) {
+        if (ts.isParenthesizedExpression(out)) {
+          out = out.expression;
+          continue;
+        }
+        if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
+          out = out.expression;
+          continue;
+        }
+        if (ts.isVoidExpression(out)) {
+          out = out.expression;
+          continue;
+        }
+        if (ts.isAwaitExpression(out)) {
+          out = out.expression;
+          continue;
+        }
+        break;
+      }
+      return out;
+    };
+
+    const isSilentTrueObject = (expr: ts.Expression): boolean => {
+      const unwrapped = unwrapExpression(expr);
+      if (!ts.isObjectLiteralExpression(unwrapped)) {
+        return false;
+      }
+      for (const prop of unwrapped.properties) {
+        if (!ts.isPropertyAssignment(prop)) {
+          continue;
+        }
+        const name = prop.name;
+        const key = ts.isIdentifier(name) ? name.text : ts.isStringLiteral(name) ? name.text : undefined;
+        if (key !== 'silent') {
+          continue;
+        }
+        const value = unwrapExpression(prop.initializer);
+        if (value.kind === ts.SyntaxKind.TrueKeyword) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const isRefreshBuildDiagnosticsSilentCall = (node: ts.Node): boolean => {
+      const expr = ts.isExpressionStatement(node) ? unwrapExpression(node.expression) : undefined;
+      if (!expr || !ts.isCallExpression(expr)) {
+        return false;
+      }
+      const callee = unwrapExpression(expr.expression);
+      if (!ts.isIdentifier(callee) || callee.text !== 'refreshBuildDiagnostics') {
+        return false;
+      }
+      const [arg0, arg1] = expr.arguments;
+      return Boolean(arg0 && ts.isIdentifier(arg0) && arg0.text === 'folder' && arg1 && isSilentTrueObject(arg1));
+    };
+
+    const containsPendingRefreshReset = (node: ts.Node): boolean => {
+      let found = false;
+      const visit = (n: ts.Node) => {
+        if (found) {
+          return;
+        }
+        if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+          const left = unwrapExpression(n.left);
+          const right = unwrapExpression(n.right);
+          if (
+            right.kind === ts.SyntaxKind.FalseKeyword &&
+            ts.isPropertyAccessExpression(left) &&
+            ts.isIdentifier(unwrapExpression(left.expression)) &&
+            (unwrapExpression(left.expression) as ts.Identifier).text === 'workspaceState' &&
+            left.name.text === 'pendingDiagnosticsRefreshAfterBuildCommand'
+          ) {
+            found = true;
+            return;
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(node);
+      return found;
+    };
+
+    const containsBuildCommandInFlightReset = (node: ts.Node): boolean => {
+      let found = false;
+      const visit = (n: ts.Node) => {
+        if (found) {
+          return;
+        }
+        if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+          const left = unwrapExpression(n.left);
+          const right = unwrapExpression(n.right);
+          if (
+            right.kind === ts.SyntaxKind.FalseKeyword &&
+            ts.isPropertyAccessExpression(left) &&
+            ts.isIdentifier(unwrapExpression(left.expression)) &&
+            (unwrapExpression(left.expression) as ts.Identifier).text === 'workspaceState' &&
+            left.name.text === 'buildCommandInFlight'
+          ) {
+            found = true;
+            return;
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(node);
+      return found;
+    };
+
+    type HandlerFn = ts.ArrowFunction | ts.FunctionExpression;
+
+    const findBuildProjectHandler = (): HandlerFn | undefined => {
+      let handler: HandlerFn | undefined;
+      const visit = (node: ts.Node) => {
+        if (handler) {
+          return;
+        }
+
+        if (!ts.isCallExpression(node)) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+
+        const callee = unwrapExpression(node.expression);
+        if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== 'registerCommand') {
+          ts.forEachChild(node, visit);
+          return;
+        }
+
+        const receiver = unwrapExpression(callee.expression);
+        if (
+          !ts.isPropertyAccessExpression(receiver) ||
+          receiver.name.text !== 'commands' ||
+          !ts.isIdentifier(unwrapExpression(receiver.expression)) ||
+          (unwrapExpression(receiver.expression) as ts.Identifier).text !== 'vscode'
+        ) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+
+        const [arg0, arg1] = node.arguments;
+        if (!arg0 || !ts.isStringLiteral(arg0) || arg0.text !== 'nova.buildProject') {
+          ts.forEachChild(node, visit);
+          return;
+        }
+
+        if (!arg1) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+
+        const fn = unwrapExpression(arg1);
+        if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+          handler = fn;
+          return;
+        }
+
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      return handler;
+    };
+
+    const handler = findBuildProjectHandler();
+    expect(handler).toBeDefined();
+
+    let foundPendingFinally = false;
+
+    const visit = (node: ts.Node) => {
+      if (foundPendingFinally) {
+        return;
+      }
+      if (ts.isIfStatement(node)) {
+        const condition = unwrapExpression(node.expression);
+        if (
+          ts.isPropertyAccessExpression(condition) &&
+          condition.name.text === 'pendingDiagnosticsRefreshAfterBuildCommand' &&
+          ts.isIdentifier(unwrapExpression(condition.expression)) &&
+          (unwrapExpression(condition.expression) as ts.Identifier).text === 'workspaceState'
+        ) {
+          const thenHasRefresh = (() => {
+            let found = false;
+            const scan = (n: ts.Node) => {
+              if (found) {
+                return;
+              }
+              if (isRefreshBuildDiagnosticsSilentCall(n)) {
+                found = true;
+                return;
+              }
+              ts.forEachChild(n, scan);
+            };
+            scan(node.thenStatement);
+            return found;
+          })();
+
+          if (!thenHasRefresh) {
+            return;
+          }
+
+          if (!containsPendingRefreshReset(node.thenStatement)) {
+            return;
+          }
+
+          // Ensure this is in a finally block that also clears buildCommandInFlight.
+          let current: ts.Node | undefined = node;
+          while (current) {
+            if (ts.isTryStatement(current) && current.finallyBlock) {
+              const start = node.getStart(sourceFile);
+              const end = node.getEnd();
+              const finallyStart = current.finallyBlock.getStart(sourceFile);
+              const finallyEnd = current.finallyBlock.getEnd();
+              if (start >= finallyStart && end <= finallyEnd) {
+                if (containsBuildCommandInFlightReset(current.finallyBlock)) {
+                  foundPendingFinally = true;
+                }
+                break;
+              }
+            }
+            current = current.parent;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(handler!.body);
+
+    expect(foundPendingFinally).toBe(true);
+  });
 });
