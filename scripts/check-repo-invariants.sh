@@ -63,7 +63,7 @@ if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates
     echo "  found:" >&2
     for file in "${nova_dap_root_tests[@]}"; do
       echo "    - ${file}" >&2
-    done
+  done
   fi
   echo "  suggestion: move additional files into crates/nova-dap/tests/suite/ and add them to crates/nova-dap/tests/suite/mod.rs" >&2
   exit 1
@@ -148,8 +148,8 @@ banned_test_target_patterns=(
   # `nova-syntax` suites were folded into the `harness` test binary.
   '--test(=|[[:space:]]+)javac_corpus\\b'
   '--test(=|[[:space:]]+)golden_corpus\\b'
-  # `nova-dap` real JVM tests live under the consolidated `tests` harness.
-  '--test(=|[[:space:]]+)real_jvm\\b'
+  # `nova-dap` real JVM tests live under the consolidated `real_jvm` harness.
+  # (So this target name is intentionally allowed.)
   # `nova-cli` real-project tests are part of the consolidated `harness`.
   '--test(=|[[:space:]]+)real_projects\\b'
 )
