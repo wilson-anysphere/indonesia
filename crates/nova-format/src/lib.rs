@@ -363,13 +363,6 @@ pub fn edits_for_range_formatting(
         return Ok(Vec::new());
     }
 
-    // Range formatting often targets full lines, but editors can send arbitrary selections. If the
-    // requested range begins inside a comment or string-like token, lexing the snippet in
-    // isolation can reinterpret the literal contents as Java code and corrupt them. Avoid applying
-    // range formatting in that situation.
-    if is_inside_non_code_token_at_offset(tree, range.start()) {
-        return Ok(Vec::new());
-    }
     let start = u32::from(range.start()) as usize;
     let end = u32::from(range.end()) as usize;
     if start > end || end > source.len() {
@@ -444,14 +437,7 @@ fn range_boundary_is_inside_non_code_token(tree: &SyntaxTree, offset: TextSize) 
     for tok in tree.tokens() {
         if tok.range.end > offset {
             if tok.range.start < offset && offset < tok.range.end {
-                return matches!(
-                    tok.kind,
-                    SyntaxKind::StringLiteral
-                        | SyntaxKind::CharLiteral
-                        | SyntaxKind::LineComment
-                        | SyntaxKind::BlockComment
-                        | SyntaxKind::DocComment
-                );
+                return is_non_code_token_kind(tok.kind);
             }
             break;
         }

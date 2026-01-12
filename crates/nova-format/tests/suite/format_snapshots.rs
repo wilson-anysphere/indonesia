@@ -1059,6 +1059,24 @@ fn range_formatting_is_noop_inside_text_block_template() {
 }
 
 #[test]
+fn range_formatting_can_indent_comment_only_line() {
+    let input = "class Foo {\n    void m() {\n// c\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Select only the comment line.
+    let start = Position::new(2, 0);
+    let end_offset = index.line_end(2).unwrap();
+    let end = index.position(input, end_offset);
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    let out = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(out, "class Foo {\n    void m() {\n        // c\n    }\n}\n");
+}
+
+#[test]
 fn range_formatting_inside_switch_case_uses_case_indent() {
     let input = "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n        int y=2;\n        break;\n        default:\n        break;\n        }\n    }\n}\n";
     let tree = parse(input);
