@@ -1,0 +1,5 @@
+// Minimal buildSrc subproject that depends on the buildSrc root project.
+dependencies {
+    implementation project(':')
+}
+

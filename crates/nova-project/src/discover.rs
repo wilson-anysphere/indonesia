@@ -504,7 +504,15 @@ fn gradle_workspace_root(start: &Path) -> Option<PathBuf> {
             // Without this, opening a file under `<workspace>/build-logic/**` would incorrectly
             // treat the included build as the workspace root, preventing the caller from loading a
             // project model that includes the composite build relationship.
-            if !is_included_build_root(dir) {
+            let is_buildsrc_dir = dir
+                .file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("buildSrc"));
+            let buildsrc_should_not_steal_root = is_buildsrc_dir
+                && dir
+                    .parent()
+                    .is_some_and(|parent| has_gradle_settings(parent) || has_gradle_build(parent));
+
+            if !is_included_build_root(dir) && !buildsrc_should_not_steal_root {
                 return Some(dir.to_path_buf());
             }
         }

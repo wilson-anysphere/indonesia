@@ -1,0 +1,3 @@
+// buildSrc itself can be a small multi-project build.
+include("plugins")
+

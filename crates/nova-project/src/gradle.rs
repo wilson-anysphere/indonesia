@@ -204,8 +204,14 @@ pub(crate) fn load_gradle_project(
     }
 
     maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+    let buildsrc_builds: Vec<GradleModuleRef> = module_refs
+        .iter()
+        .filter(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
+        .cloned()
+        .collect();
     let included_builds = append_included_build_module_refs(&mut module_refs, include_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
+    append_included_build_subproject_module_refs(&mut module_refs, root, &buildsrc_builds);
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -535,8 +541,14 @@ pub(crate) fn load_gradle_workspace_model(
     }
 
     maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+    let buildsrc_builds: Vec<GradleModuleRef> = module_refs
+        .iter()
+        .filter(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
+        .cloned()
+        .collect();
     let included_builds = append_included_build_module_refs(&mut module_refs, include_builds);
     append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
+    append_included_build_subproject_module_refs(&mut module_refs, root, &buildsrc_builds);
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -762,17 +774,19 @@ pub(crate) fn load_gradle_workspace_model(
 
         // Best-effort: record inter-module `project(":...")` dependencies for later output-dir
         // propagation into module classpaths (see post-processing after all module configs are built).
-        let included_build_prefix = included_build_root_project_path(&module_ref.project_path);
+        let composite_build_prefix = composite_build_root_project_path(&module_ref.project_path);
         let deps = parse_gradle_project_dependencies(&module_root)
             .into_iter()
             .map(|dep_project_path| {
-                if let Some(prefix) = included_build_prefix {
-                    // Map `project(":foo")` to `:<includedBuildPrefix>:foo` so we resolve module
-                    // outputs within the included build instead of accidentally pointing at the
-                    // outer build.
+                if let Some(prefix) = composite_build_prefix {
+                    // Map `project(":foo")` to `:<compositeBuildPrefix>:foo` so we resolve module
+                    // outputs within the composite build (e.g. `buildSrc` or `includeBuild`) instead
+                    // of accidentally pointing at the outer Gradle build.
                     if dep_project_path == ":" {
                         prefix.to_string()
-                    } else if dep_project_path.starts_with(":__includedBuild_") {
+                    } else if dep_project_path.starts_with(":__includedBuild_")
+                        || dep_project_path.starts_with(GRADLE_BUILDSRC_PROJECT_PATH)
+                    {
                         dep_project_path
                     } else {
                         format!("{prefix}{dep_project_path}")
@@ -1026,7 +1040,17 @@ fn sanitize_included_build_name(name: &str) -> String {
     }
 }
 
-fn included_build_root_project_path(project_path: &str) -> Option<&str> {
+fn composite_build_root_project_path(project_path: &str) -> Option<&str> {
+    // Gradle's `buildSrc` is a separate build. We model it via a stable synthetic project path
+    // `:__buildSrc` and may also synthesize nested project paths like `:__buildSrc:subproject` when
+    // `buildSrc/settings.gradle(.kts)` is present.
+    if project_path.starts_with(GRADLE_BUILDSRC_PROJECT_PATH) {
+        let rest = &project_path[GRADLE_BUILDSRC_PROJECT_PATH.len()..];
+        if rest.is_empty() || rest.starts_with(':') {
+            return Some(GRADLE_BUILDSRC_PROJECT_PATH);
+        }
+    }
+
     if !project_path.starts_with(":__includedBuild_") {
         return None;
     }

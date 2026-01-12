@@ -200,6 +200,53 @@ fn gradle_orders_buildsrc_after_root_before_subprojects() {
 }
 
 #[test]
+fn gradle_buildsrc_subprojects_are_discovered_and_scoped() {
+    let root = testdata_path("gradle-buildsrc");
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model = load_workspace_model_with_options(&root, &options).expect("load gradle model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let plugins = model
+        .module_by_id("gradle::__buildSrc:plugins")
+        .expect("buildSrc plugins module");
+
+    let java_file = model
+        .workspace_root
+        .join("buildSrc/plugins/src/main/java/com/example/plugins/Plugin.java");
+    let matched = model
+        .module_for_path(&java_file)
+        .expect("module_for_path for buildSrc plugins java file");
+    assert_eq!(matched.module.id, plugins.id);
+    assert_eq!(matched.source_root.kind, SourceRootKind::Main);
+
+    let classpath_dirs: std::collections::BTreeSet<_> = plugins
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Directory)
+        .map(|cp| {
+            cp.path
+                .strip_prefix(&model.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
+        .collect();
+
+    assert!(
+        classpath_dirs.contains(&PathBuf::from("buildSrc/build/classes/java/main")),
+        "expected buildSrc/plugins classpath to include buildSrc root output dir"
+    );
+    assert!(
+        !classpath_dirs.contains(&PathBuf::from("build/classes/java/main")),
+        "did not expect buildSrc/plugins classpath to include outer build root output dir"
+    );
+}
+
+#[test]
 fn gradle_snapshot_entry_for_buildsrc_is_consumed_when_present() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspace_root = tmp.path();
