@@ -1291,26 +1291,41 @@ async fn handle_packet(
         }
         // VirtualMachine.RedefineClasses
         (1, 18) => {
-            let class_count = r.read_u32().unwrap_or(0);
-            let mut classes = Vec::new();
-            for _ in 0..class_count {
-                let type_id = r.read_reference_type_id(sizes).unwrap_or(0);
-                let len = r.read_u32().unwrap_or(0) as usize;
-                let bytes = r.read_bytes(len).unwrap_or(&[]).to_vec();
-                classes.push((type_id, bytes));
+            let res = (|| {
+                let class_count = r.read_u32()?;
+                let mut classes = Vec::new();
+                for _ in 0..class_count {
+                    let type_id = r.read_reference_type_id(sizes)?;
+                    let len = r.read_u32()? as usize;
+                    let bytes_slice = r.read_bytes(len)?;
+                    let mut bytes = Vec::new();
+                    bytes.try_reserve_exact(len).map_err(|_| {
+                        super::types::JdwpError::Protocol(format!(
+                            "unable to allocate redefine class buffer ({len} bytes)"
+                        ))
+                    })?;
+                    bytes.extend_from_slice(bytes_slice);
+                    classes.push((type_id, bytes));
+                }
+                Ok::<_, super::types::JdwpError>((class_count, classes))
+            })();
+
+            match res {
+                Ok((class_count, classes)) => {
+                    state
+                        .redefine_classes_calls
+                        .lock()
+                        .await
+                        .push(RedefineClassesCall {
+                            class_count,
+                            classes,
+                        });
+
+                    let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
+                    (err, Vec::new())
+                }
+                Err(_) => (1, Vec::new()),
             }
-
-            state
-                .redefine_classes_calls
-                .lock()
-                .await
-                .push(RedefineClassesCall {
-                    class_count,
-                    classes,
-                });
-
-            let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
-            (err, Vec::new())
         }
         // VirtualMachine.Suspend
         (1, 8) => {
@@ -1973,43 +1988,52 @@ async fn handle_packet(
         }
         // ReferenceType.GetValues (static field access)
         (2, 6) => {
-            let type_id = r.read_reference_type_id(sizes).unwrap_or(0);
-            let count = r.read_u32().unwrap_or(0) as usize;
-            let mut field_ids = Vec::new();
-            for _ in 0..count {
-                field_ids.push(r.read_id(sizes.field_id).unwrap_or(0));
-            }
-            let mut w = JdwpWriter::new();
-            w.write_u32(field_ids.len() as u32);
-            let static_values = state.static_field_values.lock().await;
-            for field_id in field_ids {
-                if let Some(value) = static_values.get(&(type_id, field_id)) {
-                    w.write_tagged_value(value, sizes);
-                    continue;
+            let res = (|| {
+                let type_id = r.read_reference_type_id(sizes)?;
+                let count = r.read_u32()? as usize;
+                let mut field_ids = Vec::new();
+                for _ in 0..count {
+                    field_ids.push(r.read_id(sizes.field_id)?);
                 }
+                Ok::<_, super::types::JdwpError>((type_id, field_ids))
+            })();
 
-                let value = match (type_id, field_id) {
-                    (OBJECT_CLASS_ID, FIELD_ID) => JdwpValue::Int(7),
-                    (CLASS_ID, MAIN_STATIC_FIELD_ID) => JdwpValue::Int(0),
-                    (FIELD_HIDING_SUBCLASS_ID, FIELD_HIDING_STATIC_SHARED_SUB_ID) => {
-                        JdwpValue::Int(1)
+            match res {
+                Ok((type_id, field_ids)) => {
+                    let mut w = JdwpWriter::new();
+                    w.write_u32(field_ids.len() as u32);
+                    let static_values = state.static_field_values.lock().await;
+                    for field_id in field_ids {
+                        if let Some(value) = static_values.get(&(type_id, field_id)) {
+                            w.write_tagged_value(value, sizes);
+                            continue;
+                        }
+
+                        let value = match (type_id, field_id) {
+                            (OBJECT_CLASS_ID, FIELD_ID) => JdwpValue::Int(7),
+                            (CLASS_ID, MAIN_STATIC_FIELD_ID) => JdwpValue::Int(0),
+                            (FIELD_HIDING_SUBCLASS_ID, FIELD_HIDING_STATIC_SHARED_SUB_ID) => {
+                                JdwpValue::Int(1)
+                            }
+                            (FIELD_HIDING_SUPERCLASS_ID, FIELD_HIDING_STATIC_SHARED_SUPER_ID) => {
+                                JdwpValue::Int(2)
+                            }
+                            (FIELD_HIDING_SUPERCLASS_ID, FIELD_HIDING_STATIC_SUPER_ONLY_ID) => {
+                                JdwpValue::Int(3)
+                            }
+                            (THROWABLE_CLASS_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
+                                // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                                tag: b's',
+                                id: STRING_OBJECT_ID,
+                            },
+                            _ => JdwpValue::Void,
+                        };
+                        w.write_tagged_value(&value, sizes);
                     }
-                    (FIELD_HIDING_SUPERCLASS_ID, FIELD_HIDING_STATIC_SHARED_SUPER_ID) => {
-                        JdwpValue::Int(2)
-                    }
-                    (FIELD_HIDING_SUPERCLASS_ID, FIELD_HIDING_STATIC_SUPER_ONLY_ID) => {
-                        JdwpValue::Int(3)
-                    }
-                    (THROWABLE_CLASS_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
-                        // String values are tagged as `s` (JDWP Tag.STRING) in replies.
-                        tag: b's',
-                        id: STRING_OBJECT_ID,
-                    },
-                    _ => JdwpValue::Void,
-                };
-                w.write_tagged_value(&value, sizes);
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
             }
-            (0, w.into_vec())
         }
         // Method.LineTable
         (6, 1) => {
@@ -2113,57 +2137,66 @@ async fn handle_packet(
                 // JDWP `Error.THREAD_NOT_SUSPENDED` (no suspension means frames/locals are unavailable).
                 (ERROR_THREAD_NOT_SUSPENDED, Vec::new())
             } else {
-                let thread_id = r.read_object_id(sizes).unwrap_or(0);
-                let frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
-                let count = r.read_u32().unwrap_or(0) as usize;
-                let mut slots = Vec::new();
-                for _ in 0..count {
-                    let slot = r.read_u32().unwrap_or(0);
-                    let tag = r.read_u8().unwrap_or(0);
-                    slots.push((slot, tag));
-                }
-                let mut w = JdwpWriter::new();
-                w.write_u32(slots.len() as u32);
-                let locals = state.stack_frame_values.lock().await;
-                for (slot, tag) in slots {
-                    if let Some(value) = locals.get(&(thread_id, frame_id, slot)) {
-                        w.write_tagged_value(value, sizes);
-                        continue;
+                let res = (|| {
+                    let thread_id = r.read_object_id(sizes)?;
+                    let frame_id = r.read_id(sizes.frame_id)?;
+                    let count = r.read_u32()? as usize;
+                    let mut slots = Vec::new();
+                    for _ in 0..count {
+                        let slot = r.read_u32()?;
+                        let tag = r.read_u8()?;
+                        slots.push((slot, tag));
                     }
+                    Ok::<_, super::types::JdwpError>((thread_id, frame_id, slots))
+                })();
 
-                    let value = match (slot, tag) {
-                        // Slot values are keyed by `(slot, tag)` so the mock can support both
-                        // `Method.VariableTable` (where slot 0 is an int) and
-                        // `Method.VariableTableWithGeneric` (where slot 0 can be an object like
-                        // `java.util.List`).
-                        (0, b'I') => JdwpValue::Int(42),
-                        // Slot 0 is `int x` in `Method.VariableTable`, but is also used for a
-                        // reference-typed local (`List<String> list`) in the mock's generic variable
-                        // table. Use a concrete `java.util.ArrayList` sample object so stream-debug
-                        // can inspect the backing collection without requiring a real JVM.
-                        (0, _) => JdwpValue::Object {
-                            tag: b'L',
-                            id: SAMPLE_ARRAYLIST_OBJECT_ID,
-                        },
-                        (1, b'I') => JdwpValue::Int(42),
-                        (1, _) => JdwpValue::Object {
-                            tag: b'L',
-                            id: OBJECT_ID,
-                        },
-                        (2, _) => JdwpValue::Object {
-                            // String values are tagged as `s` (JDWP Tag.STRING) in replies.
-                            tag: b's',
-                            id: STRING_OBJECT_ID,
-                        },
-                        (3, _) => JdwpValue::Object {
-                            tag: b'[',
-                            id: ARRAY_OBJECT_ID,
-                        },
-                        _ => JdwpValue::Void,
-                    };
-                    w.write_tagged_value(&value, sizes);
+                match res {
+                    Ok((thread_id, frame_id, slots)) => {
+                        let mut w = JdwpWriter::new();
+                        w.write_u32(slots.len() as u32);
+                        let locals = state.stack_frame_values.lock().await;
+                        for (slot, tag) in slots {
+                            if let Some(value) = locals.get(&(thread_id, frame_id, slot)) {
+                                w.write_tagged_value(value, sizes);
+                                continue;
+                            }
+
+                            let value = match (slot, tag) {
+                                // Slot values are keyed by `(slot, tag)` so the mock can support both
+                                // `Method.VariableTable` (where slot 0 is an int) and
+                                // `Method.VariableTableWithGeneric` (where slot 0 can be an object like
+                                // `java.util.List`).
+                                (0, b'I') => JdwpValue::Int(42),
+                                // Slot 0 is `int x` in `Method.VariableTable`, but is also used for a
+                                // reference-typed local (`List<String> list`) in the mock's generic variable
+                                // table. Use a concrete `java.util.ArrayList` sample object so stream-debug
+                                // can inspect the backing collection without requiring a real JVM.
+                                (0, _) => JdwpValue::Object {
+                                    tag: b'L',
+                                    id: SAMPLE_ARRAYLIST_OBJECT_ID,
+                                },
+                                (1, b'I') => JdwpValue::Int(42),
+                                (1, _) => JdwpValue::Object {
+                                    tag: b'L',
+                                    id: OBJECT_ID,
+                                },
+                                (2, _) => JdwpValue::Object {
+                                    // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                                    tag: b's',
+                                    id: STRING_OBJECT_ID,
+                                },
+                                (3, _) => JdwpValue::Object {
+                                    tag: b'[',
+                                    id: ARRAY_OBJECT_ID,
+                                },
+                                _ => JdwpValue::Void,
+                            };
+                            w.write_tagged_value(&value, sizes);
+                        }
+                        (0, w.into_vec())
+                    }
+                    Err(_) => (1, Vec::new()),
                 }
-                (0, w.into_vec())
             }
         }
         // StackFrame.SetValues
@@ -2352,68 +2385,95 @@ async fn handle_packet(
         }
         // ObjectReference.GetValues
         (9, 2) => {
-            let object_id = r.read_object_id(sizes).unwrap_or(0);
-            let count = r.read_u32().unwrap_or(0) as usize;
-            let mut field_ids = Vec::new();
-            for _ in 0..count {
-                field_ids.push(r.read_id(sizes.field_id).unwrap_or(0));
-            }
-            let mut w = JdwpWriter::new();
-            w.write_u32(count as u32);
-            let object_values = state.object_field_values.lock().await;
-            for field_id in field_ids {
-                if let Some(value) = object_values.get(&(object_id, field_id)) {
-                    w.write_tagged_value(value, sizes);
-                    continue;
+            let res = (|| {
+                let object_id = r.read_object_id(sizes)?;
+                let count = r.read_u32()? as usize;
+                let mut field_ids = Vec::new();
+                for _ in 0..count {
+                    field_ids.push(r.read_id(sizes.field_id)?);
                 }
+                Ok::<_, super::types::JdwpError>((object_id, field_ids))
+            })();
 
-                let value = match (object_id, field_id) {
-                    (EXCEPTION_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
-                        tag: b's',
-                        id: STRING_OBJECT_ID,
-                    },
-                    (FIELD_HIDING_OBJECT_ID, FIELD_HIDING_FIELD_SUPER_ID) => JdwpValue::Int(2),
-                    (FIELD_HIDING_OBJECT_ID, FIELD_HIDING_FIELD_SUB_ID) => JdwpValue::Int(1),
-                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_SIZE_ID) => JdwpValue::Int(2),
-                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_TABLE_ID) => JdwpValue::Object {
-                        tag: b'[',
-                        id: HASHMAP_TABLE_ARRAY_OBJECT_ID,
-                    },
-                    (SAMPLE_HASHSET_OBJECT_ID, HASHSET_FIELD_MAP_ID) => JdwpValue::Object {
-                        tag: b'L',
-                        id: SAMPLE_HASHMAP_OBJECT_ID,
-                    },
-                    (SAMPLE_ARRAYLIST_OBJECT_ID, ARRAYLIST_FIELD_SIZE_ID) => JdwpValue::Int(3),
-                    (SAMPLE_ARRAYLIST_OBJECT_ID, ARRAYLIST_FIELD_ELEMENT_DATA_ID) => {
-                        JdwpValue::Object {
-                            tag: b'[',
-                            id: SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID,
+            match res {
+                Ok((object_id, field_ids)) => {
+                    let mut w = JdwpWriter::new();
+                    w.write_u32(field_ids.len() as u32);
+                    let object_values = state.object_field_values.lock().await;
+                    for field_id in field_ids {
+                        if let Some(value) = object_values.get(&(object_id, field_id)) {
+                            w.write_tagged_value(value, sizes);
+                            continue;
                         }
+
+                        let value = match (object_id, field_id) {
+                            (EXCEPTION_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
+                                tag: b's',
+                                id: STRING_OBJECT_ID,
+                            },
+                            (FIELD_HIDING_OBJECT_ID, FIELD_HIDING_FIELD_SUPER_ID) => {
+                                JdwpValue::Int(2)
+                            }
+                            (FIELD_HIDING_OBJECT_ID, FIELD_HIDING_FIELD_SUB_ID) => {
+                                JdwpValue::Int(1)
+                            }
+                            (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_SIZE_ID) => JdwpValue::Int(2),
+                            (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_TABLE_ID) => {
+                                JdwpValue::Object {
+                                    tag: b'[',
+                                    id: HASHMAP_TABLE_ARRAY_OBJECT_ID,
+                                }
+                            }
+                            (SAMPLE_HASHSET_OBJECT_ID, HASHSET_FIELD_MAP_ID) => JdwpValue::Object {
+                                tag: b'L',
+                                id: SAMPLE_HASHMAP_OBJECT_ID,
+                            },
+                            (SAMPLE_ARRAYLIST_OBJECT_ID, ARRAYLIST_FIELD_SIZE_ID) => {
+                                JdwpValue::Int(3)
+                            }
+                            (SAMPLE_ARRAYLIST_OBJECT_ID, ARRAYLIST_FIELD_ELEMENT_DATA_ID) => {
+                                JdwpValue::Object {
+                                    tag: b'[',
+                                    id: SAMPLE_ARRAYLIST_ELEMENTDATA_OBJECT_ID,
+                                }
+                            }
+                            (SAMPLE_INTEGER_1_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => {
+                                JdwpValue::Int(10)
+                            }
+                            (SAMPLE_INTEGER_2_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => {
+                                JdwpValue::Int(20)
+                            }
+                            (SAMPLE_INTEGER_3_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => {
+                                JdwpValue::Int(30)
+                            }
+                            (HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => {
+                                JdwpValue::Object {
+                                    tag: b's',
+                                    id: HASHMAP_KEY_A_OBJECT_ID,
+                                }
+                            }
+                            (HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => {
+                                JdwpValue::Object {
+                                    tag: b's',
+                                    id: HASHMAP_KEY_B_OBJECT_ID,
+                                }
+                            }
+                            (
+                                HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
+                                HASHMAP_NODE_FIELD_VALUE_ID,
+                            )
+                            | (
+                                HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
+                                HASHMAP_NODE_FIELD_NEXT_ID,
+                            ) => JdwpValue::Object { tag: b'L', id: 0 },
+                            _ => JdwpValue::Int(7),
+                        };
+                        w.write_tagged_value(&value, sizes);
                     }
-                    (SAMPLE_INTEGER_1_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => JdwpValue::Int(10),
-                    (SAMPLE_INTEGER_2_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => JdwpValue::Int(20),
-                    (SAMPLE_INTEGER_3_OBJECT_ID, INTEGER_FIELD_VALUE_ID) => JdwpValue::Int(30),
-                    (HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => JdwpValue::Object {
-                        tag: b's',
-                        id: HASHMAP_KEY_A_OBJECT_ID,
-                    },
-                    (HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => JdwpValue::Object {
-                        tag: b's',
-                        id: HASHMAP_KEY_B_OBJECT_ID,
-                    },
-                    (
-                        HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
-                        HASHMAP_NODE_FIELD_VALUE_ID,
-                    )
-                    | (
-                        HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
-                        HASHMAP_NODE_FIELD_NEXT_ID,
-                    ) => JdwpValue::Object { tag: b'L', id: 0 },
-                    _ => JdwpValue::Int(7),
-                };
-                w.write_tagged_value(&value, sizes);
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
             }
-            (0, w.into_vec())
         }
         // ObjectReference.SetValues
         (9, 3) => {
@@ -3004,154 +3064,184 @@ async fn handle_packet(
         }
         // EventRequest.Set
         (15, 1) => {
-            let event_kind = r.read_u8().unwrap_or(0);
-            let suspend_policy = r.read_u8().unwrap_or(0);
-            let modifier_count = r.read_u32().unwrap_or(0) as usize;
-            let mut count_modifier: Option<u32> = None;
-            let mut step_depth: Option<u32> = None;
-            let mut exception_caught = false;
-            let mut exception_uncaught = false;
-            let mut field_only: Option<(ReferenceTypeId, FieldId)> = None;
-            let mut instance_only: Option<ObjectId> = None;
-            let mut modifiers = Vec::new();
-            for _ in 0..modifier_count {
-                let mod_kind = r.read_u8().unwrap_or(0);
-                match mod_kind {
-                    EVENT_MODIFIER_KIND_COUNT => {
-                        let count = r.read_u32().unwrap_or(0);
-                        count_modifier = Some(count);
-                        modifiers.push(MockEventRequestModifier::Count { count });
+            match (|| {
+                let event_kind = r.read_u8()?;
+                let suspend_policy = r.read_u8()?;
+                let modifier_count = r.read_u32()? as usize;
+                let mut count_modifier: Option<u32> = None;
+                let mut step_depth: Option<u32> = None;
+                let mut exception_caught = false;
+                let mut exception_uncaught = false;
+                let mut field_only: Option<(ReferenceTypeId, FieldId)> = None;
+                let mut instance_only: Option<ObjectId> = None;
+                let mut modifiers = Vec::new();
+                for _ in 0..modifier_count {
+                    let mod_kind = r.read_u8()?;
+                    match mod_kind {
+                        EVENT_MODIFIER_KIND_COUNT => {
+                            let count = r.read_u32()?;
+                            count_modifier = Some(count);
+                            modifiers.push(MockEventRequestModifier::Count { count });
+                        }
+                        EVENT_MODIFIER_KIND_THREAD_ONLY => {
+                            let thread = r.read_object_id(sizes)?;
+                            modifiers.push(MockEventRequestModifier::ThreadOnly { thread });
+                        }
+                        EVENT_MODIFIER_KIND_CLASS_ONLY => {
+                            let class_id = r.read_reference_type_id(sizes)?;
+                            modifiers.push(MockEventRequestModifier::ClassOnly { class_id });
+                        }
+                        EVENT_MODIFIER_KIND_CLASS_MATCH => {
+                            let pattern = r.read_string()?;
+                            modifiers.push(MockEventRequestModifier::ClassMatch { pattern });
+                        }
+                        EVENT_MODIFIER_KIND_CLASS_EXCLUDE => {
+                            let pattern = r.read_string()?;
+                            modifiers.push(MockEventRequestModifier::ClassExclude { pattern });
+                        }
+                        EVENT_MODIFIER_KIND_LOCATION_ONLY => {
+                            let location = r.read_location(sizes)?;
+                            modifiers.push(MockEventRequestModifier::LocationOnly { location });
+                        }
+                        EVENT_MODIFIER_KIND_EXCEPTION_ONLY => {
+                            let exception_or_null = r.read_reference_type_id(sizes)?;
+                            exception_caught = r.read_bool()?;
+                            exception_uncaught = r.read_bool()?;
+                            modifiers.push(MockEventRequestModifier::ExceptionOnly {
+                                exception_or_null,
+                                caught: exception_caught,
+                                uncaught: exception_uncaught,
+                            });
+                        }
+                        EVENT_MODIFIER_KIND_FIELD_ONLY => {
+                            let class_id = r.read_reference_type_id(sizes)?;
+                            let field_id = r.read_id(sizes.field_id)?;
+                            field_only = Some((class_id, field_id));
+                            modifiers
+                                .push(MockEventRequestModifier::FieldOnly { class_id, field_id });
+                        }
+                        EVENT_MODIFIER_KIND_STEP => {
+                            let thread = r.read_object_id(sizes)?;
+                            let size = r.read_u32()?;
+                            let depth = r.read_u32()?;
+                            step_depth = Some(depth);
+                            modifiers.push(MockEventRequestModifier::Step {
+                                thread,
+                                size,
+                                depth,
+                            });
+                        }
+                        EVENT_MODIFIER_KIND_INSTANCE_ONLY => {
+                            let object_id = r.read_object_id(sizes)?;
+                            instance_only = Some(object_id);
+                            modifiers.push(MockEventRequestModifier::InstanceOnly { object_id });
+                        }
+                        EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH => {
+                            let pattern = r.read_string()?;
+                            modifiers.push(MockEventRequestModifier::SourceNameMatch { pattern });
+                        }
+                        _ => {}
                     }
-                    EVENT_MODIFIER_KIND_THREAD_ONLY => {
-                        let thread = r.read_object_id(sizes).unwrap_or(0);
-                        modifiers.push(MockEventRequestModifier::ThreadOnly { thread });
-                    }
-                    EVENT_MODIFIER_KIND_CLASS_ONLY => {
-                        let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
-                        modifiers.push(MockEventRequestModifier::ClassOnly { class_id });
-                    }
-                    EVENT_MODIFIER_KIND_CLASS_MATCH => {
-                        let pattern = r.read_string().unwrap_or_default();
-                        modifiers.push(MockEventRequestModifier::ClassMatch { pattern });
-                    }
-                    EVENT_MODIFIER_KIND_CLASS_EXCLUDE => {
-                        let pattern = r.read_string().unwrap_or_default();
-                        modifiers.push(MockEventRequestModifier::ClassExclude { pattern });
-                    }
-                    EVENT_MODIFIER_KIND_LOCATION_ONLY => {
-                        let location = r
-                            .read_location(sizes)
-                            .unwrap_or_else(|_| default_location());
-                        modifiers.push(MockEventRequestModifier::LocationOnly { location });
-                    }
-                    EVENT_MODIFIER_KIND_EXCEPTION_ONLY => {
-                        let exception_or_null = r.read_reference_type_id(sizes).unwrap_or(0);
-                        exception_caught = r.read_bool().unwrap_or(false);
-                        exception_uncaught = r.read_bool().unwrap_or(false);
-                        modifiers.push(MockEventRequestModifier::ExceptionOnly {
-                            exception_or_null,
-                            caught: exception_caught,
-                            uncaught: exception_uncaught,
-                        });
-                    }
-                    EVENT_MODIFIER_KIND_FIELD_ONLY => {
-                        let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
-                        let field_id = r.read_id(sizes.field_id).unwrap_or(0);
-                        field_only = Some((class_id, field_id));
-                        modifiers.push(MockEventRequestModifier::FieldOnly { class_id, field_id });
-                    }
-                    EVENT_MODIFIER_KIND_STEP => {
-                        let thread = r.read_object_id(sizes).unwrap_or(0);
-                        let size = r.read_u32().unwrap_or(0);
-                        let depth = r.read_u32().unwrap_or(0);
-                        step_depth = Some(depth);
-                        modifiers.push(MockEventRequestModifier::Step {
-                            thread,
-                            size,
-                            depth,
-                        });
-                    }
-                    EVENT_MODIFIER_KIND_INSTANCE_ONLY => {
-                        let object_id = r.read_object_id(sizes).unwrap_or(0);
-                        instance_only = Some(object_id);
-                        modifiers.push(MockEventRequestModifier::InstanceOnly { object_id });
-                    }
-                    EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH => {
-                        let pattern = r.read_string().unwrap_or_default();
-                        modifiers.push(MockEventRequestModifier::SourceNameMatch { pattern });
-                    }
-                    _ => {}
                 }
+                Ok::<_, super::types::JdwpError>((
+                    event_kind,
+                    suspend_policy,
+                    modifiers,
+                    count_modifier,
+                    step_depth,
+                    exception_caught,
+                    exception_uncaught,
+                    field_only,
+                    instance_only,
+                ))
+            })() {
+                Ok((
+                    event_kind,
+                    suspend_policy,
+                    modifiers,
+                    count_modifier,
+                    step_depth,
+                    exception_caught,
+                    exception_uncaught,
+                    field_only,
+                    instance_only,
+                )) => {
+                    let request_id = state.alloc_request_id();
+                    state.event_requests.lock().await.push(MockEventRequest {
+                        event_kind,
+                        suspend_policy,
+                        request_id,
+                        modifiers,
+                    });
+                    match event_kind {
+                        1 => {
+                            *state.step_request.lock().await = Some(request_id);
+                            *state.step_suspend_policy.lock().await = Some(suspend_policy);
+                            state
+                                .step_depth
+                                .store(step_depth.unwrap_or(0), Ordering::Relaxed);
+                        }
+                        2 => {
+                            *state.breakpoint_request.lock().await = Some(request_id);
+                            *state.breakpoint_suspend_policy.lock().await = Some(suspend_policy);
+                            *state.breakpoint_count_modifier.lock().await = count_modifier;
+                        }
+                        4 => {
+                            *state.exception_request.lock().await = Some(MockExceptionRequest {
+                                request_id,
+                                caught: exception_caught,
+                                uncaught: exception_uncaught,
+                            })
+                        }
+                        6 => *state.thread_start_request.lock().await = Some(request_id),
+                        7 => *state.thread_death_request.lock().await = Some(request_id),
+                        EVENT_KIND_CLASS_PREPARE => {
+                            *state.class_prepare_request.lock().await =
+                                Some(MockSimpleEventRequest {
+                                    request_id,
+                                    suspend_policy,
+                                })
+                        }
+                        42 => *state.method_exit_request.lock().await = Some(request_id),
+                        EVENT_KIND_CLASS_UNLOAD => {
+                            *state.class_unload_request.lock().await =
+                                Some(MockSimpleEventRequest {
+                                    request_id,
+                                    suspend_policy,
+                                })
+                        }
+                        EVENT_KIND_FIELD_ACCESS => {
+                            *state.field_access_request.lock().await = Some(MockWatchpointRequest {
+                                request_id,
+                                suspend_policy,
+                                field_only,
+                                instance_only,
+                            })
+                        }
+                        EVENT_KIND_FIELD_MODIFICATION => {
+                            *state.field_modification_request.lock().await =
+                                Some(MockWatchpointRequest {
+                                    request_id,
+                                    suspend_policy,
+                                    field_only,
+                                    instance_only,
+                                })
+                        }
+                        EVENT_KIND_VM_DISCONNECT => {
+                            *state.vm_disconnect_request.lock().await =
+                                Some(MockSimpleEventRequest {
+                                    request_id,
+                                    suspend_policy,
+                                })
+                        }
+                        _ => {}
+                    }
+                    let mut w = JdwpWriter::new();
+                    w.write_i32(request_id);
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
             }
-            let request_id = state.alloc_request_id();
-            state.event_requests.lock().await.push(MockEventRequest {
-                event_kind,
-                suspend_policy,
-                request_id,
-                modifiers,
-            });
-            match event_kind {
-                1 => {
-                    *state.step_request.lock().await = Some(request_id);
-                    *state.step_suspend_policy.lock().await = Some(suspend_policy);
-                    state
-                        .step_depth
-                        .store(step_depth.unwrap_or(0), Ordering::Relaxed);
-                }
-                2 => {
-                    *state.breakpoint_request.lock().await = Some(request_id);
-                    *state.breakpoint_suspend_policy.lock().await = Some(suspend_policy);
-                    *state.breakpoint_count_modifier.lock().await = count_modifier;
-                }
-                4 => {
-                    *state.exception_request.lock().await = Some(MockExceptionRequest {
-                        request_id,
-                        caught: exception_caught,
-                        uncaught: exception_uncaught,
-                    })
-                }
-                6 => *state.thread_start_request.lock().await = Some(request_id),
-                7 => *state.thread_death_request.lock().await = Some(request_id),
-                EVENT_KIND_CLASS_PREPARE => {
-                    *state.class_prepare_request.lock().await = Some(MockSimpleEventRequest {
-                        request_id,
-                        suspend_policy,
-                    })
-                }
-                42 => *state.method_exit_request.lock().await = Some(request_id),
-                EVENT_KIND_CLASS_UNLOAD => {
-                    *state.class_unload_request.lock().await = Some(MockSimpleEventRequest {
-                        request_id,
-                        suspend_policy,
-                    })
-                }
-                EVENT_KIND_FIELD_ACCESS => {
-                    *state.field_access_request.lock().await = Some(MockWatchpointRequest {
-                        request_id,
-                        suspend_policy,
-                        field_only,
-                        instance_only,
-                    })
-                }
-                EVENT_KIND_FIELD_MODIFICATION => {
-                    *state.field_modification_request.lock().await = Some(MockWatchpointRequest {
-                        request_id,
-                        suspend_policy,
-                        field_only,
-                        instance_only,
-                    })
-                }
-                EVENT_KIND_VM_DISCONNECT => {
-                    *state.vm_disconnect_request.lock().await = Some(MockSimpleEventRequest {
-                        request_id,
-                        suspend_policy,
-                    })
-                }
-                _ => {}
-            }
-            let mut w = JdwpWriter::new();
-            w.write_i32(request_id);
-            (0, w.into_vec())
         }
         // EventRequest.Clear
         (15, 2) => {
