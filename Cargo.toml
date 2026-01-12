@@ -179,6 +179,9 @@ debug = 0
 [profile.dev.package.wasmparser]
 debug = 0
 
+# NOTE: `[profile.test]` is declared above. Do not reintroduce a second
+# `[profile.test]` header here—TOML treats it as a duplicate table and Cargo will
+# fail to parse the workspace.
 [profile.test.package.wasmtime]
 debug = 0
 [profile.test.package.wasmtime-asm-macros]
