@@ -365,7 +365,7 @@ message and returns early so normal CI stays stable.
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.

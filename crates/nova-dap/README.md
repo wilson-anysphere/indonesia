@@ -315,5 +315,5 @@ green.
 Run it locally with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm -- --nocapture
 ```
