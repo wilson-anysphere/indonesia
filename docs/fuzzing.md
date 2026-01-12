@@ -22,6 +22,10 @@ rustup toolchain install nightly --component llvm-tools-preview --component rust
 cargo install cargo-binstall --locked
 cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
+# Agent / multi-runner equivalent:
+# bash scripts/cargo_agent.sh install cargo-binstall --locked
+# bash scripts/cargo_agent.sh +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
+
 # Alternative (slower): build cargo-fuzz from source.
 # cargo +nightly install cargo-fuzz --version 0.13.1 --locked
 ```
@@ -29,6 +33,27 @@ cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disa
 ## Running fuzz targets
 
 Unless otherwise noted, commands below are run from the repository root.
+
+## Agent / multi-runner environments (wrapper script)
+
+If you're running fuzzing on a shared host with multiple concurrent agents, follow
+[`AGENTS.md`](../AGENTS.md) and run Cargo via the wrapper script:
+
+```bash
+# Workstation / CI:
+cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+
+# Agent / multi-runner:
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+```
+
+When running from a crate directory (for per-crate fuzz harnesses under `crates/*/fuzz/`), invoke
+the wrapper relative to the repo root:
+
+```bash
+cd crates/nova-remote-proto
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+```
 
 > Note: the first `cargo fuzz` run can take a while because the toolchain builds the Rust standard
 > library with the selected fuzzing settings. Subsequent runs reuse `fuzz/target/` and are much
