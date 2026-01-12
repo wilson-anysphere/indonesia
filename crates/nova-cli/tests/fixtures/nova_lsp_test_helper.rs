@@ -16,8 +16,21 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    // Accept (and ignore) `--stdio` for compatibility with `nova lsp`'s default behaviour.
-    // All other args are ignored.
+    // When invoked as `nova-lsp` (via PATH), require `--stdio` so integration tests can validate
+    // that the launcher injects the default argument.
+    //
+    // When invoked under any other name (e.g. directly as `nova-cli-test-lsp`), accept any args.
+    let invoked_as_nova_lsp = std::env::args()
+        .next()
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_stem())
+        .and_then(|p| p.to_str())
+        .is_some_and(|s| s == "nova-lsp");
+
+    if invoked_as_nova_lsp && !args.iter().any(|arg| arg == "--stdio") {
+        eprintln!("expected --stdio when invoked as nova-lsp");
+        std::process::exit(2);
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

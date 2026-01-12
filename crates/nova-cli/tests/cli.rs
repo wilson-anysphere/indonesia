@@ -21,13 +21,13 @@ fn lsp_test_server() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_nova-cli-test-lsp"))
 }
 
-/// Returns a temporary directory containing a `nova-lsp` executable (backed by a lightweight
-/// test server binary), plus a PATH value that prepends that directory.
-fn path_with_test_nova_lsp() -> (TempDir, std::ffi::OsString) {
+/// Returns a temporary directory containing the requested executable name (backed by the lightweight
+/// LSP test server binary), plus a PATH value that prepends that directory.
+fn path_with_test_executable(name: &str) -> (TempDir, std::ffi::OsString) {
     let temp = TempDir::new().expect("tempdir");
     let stub = lsp_test_server();
 
-    let exe_name = format!("nova-lsp{}", std::env::consts::EXE_SUFFIX);
+    let exe_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let dest = temp.path().join(exe_name);
 
     if std::fs::hard_link(&stub, &dest).is_err() {
@@ -40,6 +40,14 @@ fn path_with_test_nova_lsp() -> (TempDir, std::ffi::OsString) {
     entries.insert(0, temp.path().to_path_buf());
     let path = std::env::join_paths(entries).expect("join PATH");
     (temp, path)
+}
+
+fn path_with_test_nova_lsp() -> (TempDir, std::ffi::OsString) {
+    path_with_test_executable("nova-lsp")
+}
+
+fn path_with_test_nova_dap() -> (TempDir, std::ffi::OsString) {
+    path_with_test_executable("nova-dap")
 }
 
 fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
@@ -201,6 +209,61 @@ fn lsp_stdio_initialize_shutdown_exit_passthrough() {
 
     let status = child.wait().expect("wait");
     assert!(status.success(), "expected successful LSP lifecycle, got {status:?}");
+}
+
+#[test]
+fn dap_version_passthrough_matches_nova_dap() {
+    let (_temp, path_with_nova_dap) = path_with_test_nova_dap();
+
+    let nova_dap_path = _temp
+        .path()
+        .join(format!("nova-dap{}", std::env::consts::EXE_SUFFIX));
+
+    let direct = ProcessCommand::new(&nova_dap_path)
+        .arg("--version")
+        .output()
+        .expect("run nova-dap --version");
+    assert!(
+        direct.status.success(),
+        "direct stderr: {}",
+        String::from_utf8_lossy(&direct.stderr)
+    );
+
+    let via_nova = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("dap")
+        .arg("--version")
+        .env("PATH", &path_with_nova_dap)
+        .output()
+        .expect("run nova dap --version");
+    assert!(
+        via_nova.status.success(),
+        "via nova (PATH) stderr: {}",
+        String::from_utf8_lossy(&via_nova.stderr)
+    );
+    assert_eq!(
+        direct.stdout,
+        via_nova.stdout,
+        "expected identical stdout for `nova-dap --version` and `nova dap --version`"
+    );
+
+    let stub = lsp_test_server();
+    let via_nova_path = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("dap")
+        .arg("--path")
+        .arg(&stub)
+        .arg("--version")
+        .output()
+        .expect("run nova dap --path ... --version");
+    assert!(
+        via_nova_path.status.success(),
+        "via nova (--path) stderr: {}",
+        String::from_utf8_lossy(&via_nova_path.stderr)
+    );
+    assert_eq!(
+        direct.stdout,
+        via_nova_path.stdout,
+        "expected identical stdout for `nova-dap --version` and `nova dap --path ... --version`"
+    );
 }
 
 #[test]
