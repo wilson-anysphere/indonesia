@@ -168,6 +168,7 @@ impl JdkIndex {
             "singletonList",
             StaticMemberKind::Method,
         );
+        this.add_static_member("java.lang.System", "out", StaticMemberKind::Field);
 
         // Ensure deterministic ordering for callers that iterate the built-in index.
         this.builtin_binary_names_sorted.sort();

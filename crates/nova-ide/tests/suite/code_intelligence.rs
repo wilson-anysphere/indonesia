@@ -3116,6 +3116,42 @@ class A {
 }
 
 #[test]
+fn completion_includes_static_imported_field_in_expression() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.System.out;
+
+class A {
+  void m() {
+    ou<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let out = items
+        .iter()
+        .find(|i| i.label == "out")
+        .expect("expected out completion item");
+    assert_eq!(
+        out.kind,
+        Some(lsp_types::CompletionItemKind::CONSTANT),
+        "expected System.out to be classified as a constant; got {out:#?}"
+    );
+    assert_eq!(
+        out.insert_text.as_deref(),
+        Some("out"),
+        "expected System.out to insert without parens; got {out:#?}"
+    );
+    assert_eq!(
+        out.insert_text_format,
+        None,
+        "expected System.out to not use snippet insertion; got {out:#?}"
+    );
+}
+
+#[test]
 fn static_import_completion_replaces_only_member_segment() {
     let text_with_caret = r#"
  import static java.lang.Math.ma<|>;

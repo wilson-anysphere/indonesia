@@ -6502,10 +6502,7 @@ fn static_import_completions(
     member_prefix: &str,
 ) -> Option<Vec<CompletionItem>> {
     let owner_source = static_import_owner_prefix(text, offset, prefix_start)?;
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
+    let jdk = jdk_index();
     let owner = resolve_static_import_owner(jdk.as_ref(), &owner_source)?;
 
     let names = jdk
@@ -11361,24 +11358,72 @@ fn general_completions(
     let static_imports = parse_static_imports(&analysis.tokens, jdk.as_ref());
     if !static_imports.is_empty() {
         let mut matcher = FuzzyMatcher::new(prefix);
+        // Cache per-owner static member info so we only hit the JDK index once per
+        // imported type.
+        let mut static_members_cache: HashMap<String, Vec<StaticMemberInfo>> = HashMap::new();
         for import in static_imports {
+            let static_members = static_members_cache
+                .entry(import.owner.clone())
+                .or_insert_with(|| {
+                    let owner_ty = TypeName::from(import.owner.as_str());
+                    TypeIndex::static_members(jdk.as_ref(), &owner_ty)
+                });
             match import.member.as_str() {
                 "*" => {
-                    let Ok(members) = jdk.static_member_names_with_prefix(&import.owner, "") else {
+                    if static_members.is_empty() {
+                        // If we can't recover static member kinds, fall back to best-effort name
+                        // enumeration and heuristic item shaping.
+                        let Ok(members) = jdk.static_member_names_with_prefix(&import.owner, "")
+                        else {
+                            continue;
+                        };
+                        for name in members {
+                            if matcher.score(&name).is_none() {
+                                continue;
+                            }
+                            let all_caps = name.chars().any(|c| c.is_ascii_uppercase())
+                                && !name.chars().any(|c| c.is_ascii_lowercase());
+                            let kind = if all_caps {
+                                StaticMemberKind::Field
+                            } else {
+                                StaticMemberKind::Method
+                            };
+                            items.push(static_import_completion_item_from_kind(
+                                &import.owner,
+                                &name,
+                                kind,
+                            ));
+                        }
                         continue;
-                    };
-                    for name in members {
-                        if matcher.score(&name).is_none() {
+                    }
+
+                    for StaticMemberInfo { name, kind } in static_members.iter() {
+                        let name = name.as_str();
+                        if matcher.score(name).is_none() {
                             continue;
                         }
-                        items.push(static_import_completion_item(&types, jdk.as_ref(), &import.owner, &name));
+                        items.push(static_import_completion_item_from_kind(
+                            &import.owner,
+                            name,
+                            *kind,
+                        ));
                     }
                 }
                 name => {
                     if matcher.score(name).is_none() {
                         continue;
                     }
-                    items.push(static_import_completion_item(&types, jdk.as_ref(), &import.owner, name));
+                    let kind_hint = static_members
+                        .iter()
+                        .find(|m| m.name.as_str() == name)
+                        .map(|m| m.kind);
+                    items.push(static_import_completion_item(
+                        &types,
+                        jdk.as_ref(),
+                        &import.owner,
+                        name,
+                        kind_hint,
+                    ));
                 }
             }
         }
@@ -12658,13 +12703,45 @@ fn best_effort_binary_name_for_imported_type(jdk: &JdkIndex, source: &str) -> St
     source.to_string()
 }
 
+fn static_import_completion_item_from_kind(
+    owner: &str,
+    name: &str,
+    kind: StaticMemberKind,
+) -> CompletionItem {
+    let (item_kind, insert_text, insert_text_format) = match kind {
+        StaticMemberKind::Method => (
+            CompletionItemKind::METHOD,
+            Some(format!("{name}($0)")),
+            Some(InsertTextFormat::SNIPPET),
+        ),
+        StaticMemberKind::Field => (CompletionItemKind::CONSTANT, Some(name.to_string()), None),
+    };
+
+    CompletionItem {
+        label: name.to_string(),
+        kind: Some(item_kind),
+        detail: Some(binary_name_to_source_name(owner)),
+        insert_text,
+        insert_text_format,
+        // Mark the completion so we can apply a small ranking bonus.
+        data: Some(json!({ "nova": { "origin": "code_intelligence", "static_import": true } })),
+        ..Default::default()
+    }
+}
+
 fn static_import_completion_item(
     types: &TypeStore,
     jdk: &JdkIndex,
     owner: &str,
     name: &str,
+    kind_hint: Option<StaticMemberKind>,
 ) -> CompletionItem {
-    let mut kind: Option<CompletionItemKind> = None;
+    let mut kind: Option<CompletionItemKind> = kind_hint.map(|kind| match kind {
+        StaticMemberKind::Method => CompletionItemKind::METHOD,
+        // `TypeIndex::static_members` does not carry `final` information, so treat the value as a
+        // constant by default.
+        StaticMemberKind::Field => CompletionItemKind::CONSTANT,
+    });
     let mut detail: Option<String> = None;
 
     if let Ok(Some(stub)) = jdk.lookup_type(owner) {
@@ -12712,7 +12789,7 @@ fn static_import_completion_item(
             CompletionItemKind::METHOD
         }
     });
-    let detail = detail.or_else(|| Some(owner.to_string()));
+    let detail = detail.or_else(|| Some(binary_name_to_source_name(owner)));
 
     let (insert_text, insert_text_format) = match kind {
         CompletionItemKind::METHOD => (
