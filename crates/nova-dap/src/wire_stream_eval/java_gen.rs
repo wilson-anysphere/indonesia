@@ -693,6 +693,19 @@ fn is_java_keyword(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
+
+    use nova_scheduler::CancellationToken;
+    use tempfile::TempDir;
+
+    fn tool_available(name: &str) -> bool {
+        Command::new(name)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    }
 
     fn is_valid_java_ident_ascii(s: &str) -> bool {
         let mut chars = s.chars();
@@ -719,6 +732,48 @@ mod tests {
         assert_eq!(
             rewritten,
             "__this + thisThing + otherthis + _this + __this.foo() + __this"
+        );
+    }
+
+    #[tokio::test]
+    async fn generated_helper_compiles_for_primitive_stream_sampling_when_javac_available() {
+        if !tool_available("javac") {
+            eprintln!("skipping javac compile test: `javac` not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let class_name = "NovaStreamEvalHelper_Test";
+        let source_path = tmp.path().join(format!("{class_name}.java"));
+
+        // The stage expression returns a *primitive* stream; the generated stage method should
+        // compile without callers needing to append `.boxed()` / `.collect(...)`.
+        let src = generate_stream_eval_helper_java_source(
+            "",
+            class_name,
+            &[],
+            &[("this".to_string(), "Object".to_string())],
+            &[],
+            &[],
+            &["IntStream.range(0, 3)".to_string()],
+            None,
+            3,
+        );
+        std::fs::write(&source_path, &src).unwrap();
+
+        let cancel = CancellationToken::new();
+        let javac = crate::javac::HotSwapJavacConfig {
+            javac: "javac".to_string(),
+            release: Some("8".to_string()),
+            ..crate::javac::HotSwapJavacConfig::default()
+        };
+
+        let compiled =
+            crate::javac::compile_java_for_hot_swap(&cancel, &javac, &source_path).await;
+        assert!(
+            compiled.is_ok(),
+            "expected generated helper source to compile (do we have the right imports and sampleStream implementation?)\nsource:\n{src}\nerror:\n{}",
+            compiled.err().unwrap().to_string()
         );
     }
 
