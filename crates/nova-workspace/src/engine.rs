@@ -3320,14 +3320,16 @@ fn should_refresh_build_config(
     // lexical `.`/`..` resolution). This avoids missing prefix matches when module roots are
     // recorded with `..` segments (e.g. `../included`) but file change events arrive in a
     // normalized form.
-    let mut roots: Vec<(PathBuf, usize)> = Vec::with_capacity(module_roots.len() + 1);
     let workspace_root = normalize_vfs_local_path(workspace_root.to_path_buf());
-    let workspace_root_len = workspace_root.components().count();
-    roots.push((workspace_root, workspace_root_len));
-    for root in module_roots.iter().cloned().map(normalize_vfs_local_path) {
-        let len = root.components().count();
-        roots.push((root, len));
-    }
+    let module_roots: Vec<(PathBuf, usize)> = module_roots
+        .iter()
+        .cloned()
+        .map(normalize_vfs_local_path)
+        .map(|root| {
+            let len = root.components().count();
+            (root, len)
+        })
+        .collect();
 
     changed_files.iter().any(|path| {
         let path = normalize_vfs_local_path(path.clone());
@@ -3336,15 +3338,23 @@ fn should_refresh_build_config(
         // directories). Use paths relative to the workspace root (or module roots) so absolute
         // parent directories (like `/home/user/build/...`) don't accidentally trip ignore
         // heuristics.
-        let mut best: Option<(&Path, usize)> = None;
-        for (root, root_len) in &roots {
-            if let Ok(stripped) = path.strip_prefix(root) {
-                if best.map(|(_, best_len)| *root_len > best_len).unwrap_or(true) {
-                    best = Some((stripped, *root_len));
+        //
+        // Prefer the workspace root when the changed file is inside it. This preserves the
+        // intended semantics for root-only build inputs like `gradlew`/`gradlew.bat`.
+        let rel = match path.strip_prefix(&workspace_root) {
+            Ok(rel) => rel,
+            Err(_) => {
+                let mut best: Option<(&Path, usize)> = None;
+                for (root, root_len) in &module_roots {
+                    if let Ok(stripped) = path.strip_prefix(root) {
+                        if best.map(|(_, best_len)| *root_len > best_len).unwrap_or(true) {
+                            best = Some((stripped, *root_len));
+                        }
+                    }
                 }
+                best.map(|(rel, _)| rel).unwrap_or(path.as_path())
             }
-        }
-        let rel = best.map(|(rel, _)| rel).unwrap_or(path.as_path());
+        };
 
         is_build_tool_input_file(rel) || is_nova_config_file(rel)
     })
@@ -4207,6 +4217,15 @@ mod tests {
         assert!(
             !should_refresh_build_config(&root, &[], &[root.join("sub").join("gradlew")]),
             "expected nested gradlew to be ignored"
+        );
+
+        assert!(
+            !should_refresh_build_config(
+                &root,
+                &[root.join("sub")],
+                &[root.join("sub").join("gradlew")]
+            ),
+            "expected module-root gradlew under workspace root to be ignored"
         );
 
         assert!(

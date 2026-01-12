@@ -1100,7 +1100,7 @@ fn looks_like_value_identifier(name: &str) -> bool {
 }
 
 fn looks_like_type_identifier(name: &str) -> bool {
-    if !crate::quick_fixes::is_java_identifier(name) {
+    if !is_java_identifier(name) {
         return false;
     }
 
