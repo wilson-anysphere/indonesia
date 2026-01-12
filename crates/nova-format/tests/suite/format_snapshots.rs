@@ -1355,6 +1355,48 @@ fn pretty_document_formatting_is_idempotent_on_members_with_blank_line_comment()
 }
 
 #[test]
+fn pretty_document_formatting_is_idempotent_on_eof_comment_after_package() {
+    let input = "package foo;\n// c\n";
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(formatted, "package foo;\n\n// c\n");
+
+    let edits_again = edits_for_document_formatting_with_strategy(
+        &formatted,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn pretty_document_formatting_is_idempotent_on_eof_comment_after_imports() {
+    let input = "import java.util.List;\n// c\n";
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(formatted, "import java.util.List;\n// c\n");
+
+    let edits_again = edits_for_document_formatting_with_strategy(
+        &formatted,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
 fn pretty_preserves_single_blank_line_between_imports_with_trailing_comment() {
     let input = "import java.util.List; // list\n\nimport java.util.Map;\nclass Foo{}\n";
     let edits = edits_for_document_formatting_with_strategy(

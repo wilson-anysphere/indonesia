@@ -165,8 +165,23 @@ impl<'a> JavaPrettyFormatter<'a> {
             .filter_map(|el| el.into_token())
             .find(|tok| tok.kind() == SyntaxKind::Eof);
         if let Some(eof) = eof {
-            let trailing = self.comments.take_leading_doc(TokenKey::from(&eof), 0);
+            let eof_key = TokenKey::from(&eof);
+            let blank_line_before = self.comments.leading_blank_line_before(eof_key);
+            let trailing = self.comments.take_leading_doc(eof_key, 0);
             if !trailing.is_nil() {
+                // EOF-anchored comments are not inline with the previous significant token, so they
+                // must appear on a new line. Ensure we always flush at least one hardline before
+                // printing them.
+                if pending_hardlines == 0 {
+                    pending_hardlines = 1;
+                }
+
+                // Avoid double-inserting blank lines when the pretty printer already emitted a
+                // structural blank line and the comment metadata also indicates an extra blank
+                // line before the comment block.
+                if pending_hardlines >= 2 && blank_line_before {
+                    pending_hardlines = pending_hardlines.saturating_sub(1);
+                }
                 self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, None);
                 parts.push(trailing);
             }
