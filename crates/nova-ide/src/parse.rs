@@ -737,6 +737,55 @@ fn parse_method_body(
 
     let mut i = body_start + 1;
     while i < body_end {
+        // Call site: new Type ( ... ) . < ... > method (
+        //
+        // Best-effort support for receivers like `new C().foo()` and `new C().<T>foo()`.
+        // Without this, such calls are currently ignored because we only recognize
+        // member calls with identifier receivers (`recv.foo()`).
+        if tokens.get(i).and_then(|t| t.ident()) == Some("new") {
+            if let Some((ty, ty_span, after_ty)) = parse_type_ref(tokens, i + 1, body_end) {
+                if tokens.get(after_ty).and_then(|t| t.symbol()) == Some('(') {
+                    if let Some(close_paren) = find_matching(tokens, after_ty, '(', ')') {
+                        // `new C().<T>foo(`
+                        if let (Some('.'), Some('<')) = (
+                            tokens.get(close_paren + 1).and_then(|t| t.symbol()),
+                            tokens.get(close_paren + 2).and_then(|t| t.symbol()),
+                        ) {
+                            if let Some(close_angle) =
+                                find_matching(tokens, close_paren + 2, '<', '>')
+                            {
+                                if let (Some(method), Some('(')) = (
+                                    tokens.get(close_angle + 1).and_then(|t| t.ident()),
+                                    tokens.get(close_angle + 2).and_then(|t| t.symbol()),
+                                ) {
+                                    calls.push(CallSite {
+                                        receiver: ty.clone(),
+                                        receiver_span: ty_span,
+                                        method: method.to_string(),
+                                        method_span: tokens[close_angle + 1].span,
+                                    });
+                                }
+                            }
+                        }
+
+                        // `new C().foo(`
+                        if let (Some('.'), Some(method), Some('(')) = (
+                            tokens.get(close_paren + 1).and_then(|t| t.symbol()),
+                            tokens.get(close_paren + 2).and_then(|t| t.ident()),
+                            tokens.get(close_paren + 3).and_then(|t| t.symbol()),
+                        ) {
+                            calls.push(CallSite {
+                                receiver: ty,
+                                receiver_span: ty_span,
+                                method: method.to_string(),
+                                method_span: tokens[close_paren + 2].span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // Call site: recv . < ... > method (
         //
         // Best-effort support for generic method calls like `obj.<T>method(...)`.
@@ -1425,6 +1474,24 @@ class C {
             .calls
             .iter()
             .any(|call| call.receiver == "this" && call.method == "foo"));
+    }
+
+    #[test]
+    fn member_calls_on_new_expressions_are_indexed_as_calls() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C {
+  void foo() {}
+  void test() { new C().foo(); }
+}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert!(parsed
+            .calls
+            .iter()
+            .any(|call| call.receiver == "C" && call.method == "foo"));
     }
 
     #[test]
