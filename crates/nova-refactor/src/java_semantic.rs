@@ -1859,6 +1859,21 @@ fn collect_ident_segments(node: &nova_syntax::SyntaxNode) -> Vec<(String, TextRa
         .collect()
 }
 
+/// Collect the identifier segments that make up a named type reference.
+///
+/// `NamedType` is token-based in the AST schema. We intentionally only look at its *direct*
+/// identifier-like tokens so we do not accidentally include tokens from nested `TypeArguments`
+/// (`List<Foo>` → `List`, `Foo` is handled by its own `ast::Type` node).
+fn collect_named_type_segments(named: &ast::NamedType) -> Vec<(String, TextRange)> {
+    named
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| tok.kind().is_identifier_like())
+        .map(|tok| (tok.text().to_string(), syntax_token_range(&tok)))
+        .collect()
+}
+
 fn resolution_to_key(res: Resolution, accept_methods: bool) -> Option<ResolutionKey> {
     match res {
         Resolution::Field(field) => Some(ResolutionKey::Field(field)),
@@ -2311,6 +2326,69 @@ fn record_syntax_only_references(
     for (&item, &class_scope) in &scope_result.class_scopes {
         if let Some(body_range) = item_body_range(tree, item) {
             type_scopes.push((body_range, class_scope));
+        }
+    }
+
+    // Type references across the full syntax tree.
+    //
+    // We intentionally walk all `ast::Type` nodes instead of relying solely on HIR/type-ref string
+    // ranges: Nova's lowering currently drops several type-bearing constructs (casts/instanceof,
+    // `throws`, `catch` unions, ...), so semantic rename needs an AST-level pass to be complete.
+    for node in unit.syntax().descendants() {
+        let Some(ty) = ast::Type::cast(node) else {
+            continue;
+        };
+        let Some(named) = ty.named() else {
+            continue;
+        };
+
+        let segments = collect_named_type_segments(&named);
+        if segments.is_empty() {
+            continue;
+        }
+
+        let range = ty.syntax().text_range();
+        let start = u32::from(range.start()) as usize;
+
+        // Prefer the innermost enclosing type body scope (so nested types resolve correctly).
+        let mut scope = scope_result.file_scope;
+        let mut best: Option<(usize, nova_resolve::ScopeId)> = None;
+        for (body_range, class_scope) in &type_scopes {
+            if body_range.start <= start && start < body_range.end {
+                let len = body_range.len();
+                if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
+                    best = Some((len, *class_scope));
+                }
+            }
+        }
+        if let Some((_, class_scope)) = best {
+            scope = class_scope;
+        }
+
+        // Resolve each prefix (`Outer`, `Outer.Inner`, ...) so renames can target both outer and
+        // inner identifiers within a qualified type reference.
+        let mut prefix = String::new();
+        for (idx, (seg, seg_range)) in segments.iter().enumerate() {
+            if idx > 0 {
+                prefix.push('.');
+            }
+            prefix.push_str(seg);
+
+            let qn = QualifiedName::from_dotted(&prefix);
+            let Some(TypeResolution::Source(item)) = resolver
+                .resolve_qualified_type_resolution_in_scope(&scope_result.scopes, scope, &qn)
+            else {
+                continue;
+            };
+
+            record_reference(
+                file,
+                *seg_range,
+                ResolutionKey::Type(item),
+                resolution_to_symbol,
+                references,
+                spans,
+            );
         }
     }
 
