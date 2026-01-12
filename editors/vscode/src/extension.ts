@@ -2110,11 +2110,20 @@ export async function activate(context: vscode.ExtensionContext) {
       channel.show(true);
 
       try {
-        const discovered = await discoverTestsForWorkspaces(workspaces);
+        const discovered = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Discovering tests…', cancellable: true },
+          async (_progress, token) => {
+            const discovered = await discoverTestsForWorkspaces(workspaces, { token });
+            if (!discovered) {
+              return undefined;
+            }
+            await refreshTests(discovered, { token });
+            return discovered;
+          },
+        );
         if (!discovered) {
           return;
         }
-        await refreshTests(discovered);
 
         for (const entry of discovered) {
           const flat = flattenTests(entry.response.tests).filter((t) => t.kind === 'test');
@@ -2479,7 +2488,7 @@ async function discoverTestsForWorkspaces(
   const token = opts?.token;
   for (const workspace of workspaces) {
     if (token?.isCancellationRequested) {
-      break;
+      return undefined;
     }
     const response = await sendNovaRequest<DiscoverResponse>(
       'nova/test/discover',
