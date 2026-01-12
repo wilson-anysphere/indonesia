@@ -2540,13 +2540,10 @@ fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
 
         // Error recovery (or other non-antisymmetric cases in our best-effort subtyping):
         // if the types are mutually compatible, pick a deterministic representative.
-        (true, true) => {
-            if type_sort_key(env, a) <= type_sort_key(env, b) {
-                a.clone()
-            } else {
-                b.clone()
-            }
-        }
+        //
+        // Use `make_intersection` rather than a direct `type_sort_key` tie-breaker so we
+        // fully normalize equivalent intersections (e.g. `(A & B & C)` in different orders).
+        (true, true) => make_intersection(env, vec![a.clone(), b.clone()]),
 
         // Otherwise, synthesize a normalized intersection.
         (false, false) => make_intersection(env, vec![a.clone(), b.clone()]),
