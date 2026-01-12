@@ -901,9 +901,13 @@ export function registerNovaBuildIntegration(
                   ...(module ? { module } : {}),
                   ...(projectPath ? { projectPath } : {}),
                   ...(target ? { target } : {}),
-                }, { token });
+                 }, { token });
                 buildProjectResponse = response as NovaBuildProjectResponse | undefined;
                 if (typeof buildProjectResponse === 'undefined') {
+                  if (token.isCancellationRequested) {
+                    logBuildFinished();
+                    return { kind: 'cancelled' };
+                  }
                   buildOutput.appendLine('nova/buildProject returned undefined.');
                   logBuildFinished();
                   return { kind: 'error', message: 'nova/buildProject returned undefined.' };
@@ -936,15 +940,19 @@ export function registerNovaBuildIntegration(
                     ...(module ? { module } : {}),
                     ...(projectPath ? { projectPath } : {}),
                     target,
-                  }, { token });
-                  buildProjectResponse = response as NovaBuildProjectResponse | undefined;
-                  if (typeof buildProjectResponse === 'undefined') {
-                    buildOutput.appendLine('nova/buildProject returned undefined.');
-                    logBuildFinished();
-                    return { kind: 'error', message: 'nova/buildProject returned undefined.' };
-                  }
-                } else {
-                  throw err;
+                   }, { token });
+                   buildProjectResponse = response as NovaBuildProjectResponse | undefined;
+                   if (typeof buildProjectResponse === 'undefined') {
+                      if (token.isCancellationRequested) {
+                        logBuildFinished();
+                        return { kind: 'cancelled' };
+                      }
+                      buildOutput.appendLine('nova/buildProject returned undefined.');
+                      logBuildFinished();
+                      return { kind: 'error', message: 'nova/buildProject returned undefined.' };
+                    }
+                  } else {
+                    throw err;
                 }
               }
 
