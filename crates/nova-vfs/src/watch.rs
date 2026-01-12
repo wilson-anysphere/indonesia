@@ -128,6 +128,9 @@ mod notify_impl {
     }
 
     impl EventNormalizer {
+        const MAX_AGE: Duration = Duration::from_secs(2);
+        const MAX_PENDING_RENAMES: usize = 512;
+
         fn new() -> Self {
             Self {
                 pending_renames: VecDeque::new(),
@@ -135,45 +138,39 @@ mod notify_impl {
         }
 
         fn push(&mut self, event: notify::Event, now: Instant) -> Vec<FileChange> {
-            self.gc_pending(now);
+            let mut out = self.gc_pending(now);
 
             use notify::event::{ModifyKind, RenameMode};
 
             match event.kind {
-                EventKind::Create(_) => event
-                    .paths
-                    .into_iter()
-                    .map(|path| FileChange::Created {
+                EventKind::Create(_) => out.extend(event.paths.into_iter().map(|path| {
+                    FileChange::Created {
                         path: VfsPath::local(path),
-                    })
-                    .collect(),
-                EventKind::Remove(_) => event
-                    .paths
-                    .into_iter()
-                    .map(|path| FileChange::Deleted {
+                    }
+                })),
+                EventKind::Remove(_) => out.extend(event.paths.into_iter().map(|path| {
+                    FileChange::Deleted {
                         path: VfsPath::local(path),
-                    })
-                    .collect(),
+                    }
+                })),
                 EventKind::Modify(ModifyKind::Data(_))
                 | EventKind::Modify(ModifyKind::Metadata(_))
                 | EventKind::Modify(ModifyKind::Other)
-                | EventKind::Modify(ModifyKind::Any) => event
-                    .paths
-                    .into_iter()
-                    .map(|path| FileChange::Modified {
+                | EventKind::Modify(ModifyKind::Any) => out.extend(event.paths.into_iter().map(|path| {
+                    FileChange::Modified {
                         path: VfsPath::local(path),
-                    })
-                    .collect(),
+                    }
+                })),
                 EventKind::Modify(ModifyKind::Name(rename_mode)) => match rename_mode {
-                    RenameMode::Both => paths_to_moves(event.paths),
+                    RenameMode::Both => out.extend(paths_to_moves(event.paths)),
                     RenameMode::From => {
                         for path in event.paths {
                             self.pending_renames.push_back((now, VfsPath::local(path)));
                         }
-                        Vec::new()
+                        // Enforce queue bounds immediately so we don't silently drop a rename-from.
+                        out.extend(self.gc_pending(now));
                     }
                     RenameMode::To => {
-                        let mut out = Vec::new();
                         for to in event.paths {
                             let to = VfsPath::local(to);
                             if let Some((_, from)) = self.pending_renames.pop_front() {
@@ -182,41 +179,48 @@ mod notify_impl {
                                 out.push(FileChange::Created { path: to });
                             }
                         }
-                        out
                     }
                     // Unknown rename variants: treat as modified.
-                    RenameMode::Any | RenameMode::Other => event
-                        .paths
-                        .into_iter()
-                        .map(|path| FileChange::Modified {
+                    RenameMode::Any | RenameMode::Other => out.extend(event.paths.into_iter().map(|path| {
+                        FileChange::Modified {
                             path: VfsPath::local(path),
-                        })
-                        .collect(),
+                        }
+                    })),
                 },
                 // Some backends report a rename as a "modify" without further detail.
-                _ => event
-                    .paths
-                    .into_iter()
-                    .map(|path| FileChange::Modified {
-                        path: VfsPath::local(path),
-                    })
-                    .collect(),
+                _ => out.extend(event.paths.into_iter().map(|path| FileChange::Modified {
+                    path: VfsPath::local(path),
+                })),
             }
+
+            out
         }
 
-        fn gc_pending(&mut self, now: Instant) {
-            const MAX_AGE: Duration = Duration::from_secs(2);
+        /// Flushes internal state for expired/evicted rename-from events.
+        fn flush(&mut self, now: Instant) -> Vec<FileChange> {
+            self.gc_pending(now)
+        }
+
+        fn gc_pending(&mut self, now: Instant) -> Vec<FileChange> {
+            let mut out = Vec::new();
+
             while let Some((t, _)) = self.pending_renames.front() {
-                if now.duration_since(*t) <= MAX_AGE {
+                if now.saturating_duration_since(*t) <= Self::MAX_AGE {
                     break;
                 }
-                self.pending_renames.pop_front();
+                if let Some((_, path)) = self.pending_renames.pop_front() {
+                    out.push(FileChange::Deleted { path });
+                }
             }
 
             // Bound memory for rename storms.
-            while self.pending_renames.len() > 512 {
-                self.pending_renames.pop_front();
+            while self.pending_renames.len() > Self::MAX_PENDING_RENAMES {
+                if let Some((_, path)) = self.pending_renames.pop_front() {
+                    out.push(FileChange::Deleted { path });
+                }
             }
+
+            out
         }
     }
 
@@ -328,7 +332,31 @@ mod notify_impl {
         use notify::event::{ModifyKind, RenameMode};
 
         #[test]
-        fn normalize_rename_from_to_into_move() {
+        fn emits_deleted_when_rename_from_expires() {
+            let mut normalizer = EventNormalizer::new();
+            let t0 = Instant::now();
+            let tmp = tempfile::tempdir().unwrap();
+
+            let from = tmp.path().join("A.java");
+            let ev_from = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                paths: vec![from.clone()],
+                attrs: Default::default(),
+            };
+
+            assert_eq!(normalizer.push(ev_from, t0), Vec::new());
+
+            let t1 = t0 + EventNormalizer::MAX_AGE + Duration::from_millis(1);
+            assert_eq!(
+                normalizer.flush(t1),
+                vec![FileChange::Deleted {
+                    path: VfsPath::local(from)
+                }]
+            );
+        }
+
+        #[test]
+        fn normalize_rename_from_to_into_move_without_extra_deleted() {
             let mut normalizer = EventNormalizer::new();
             let t0 = Instant::now();
 
@@ -346,7 +374,7 @@ mod notify_impl {
                 attrs: Default::default(),
             };
 
-            assert!(normalizer.push(ev_from, t0).is_empty());
+            assert_eq!(normalizer.push(ev_from, t0), Vec::new());
             assert_eq!(
                 normalizer.push(ev_to, t0),
                 vec![FileChange::Moved {
@@ -354,6 +382,10 @@ mod notify_impl {
                     to: VfsPath::local(to)
                 }]
             );
+
+            // Ensure the matched rename doesn't later show up as a delete.
+            let t1 = t0 + EventNormalizer::MAX_AGE + Duration::from_millis(1);
+            assert_eq!(normalizer.flush(t1), Vec::new());
         }
 
         #[test]
@@ -447,31 +479,27 @@ mod notify_impl {
         }
 
         #[test]
-        fn unmatched_rename_from_is_garbage_collected() {
+        fn evicted_rename_from_emits_deleted() {
             let mut normalizer = EventNormalizer::new();
             let t0 = Instant::now();
+            let tmp = tempfile::tempdir().unwrap();
 
-            let from = PathBuf::from("/tmp/A.java");
-            let to = PathBuf::from("/tmp/B.java");
+            let mut paths = Vec::with_capacity(EventNormalizer::MAX_PENDING_RENAMES + 1);
+            for idx in 0..(EventNormalizer::MAX_PENDING_RENAMES + 1) {
+                paths.push(tmp.path().join(format!("File{idx}.java")));
+            }
+            let first = paths[0].clone();
 
             let ev_from = notify::Event {
                 kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
-                paths: vec![from],
+                paths,
                 attrs: Default::default(),
             };
-            assert!(normalizer.push(ev_from, t0).is_empty());
 
-            // Force GC to discard the pending rename-from.
-            let t1 = t0 + Duration::from_secs(3);
-            let ev_to = notify::Event {
-                kind: EventKind::Modify(ModifyKind::Name(RenameMode::To)),
-                paths: vec![to.clone()],
-                attrs: Default::default(),
-            };
             assert_eq!(
-                normalizer.push(ev_to, t1),
-                vec![FileChange::Created {
-                    path: VfsPath::local(to)
+                normalizer.push(ev_from, t0),
+                vec![FileChange::Deleted {
+                    path: VfsPath::local(first)
                 }]
             );
         }
