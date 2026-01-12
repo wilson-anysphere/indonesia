@@ -1137,12 +1137,12 @@ export function registerNovaBuildIntegration(
             return;
           }
 
-          // Best-effort: reloads can change the project model; refresh the Nova Project explorer if present.
-          try {
-            await vscode.commands.executeCommand('nova.refreshProjectExplorer');
-          } catch {
-            // Command is optional; ignore if not contributed.
-          }
+      // Best-effort: reloads can change the project model; refresh the Nova Project explorer if present.
+      try {
+        await vscode.commands.executeCommand('nova.refreshProjectExplorer', folder);
+      } catch {
+        // Command is optional; ignore if not contributed.
+      }
 
           if (token.isCancellationRequested) {
             return;

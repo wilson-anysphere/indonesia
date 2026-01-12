@@ -115,7 +115,7 @@ export function registerNovaBuildFileWatchers(
     }
 
     try {
-      await vscode.commands.executeCommand('nova.refreshProjectExplorer');
+      await vscode.commands.executeCommand('nova.refreshProjectExplorer', workspaceFolder);
     } catch {
       // Command is optional; ignore if not contributed.
     }
