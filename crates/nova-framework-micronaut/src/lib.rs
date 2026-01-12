@@ -480,6 +480,11 @@ fn single_file_fingerprint(db: &dyn Database, file: FileId) -> u64 {
 fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     let bytes = text.as_bytes();
     bytes.len().hash(hasher);
+    // Hashing the pointer is a cheap way to detect text replacement in common
+    // DB implementations (without scanning the full file). If the DB mutates
+    // text in place, the pointer/len may remain stable, so we also hash a small
+    // prefix/suffix as a best-effort invalidation signal.
+    text.as_ptr().hash(hasher);
 
     const EDGE: usize = 64;
     let prefix_len = bytes.len().min(EDGE);
