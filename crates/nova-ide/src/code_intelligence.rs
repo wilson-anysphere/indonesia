@@ -2904,7 +2904,34 @@ fn package_decl_completions(
         }
     }
 
-    // 2) JDK packages (bounded).
+    // 2) Classpath packages (optional, when a Salsa-backed DB provides a classpath index).
+    const MAX_CLASSPATH_PACKAGES: usize = 2048;
+    if !ctx.dotted_prefix.is_empty() {
+        if let Some(salsa) = db.salsa_db() {
+            let pkgs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                salsa.with_snapshot(|snap| {
+                    let project = snap.file_project(file);
+                    snap.classpath_index(project)
+                        .map(|cp| cp.packages_with_prefix(&ctx.dotted_prefix))
+                })
+            }))
+            .ok()
+            .flatten();
+
+            if let Some(pkgs) = pkgs {
+                for pkg in pkgs.into_iter().take(MAX_CLASSPATH_PACKAGES) {
+                    add_package_segment_candidates(
+                        &mut candidates,
+                        &pkg,
+                        &parent_segments,
+                        &ctx.segment_prefix,
+                    );
+                }
+            }
+        }
+    }
+
+    // 3) JDK packages (bounded).
     const MAX_JDK_PACKAGES: usize = 2048;
     if !ctx.dotted_prefix.is_empty() {
         let jdk = JDK_INDEX
