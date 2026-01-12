@@ -4122,6 +4122,39 @@ fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() 
 }
 
 #[test]
+fn inline_variable_rejected_when_initializer_field_dependency_is_written_before_use() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int x = 1;
+  void m() {
+    int a = x;
+    x = 2;
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineWouldChangeValue { .. }),
+        "expected InlineWouldChangeValue, got: {err:?}"
+    );
+}
+
+#[test]
 fn inline_variable_allowed_when_initializer_dependencies_are_not_written() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

@@ -1341,9 +1341,14 @@ fn ensure_inline_variable_value_stable(
             continue;
         };
 
+        // Treat any symbol whose *value* can change over time as a dependency that must remain
+        // stable between the declaration and the inlined usage(s).
+        //
+        // Note: This is intentionally conservative for locals/params and also covers fields, since
+        // re-evaluating `this.x` / `x` later can change behavior just like with locals.
         if !matches!(
             db.symbol_kind(sym),
-            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter | JavaSymbolKind::Field)
         ) {
             continue;
         }
