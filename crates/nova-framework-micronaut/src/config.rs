@@ -1,4 +1,4 @@
-use nova_types::CompletionItem;
+use nova_types::{CompletionItem, Span};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigFileKind {
@@ -58,6 +58,8 @@ pub fn config_completions(prefix: &str, config_keys: &[String]) -> Vec<Completio
 struct PlaceholderContext {
     /// Currently typed prefix within the placeholder.
     prefix: String,
+    /// Byte offset (into `java_source`) where the placeholder key begins.
+    key_start: usize,
 }
 
 fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContext> {
@@ -89,7 +91,12 @@ fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContex
         let Some(open_rel) = content[..rel_offset].rfind("${") else {
             return None;
         };
-        let key_start_rel = open_rel + 2;
+        let mut key_start_rel = open_rel + 2;
+        while key_start_rel < content.len()
+            && content.as_bytes()[key_start_rel].is_ascii_whitespace()
+        {
+            key_start_rel += 1;
+        }
         if rel_offset < key_start_rel {
             return None;
         }
@@ -104,7 +111,8 @@ fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContex
         }
 
         let prefix = content[key_start_rel..rel_offset].trim().to_string();
-        return Some(PlaceholderContext { prefix });
+        let key_start = content_start + key_start_rel;
+        return Some(PlaceholderContext { prefix, key_start });
     }
 
     None
@@ -142,6 +150,17 @@ pub fn completions_for_value_placeholder(
     };
 
     config_completions(&ctx.prefix, config_keys)
+}
+
+/// Compute the replacement span for completions inside `@Value("${...}")`.
+///
+/// The returned span covers the placeholder key prefix (start of key to cursor),
+/// so inserting a full key like `micronaut.server.port` replaces `micronaut.server.p`
+/// instead of only the last identifier segment (`p`).
+#[must_use]
+pub fn completion_span_for_value_placeholder(java_source: &str, offset: usize) -> Option<Span> {
+    let ctx = placeholder_context_at(java_source, offset)?;
+    Some(Span::new(ctx.key_start, offset))
 }
 
 fn parse_properties_keys(text: &str) -> Vec<String> {
