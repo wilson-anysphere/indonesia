@@ -1911,8 +1911,8 @@ fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
     // - `-Dmaven.repo.local=/path/to/repo`
     // - `-Dmaven.repo.local /path/to/repo`
     //
-    // We accept both, prefer the last valid value, and ignore placeholder values (e.g.
-    // `${user.home}`) that we don't currently expand.
+    // We accept both, prefer the last valid value, and best-effort expand `${user.home}` while
+    // ignoring other placeholder values.
     let mut it = contents.split_whitespace().peekable();
     let mut repo: Option<PathBuf> = None;
 
@@ -1964,7 +1964,16 @@ fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    // Best-effort: don't try to resolve placeholders in Maven repo configuration.
+    // Best-effort: support Maven's common `${user.home}` placeholder for local repository paths.
+    //
+    // This appears in both `~/.m2/settings.xml` and `.mvn/maven.config`. If we treat it as a normal
+    // relative path we'll end up joining `<base>/${user.home}/...`, which is almost certainly
+    // wrong.
+    if let Some(path) = expand_maven_user_home_placeholder(value) {
+        return Some(path);
+    }
+
+    // For other placeholders, we don't currently attempt expansion.
     if value.contains("${") {
         return None;
     }
@@ -1975,6 +1984,25 @@ fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
     } else {
         Some(base.join(path))
     }
+}
+
+fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
+    const USER_HOME: &str = "${user.home}";
+    let rest = value.strip_prefix(USER_HOME)?;
+
+    let home = home_dir()?;
+    if rest.is_empty() {
+        return Some(home);
+    }
+
+    // Accept both separators so configs remain portable.
+    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+    if rest.contains("${") {
+        // If there are any remaining placeholders, bail out rather than guessing.
+        return None;
+    }
+
+    Some(home.join(rest))
 }
 
 fn default_maven_repo() -> Option<PathBuf> {
@@ -2373,6 +2401,32 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prior: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let prior = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prior }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn write_maven_config(workspace_root: &Path, contents: &str) {
         let mvn_dir = workspace_root.join(".mvn");
@@ -2426,12 +2480,24 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_repo_local_is_ignored() {
+    fn placeholder_repo_local_expands_user_home() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_maven_config(dir.path(), "-Dmaven.repo.local=${user.home}/.m2/repository");
 
-        let repo = maven_repo_from_maven_config(dir.path());
-        assert_eq!(repo, None);
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        // Set both to behave deterministically on Windows/Linux.
+        let _home = EnvVarGuard::set("HOME", &home);
+        let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, home.join(".m2/repository"));
     }
 
     #[test]

@@ -121,7 +121,7 @@ fn settings_xml_local_repository_is_used_for_dependency_jars() {
 }
 
 #[test]
-fn settings_xml_placeholder_local_repository_is_ignored() {
+fn settings_xml_placeholder_local_repository_expands_user_home() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("home");
     let workspace_root = temp.path().join("workspace");
@@ -129,15 +129,13 @@ fn settings_xml_placeholder_local_repository_is_ignored() {
     std::fs::create_dir_all(&home).expect("create home");
     std::fs::create_dir_all(&workspace_root).expect("create workspace");
 
-    // Best-effort: Nova ignores Maven repo config values containing `${...}` placeholders.
-    // If we *didn't* ignore this, we'd end up trying to resolve jars under
-    // `<home>/${user.home}/...`, which is almost certainly wrong.
+    // The Maven local repository path commonly uses the `${user.home}` placeholder.
+    // Expand it and resolve dependency jars from the resulting directory.
     write_settings_xml(&home, Path::new("${user.home}/.m2/custom-repo"));
 
-    // With the placeholder ignored, discovery should fall back to the default repo under HOME.
-    let default_repo = home.join(".m2").join("repository");
+    let expanded_repo = home.join(".m2").join("custom-repo");
     write_pom_xml(&workspace_root);
-    touch_expected_jar(&default_repo);
+    touch_expected_jar(&expanded_repo);
 
     with_home_dir(&home, || {
         let options = LoadOptions::default();
@@ -150,10 +148,10 @@ fn settings_xml_placeholder_local_repository_is_ignored() {
             .map(|e| e.path.clone())
             .collect::<Vec<_>>();
 
-        let expected = expected_guava_jar(&default_repo);
+        let expected = expected_guava_jar(&expanded_repo);
         assert!(
             jar_entries.contains(&expected),
-            "expected fallback jar path {expected:?} in classpath entries: {jar_entries:?}"
+            "expected expanded jar path {expected:?} in classpath entries: {jar_entries:?}"
         );
     });
 }
