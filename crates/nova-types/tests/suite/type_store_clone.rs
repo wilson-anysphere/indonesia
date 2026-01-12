@@ -10,10 +10,13 @@ fn type_store_clone_preserves_ids_and_is_independent() {
 
     let object = store.well_known().object;
 
+    // Create a project/local type parameter and ensure cloning preserves its `TypeVarId`.
+    let local_tp = store.add_type_param("T", vec![Type::class(object, vec![])]);
+
     let foo_def = ClassDef {
         name: "com.example.Foo".to_string(),
         kind: ClassKind::Class,
-        type_params: vec![],
+        type_params: vec![local_tp],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
         fields: vec![],
@@ -55,6 +58,7 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     assert_eq!(removed_bar_id, bar_id);
     assert_eq!(store.lookup_class("com.example.Bar"), None);
 
+    let original_type_param_count = store.type_param_count();
     let mut cloned = store.clone();
 
     // `well_known` ids should be preserved.
@@ -130,9 +134,17 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     // Re-inserting in the clone should not affect the original.
     assert_eq!(store.lookup_class("com.example.Bar"), None);
 
-    // Removing a class in the original should not affect the clone.
-    store.remove_class("com.example.Foo").expect("foo removed");
-    assert_eq!(store.lookup_class("com.example.Foo"), None);
-    assert_eq!(cloned.lookup_class("com.example.Foo"), Some(foo_id));
-    assert_eq!(cloned.class(foo_id).unwrap().methods[0].name, "foo");
+    // Adding a type parameter in the clone should not affect the original.
+    let added_to_clone = cloned.add_type_param("U", vec![Type::class(object, vec![])]);
+    assert_eq!(cloned.type_param_count(), original_type_param_count + 1);
+    assert_eq!(store.type_param_count(), original_type_param_count);
+    assert!(store.type_param(added_to_clone).is_none());
+    assert_eq!(cloned.type_param(added_to_clone).unwrap().name, "U");
+
+    // Removing a class in the clone should not affect the original.
+    let removed_foo_id = cloned.remove_class("com.example.Foo").expect("foo removed in clone");
+    assert_eq!(removed_foo_id, foo_id);
+    assert_eq!(cloned.lookup_class("com.example.Foo"), None);
+    assert_eq!(store.lookup_class("com.example.Foo"), Some(foo_id));
+    assert_eq!(store.class(foo_id).unwrap().methods[0].name, "foo");
 }
