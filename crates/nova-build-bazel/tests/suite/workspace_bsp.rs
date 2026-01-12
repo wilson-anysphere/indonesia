@@ -5,7 +5,7 @@ use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileProvider, InitializeBuildResult, JavacOptionsItem,
     JavacProvider, ServerCapabilities,
 };
-use nova_build_bazel::{BazelWorkspace, BspWorkspace, CommandOutput, CommandRunner};
+use nova_build_bazel::{BazelWorkspace, BspServerConfig, BspWorkspace, CommandOutput, CommandRunner};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -21,6 +21,46 @@ struct RecordingRunner {
 impl RecordingRunner {
     fn calls(&self) -> Vec<Vec<String>> {
         self.calls.lock().unwrap().clone()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct QueryingRunner {
+    calls: Arc<Mutex<Vec<Vec<String>>>>,
+    query_stdout: String,
+}
+
+impl QueryingRunner {
+    fn new(query_stdout: impl Into<String>) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            query_stdout: query_stdout.into(),
+        }
+    }
+
+    fn calls(&self) -> Vec<Vec<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl CommandRunner for QueryingRunner {
+    fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        assert_eq!(program, "bazel");
+        self.calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|s| s.to_string()).collect());
+
+        let stdout = if args.first() == Some(&"query") {
+            self.query_stdout.clone()
+        } else {
+            String::new()
+        };
+
+        Ok(CommandOutput {
+            stdout,
+            stderr: String::new(),
+        })
     }
 }
 
@@ -156,6 +196,51 @@ fn bazel_workspace_java_targets_falls_back_to_bsp_target_id_uri() {
 
     drop(workspace);
     server.join();
+}
+
+#[test]
+fn bazel_workspace_java_targets_falls_back_to_query_when_bsp_buildtargets_times_out() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+
+    let root = tempdir().unwrap();
+    // Create a minimal workspace marker to match real usage patterns.
+    std::fs::write(root.path().join("WORKSPACE"), "").unwrap();
+
+    let fake_server_path = env!("CARGO_BIN_EXE_fake_bsp_server");
+    let bsp_workspace = {
+        // Keep the default request timeout for the initialization handshake. We'll shorten it
+        // after connect so the hanging `workspace/buildTargets` request times out quickly.
+        let _unset_timeout = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", None);
+
+        BspWorkspace::connect(
+            root.path().to_path_buf(),
+            BspServerConfig {
+                program: fake_server_path.to_string(),
+                args: vec![
+                    "--hang-method".to_string(),
+                    "workspace/buildTargets".to_string(),
+                ],
+            },
+        )
+        .unwrap()
+    };
+
+    let _request_timeout_guard = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", Some("50"));
+
+    let runner = QueryingRunner::new("//pkg:from_query\n");
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner.clone())
+        .unwrap()
+        .with_bsp_workspace(bsp_workspace);
+
+    let targets = workspace.java_targets().unwrap();
+    assert_eq!(targets, vec!["//pkg:from_query".to_string()]);
+
+    // Ensure we actually fell back to `bazel query` rather than returning BSP results.
+    assert!(runner
+        .calls()
+        .into_iter()
+        .any(|args| args.first().map(String::as_str) == Some("query")));
 }
 
 #[test]
