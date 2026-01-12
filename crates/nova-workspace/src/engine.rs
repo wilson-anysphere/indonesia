@@ -276,6 +276,7 @@ impl Drop for WatcherHandle {
 
 const BATCH_QUEUE_CAPACITY: usize = 256;
 const WATCH_COMMAND_QUEUE_CAPACITY: usize = 1;
+const SUBSCRIBER_QUEUE_CAPACITY: usize = 1024;
 const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,7 +534,7 @@ impl WorkspaceEngine {
     }
 
     pub fn subscribe(&self) -> Receiver<WorkspaceEvent> {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = async_channel::bounded(SUBSCRIBER_QUEUE_CAPACITY);
         self.subscribers
             .lock()
             .expect("workspace subscriber mutex poisoned")
@@ -1924,7 +1925,11 @@ fn publish_to_subscribers(
     let mut subs = subscribers
         .lock()
         .expect("workspace subscriber mutex poisoned");
-    subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+    subs.retain(|tx| match tx.try_send(event.clone()) {
+        Ok(()) => true,
+        Err(async_channel::TrySendError::Full(_)) => true,
+        Err(async_channel::TrySendError::Closed(_)) => false,
+    });
 }
 
 fn publish_watch_root_error(
