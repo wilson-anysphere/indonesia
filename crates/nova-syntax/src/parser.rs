@@ -1875,6 +1875,13 @@ impl<'a> Parser<'a> {
             let start = self.current_range().start;
             self.line_indent(start)
         };
+        // `block_indent` is a best-effort heuristic used for error recovery (to avoid consuming
+        // outer-closing braces when an inner `}` is missing). However, it can be misleading when
+        // the line containing `{` is itself over-indented (e.g. multi-line headers or simply
+        // mis-indented code). Track whether we've already seen a statement start that is less
+        // indented than `block_indent`; in that case, indentation is not reliable for deciding
+        // whether a closing brace belongs to this block.
+        let mut saw_statement_less_indented_than_block = false;
 
         while !self.at(SyntaxKind::RBrace)
             && !self.at(SyntaxKind::StringTemplateExprEnd)
@@ -1885,6 +1892,9 @@ impl<'a> Parser<'a> {
             if is_first && indent <= block_indent && recovery.contains(self.current()) {
                 break;
             }
+            if is_first && indent < block_indent {
+                saw_statement_less_indented_than_block = true;
+            }
 
             let before = self.tokens.len();
             self.parse_statement(stmt_ctx);
@@ -1894,7 +1904,7 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::RBrace) {
             let start = self.current_range().start;
             let (indent, is_first) = self.line_indent_and_is_first_token(start);
-            if is_first && indent < block_indent {
+            if is_first && indent < block_indent && !saw_statement_less_indented_than_block {
                 // A closing brace that is less-indented than the block start is very likely
                 // meant for an outer construct. Insert a missing `}` and let the caller
                 // consume the real one.
