@@ -25,6 +25,12 @@ Nova supports VS Code multi-root workspaces and routes most Nova commands/reques
 - Commands without an obvious target may prompt you to select a workspace folder (for example, **Nova: Build Project**, **Nova: Reload Project**, **Nova: Search Framework Items…**, or **Nova: Generate Bug Report**).
 - `untitled:` Java documents don’t belong to any workspace folder; in multi-root workspaces you may be prompted to pick which workspace folder to use.
 
+## File operations (create / delete / rename)
+
+When `nova-lsp` advertises standard LSP `workspace.fileOperations` capabilities, `vscode-languageclient` automatically wires up VS Code’s file operation events and forwards them to the server (for example, `workspace/didRenameFiles`).
+
+The extension should **not** manually forward file operations (for example, by registering its own `workspace.onDidRenameFiles` listener and calling `client.sendNotification('workspace/didRenameFiles', ...)`), because that risks sending duplicate notifications to the server.
+
 ## Frameworks Dashboard
 
 Nova contributes a **Nova Frameworks** view in the Explorer sidebar (Explorer → **Nova Frameworks**).
