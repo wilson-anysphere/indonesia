@@ -1744,31 +1744,122 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
     //   project(':app').projectDir = file('modules/app')
     //   project(':lib').projectDir = new File(settingsDir, 'modules/lib')
     //   project(":app").projectDir = file("modules/app") (Kotlin DSL)
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(
-            r#"(?x)
-                \bproject\s*\(\s*['"](?P<project>[^'"]+)['"]\s*\)
-                \s*\.\s*projectDir\s*=\s*
-                (?:
-                    file\s*\(\s*['"](?P<file_dir>[^'"]+)['"]\s*\)
-                  |
-                    (?:new\s+)?(?:java\.io\.)?File\s*\(\s*settingsDir\s*,\s*['"](?P<settings_dir>[^'"]+)['"]\s*\)
-                )
-            "#,
-        )
-        .expect("valid regex")
-    });
-
     let mut overrides = BTreeMap::new();
-    for caps in re.captures_iter(contents) {
-        let project_path = normalize_project_path(&caps["project"]);
-        let dir_rel = caps
-            .name("file_dir")
-            .or_else(|| caps.name("settings_dir"))
-            .map(|m| m.as_str())
-            .and_then(normalize_dir_rel);
-        let Some(dir_rel) = dir_rel else {
+    let bytes = contents.as_bytes();
+
+    for start in find_keyword_outside_strings(contents, "project") {
+        let mut idx = start + "project".len();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if bytes.get(idx) != Some(&b'(') {
+            continue;
+        }
+
+        let Some((project_args, after_project_parens)) = extract_balanced_parens(contents, idx)
+        else {
+            continue;
+        };
+        let Some(project_path) = extract_quoted_strings(&project_args).into_iter().next() else {
+            continue;
+        };
+        let project_path = normalize_project_path(&project_path);
+
+        // Parse:
+        //   project(...).projectDir = ...
+        //              ^^^^^^^^^^
+        let mut cursor = after_project_parens;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'.') {
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if !bytes[cursor..].starts_with(b"projectDir") {
+            continue;
+        }
+        cursor += "projectDir".len();
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+
+        // Parse RHS:
+        // - file("modules/app")
+        // - new File(settingsDir, "modules/app")
+        // - java.io.File(settingsDir, "modules/app")
+        let dir = if bytes
+            .get(cursor..)
+            .is_some_and(|rest| rest.starts_with(b"file"))
+        {
+            cursor += "file".len();
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'(') {
+                continue;
+            }
+            let Some((args, _end)) = extract_balanced_parens(contents, cursor) else {
+                continue;
+            };
+            extract_quoted_strings(&args).into_iter().next()
+        } else {
+            // Optional `new`.
+            if bytes
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(b"new"))
+            {
+                cursor += "new".len();
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+            }
+
+            // Optional `java.io.` prefix.
+            if bytes
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(b"java.io."))
+            {
+                cursor += "java.io.".len();
+            }
+
+            if !bytes
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(b"File"))
+            {
+                continue;
+            }
+            cursor += "File".len();
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'(') {
+                continue;
+            }
+            let Some((args, _end)) = extract_balanced_parens(contents, cursor) else {
+                continue;
+            };
+            // Maintain existing behavior: only accept `File(settingsDir, "...")`.
+            if !args.trim_start().starts_with("settingsDir") {
+                continue;
+            }
+            extract_quoted_strings(&args).into_iter().next()
+        };
+
+        let Some(dir) = dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) else {
+            continue;
+        };
+        let Some(dir_rel) = normalize_dir_rel(dir) else {
             continue;
         };
         overrides.insert(project_path, dir_rel);
@@ -3107,6 +3198,22 @@ def tripleGroovy = '''includeFlat("lib")'''
         assert_eq!(modules[0].dir_rel, "app");
         assert_eq!(modules[1].project_path, ":lib");
         assert_eq!(modules[1].dir_rel, "../lib");
+    }
+
+    #[test]
+    fn parse_gradle_settings_projects_ignores_projectdir_overrides_inside_strings() {
+        let settings = r#"
+include(":app")
+
+val ignored = "project(':app').projectDir = file('modules/app')"
+val triple = """project(':app').projectDir = file('modules/app')"""
+def tripleGroovy = '''project(':app').projectDir = file('modules/app')'''
+"#;
+
+        let modules = parse_gradle_settings_projects(settings);
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].project_path, ":app");
+        assert_eq!(modules[0].dir_rel, "app");
     }
 
     #[test]
