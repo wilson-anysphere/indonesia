@@ -468,10 +468,9 @@ Payload notes (see `protocol-extensions.md` for full schemas):
 // older server builds, and degrade gracefully.
 
 type FrameworkNode =
-  | { kind: 'group'; id: 'web' | 'micronautEndpoints' | 'micronautBeans'; label: string; projectRoot: string }
   // `endpoint` / `bean` are the raw protocol payloads. Keeping them attached makes it easy to implement
   // context-menu actions like "Copy Endpoint Path" without re-querying the server.
-  | { kind: 'endpoint'; label: string; projectRoot: string; endpoint: any }
+  | { kind: 'endpoint'; framework: 'web' | 'micronaut'; label: string; projectRoot: string; endpoint: any }
   | { kind: 'bean'; label: string; projectRoot: string; bean: any };
 
 function isAbsolutePath(value: string): boolean {
@@ -497,22 +496,23 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
   }
 
   getTreeItem(element: FrameworkNode): vscode.TreeItem {
-    const item = new vscode.TreeItem(element.label);
-
-    if (element.kind === 'group') {
-      item.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
-      return item;
-    }
-
-    item.collapsibleState = vscode.TreeItemCollapsibleState.None;
+    const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
 
     // Match `editors/vscode/package.json` menu contributions:
     // - endpoints: `viewItem == novaFrameworkEndpoint`
     // - beans: `viewItem == novaFrameworkBean`
     item.contextValue = element.kind === 'endpoint' ? 'novaFrameworkEndpoint' : 'novaFrameworkBean';
 
-    const file = element.kind === 'endpoint' ? element.endpoint?.file ?? element.endpoint?.handler?.file : element.bean?.file;
-    const line = element.kind === 'endpoint' && typeof element.endpoint?.line === 'number' ? element.endpoint.line : undefined;
+    const file =
+      element.kind === 'endpoint'
+        ? element.framework === 'web'
+          ? element.endpoint?.file
+          : element.endpoint?.handler?.file ?? element.endpoint?.file
+        : element.bean?.file;
+    const line =
+      element.kind === 'endpoint' && element.framework === 'web' && typeof element.endpoint?.line === 'number'
+        ? element.endpoint.line
+        : undefined;
     if (typeof file === 'string' && file.length > 0) {
       const uri = uriFromProjectFile(element.projectRoot, file);
       const range =
@@ -525,61 +525,43 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
   }
 
   async getChildren(element?: FrameworkNode): Promise<FrameworkNode[]> {
-    const projectRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!projectRoot) return [];
+    if (element) return [];
 
-    // Best-effort: servers that don't implement these endpoints will throw "method not found".
-    const web = (await this.sendOptional('nova/web/endpoints', { projectRoot })) ??
-      (await this.sendOptional('nova/quarkus/endpoints', { projectRoot })); // alias
-    const micronautEndpoints = await this.sendOptional('nova/micronaut/endpoints', { projectRoot });
-    const micronautBeans = await this.sendOptional('nova/micronaut/beans', { projectRoot });
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    const nodes: FrameworkNode[] = [];
 
-    if (!element) {
-      const roots: FrameworkNode[] = [];
-      if (web) roots.push({ kind: 'group', id: 'web', label: `Web Endpoints (${web.endpoints?.length ?? 0})`, projectRoot });
-      if (micronautEndpoints)
-        roots.push({
-          kind: 'group',
-          id: 'micronautEndpoints',
-          label: `Micronaut Endpoints (${micronautEndpoints.endpoints?.length ?? 0})`,
-          projectRoot,
-        });
-      if (micronautBeans)
-        roots.push({ kind: 'group', id: 'micronautBeans', label: `Micronaut Beans (${micronautBeans.beans?.length ?? 0})`, projectRoot });
-      return roots;
-    }
+    for (const workspaceFolder of workspaceFolders) {
+      const projectRoot = workspaceFolder.uri.fsPath;
 
-    if (element.kind !== 'group') {
-      return [];
-    }
+      // Best-effort: servers that don't implement these endpoints will throw "method not found".
+      const web = (await this.sendOptional('nova/web/endpoints', { projectRoot })) ??
+        (await this.sendOptional('nova/quarkus/endpoints', { projectRoot })); // alias
+      const micronautEndpoints = await this.sendOptional('nova/micronaut/endpoints', { projectRoot });
+      const micronautBeans = await this.sendOptional('nova/micronaut/beans', { projectRoot });
 
-    if (element.id === 'web') {
-      const endpoints = Array.isArray(web?.endpoints) ? web.endpoints : [];
-      return endpoints.map((endpoint: any) => {
+      for (const endpoint of Array.isArray(web?.endpoints) ? web.endpoints : []) {
         const methods = Array.isArray(endpoint.methods) ? endpoint.methods.join(',') : '';
         const path = typeof endpoint.path === 'string' ? endpoint.path : '<unknown>';
         const label = methods.length > 0 ? `${methods} ${path}` : path;
-        return { kind: 'endpoint', label, endpoint, projectRoot };
-      });
-    }
+        nodes.push({ kind: 'endpoint', framework: 'web', label, endpoint, projectRoot });
+      }
 
-    if (element.id === 'micronautEndpoints') {
-      const endpoints = Array.isArray(micronautEndpoints?.endpoints) ? micronautEndpoints.endpoints : [];
-      return endpoints.map((endpoint: any) => {
+      for (const endpoint of Array.isArray(micronautEndpoints?.endpoints) ? micronautEndpoints.endpoints : []) {
         const method = typeof endpoint.method === 'string' ? endpoint.method : '';
         const path = typeof endpoint.path === 'string' ? endpoint.path : '<unknown>';
         const label = method.length > 0 ? `${method} ${path}` : path;
-        return { kind: 'endpoint', label, endpoint, projectRoot };
-      });
+        nodes.push({ kind: 'endpoint', framework: 'micronaut', label, endpoint, projectRoot });
+      }
+
+      for (const bean of Array.isArray(micronautBeans?.beans) ? micronautBeans.beans : []) {
+        const name = typeof bean.name === 'string' ? bean.name : typeof bean.id === 'string' ? bean.id : 'bean';
+        const ty = typeof bean.ty === 'string' ? bean.ty : typeof bean.type === 'string' ? bean.type : '';
+        const label = ty.length > 0 ? `${name}: ${ty}` : name;
+        nodes.push({ kind: 'bean', label, bean, projectRoot });
+      }
     }
 
-    const beans = Array.isArray(micronautBeans?.beans) ? micronautBeans.beans : [];
-    return beans.map((bean: any) => {
-      const name = typeof bean.name === 'string' ? bean.name : typeof bean.id === 'string' ? bean.id : 'bean';
-      const ty = typeof bean.ty === 'string' ? bean.ty : typeof bean.type === 'string' ? bean.type : '';
-      const label = ty.length > 0 ? `${name}: ${ty}` : name;
-      return { kind: 'bean', label, bean, projectRoot };
-    });
+    return nodes;
   }
 
   private async sendOptional(method: string, params: unknown): Promise<any | undefined> {
