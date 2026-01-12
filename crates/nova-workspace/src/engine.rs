@@ -2263,9 +2263,19 @@ fn source_root_for_path(roots: &[SourceRootEntry], path: &Path) -> Option<Source
 }
 
 fn build_source_roots(config: &ProjectConfig) -> Vec<SourceRootEntry> {
-    let mut roots: Vec<PathBuf> = config.source_roots.iter().map(|r| r.path.clone()).collect();
+    let mut roots: Vec<PathBuf> = config
+        .source_roots
+        .iter()
+        .map(|r| match VfsPath::local(r.path.clone()) {
+            VfsPath::Local(path) => path,
+            _ => unreachable!("VfsPath::local produced a non-local path"),
+        })
+        .collect();
     if roots.is_empty() {
-        roots.push(config.workspace_root.clone());
+        roots.push(match VfsPath::local(config.workspace_root.clone()) {
+            VfsPath::Local(path) => path,
+            _ => unreachable!("VfsPath::local produced a non-local path"),
+        });
     }
     roots.sort();
     roots.dedup();
@@ -5597,6 +5607,9 @@ enabled = false
         let engine = workspace.engine_for_tests();
 
         let generated_root = root.join("custom-generated");
+        // Intentionally include `..` segments to ensure logical normalization doesn't break
+        // source-root membership checks.
+        let generated_root_non_canonical = root.join("module").join("..").join("custom-generated");
         let generated_file = generated_root.join("Gen.java");
         let event = NormalizedEvent::Created(generated_file.clone());
 
@@ -5628,7 +5641,7 @@ enabled = false
                 "module_root": root.to_string_lossy(),
                 "roots": [{
                     "kind": "main",
-                    "path": generated_root.to_string_lossy(),
+                    "path": generated_root_non_canonical.to_string_lossy(),
                 }]
             }]
         });

@@ -1273,7 +1273,7 @@ fn type_mismatch_quick_fixes(
     source: &str,
     uri: &lsp_types::Uri,
     selection: Span,
-    diagnostics: &[nova_types::Diagnostic],
+    diagnostics: &[Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn spans_overlap(a: Span, b: Span) -> bool {
         a.start < b.end && b.start < a.end
