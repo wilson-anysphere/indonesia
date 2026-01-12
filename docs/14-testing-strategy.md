@@ -460,6 +460,19 @@ resource contention.
 - `crates/nova-fuzzy/benches/fuzzy.rs` (`cargo bench --locked -p nova-fuzzy --bench fuzzy`)
 - `crates/nova-index/benches/symbol_search.rs` (`cargo bench --locked -p nova-index --bench symbol_search`)
 
+Agent / multi-runner equivalents:
+
+```bash
+bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
+bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
+bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
+bash scripts/cargo_agent.sh bench --locked -p nova-refactor --bench refactor
+bash scripts/cargo_agent.sh bench --locked -p nova-classpath --bench index
+bash scripts/cargo_agent.sh bench --locked -p nova-ide --bench completion
+bash scripts/cargo_agent.sh bench --locked -p nova-fuzzy --bench fuzzy
+bash scripts/cargo_agent.sh bench --locked -p nova-index --bench symbol_search
+```
+
 Benchmark thresholds live in `perf/thresholds.toml`. Runtime snapshot thresholds live in
 `perf/runtime-thresholds.toml` (used by `nova perf compare-runtime`; not currently a CI gate). For operational
 details, see [`perf/README.md`](../perf/README.md) and
