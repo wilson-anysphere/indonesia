@@ -202,3 +202,36 @@ fn is_spring_yaml_file(path: &Path) -> bool {
     }
     matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nova_db::InMemoryFileStore;
+
+    #[test]
+    fn caches_index_when_metadata_is_empty() {
+        let mut db = InMemoryFileStore::new();
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("nova-spring-cache-test-{unique}"));
+        let config_path = root.join("src/main/resources/application.properties");
+
+        let file = db.file_id_for_path(&config_path);
+        db.set_file_text(file, "server.port=8080\n".to_string());
+
+        // The temp root does not exist on disk, so `framework_cache::spring_metadata_index` returns a
+        // fresh empty `Arc<MetadataIndex>` on each call. Ensure the spring config workspace cache
+        // still hits by treating empty metadata indexes as equivalent (see `meta_ptr` logic).
+        let first = workspace_index_for_file(&db, file);
+        let second = workspace_index_for_file(&db, file);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        // Edits should invalidate the cache (content pointer/len changes).
+        db.set_file_text(file, "server.port=9090\n".to_string());
+        let third = workspace_index_for_file(&db, file);
+        assert!(!Arc::ptr_eq(&first, &third));
+    }
+}
