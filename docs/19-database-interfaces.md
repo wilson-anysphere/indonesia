@@ -42,6 +42,9 @@ Some parts of the codebase (and downstream crates) still use the legacy
 - safely returns `&str`/`&Path` references backed by the cache
 - is `Send + Sync`, so it can be used in parallel handlers
 
+`SalsaDbView` also implements [`nova_db::SourceDatabase`], so the same cached view
+can be passed to code using either interface.
+
 ### Important note about snapshot lifetime
 
 In Salsa, input writes may block while a snapshot is alive. Tests that mutate
@@ -52,4 +55,10 @@ inputs after taking a snapshot should ensure the snapshot is dropped first.
 Salsa input queries panic if a value has never been set. For this reason,
 `nova_db::salsa::Database` only enumerates file IDs in `all_file_ids` after
 `file_content` has been set for that file.
+
+## Ergonomic forwarding impls
+
+`nova_db::SourceDatabase` has forwarding implementations for `&T`, `&mut T`, and
+`Arc<T>` where `T: SourceDatabase`. This makes it easy to accept borrowed
+databases in generic code without forcing moves.
 
