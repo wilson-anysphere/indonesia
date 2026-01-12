@@ -47,6 +47,15 @@ pub trait SemanticSearch: Send + Sync {
         }
     }
 
+    /// Convenience helper to index a `nova_db::Database`.
+    ///
+    /// This avoids boilerplate wrapper code in callers by internally adapting
+    /// `nova_db::Database` to [`ProjectDatabase`].
+    fn index_database(&mut self, db: &dyn nova_db::Database) {
+        let adapter = crate::project_database::DbProjectDatabase::new(db);
+        self.index_project(&adapter);
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult>;
 }
 

@@ -319,6 +319,10 @@ impl SemanticContextBuilder {
         self.search.index_project(db);
     }
 
+    pub fn index_database(&mut self, db: &dyn nova_db::Database) {
+        self.search.index_database(db);
+    }
+
     pub fn clear(&mut self) {
         self.search.clear();
     }

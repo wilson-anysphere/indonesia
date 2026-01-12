@@ -55,9 +55,8 @@ fn db_project_database_indexes_in_memory_file_store() {
         .to_string(),
     );
 
-    let db = DbProjectDatabase::new(&store);
     let mut search = TrigramSemanticSearch::new();
-    search.index_project(&db);
+    search.index_database(&store);
 
     let results = search.search("hello from db");
     assert!(!results.is_empty(), "expected at least one search result");
