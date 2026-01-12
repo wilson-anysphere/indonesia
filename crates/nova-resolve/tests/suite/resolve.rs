@@ -531,6 +531,36 @@ class C {}
 }
 
 #[test]
+fn ambiguous_type_import_on_demand_is_reported() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import a.Outer1.*;
+import b.Outer2.*;
+class C {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("a", "Outer1");
+    let a_inner = index.add_type("a", "Outer1$Inner");
+    index.add_type("b", "Outer2");
+    let b_inner = index.add_type("b", "Outer2$Inner");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+    assert_eq!(
+        resolver.resolve_name_detailed(&scopes.scopes, scopes.file_scope, &Name::from("Inner")),
+        NameResolution::Ambiguous(vec![
+            Resolution::Type(TypeResolution::External(a_inner)),
+            Resolution::Type(TypeResolution::External(b_inner)),
+        ])
+    );
+}
+
+#[test]
 fn java_lang_is_implicit() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
