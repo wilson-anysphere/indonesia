@@ -68,6 +68,7 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
   frame would exceed the negotiated `max_frame_len`.
 - Cancellation: supported and advertised by default (`supports_cancel=true`). Incoming `Cancel`
   updates a per-RPC cancellation token; responders may return a structured `cancelled` error.
+  (Note: the current distributed router does not yet issue cancellation packets.)
 - Keepalive: there is no application-level heartbeat yet; idle connections rely on TCP / deployment
   infrastructure.
 

@@ -31,9 +31,12 @@ The reference v3 implementation (`crates/nova-remote-rpc`) currently defaults to
   `nova-remote-rpc` Cargo feature `zstd`, but it is only used when **both** peers advertise it
   (note: `nova-worker` currently advertises only `none`, so compression is effectively disabled).
 - Chunking: supported and advertised by default (`supports_chunking=true`) and used when a single
-  frame would exceed the negotiated `max_frame_len`
-- Cancellation: supported and advertised by default (`supports_cancel=true`) and supported end-to-end
-  via `RpcPayload::Cancel` + the structured `cancelled` error code
+   frame would exceed the negotiated `max_frame_len`
+- Cancellation: supported and advertised by default (`supports_cancel=true`).
+  - Workers honor `RpcPayload::Cancel` by updating a per-RPC cancellation token and may return the
+    structured `cancelled` error code.
+  - The current router implementation does not yet issue cancellation packets for long-running
+    indexing work (best-effort future work).
 - Keepalive: no application-level heartbeat yet
 
 These are defaults; deployments can further restrict maximum message sizes via the router
