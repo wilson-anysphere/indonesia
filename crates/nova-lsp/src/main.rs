@@ -4301,7 +4301,8 @@ fn handle_rename(
         if ident_range_at(&source, offset).is_some() {
             return Err((
                 -32602,
-                "rename is only supported for local variables and parameters".to_string(),
+                "rename is only supported for local variables, parameters, fields, methods, and types"
+                    .to_string(),
             ));
         }
         return Err((-32602, "no symbol at cursor".to_string()));
@@ -4309,11 +4310,18 @@ fn handle_rename(
 
     if !matches!(
         db.symbol_kind(symbol),
-        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+        Some(
+            JavaSymbolKind::Local
+                | JavaSymbolKind::Parameter
+                | JavaSymbolKind::Field
+                | JavaSymbolKind::Method
+                | JavaSymbolKind::Type
+        )
     ) {
         return Err((
             -32602,
-            "rename is only supported for local variables and parameters".to_string(),
+            "rename is only supported for local variables, parameters, fields, methods, and types"
+                .to_string(),
         ));
     }
 
