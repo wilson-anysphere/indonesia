@@ -1036,35 +1036,11 @@ fn member_contains_assignment(text: &str, member_start: usize, until: usize) -> 
                 continue;
             }
             b'"' => {
-                // Skip strings.
-                i += 1;
-                while i < until {
-                    if bytes[i] == b'\\' {
-                        i = (i + 2).min(until);
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
+                i = skip_java_string(bytes, i).min(until);
                 continue;
             }
             b'\'' => {
-                // Skip char literals.
-                i += 1;
-                while i < until {
-                    if bytes[i] == b'\\' {
-                        i = (i + 2).min(until);
-                        continue;
-                    }
-                    if bytes[i] == b'\'' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
+                i = skip_java_char(bytes, i).min(until);
                 continue;
             }
             b'/' if i + 1 < until && bytes[i + 1] == b'/' => {
