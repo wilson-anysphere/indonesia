@@ -3109,6 +3109,24 @@ class B extends A { int m(){ return super.foo(); } }
 }
 
 #[test]
+fn object_methods_resolve_even_if_extends_unresolved() {
+    let src = r#"
+class C extends Missing {
+    void m() {
+        this.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| !(d.code.as_ref() == "unresolved-method" && d.message.contains("toString"))),
+        "expected Object methods to remain available even with an unresolved superclass; got {diags:?}"
+    );
+}
+
+#[test]
 fn implements_allows_interface_method_lookup() {
     let src = r#"
 interface I { int foo(); }

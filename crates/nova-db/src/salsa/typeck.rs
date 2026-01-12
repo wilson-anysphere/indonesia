@@ -7615,6 +7615,27 @@ fn source_item_supertypes<'idx>(
     let mut super_class: Option<Type> = None;
     let mut interfaces: Vec<Type> = Vec::new();
 
+    // Only accept "real" class/interface types for supertypes. In broken code, `resolve_type_ref_text`
+    // can yield primitives/arrays/etc (e.g. `extends int`), and unresolved names yield `Type::Named`
+    // plus an `unresolved-type` diagnostic. For IDE resilience, treat those as missing and fall back
+    // to the normal defaults (`Object` for classes, none for interfaces).
+    let accept_supertype = |resolved: nova_resolve::type_ref::ResolvedType| -> Option<Type> {
+        if resolved.ty.is_errorish() {
+            return None;
+        }
+        if resolved
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type")
+        {
+            return None;
+        }
+        match resolved.ty {
+            Type::Class(_) | Type::Named(_) | Type::VirtualInner { .. } => Some(resolved.ty),
+            _ => None,
+        }
+    };
+
     match item {
         nova_hir::ids::ItemId::Class(id) => {
             let class = tree.class(id);
@@ -7624,8 +7645,8 @@ fn source_item_supertypes<'idx>(
                 let resolved = resolve_type_ref_text(
                     resolver, scopes, scope_id, loader, type_vars, ext, base_span,
                 );
-                if !resolved.ty.is_errorish() {
-                    super_class = Some(resolved.ty);
+                if let Some(ty) = accept_supertype(resolved) {
+                    super_class = Some(ty);
                 }
             }
 
@@ -7638,8 +7659,8 @@ fn source_item_supertypes<'idx>(
                 let resolved = resolve_type_ref_text(
                     resolver, scopes, scope_id, loader, type_vars, imp, base_span,
                 );
-                if !resolved.ty.is_errorish() {
-                    interfaces.push(resolved.ty);
+                if let Some(ty) = accept_supertype(resolved) {
+                    interfaces.push(ty);
                 }
             }
         }
@@ -7651,8 +7672,8 @@ fn source_item_supertypes<'idx>(
                 let resolved = resolve_type_ref_text(
                     resolver, scopes, scope_id, loader, type_vars, ext, base_span,
                 );
-                if !resolved.ty.is_errorish() {
-                    interfaces.push(resolved.ty);
+                if let Some(ty) = accept_supertype(resolved) {
+                    interfaces.push(ty);
                 }
             }
             super_class = None;
@@ -7681,8 +7702,8 @@ fn source_item_supertypes<'idx>(
                 let resolved = resolve_type_ref_text(
                     resolver, scopes, scope_id, loader, type_vars, imp, base_span,
                 );
-                if !resolved.ty.is_errorish() {
-                    interfaces.push(resolved.ty);
+                if let Some(ty) = accept_supertype(resolved) {
+                    interfaces.push(ty);
                 }
             }
         }
@@ -7699,8 +7720,8 @@ fn source_item_supertypes<'idx>(
                 let resolved = resolve_type_ref_text(
                     resolver, scopes, scope_id, loader, type_vars, imp, base_span,
                 );
-                if !resolved.ty.is_errorish() {
-                    interfaces.push(resolved.ty);
+                if let Some(ty) = accept_supertype(resolved) {
+                    interfaces.push(ty);
                 }
             }
         }
