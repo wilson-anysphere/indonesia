@@ -5,7 +5,7 @@ expression: schema
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "NovaConfig",
-  "description": "Top-level Nova configuration loaded from TOML.\n\nBuild tool integration can be configured via the `[build]` table: ```toml [build] enabled = true timeout_ms = 30000\n\n[build.maven] enabled = true\n\n[build.gradle] enabled = true ```\n\nExtensions can be configured via the `[extensions]` table: ```toml [extensions] enabled = true wasm_paths = [\"./extensions\"] allow = [\"example.my_extension\"] deny = [\"example.bad_extension\"] wasm_memory_limit_bytes = 268435456 wasm_timeout_ms = 5000 ```",
+  "description": "Top-level Nova configuration loaded from TOML.\n\nBuild tool integration can be configured via the `[build]` table: ```toml [build] # Default is `mode = \"auto\"` (use cached build metadata only; do not run build tools on cache misses). mode = \"on\" # \"off\" | \"auto\" | \"on\" timeout_ms = 120000\n\n[build.maven] mode = \"on\"\n\n[build.gradle] mode = \"on\" ```\n\nNote: the legacy alias `[build_integration]` is also accepted.\n\nLegacy compatibility: - `build.enabled = true|false` is treated as `build.mode = \"on\"|\"off\"`. - `build.maven.enabled = false` / `build.gradle.enabled = false` forces that tool `mode = \"off\"`.\n\nExtensions can be configured via the `[extensions]` table: ```toml [extensions] enabled = true wasm_paths = [\"./extensions\"] allow = [\"example.my_extension\"] deny = [\"example.bad_extension\"] wasm_memory_limit_bytes = 268435456 wasm_timeout_ms = 5000 ```",
   "type": "object",
   "allOf": [
     {

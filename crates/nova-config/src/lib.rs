@@ -488,15 +488,22 @@ impl MemoryConfig {
 /// Build tool integration can be configured via the `[build]` table:
 /// ```toml
 /// [build]
-/// enabled = true
-/// timeout_ms = 30000
+/// # Default is `mode = "auto"` (use cached build metadata only; do not run build tools on cache misses).
+/// mode = "on" # "off" | "auto" | "on"
+/// timeout_ms = 120000
 ///
 /// [build.maven]
-/// enabled = true
+/// mode = "on"
 ///
 /// [build.gradle]
-/// enabled = true
+/// mode = "on"
 /// ```
+///
+/// Note: the legacy alias `[build_integration]` is also accepted.
+///
+/// Legacy compatibility:
+/// - `build.enabled = true|false` is treated as `build.mode = "on"|"off"`.
+/// - `build.maven.enabled = false` / `build.gradle.enabled = false` forces that tool `mode = "off"`.
 ///
 /// Extensions can be configured via the `[extensions]` table:
 /// ```toml
