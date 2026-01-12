@@ -179,6 +179,10 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
         item.id = `novaFrameworks:category:${element.workspaceFolder.uri.toString()}:${element.category}`;
         item.iconPath = categoryIcon(element.category);
+        if (!isFrameworkCategorySupported(element)) {
+          item.description = NOT_SUPPORTED_MESSAGE;
+          item.tooltip = NOT_SUPPORTED_MESSAGE;
+        }
         return item;
       }
       case 'web-endpoint': {
