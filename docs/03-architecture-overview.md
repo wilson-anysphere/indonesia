@@ -604,6 +604,7 @@ use nova_core::ProjectId;
 use nova_framework::{
     CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
 };
+use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic};
 use nova_vfs::FileId;
 
@@ -623,12 +624,38 @@ use nova_vfs::FileId;
         Vec::new()
     }
 
+    fn diagnostics_with_cancel(
+        &self,
+        db: &dyn nova_framework::Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<Diagnostic> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.diagnostics(db, file)
+        }
+    }
+
     fn completions(
         &self,
         _db: &dyn nova_framework::Database,
         _ctx: &CompletionContext,
     ) -> Vec<CompletionItem> {
         Vec::new()
+    }
+
+    fn completions_with_cancel(
+        &self,
+        db: &dyn nova_framework::Database,
+        ctx: &CompletionContext,
+        cancel: &CancellationToken,
+    ) -> Vec<CompletionItem> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.completions(db, ctx)
+        }
     }
 
     fn navigation(
@@ -639,6 +666,19 @@ use nova_vfs::FileId;
         Vec::new()
     }
 
+    fn navigation_with_cancel(
+        &self,
+        db: &dyn nova_framework::Database,
+        symbol: &Symbol,
+        cancel: &CancellationToken,
+    ) -> Vec<NavigationTarget> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.navigation(db, symbol)
+        }
+    }
+
     fn virtual_members(
         &self,
         _db: &dyn nova_framework::Database,
@@ -647,15 +687,24 @@ use nova_vfs::FileId;
         Vec::new()
     }
 
-     fn inlay_hints(&self, _db: &dyn nova_framework::Database, _file: FileId) -> Vec<InlayHint> {
-         Vec::new()
-     }
- }
- ```
- 
- The real `nova-framework` API also provides `*_with_cancel` wrappers on `FrameworkAnalyzer` and
- corresponding `framework_*_with_cancel` methods on `AnalyzerRegistry`, taking
- `nova_scheduler::CancellationToken` for request cancellation.
+    fn inlay_hints(&self, _db: &dyn nova_framework::Database, _file: FileId) -> Vec<InlayHint> {
+        Vec::new()
+    }
+
+    fn inlay_hints_with_cancel(
+        &self,
+        db: &dyn nova_framework::Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<InlayHint> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.inlay_hints(db, file)
+        }
+    }
+}
+```
 
  ---
 

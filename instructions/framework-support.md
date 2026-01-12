@@ -43,6 +43,7 @@ use nova_core::ProjectId;
 use nova_framework::{
     CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
 };
+use nova_scheduler::CancellationToken;
 use nova_hir::framework::ClassData;
 use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic};
@@ -186,6 +187,9 @@ pub trait FrameworkAnalyzer: Send + Sync {
 The `Database` surface is intentionally small and partially-optional: `file_text(file)` may be
 `None`, and `all_files(project)`/`all_classes(project)` may be empty when project-wide enumeration
 is not available. Analyzers should treat these as "no data" and return best-effort results.
+For IDE integration, the registry also exposes `*_with_cancel` methods (and the trait provides
+default `*_with_cancel` hooks) that accept a `nova_scheduler::CancellationToken` so expensive scans
+can be stopped cooperatively.
 
 ### IDE Integration Constraint (Database Adapter)
 

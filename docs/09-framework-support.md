@@ -290,7 +290,8 @@ In the IDE there are currently two integration paths:
   config files and `@Value("${...}")` placeholders.
 - `crates/nova-ide/src/framework_db.rs` provides a `nova_db::Database` → `nova_framework::Database`
   adapter so `AnalyzerRegistry`-based analyzers can run in-process (see
-  `FrameworkAnalyzerRegistryProvider` in `crates/nova-ide/src/extensions.rs`).
+  `FrameworkAnalyzerRegistryProvider` in `crates/nova-ide/src/extensions.rs`, which calls the
+  registry’s `*_with_cancel` methods to cooperate with request cancellation/timeouts).
 
 ---
 
@@ -520,8 +521,9 @@ In the IDE, `crates/nova-ide/src/extensions.rs` wires two framework paths:
   `crates/nova-ide/src/framework_cache.rs`).
 - The `nova-framework` `AnalyzerRegistry` path exists via `FrameworkAnalyzerRegistryProvider`
   (which uses `crates/nova-ide/src/framework_db.rs` to adapt `nova_db::Database` to
-  `nova_framework::Database`), but the default registry currently registers
-  `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op). Registry-backed analyzers are opt-in.
+  `nova_framework::Database`), and calls `framework_*_with_cancel` methods to cooperate with request
+  cancellation/timeouts. The default registry currently registers
+  `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op), so registry-backed analyzers are opt-in.
 
 ### Plugin integration constraint (Database adapter)
 
