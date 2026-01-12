@@ -11030,6 +11030,11 @@ fn find_enclosing_target_typed_expr_in_expr(
                 find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
             }
         }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
+            }
+        }
         HirExpr::Unary { expr, .. } => {
             find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
         }
@@ -11049,6 +11054,20 @@ fn find_enclosing_target_typed_expr_in_expr(
             find_enclosing_target_typed_expr_in_expr(body, *condition, target, target_range, best);
             find_enclosing_target_typed_expr_in_expr(body, *then_expr, target, target_range, best);
             find_enclosing_target_typed_expr_in_expr(body, *else_expr, target, target_range, best);
+        }
+        HirExpr::Switch {
+            selector,
+            body: switch_body,
+            ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(
+                body,
+                *switch_body,
+                target,
+                target_range,
+                best,
+            );
         }
         HirExpr::Lambda { body: b, .. } => match b {
             LambdaBody::Expr(expr) => {

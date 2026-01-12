@@ -12026,7 +12026,10 @@ fn general_completions(
     let static_imports = parse_static_imports(&analysis.tokens, jdk.as_ref());
     if !static_imports.is_empty() {
         let mut matcher = FuzzyMatcher::new(prefix);
-        let completion_env = completion_cache::completion_env_for_file(db, file);
+        // Only build/lookup the workspace completion environment when we actually need it (i.e.
+        // for non-JDK static import owners). This avoids hashing the entire workspace on every
+        // completion request for files that only statically import JDK members.
+        let mut completion_env = None;
 
         #[derive(Clone, Debug)]
         struct WorkspaceStaticImportOwner {
@@ -12099,6 +12102,9 @@ fn general_completions(
 
                     // Workspace (source) types: use the cached completion environment to surface
                     // statically imported members.
+                    if completion_env.is_none() {
+                        completion_env = completion_cache::completion_env_for_file(db, file);
+                    }
                     let Some(env) = completion_env.as_deref() else {
                         continue;
                     };
@@ -12185,6 +12191,9 @@ fn general_completions(
                         continue;
                     }
 
+                    if completion_env.is_none() {
+                        completion_env = completion_cache::completion_env_for_file(db, file);
+                    }
                     let Some(env) = completion_env.as_deref() else {
                         continue;
                     };

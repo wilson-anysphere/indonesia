@@ -5744,6 +5744,11 @@ fn collect_switch_contexts(
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                 }
             }
+            hir::Stmt::Yield { expr, .. } => {
+                if let Some(expr) = expr {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
@@ -6037,6 +6042,14 @@ fn collect_switch_contexts(
                     item_trees,
                     out,
                 );
+            }
+            hir::Expr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                walk_expr(body, *selector, owner, scope_result, resolver, item_trees, out);
+                walk_stmt(body, *switch_body, owner, scope_result, resolver, item_trees, out);
             }
             hir::Expr::Lambda {
                 body: lambda_body, ..
@@ -7175,6 +7188,21 @@ fn record_lightweight_stmt(
         }
         Stmt::Return(ret) => {
             if let Some(expr) = &ret.expr {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    expr,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Stmt::Yield(stmt) => {
+            if let Some(expr) = &stmt.expr {
                 record_lightweight_expr(
                     file,
                     text,

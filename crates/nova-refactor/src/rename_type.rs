@@ -667,6 +667,12 @@ fn expr_scope_for_offset(
                 visit_expr(body, *then_expr, offset, best_expr, best_stmt);
                 visit_expr(body, *else_expr, offset, best_expr, best_stmt);
             }
+            Expr::Switch {
+                selector, body: b, ..
+            } => {
+                visit_expr(body, *selector, offset, best_expr, best_stmt);
+                visit_stmt(body, *b, offset, best_expr, best_stmt);
+            }
             Expr::Lambda {
                 body: lambda_body, ..
             } => match lambda_body {
@@ -763,6 +769,11 @@ fn expr_scope_for_offset(
             } => {
                 visit_expr(body, *condition, offset, best_expr, best_stmt);
                 if let Some(expr) = message {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::Yield { expr, .. } => {
+                if let Some(expr) = expr {
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }
             }
