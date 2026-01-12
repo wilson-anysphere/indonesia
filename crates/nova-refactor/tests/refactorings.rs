@@ -592,7 +592,7 @@ fn extract_variable_rejects_empty_name() {
   void m() {
     int x = 1 + 2;
   }
-}
+ }
 "#;
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let expr_start = src.find("1 + 2").unwrap();
@@ -617,6 +617,88 @@ fn extract_variable_rejects_empty_name() {
     assert_eq!(
         err.to_string(),
         "invalid variable name `<empty>`: name is empty (after trimming whitespace)"
+    );
+}
+
+#[test]
+fn extract_variable_conflicts_with_inner_block_local() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+    {
+      int sum = 0;
+      System.out.println(sum);
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "sum")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_conflicts_with_lambda_parameter() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+    java.util.function.IntUnaryOperator f = (sum) -> sum + 1;
+    System.out.println(f.applyAsInt(x));
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "sum")),
+        "expected NameCollision conflict: {conflicts:?}"
     );
 }
 
@@ -1245,13 +1327,15 @@ fn extract_variable_rejects_name_conflict_with_lambda_parameter() {
     )
     .unwrap_err();
 
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
     assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "extracted variable name conflicts with an existing binding"
-        ),
-        "expected lambda parameter name conflict, got: {err:?}"
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "sum")),
+        "expected NameCollision conflict: {conflicts:?}"
     );
 }
 
@@ -1321,13 +1405,15 @@ fn extract_variable_rejects_name_conflict_with_catch_parameter() {
     )
     .unwrap_err();
 
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
     assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "extracted variable name conflicts with an existing binding"
-        ),
-        "expected catch parameter name conflict, got: {err:?}"
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "e")),
+        "expected NameCollision conflict: {conflicts:?}"
     );
 }
 
@@ -2573,10 +2659,9 @@ fn extract_variable_rejected_in_switch_case_label() {
         break;
     }
   }
-}
+ }
 "#;
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
-
     let expr_start = src.find("1 + 2").unwrap();
     let expr_end = expr_start + "1 + 2".len();
 
@@ -2772,7 +2857,7 @@ fn extract_variable_rejects_expression_in_assert_message() {
 fn rename_local_variable_does_not_touch_shadowed_field() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
-  int foo = 0;
+      int foo = 0;
 
   void m() {
     int foo = 1;

@@ -482,7 +482,6 @@ pub fn extract_variable(
     if selection.len() == 0 {
         return Err(RefactorError::InvalidSelection);
     }
-
     let parsed = parse_java(text);
     if !parsed.errors.is_empty() {
         return Err(RefactorError::ParseError);
@@ -680,7 +679,7 @@ pub fn extract_variable(
         (stmt_range.start, String::new(), " ")
     };
 
-    check_extract_variable_name_conflicts(&stmt, insert_pos, &name)?;
+    check_extract_variable_name_conflicts(&params.file, &stmt, insert_pos, &name)?;
 
     let ty = if params.use_var {
         "var".to_string()
@@ -1879,14 +1878,21 @@ fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
     )
 }
 
-const EXTRACT_VARIABLE_NAME_CONFLICT_REASON: &str =
-    "extracted variable name conflicts with an existing binding";
-
 fn check_extract_variable_name_conflicts(
+    file: &FileId,
     stmt: &ast::Statement,
     insert_pos: usize,
     name: &str,
 ) -> Result<(), RefactorError> {
+    let name_collision = || {
+        RefactorError::Conflicts(vec![Conflict::NameCollision {
+            file: file.clone(),
+            name: name.to_string(),
+            // Extract Variable can run on a `TextDatabase` without semantic IDs for declarations.
+            existing_symbol: SymbolId::new(u32::MAX),
+        }])
+    };
+
     // The extracted variable's declaration is inserted at `insert_pos` before `stmt`. We need a
     // conservative scope range for name collision checks.
     //
@@ -1915,9 +1921,7 @@ fn check_extract_variable_name_conflicts(
 
     // Method/constructor parameters.
     if enclosing.has_parameter_named(name) {
-        return Err(RefactorError::ExtractNotSupported {
-            reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
-        });
+        return Err(name_collision());
     }
 
     // Local variable declarators.
@@ -1940,9 +1944,7 @@ fn check_extract_variable_name_conflicts(
             continue;
         };
         if ranges_overlap(new_scope, scope) {
-            return Err(RefactorError::ExtractNotSupported {
-                reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
-            });
+            return Err(name_collision());
         }
     }
 
@@ -1967,9 +1969,7 @@ fn check_extract_variable_name_conflicts(
         }
         let scope = syntax_range(body.syntax());
         if ranges_overlap(new_scope, scope) {
-            return Err(RefactorError::ExtractNotSupported {
-                reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
-            });
+            return Err(name_collision());
         }
     }
 
@@ -2013,9 +2013,7 @@ fn check_extract_variable_name_conflicts(
         }
 
         if has_conflict {
-            return Err(RefactorError::ExtractNotSupported {
-                reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
-            });
+            return Err(name_collision());
         }
     }
 
