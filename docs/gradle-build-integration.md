@@ -95,8 +95,9 @@ Schema definition (shared by writer + reader): `crates/nova-build-model/src/grad
 The snapshot is written **atomically** (write to a unique temp file in the same directory, then
 rename over the destination) to avoid leaving partially-written JSON on disk.
 
-Note: `nova-build` also caches many Gradle query results in its own build cache directory. When a
-query is served purely from cache (no Gradle process spawned), the snapshot may not be updated.
+Note: `nova-build` also caches many Gradle query results in its own build cache directory. On cache
+hits, `nova-build` may still **repopulate** parts of `.nova/queries/gradle.json` from cached data
+(best-effort) so `nova-project` can consume the snapshot even when Gradle isn’t re-run.
 
 ### Reader
 
@@ -355,9 +356,9 @@ In particular:
 - `GradleBuild::projects(...)` updates the `projects` mapping, and
 - per-project / batch compile-config extraction updates `javaCompileConfigs`.
 
-Note: calling `BuildManager::java_compile_config_gradle(..., project_path=None)` for a **single**
-project build currently executes Gradle but does **not** necessarily write the snapshot (unless it
-uses the batch multi-project path internally).
+Calling `BuildManager::java_compile_config_gradle(..., project_path=None)` will attempt to
+write/update the `":"` entry in the snapshot (best-effort), so the workspace-level classpath/source
+roots can be reused by `nova-project` after a reload.
 
 Common call sites include:
 
@@ -408,10 +409,11 @@ Snapshot writing is **best-effort**. Call sites intentionally ignore I/O errors 
 If the file is missing after running Gradle integration:
 
 - ensure the workspace is writable (Nova needs to create `.nova/queries/`),
-- ensure you invoked a query that writes the snapshot (`GradleBuild::projects`, per-project
-  `java_compile_config(..., project_path=Some(":app"))`, or the batch `java_compile_configs_all`).
+- ensure you invoked a query that writes the snapshot (`GradleBuild::projects`,
+  `java_compile_config(..., project_path=None|Some(":app"))`, or the batch `java_compile_configs_all`).
   Note: some queries can be served from `nova-build`’s cache and may not spawn Gradle; snapshot
-  updates are tied to executing Gradle.
+  repopulation is still attempted from cached data (best-effort), but it can be skipped if required
+  cached metadata (like `projectDir` mappings) is unavailable.
 
 ### Snapshot seems “stale” even though build files didn’t change
 
