@@ -16,8 +16,11 @@ use nova_types::{Parameter, PrimitiveType, Span, Type};
 /// - individual malformed members are skipped
 /// - the function never panics
 ///
-/// Note: this collects both `class` and `interface` declarations as `ClassData`. Framework analyzers
-/// often care about annotations/members on interfaces (e.g. MapStruct mappers), and `ClassData` is a
+/// Note: this collects Java `class`, `interface`, `enum`, `record`, and annotation type
+/// declarations as `ClassData`.
+///
+/// Framework analyzers often care about annotations and members on non-class declarations (for
+/// example MapStruct mappers and Dagger components are typically interfaces), and `ClassData` is a
 /// lightweight, type-kind-agnostic container.
 #[must_use]
 pub fn extract_classes_from_source(source: &str) -> Vec<ClassData> {
@@ -393,4 +396,36 @@ fn strip_generic_args(raw: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_interface_with_annotations() {
+        let src = r#"package com.example;
+
+import org.mapstruct.Mapper;
+
+@Mapper
+public interface MyMapper {
+  Target map(Source source);
+}
+
+class Source {}
+class Target {}
+"#;
+
+        let classes = extract_classes_from_source(src);
+        let mapper = classes
+            .iter()
+            .find(|c| c.name == "MyMapper")
+            .expect("expected MyMapper interface to be extracted");
+
+        assert!(
+            mapper.has_annotation("Mapper"),
+            "expected @Mapper annotation to be captured on interface: {mapper:?}"
+        );
+    }
 }
