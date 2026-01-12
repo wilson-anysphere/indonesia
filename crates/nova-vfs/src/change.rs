@@ -32,13 +32,15 @@ impl FileChange {
     ///
     /// - For create/modify/delete this is just the path.
     /// - For moves this includes both `from` and `to`.
-    pub fn paths(&self) -> Vec<&VfsPath> {
-        match self {
+    pub fn paths(&self) -> impl Iterator<Item = &VfsPath> {
+        let (first, second) = match self {
             FileChange::Created { path }
             | FileChange::Modified { path }
-            | FileChange::Deleted { path } => vec![path],
-            FileChange::Moved { from, to } => vec![from, to],
-        }
+            | FileChange::Deleted { path } => (path, None),
+            FileChange::Moved { from, to } => (from, Some(to)),
+        };
+
+        std::iter::once(first).chain(second.into_iter())
     }
 }
 
