@@ -85,13 +85,13 @@ fn process_event_pid(msg: &Value) -> Option<u32> {
         .and_then(|pid| u32::try_from(pid).ok())
 }
 
-async fn read_until_process_event_pid(
+async fn read_until_process_event(
     reader: &mut DapReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
     buffered: &[Value],
-) -> u32 {
+) -> Value {
     for msg in buffered {
-        if let Some(pid) = process_event_pid(msg) {
-            return pid;
+        if process_event_pid(msg).is_some() {
+            return msg.clone();
         }
     }
 
@@ -99,8 +99,8 @@ async fn read_until_process_event_pid(
         let msg = tokio::time::timeout(Duration::from_secs(2), read_next(reader))
             .await
             .expect("timed out waiting for process event");
-        if let Some(pid) = process_event_pid(&msg) {
-            return pid;
+        if process_event_pid(&msg).is_some() {
+            return msg;
         }
     }
 
@@ -219,7 +219,16 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
         .unwrap_or(false));
 
     let pid1 = wait_for_pid_file(&pid_path).await;
-    let process_pid1 = read_until_process_event_pid(&mut reader, &launch_messages).await;
+    let launch_process_evt = read_until_process_event(&mut reader, &launch_messages).await;
+    assert_eq!(
+        launch_process_evt
+            .pointer("/body/startMethod")
+            .and_then(|v| v.as_str()),
+        Some("launch"),
+        "expected process event startMethod=launch after launch: {launch_process_evt}"
+    );
+    let process_pid1 = process_event_pid(&launch_process_evt)
+        .expect("expected process event to include body.systemProcessId after launch");
     assert_eq!(
         process_pid1, pid1,
         "expected process event pid to match pid file after launch"
@@ -247,7 +256,9 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
 
     let pid2 = wait_for_new_pid(&pid_path, pid1).await;
     assert_ne!(pid1, pid2, "expected restart to spawn a new process");
-    let process_pid2 = read_until_process_event_pid(&mut reader, &restart_messages).await;
+    let restart_process_evt = read_until_process_event(&mut reader, &restart_messages).await;
+    let process_pid2 = process_event_pid(&restart_process_evt)
+        .expect("expected process event to include body.systemProcessId after restart");
     assert_eq!(
         process_pid2, pid2,
         "expected process event pid to match pid file after restart"
