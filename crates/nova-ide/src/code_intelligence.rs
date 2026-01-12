@@ -1181,7 +1181,114 @@ fn sort_and_dedupe_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.dedup();
 }
 
-fn salsa_semantic_file_diagnostics(db: &Snapshot, file: FileId, is_java: bool) -> Vec<Diagnostic> {
+fn is_java_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
+fn collect_java_identifier_tokens<'a>(text: &'a str) -> HashSet<&'a str> {
+    let bytes = text.as_bytes();
+    let mut out: HashSet<&'a str> = HashSet::new();
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !is_java_identifier_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < bytes.len() && is_java_identifier_byte(bytes[i]) {
+            i += 1;
+        }
+
+        // ASCII bytes are always valid UTF-8 char boundaries.
+        if let Some(token) = text.get(start..i) {
+            out.insert(token);
+        }
+    }
+
+    out
+}
+
+fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
+    struct ImportLine {
+        span: Span,
+        path: String,
+        simple: String,
+    }
+
+    let mut imports: Vec<ImportLine> = Vec::new();
+    let mut last_import_end = 0usize;
+
+    let mut offset = 0usize;
+    for segment in java_source.split_inclusive('\n') {
+        let line_end_including_newline = offset + segment.len();
+        let mut line = segment.strip_suffix('\n').unwrap_or(segment);
+        line = line.strip_suffix('\r').unwrap_or(line);
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("import ") {
+            // Always exclude the full import block from usage searches (even static/wildcard).
+            last_import_end = line_end_including_newline;
+
+            // Ignore static imports for now; those introduce members, not types.
+            if trimmed.starts_with("import static ") {
+                offset = line_end_including_newline;
+                continue;
+            }
+
+            // Extract `foo.bar.Baz` from `import foo.bar.Baz;` (best-effort).
+            let rest = trimmed.get("import ".len()..).unwrap_or("").trim();
+            let rest = rest
+                .split_once(';')
+                .map(|(before, _after)| before)
+                .unwrap_or(rest)
+                .trim();
+
+            if rest.is_empty() {
+                offset = line_end_including_newline;
+                continue;
+            }
+
+            // Ignore wildcard imports (`import foo.bar.*;`) for now.
+            if rest.ends_with(".*") {
+                offset = line_end_including_newline;
+                continue;
+            }
+
+            let simple = rest.rsplit('.').next().unwrap_or(rest).to_string();
+            imports.push(ImportLine {
+                span: Span::new(offset, offset + line.len()),
+                path: rest.to_string(),
+                simple,
+            });
+        }
+
+        offset = line_end_including_newline;
+    }
+
+    let body = java_source.get(last_import_end..).unwrap_or("");
+    let used = collect_java_identifier_tokens(body);
+
+    imports
+        .into_iter()
+        .filter(|import| !used.contains(import.simple.as_str()))
+        .map(|import| {
+            Diagnostic::warning(
+                "unused-import",
+                format!("unused import `{}`", import.path),
+                Some(import.span),
+            )
+        })
+        .collect()
+}
+
+fn salsa_semantic_file_diagnostics(
+    db: &Snapshot,
+    file: FileId,
+    is_java: bool,
+) -> Vec<Diagnostic> {
     if !is_java {
         return Vec::new();
     }
@@ -1266,7 +1373,12 @@ pub fn core_file_diagnostics(
         }));
     }
 
-    // 2) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
+    // 2) Unused imports (best-effort).
+    if is_java {
+        diagnostics.extend(unused_import_diagnostics(text));
+    }
+
+    // 3) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
     if is_java {
         if cancel.is_cancelled() {
             return Vec::new();
@@ -1365,7 +1477,12 @@ pub(crate) fn core_file_diagnostics_cancelable(
         }));
     }
 
-    // 2) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
+    // 2) Unused imports (best-effort).
+    if is_java {
+        diagnostics.extend(unused_import_diagnostics(text));
+    }
+
+    // 3) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
     if is_java {
         // Checkpoint: before starting Salsa work.
         if cancel.is_cancelled() {
@@ -1380,7 +1497,7 @@ pub(crate) fn core_file_diagnostics_cancelable(
         });
     }
 
-    // 3) Unresolved references (best-effort).
+    // 4) Unresolved references (best-effort).
     if cancel.is_cancelled() {
         return Vec::new();
     }
@@ -1448,7 +1565,12 @@ pub fn file_diagnostics_with_semantic_db(
     // 2) Salsa-backed semantic diagnostics (Java parse errors, feature gating, imports, typeck, flow).
     diagnostics.extend(salsa_semantic_file_diagnostics(semantic_db, file, is_java));
 
-    // 3) Unresolved references (best-effort).
+    // 3) Unused imports (best-effort).
+    if is_java {
+        diagnostics.extend(unused_import_diagnostics(text));
+    }
+
+    // 4) Unresolved references (best-effort).
     let analysis = analyze(text);
     for call in &analysis.calls {
         if call.receiver.is_some() {
@@ -1464,7 +1586,7 @@ pub fn file_diagnostics_with_semantic_db(
         ));
     }
 
-    // 4) JPA / JPQL diagnostics (best-effort).
+    // 5) JPA / JPQL diagnostics (best-effort).
     //
     // Computing the per-project entity model can require scanning the full
     // workspace. Avoid that work for files that clearly cannot contain any JPA

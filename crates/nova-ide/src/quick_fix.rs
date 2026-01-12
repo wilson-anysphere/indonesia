@@ -25,32 +25,56 @@ pub(crate) fn quick_fixes_for_diagnostics(
     ));
 
     for diag in diagnostics {
-        if diag.code.as_ref() != "unresolved-name" {
-            continue;
-        }
+        match diag.code.as_ref() {
+            "unresolved-name" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
 
-        let Some(diag_span) = diag.span else {
-            continue;
-        };
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
 
-        if !spans_intersect(diag_span, selection) {
-            continue;
-        }
+                let Some(name) = extract_unresolved_name(diag, source) else {
+                    continue;
+                };
 
-        let Some(name) = extract_unresolved_name(diag, source) else {
-            continue;
-        };
+                if !looks_like_value_ident(&name) {
+                    continue;
+                }
 
-        if !looks_like_value_ident(&name) {
-            continue;
-        }
+                if let Some(action) = create_local_variable_action(uri, source, diag_span, &name) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
 
-        if let Some(action) = create_local_variable_action(uri, source, diag_span, &name) {
-            actions.push(CodeActionOrCommand::CodeAction(action));
-        }
+                if let Some(action) = create_field_action(uri, source, &name) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+            }
+            "unused-import" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
 
-        if let Some(action) = create_field_action(uri, source, &name) {
-            actions.push(CodeActionOrCommand::CodeAction(action));
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                let Some(line_start) = line_start_offset(source, diag_span.start) else {
+                    continue;
+                };
+                let line_end = line_end_offset(source, diag_span.end);
+
+                let edit = single_replace_range_edit(uri, source, line_start, line_end, String::new());
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Remove unused import".to_string(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(edit),
+                    is_preferred: Some(true),
+                    ..Default::default()
+                }));
+            }
+            _ => {}
         }
     }
 
@@ -119,11 +143,19 @@ fn create_field_action(uri: &Uri, source: &str, name: &str) -> Option<CodeAction
 }
 
 fn single_edit(uri: &Uri, source: &str, insert_offset: usize, new_text: String) -> WorkspaceEdit {
-    let pos = crate::text::offset_to_position(source, insert_offset);
-    let range = Range {
-        start: pos,
-        end: pos,
-    };
+    single_replace_range_edit(uri, source, insert_offset, insert_offset, new_text)
+}
+
+fn single_replace_range_edit(
+    uri: &Uri,
+    source: &str,
+    start_offset: usize,
+    end_offset: usize,
+    new_text: String,
+) -> WorkspaceEdit {
+    let start = crate::text::offset_to_position(source, start_offset);
+    let end = crate::text::offset_to_position(source, end_offset);
+    let range = Range { start, end };
     let edit = TextEdit { range, new_text };
 
     let mut changes = HashMap::new();
@@ -144,6 +176,17 @@ fn line_start_offset(text: &str, offset: usize) -> Option<usize> {
     match prefix.rfind('\n') {
         Some(idx) => Some(idx + 1),
         None => Some(0),
+    }
+}
+
+fn line_end_offset(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    let Some(rest) = text.get(offset..) else {
+        return text.len();
+    };
+    match rest.find('\n') {
+        Some(rel) => offset + rel + 1,
+        None => text.len(),
     }
 }
 

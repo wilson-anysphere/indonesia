@@ -909,6 +909,7 @@ where
         this
     }
 }
+
 #[allow(private_bounds)]
 impl<DB: ?Sized> IdeExtensions<DB>
 where
@@ -1177,6 +1178,14 @@ where
             actions.extend(type_mismatch_quick_fixes_from_context(
                 &cancel,
                 source,
+                &cancel,
+                &uri,
+                span,
+                context_diagnostics,
+            ));
+
+            actions.extend(unused_import_quick_fixes_from_context(
+                source,
                 &uri,
                 &cancel,
                 span,
@@ -1271,7 +1280,6 @@ fn type_mismatch_quick_fixes(
     cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
-    cancel: &CancellationToken,
     selection: Span,
     diagnostics: &[nova_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
@@ -1392,10 +1400,6 @@ fn type_mismatch_quick_fixes_from_context(
         }
     }
 
-    if cancel.is_cancelled() {
-        return Vec::new();
-    }
-
     let mut actions = Vec::new();
 
     let source_index = TextIndex::new(source);
@@ -1455,6 +1459,87 @@ fn type_mismatch_quick_fixes_from_context(
                 kind: Some(lsp_types::CodeActionKind::QUICKFIX),
                 edit: Some(edit),
                 is_preferred: Some(expected != "String"),
+                ..lsp_types::CodeAction::default()
+            },
+        ));
+    }
+
+    actions
+}
+
+fn unused_import_quick_fixes_from_context(
+    source: &str,
+    uri: &lsp_types::Uri,
+    selection: Span,
+    context_diagnostics: &[lsp_types::Diagnostic],
+) -> Vec<lsp_types::CodeActionOrCommand> {
+    fn spans_overlap(a: Span, b: Span) -> bool {
+        a.start < b.end && b.start < a.end
+    }
+
+    fn single_delete_edit(uri: &lsp_types::Uri, range: lsp_types::Range) -> lsp_types::WorkspaceEdit {
+        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        changes.insert(
+            uri.clone(),
+            vec![lsp_types::TextEdit {
+                range,
+                new_text: String::new(),
+            }],
+        );
+        lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }
+    }
+
+    let mut actions = Vec::new();
+
+    let source_index = TextIndex::new(source);
+    for diagnostic in context_diagnostics {
+        let Some(lsp_types::NumberOrString::String(code)) = diagnostic.code.as_ref() else {
+            continue;
+        };
+        if code != "unused-import" {
+            continue;
+        }
+
+        let Some(start) = source_index.position_to_offset(diagnostic.range.start) else {
+            continue;
+        };
+        let Some(end) = source_index.position_to_offset(diagnostic.range.end) else {
+            continue;
+        };
+        let diag_span = Span::new(start, end);
+        if !spans_overlap(selection, diag_span) {
+            continue;
+        }
+
+        let line_start = source
+            .get(..diag_span.start)
+            .unwrap_or("")
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+
+        let line_end = source
+            .get(diag_span.end..)
+            .unwrap_or("")
+            .find('\n')
+            .map(|idx| diag_span.end + idx + 1)
+            .unwrap_or(source.len());
+
+        let range = lsp_types::Range::new(
+            source_index.offset_to_position(line_start),
+            source_index.offset_to_position(line_end),
+        );
+        let edit = single_delete_edit(uri, range);
+        actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+            lsp_types::CodeAction {
+                title: "Remove unused import".to_string(),
+                kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                edit: Some(edit),
+                is_preferred: Some(true),
                 ..lsp_types::CodeAction::default()
             },
         ));
