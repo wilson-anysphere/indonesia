@@ -482,7 +482,7 @@ fn registry_does_not_complete_when_annotation_is_not_config_property_even_if_com
 }
 
 #[test]
-fn registry_skips_cdi_diagnostics_when_java_file_has_no_path() {
+fn registry_reports_cdi_diagnostics_when_java_file_has_no_path() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
     db.add_dependency(project, "io.quarkus", "quarkus-arc");
@@ -504,7 +504,10 @@ fn registry_skips_cdi_diagnostics_when_java_file_has_no_path() {
     registry.register(Box::new(QuarkusAnalyzer::new()));
 
     let diags = registry.framework_diagnostics(&db, file_with_issue);
-    assert!(diags.is_empty(), "expected no diagnostics, got: {diags:#?}");
+    assert!(
+        diags.iter().any(|d| d.code == CDI_UNSATISFIED_CODE),
+        "expected {CDI_UNSATISFIED_CODE} diagnostic, got: {diags:#?}"
+    );
 }
 
 #[test]
