@@ -92,12 +92,11 @@ class C {
     int m(int a) {
         int b = 1;
         int r = 0;
-        r = compute(a, b);
+        r = compute(r, a, b);
         return r;
     }
 
-    private int compute(int a, int b) {
-        int r;
+    private int compute(int r, int a, int b) {
         r = a + b;
         return r;
     }
