@@ -1,6 +1,6 @@
 use nova_types::{
-    resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodDef, MethodResolution,
-    TyContext, Type, TypeEnv, TypeStore,
+    resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodResolution, TyContext,
+    Type, TypeEnv, TypeStore,
 };
 
 use pretty_assertions::assert_eq;
@@ -11,20 +11,8 @@ fn interface_receivers_can_resolve_object_methods_without_explicit_super_class()
     let object = env.well_known().object;
     let string = env.well_known().string;
 
-    // The minimal JDK doesn't currently define `Object.toString()`, but Java member lookup treats
-    // `Object` methods as members of every interface type (JLS 4.10.2).
-    env.class_mut(object)
-        .expect("java.lang.Object should exist")
-        .methods
-        .push(MethodDef {
-            name: "toString".to_string(),
-            type_params: vec![],
-            params: vec![],
-            return_type: Type::class(string, vec![]),
-            is_static: false,
-            is_varargs: false,
-            is_abstract: false,
-        });
+    // Java member lookup treats `Object` methods as members of every interface type
+    // (JLS 4.10.2), even if the interface has no explicit superclass.
 
     // Regression setup: custom interface definition with no explicit `super_class`.
     let iface = env.add_class(ClassDef {
