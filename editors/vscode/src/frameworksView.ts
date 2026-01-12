@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { State, type LanguageClient } from 'vscode-languageclient/node';
+import { isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT, uriFromFileLike } from './frameworkDashboard';
 
 type WebEndpoint = {
@@ -173,9 +174,9 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
       this.setMessage(undefined);
       return endpoints;
     } catch (err) {
-      await this.setContexts({ serverRunning: true, webEndpointsSupported: !isMethodNotFoundError(err) });
+      await this.setContexts({ serverRunning: true, webEndpointsSupported: !isNovaMethodNotFoundError(err) });
 
-      if (isMethodNotFoundError(err)) {
+      if (isNovaMethodNotFoundError(err)) {
         this.setMessage('Web endpoints are not supported by this server (missing nova/web/endpoints).');
         return [];
       }
@@ -219,15 +220,62 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<v
 }
 
 async function fetchWebEndpoints(client: LanguageClient, projectRoot: string): Promise<WebEndpointsResponse> {
-  try {
-    return await client.sendRequest<WebEndpointsResponse>('nova/web/endpoints', { projectRoot });
-  } catch (err) {
-    if (isMethodNotFoundError(err)) {
-      // Older Nova builds exposed these endpoints under a Quarkus-specific method.
-      return await client.sendRequest<WebEndpointsResponse>('nova/quarkus/endpoints', { projectRoot });
+  const method = 'nova/web/endpoints';
+  const alias = 'nova/quarkus/endpoints';
+
+  const supportedWeb = isNovaRequestSupported(method);
+  const supportedAlias = isNovaRequestSupported(alias);
+
+  const candidates: string[] = [];
+  if (supportedWeb === true) {
+    candidates.push(method);
+    if (supportedAlias !== false) {
+      candidates.push(alias);
     }
+  } else if (supportedAlias === true) {
+    candidates.push(alias);
+    if (supportedWeb === 'unknown') {
+      candidates.push(method);
+    }
+  } else if (supportedWeb === false) {
+    if (supportedAlias !== false) {
+      candidates.push(alias);
+    }
+  } else if (supportedAlias === false) {
+    candidates.push(method);
+  } else {
+    // Prefer the alias when we don't have capability lists (older Nova builds).
+    candidates.push(alias, method);
+  }
+
+  // De-dup candidates while preserving order.
+  const seen = new Set<string>();
+  const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
+
+  if (ordered.length === 0) {
+    const err = new Error(`Method not found: ${method}`) as Error & { code: number };
+    err.code = -32601;
     throw err;
   }
+
+  let lastNotFound: unknown | undefined;
+  for (const candidate of ordered) {
+    try {
+      return await client.sendRequest<WebEndpointsResponse>(candidate, { projectRoot });
+    } catch (err) {
+      if (isNovaMethodNotFoundError(err)) {
+        lastNotFound = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastNotFound ?? (() => {
+    const err = new Error(`Method not found: ${method}`) as Error & { code: number };
+    err.code = -32601;
+    return err;
+  })();
 }
 function formatError(err: unknown): string {
   if (err instanceof Error) {
@@ -244,29 +292,6 @@ function formatError(err: unknown): string {
   } catch {
     return String(err);
   }
-}
-
-function isMethodNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') {
-    return false;
-  }
-
-  const code = (err as { code?: unknown }).code;
-  if (code === -32601) {
-    return true;
-  }
-
-  const message = (err as { message?: unknown }).message;
-  // `nova-lsp` currently reports unknown `nova/*` custom methods as `-32602` with an
-  // "unknown (stateless) method" message (because everything is routed through a single dispatcher).
-  if (
-    code === -32602 &&
-    typeof message === 'string' &&
-    message.toLowerCase().includes('unknown (stateless) method')
-  ) {
-    return true;
-  }
-  return typeof message === 'string' && message.toLowerCase().includes('method not found');
 }
 
 function isSafeModeError(err: unknown): boolean {
