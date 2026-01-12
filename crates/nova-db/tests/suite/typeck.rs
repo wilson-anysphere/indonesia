@@ -2689,6 +2689,56 @@ class B {
 }
 
 #[test]
+fn static_imported_workspace_generic_method_infers_return_type() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let util_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    let src_util = r#"
+package p;
+class Util {
+  static <T> T make() { return null; }
+}
+"#;
+    let src_use = r#"
+package p;
+import static p.Util.make;
+class Use {
+  String m() { return make(); }
+}
+"#;
+
+    set_file(&mut db, project, util_file, "src/p/Util.java", src_util);
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![util_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static-imported workspace generic method to resolve; got {diags:?}"
+    );
+
+    let offset = src_use
+        .find("make()")
+        .expect("snippet should contain make()")
+        + "make".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn static_imported_math_max_resolves() {
     let src = r#"
 import static java.lang.Math.max;
