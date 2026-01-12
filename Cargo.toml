@@ -238,3 +238,10 @@ debug = 0
 # budget.
 [profile.test.package.nova-lsp]
 debug = 0
+
+[patch.crates-io]
+# `lsp-types` 0.97 is missing `typeHierarchyProvider` in `ServerCapabilities`, even
+# though the project implements type hierarchy requests. Patch it locally so
+# `nova-lsp::server_capabilities()` can advertise the feature like the stdio
+# server does.
+lsp-types = { path = "third_party/lsp-types" }

@@ -995,8 +995,8 @@ excluded_paths = ["secret/**"]
         .and_then(|v| v.as_object())
         .expect("ExplainErrorArgs payload");
     assert!(
-        explain_args.get("code").is_none() || explain_args.get("code").is_some_and(|v| v.is_null()),
-        "expected explainError args.code to be omitted/null for excluded paths, got: {explain_args:?}"
+        explain_args.get("code").is_some_and(|v| v.is_null()),
+        "expected explainError args.code to be null for excluded paths, got: {explain_args:?}"
     );
 
     assert!(
@@ -1036,6 +1036,9 @@ fn stdio_server_handles_ai_explain_error_code_action() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        // Enable code-edit actions for this test (cloud-mode policy would otherwise hide them for
+        // the `http` provider).
+        .env("NOVA_AI_LOCAL_ONLY", "1")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -2120,6 +2123,9 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
         // Ensure a developer's environment doesn't disable AI for this test.
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        // Enable code-edit actions for this test (cloud-mode policy would otherwise hide them for
+        // the `http` provider).
+        .env("NOVA_AI_LOCAL_ONLY", "1")
         .env("NOVA_AI_PROVIDER", "http")
         // Ensure patch-based AI code actions are allowed so this test exercises UTF-16 range
         // extraction rather than privacy gating.
@@ -2211,7 +2217,7 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     let gen_tests = actions
         .iter()
         .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI"))
-        .expect("generate tests action");
+        .unwrap_or_else(|| panic!("missing generate tests action in {actions:#?}"));
     let cmd = gen_tests
         .get("command")
         .and_then(|c| c.get("command"))

@@ -613,13 +613,7 @@ pub fn server_capabilities() -> ServerCapabilities {
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
-        // `lsp-types` 0.97 does not expose a first-class `typeHierarchyProvider`
-        // field on `ServerCapabilities` yet, but Nova supports type hierarchy
-        // endpoints. Advertise support via `experimental` so embedders can still
-        // surface the feature.
-        experimental: Some(serde_json::json!({
-            "typeHierarchyProvider": true,
-        })),
+        type_hierarchy_provider: Some(lsp_types::TypeHierarchyServerCapability::Simple(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -643,11 +637,10 @@ mod tests {
             json.get("callHierarchyProvider"),
             Some(&serde_json::Value::Bool(true))
         );
-        let type_hierarchy = json.get("typeHierarchyProvider").or_else(|| {
-            json.get("experimental")
-                .and_then(|exp| exp.get("typeHierarchyProvider"))
-        });
-        assert_eq!(type_hierarchy, Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            json.get("typeHierarchyProvider"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 }
 fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize> {
