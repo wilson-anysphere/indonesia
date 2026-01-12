@@ -9,14 +9,40 @@ const WATCHED_FILE_GLOB_PATTERNS = [
   // Java source files.
   '**/*.java',
 
-  // Maven build configuration.
+  // Maven build configuration / wrapper.
   '**/pom.xml',
+  '**/mvnw',
+  '**/mvnw.cmd',
+  '**/.mvn/wrapper/maven-wrapper.properties',
+  '**/.mvn/extensions.xml',
+  '**/.mvn/maven.config',
+  '**/.mvn/jvm.config',
 
-  // Gradle build configuration (Groovy + Kotlin DSL).
+  // Gradle build configuration (Groovy + Kotlin DSL) / wrapper.
   '**/build.gradle',
+  '**/build.gradle.kts',
   '**/settings.gradle',
+  '**/settings.gradle.kts',
   '**/gradle.properties',
-  '**/*.gradle.kts',
+  '**/gradlew',
+  '**/gradlew.bat',
+  '**/gradle/wrapper/gradle-wrapper.properties',
+  '**/gradle/libs.versions.toml',
+  '**/gradle/*.gradle',
+  '**/gradle/*.gradle.kts',
+
+  // Bazel build configuration.
+  '**/.bazelrc',
+  '**/.bazelrc.*',
+  '**/.bazelversion',
+  '**/MODULE.bazel.lock',
+  '**/bazelisk.rc',
+  '**/WORKSPACE',
+  '**/WORKSPACE.bazel',
+  '**/MODULE.bazel',
+  '**/BUILD',
+  '**/BUILD.bazel',
+  '**/*.bzl',
 
   // Spring Boot config that can influence annotation processing / classpath
   // behavior / generated sources / diagnostics.
@@ -26,6 +52,8 @@ const WATCHED_FILE_GLOB_PATTERNS = [
 
   // Nova config.
   '**/nova.toml',
+  '**/.nova.toml',
+  '**/nova.config.toml',
   '**/.nova/config.toml',
 ] as const;
 
@@ -33,4 +61,3 @@ export function getNovaWatchedFileGlobPatterns(): string[] {
   // Return a copy so callers can't mutate our module-level constant.
   return [...WATCHED_FILE_GLOB_PATTERNS];
 }
-
