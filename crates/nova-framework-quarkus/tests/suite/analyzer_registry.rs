@@ -55,7 +55,7 @@ fn registry_completes_config_property_names_from_application_properties() {
         import org.eclipse.microprofile.config.inject.ConfigProperty;
 
         public class MyConfig {
-          @ConfigProperty(name="qu")
+          @ConfigProperty(name="ser")
           String prop;
         }
     "#;
@@ -65,8 +65,7 @@ fn registry_completes_config_property_names_from_application_properties() {
         project,
         "src/main/resources/application.properties",
         r#"
-            quarkus.http.port=8080
-            quarkus.datasource.username=sa
+            server.port=8080
         "#,
     );
 
@@ -77,7 +76,7 @@ fn registry_completes_config_property_names_from_application_properties() {
     let ctx = CompletionContext {
         project,
         file: java_file,
-        offset: cursor_base + 2, // after `qu`
+        offset: cursor_base + 3, // after `ser`
     };
 
     let mut registry = AnalyzerRegistry::new();
@@ -85,15 +84,15 @@ fn registry_completes_config_property_names_from_application_properties() {
 
     let items = registry.framework_completions(&db, &ctx);
     assert!(
-        items.iter().any(|c| c.label == "quarkus.http.port"),
-        "expected completion for quarkus.http.port, got: {items:#?}",
+        items.iter().any(|c| c.label == "server.port"),
+        "expected completion for server.port, got: {items:#?}",
     );
 
     let item = items
         .iter()
-        .find(|c| c.label == "quarkus.http.port")
-        .expect("expected quarkus.http.port completion item");
-    assert_eq!(item.replace_span, Some(nova_types::Span::new(cursor_base, cursor_base + 2)));
+        .find(|c| c.label == "server.port")
+        .expect("expected server.port completion item");
+    assert_eq!(item.replace_span, Some(nova_types::Span::new(cursor_base, cursor_base + 3)));
 }
 
 #[test]
