@@ -99,6 +99,19 @@ pub fn reparse_java(
         return parse_java(new_text);
     }
 
+    // `parse_node_fragment`-based fragment parsers ensure losslessness by wrapping any trailing,
+    // unconsumed tokens in a top-level `Error` node without producing diagnostics for them.
+    //
+    // Those tokens may instead be interpreted by the surrounding grammar in a full parse,
+    // producing different syntax and/or diagnostics (e.g. `>>` being parsed as a shift operator
+    // after an early-exited type-arguments parse).
+    //
+    // If we detect such trailing tokens, fall back to a full parse to keep the incremental result
+    // consistent.
+    if fragment_has_trailing_unparsed_tokens(plan.target, &fragment) {
+        return parse_java(new_text);
+    }
+
     // If the fragment ends in an unterminated string/comment/text block, the lexer would normally
     // continue tokenizing into the following text. Splicing the fragment into the previous tree
     // would leave the preserved portion tokenized under the old lexer state, producing an
@@ -130,6 +143,7 @@ pub fn reparse_java(
     let mut preserved_errors = shift_preserved_errors(
         &old.errors,
         plan.old_range,
+        plan.target_node.kind(),
         edit.delta(),
     );
     let fragment_errors = offset_errors(fragment.errors, plan.new_range.start);
@@ -194,6 +208,45 @@ fn fragment_ends_in_line_comment(fragment_text: &str) -> bool {
 
     let last = &tokens[tokens.len().saturating_sub(2)];
     last.kind == SyntaxKind::LineComment
+}
+
+fn fragment_has_trailing_unparsed_tokens(target: ReparseTarget, fragment: &JavaParseResult) -> bool {
+    // This only applies to fragment parsers built on `parse_node_fragment` (lists and type
+    // parameter/argument nodes). Block/class-body fragment parsers either parse to a delimiter or
+    // rely on a separate losslessness check.
+    match target {
+        ReparseTarget::ArgumentList
+        | ReparseTarget::AnnotationElementValuePairList
+        | ReparseTarget::ParameterList
+        | ReparseTarget::TypeArguments
+        | ReparseTarget::TypeParameters => {}
+        _ => return false,
+    }
+
+    let root = fragment.syntax();
+    let mut last_child = None;
+    for child in root.children() {
+        last_child = Some(child);
+    }
+    let Some(last_child) = last_child else {
+        return false;
+    };
+    if last_child.kind() != SyntaxKind::Error {
+        return false;
+    }
+    if last_child.text_range().end() != root.text_range().end() {
+        return false;
+    }
+    // Ignore empty error nodes (shouldn't happen, but be defensive).
+    if last_child.text_range().is_empty() {
+        return false;
+    }
+
+    // The wrapper `Error` node always contains at least one non-trivia token.
+    last_child
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|t| !t.kind().is_trivia())
 }
 
 /// Convenience wrapper used by query integrations: reparse when an edit + old parse is available,
@@ -580,14 +633,62 @@ fn offset_errors(mut errors: Vec<ParseError>, offset: u32) -> Vec<ParseError> {
 fn shift_preserved_errors(
     errors: &[ParseError],
     reparsed_old_range: TextRange,
+    reparsed_kind: SyntaxKind,
     delta: isize,
 ) -> Vec<ParseError> {
+    // Preserve errors that are *entirely* outside the reparsed region. Treat empty ranges at the
+    // boundary as belonging to the reparsed region: many “missing token” diagnostics use an empty
+    // range at the expected token position, which is often exactly `reparsed_old_range.end`.
+    //
+    // Keeping boundary errors would duplicate or stale-shift diagnostics that should be replaced
+    // by the fragment reparse.
+    let reparsing_class_body = matches!(
+        reparsed_kind,
+        SyntaxKind::ClassBody
+            | SyntaxKind::InterfaceBody
+            | SyntaxKind::EnumBody
+            | SyntaxKind::RecordBody
+            | SyntaxKind::AnnotationBody
+            // Type declarations *contain* a body; when reparsing the whole declaration we must not
+            // preserve class-body-level EOF diagnostics from the previous parse.
+            | SyntaxKind::ClassDeclaration
+            | SyntaxKind::InterfaceDeclaration
+            | SyntaxKind::EnumDeclaration
+            | SyntaxKind::RecordDeclaration
+            | SyntaxKind::AnnotationTypeDeclaration
+    );
+    let is_class_body_error = |e: &ParseError| {
+        e.message.contains("class body")
+            || e.message.contains("interface body")
+            || e.message.contains("enum body")
+            || e.message.contains("record body")
+            || e.message.contains("annotation body")
+            || e.message.contains("member name")
+    };
+    let is_before_reparse = |e: &ParseError| {
+        e.range.end < reparsed_old_range.start
+            || (e.range.end == reparsed_old_range.start && e.range.start < reparsed_old_range.start)
+    };
+    let is_after_reparse = |e: &ParseError| {
+        if e.range.start > reparsed_old_range.end {
+            return true;
+        }
+        if e.range.start < reparsed_old_range.end {
+            return false;
+        }
+        // `e.range.start == reparsed_old_range.end`.
+        if e.range.end > reparsed_old_range.end {
+            return true;
+        }
+        // Empty range at the end boundary: preserve class-body-level diagnostics unless we are
+        // reparsing the class body itself.
+        e.range.end == reparsed_old_range.end && !reparsing_class_body && is_class_body_error(e)
+    };
+
     if delta == 0 {
         return errors
             .iter()
-            .filter(|e| {
-                e.range.end <= reparsed_old_range.start || e.range.start >= reparsed_old_range.end
-            })
+            .filter(|e| is_before_reparse(e) || is_after_reparse(e))
             .cloned()
             .collect();
     }
@@ -596,10 +697,10 @@ fn shift_preserved_errors(
     errors
         .iter()
         .filter_map(|e| {
-            if e.range.end <= reparsed_old_range.start {
+            if is_before_reparse(e) {
                 return Some(e.clone());
             }
-            if e.range.start >= reparsed_old_range.end {
+            if is_after_reparse(e) {
                 let start = (e.range.start as i64 + delta_i64) as u32;
                 let end = (e.range.end as i64 + delta_i64) as u32;
                 return Some(ParseError {
