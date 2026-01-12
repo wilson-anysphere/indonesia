@@ -69,6 +69,8 @@ impl<'a> JavaPrettyFormatter<'a> {
 
         let mut parts: Vec<Doc<'a>> = Vec::new();
         let mut pending_hardlines: usize = 0;
+        let mut prev_end: Option<u32> = None;
+        let mut prev_was_type_decl = false;
 
         let mut idx = 0usize;
         while idx < children.len() {
@@ -79,6 +81,8 @@ impl<'a> JavaPrettyFormatter<'a> {
                     parts.push(self.print_package_declaration(child));
                     // Exactly one blank line after a package declaration.
                     pending_hardlines = 2;
+                    prev_end = Some(u32::from(child.text_range().end()));
+                    prev_was_type_decl = false;
                     idx += 1;
                 }
                 SyntaxKind::ImportDeclaration => {
@@ -94,23 +98,57 @@ impl<'a> JavaPrettyFormatter<'a> {
                         // Blank line between the imports section and the first declaration.
                         pending_hardlines = 2;
                     }
+                    prev_end = Some(u32::from(children[idx - 1].text_range().end()));
+                    prev_was_type_decl = false;
                 }
                 SyntaxKind::ModuleDeclaration => {
                     flush_pending_hardlines(&mut parts, &mut pending_hardlines);
                     parts.push(self.print_module_declaration(child));
                     pending_hardlines = 1;
+                    prev_end = Some(u32::from(child.text_range().end()));
+                    prev_was_type_decl = false;
                     idx += 1;
                 }
                 _ => {
+                    // Preserve at most one blank line between consecutive top-level type
+                    // declarations *when the gap is whitespace-only*.
+                    //
+                    // If there are boundary comments between types (line/block/doc), the slice will
+                    // not be whitespace-only and we'll fall back to a single hardline between
+                    // declarations.
+                    if pending_hardlines == 1
+                        && prev_was_type_decl
+                        && ast::TypeDeclaration::cast(child.clone()).is_some()
+                    {
+                        if let Some(prev_end) = prev_end {
+                            let start = u32::from(child.text_range().start());
+                            let len = self.source.len();
+                            let mut a = prev_end as usize;
+                            let mut b = start as usize;
+                            a = a.min(len);
+                            b = b.min(len);
+                            if a > b {
+                                std::mem::swap(&mut a, &mut b);
+                            }
+                            let slice = self.source.get(a..b).unwrap_or("");
+                            if slice.trim().is_empty() && has_blank_line(slice) {
+                                pending_hardlines = 2;
+                            }
+                        }
+                    }
+
                     flush_pending_hardlines(&mut parts, &mut pending_hardlines);
                     if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
                         parts.push(self.print_type_declaration(ty));
+                        prev_was_type_decl = true;
                     } else {
                         // Fallback nodes print verbatim source, including any nested comment tokens.
                         // Consume those comments so they don't trip the drain assertion.
                         parts.push(self.print_verbatim_node_with_boundary_comments(child));
+                        prev_was_type_decl = false;
                     }
                     pending_hardlines = 1;
+                    prev_end = Some(u32::from(child.text_range().end()));
                     idx += 1;
                 }
             }

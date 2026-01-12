@@ -1252,6 +1252,19 @@ public @interface MyAnno {
 }
 
 #[test]
+fn pretty_preserves_blank_line_between_top_level_types_when_gap_is_whitespace_only() {
+    let input = "class Foo{}\n\nclass Bar{}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(formatted, "class Foo {\n}\n\nclass Bar {\n}\n");
+}
+
+#[test]
 fn pretty_inserts_spaces_after_generic_and_record_header_closes() {
     let input = r#"class Foo<T>implements Bar{}
 record R(java.util.List<@Deprecated String>xs)implements java.io.Serializable{}
