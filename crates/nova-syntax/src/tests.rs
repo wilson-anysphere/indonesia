@@ -1130,6 +1130,54 @@ fn feature_gate_var_local_inference_version_matrix() {
 }
 
 #[test]
+fn feature_gate_var_lambda_parameters_version_matrix() {
+    let input =
+        "class Foo { void m() { java.util.function.IntUnaryOperator f = (var x) -> x + 1; } }";
+
+    let java8 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_8,
+        },
+    );
+    assert_eq!(java8.result.errors, Vec::new());
+    assert_eq!(
+        java8.diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_VAR_LAMBDA_PARAMETERS"]
+    );
+
+    let java10 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert_eq!(
+        java10.diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_VAR_LAMBDA_PARAMETERS"]
+    );
+
+    let java11 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_11,
+        },
+    );
+    assert_eq!(java11.result.errors, Vec::new());
+    assert!(java11.diagnostics.is_empty());
+}
+
+#[test]
 fn feature_gate_sealed_classes_version_matrix() {
     let input = "sealed class C permits A, B {}";
 

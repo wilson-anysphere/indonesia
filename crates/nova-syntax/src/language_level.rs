@@ -61,6 +61,14 @@ impl JavaLanguageLevel {
                 }
             }
 
+            VarLambdaParameters => {
+                if self.major >= 11 {
+                    Stable
+                } else {
+                    Unavailable
+                }
+            }
+
             SwitchExpressions => {
                 if self.major >= 14 {
                     Stable
@@ -211,6 +219,7 @@ impl Default for JavaLanguageLevel {
 pub enum JavaFeature {
     Modules,                   // Java 9+
     VarLocalInference,         // Java 10+
+    VarLambdaParameters,       // Java 11+ (JEP 323: local-variable syntax for lambda parameters)
     SwitchExpressions,         // final Java 14 (preview earlier in javac, ignored here)
     TextBlocks,                // final Java 15
     PatternMatchingInstanceof, // final Java 16 (preview 14/15)
@@ -227,6 +236,7 @@ impl JavaFeature {
         match self {
             JavaFeature::Modules => "JAVA_FEATURE_MODULES",
             JavaFeature::VarLocalInference => "JAVA_FEATURE_VAR_LOCAL_INFERENCE",
+            JavaFeature::VarLambdaParameters => "JAVA_FEATURE_VAR_LAMBDA_PARAMETERS",
             JavaFeature::SwitchExpressions => "JAVA_FEATURE_SWITCH_EXPRESSIONS",
             JavaFeature::TextBlocks => "JAVA_FEATURE_TEXT_BLOCKS",
             JavaFeature::PatternMatchingInstanceof => "JAVA_FEATURE_PATTERN_MATCHING_INSTANCEOF",
@@ -243,6 +253,7 @@ impl JavaFeature {
         match self {
             JavaFeature::Modules => "modules",
             JavaFeature::VarLocalInference => "local variable type inference (`var`)",
+            JavaFeature::VarLambdaParameters => "local-variable syntax for lambda parameters (`var`)",
             JavaFeature::SwitchExpressions => "switch expressions",
             JavaFeature::TextBlocks => "text blocks",
             JavaFeature::PatternMatchingInstanceof => "pattern matching for `instanceof`",
@@ -259,6 +270,7 @@ impl JavaFeature {
         match self {
             JavaFeature::Modules => Some(9),
             JavaFeature::VarLocalInference => Some(10),
+            JavaFeature::VarLambdaParameters => Some(11),
             JavaFeature::SwitchExpressions => Some(14),
             JavaFeature::TextBlocks => Some(15),
             JavaFeature::PatternMatchingInstanceof => Some(16),

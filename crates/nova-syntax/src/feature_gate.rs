@@ -18,6 +18,7 @@ pub(crate) fn feature_gate_diagnostics(
     gate_record_patterns(root, level, &mut diagnostics);
     gate_pattern_matching_instanceof(root, level, &mut diagnostics);
     gate_var_local_inference(root, level, &mut diagnostics);
+    gate_var_lambda_parameters(root, level, &mut diagnostics);
     gate_unnamed_variables(root, level, &mut diagnostics);
     gate_string_templates(root, level, &mut diagnostics);
 
@@ -368,6 +369,41 @@ fn gate_var_local_inference(
             level,
             JavaFeature::VarLocalInference,
             &var_kw,
+        ));
+    }
+}
+
+fn gate_var_lambda_parameters(
+    root: &SyntaxNode,
+    level: JavaLanguageLevel,
+    out: &mut Vec<Diagnostic>,
+) {
+    if level.is_enabled(JavaFeature::VarLambdaParameters) {
+        return;
+    }
+
+    for param in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::LambdaParameter)
+    {
+        // Only gate typed lambda parameters (`(Type x) -> ...`). Inferred-parameter lambdas can
+        // still use `var` as an identifier: `(var) -> ...` does not have a `Type` child.
+        let Some(ty) = param.children().find(|n| n.kind() == SyntaxKind::Type) else {
+            continue;
+        };
+
+        let Some(first) = first_token(&ty) else {
+            continue;
+        };
+
+        if first.kind() != SyntaxKind::VarKw {
+            continue;
+        }
+
+        out.push(feature_error(
+            level,
+            JavaFeature::VarLambdaParameters,
+            &first,
         ));
     }
 }
