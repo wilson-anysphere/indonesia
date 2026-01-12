@@ -30,6 +30,19 @@ consumer receives a rescan signal, it should fall back to walking/relisting the 
 rebuilding its view of the filesystem (treat watcher events as a hint, not an authoritative source
 of truth).
 
+### Backpressure / overflow
+
+The Notify-backed watcher implementation uses **bounded internal queues** to avoid unbounded memory
+growth under event storms (e.g. `git checkout`, branch switches, build output churn). When either
+queue overflows, the watcher drops events and emits `WatchEvent::Rescan`.
+
+Queue sizes can be tuned via environment variables:
+
+- `NOVA_WATCH_NOTIFY_RAW_QUEUE_CAPACITY` (notify callback → drain thread)
+- `NOVA_WATCH_NOTIFY_EVENTS_QUEUE_CAPACITY` (drain thread → consumer)
+
+Values must be positive integers. Empty/`0` values fall back to built-in defaults.
+
 ## Watch paths and modes (`WatchMode`)
 
 `nova_vfs::FileWatcher` is defined in terms of watching **paths**, not just “workspace roots”.
