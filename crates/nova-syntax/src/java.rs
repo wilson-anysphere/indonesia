@@ -1485,12 +1485,6 @@ impl Lowerer {
             }
             SyntaxKind::AssertStatement => Some(ast::Stmt::Assert(self.lower_assert_stmt(node))),
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
-            SyntaxKind::LabeledStatement => {
-                // Best-effort: drop the label and lower the inner statement so downstream layers
-                // can still analyze declarations/usages inside labeled blocks and loops.
-                let inner = node.children().find(|child| is_statement_kind(child.kind()))?;
-                self.lower_stmt(&inner)
-            }
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
             SyntaxKind::IfStatement => Some(ast::Stmt::If(self.lower_if_stmt(node))),
             SyntaxKind::WhileStatement | SyntaxKind::DoWhileStatement => {
