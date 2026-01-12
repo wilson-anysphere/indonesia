@@ -1057,6 +1057,9 @@ fn signature_type_diagnostics(
 ) -> Vec<Diagnostic> {
     cancel::check_cancelled(db);
 
+    let file_text = db.file_content(file);
+    let file_text = file_text.as_str();
+
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
@@ -1119,6 +1122,7 @@ fn signature_type_diagnostics(
             *item,
             &mut loader,
             &object_ty,
+            file_text,
             &mut out,
         );
     }
@@ -1134,9 +1138,11 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
     item: nova_hir::item_tree::Item,
     loader: &mut ExternalTypeLoader<'_>,
     default_bound: &Type,
+    file_text: &str,
     out: &mut Vec<Diagnostic>,
 ) {
     use nova_hir::ids::ItemId as HirItemId;
+    use nova_hir::item_tree::AnnotationUse;
     use nova_hir::item_tree::Item as TreeItem;
     use nova_hir::item_tree::Member;
 
@@ -1165,6 +1171,25 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
 
     let mut class_vars = HashMap::new();
     alloc_type_param_ids(loader, default_bound, type_params, &mut class_vars);
+
+    // Annotation uses on the type declaration.
+    let item_annotations: &[AnnotationUse] = match item_id {
+        HirItemId::Class(id) => tree.class(id).annotations.as_slice(),
+        HirItemId::Interface(id) => tree.interface(id).annotations.as_slice(),
+        HirItemId::Enum(id) => tree.enum_(id).annotations.as_slice(),
+        HirItemId::Record(id) => tree.record(id).annotations.as_slice(),
+        HirItemId::Annotation(id) => tree.annotation(id).annotations.as_slice(),
+    };
+    collect_annotation_use_diagnostics(
+        resolver,
+        &scopes.scopes,
+        class_scope,
+        loader,
+        &class_vars,
+        file_text,
+        item_annotations,
+        out,
+    );
 
     // Type parameter bounds.
     for tp in type_params {
@@ -1325,6 +1350,16 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
         match *member {
             Member::Field(fid) => {
                 let field = tree.field(fid);
+                collect_annotation_use_diagnostics(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    file_text,
+                    &field.annotations,
+                    out,
+                );
                 let resolved = resolve_type_ref_text(
                     resolver,
                     &scopes.scopes,
@@ -1338,6 +1373,28 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             }
             Member::Method(mid) => {
                 let method = tree.method(mid);
+                collect_annotation_use_diagnostics(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    file_text,
+                    &method.annotations,
+                    out,
+                );
+                for param in &method.params {
+                    collect_annotation_use_diagnostics(
+                        resolver,
+                        &scopes.scopes,
+                        class_scope,
+                        loader,
+                        &class_vars,
+                        file_text,
+                        &param.annotations,
+                        out,
+                    );
+                }
                 if method.body.is_some() {
                     continue;
                 }
@@ -1405,7 +1462,32 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     out.extend(resolved.diagnostics);
                 }
             }
-            Member::Constructor(_) | Member::Initializer(_) => {}
+            Member::Constructor(cid) => {
+                let ctor = tree.constructor(cid);
+                collect_annotation_use_diagnostics(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    file_text,
+                    &ctor.annotations,
+                    out,
+                );
+                for param in &ctor.params {
+                    collect_annotation_use_diagnostics(
+                        resolver,
+                        &scopes.scopes,
+                        class_scope,
+                        loader,
+                        &class_vars,
+                        file_text,
+                        &param.annotations,
+                        out,
+                    );
+                }
+            }
+            Member::Initializer(_) => {}
             Member::Type(child) => collect_signature_type_diagnostics_in_item(
                 db,
                 resolver,
@@ -1414,10 +1496,61 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                 child,
                 loader,
                 default_bound,
+                file_text,
                 out,
             ),
         }
     }
+}
+
+fn collect_annotation_use_diagnostics<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    loader: &mut ExternalTypeLoader<'_>,
+    type_vars: &HashMap<String, TypeVarId>,
+    file_text: &str,
+    annotations: &[nova_hir::item_tree::AnnotationUse],
+    out: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        if ann.name.trim().is_empty() {
+            continue;
+        }
+        let base_span = annotation_name_span(file_text, ann).or(Some(ann.range));
+        let resolved = resolve_type_ref_text(
+            resolver,
+            scopes,
+            scope_id,
+            loader,
+            type_vars,
+            &ann.name,
+            base_span,
+        );
+        out.extend(resolved.diagnostics);
+    }
+}
+
+fn annotation_name_span(
+    file_text: &str,
+    ann: &nova_hir::item_tree::AnnotationUse,
+) -> Option<Span> {
+    if ann.name.is_empty() {
+        return Some(ann.range);
+    }
+    let start = ann.range.start.min(file_text.len());
+    let end = ann.range.end.min(file_text.len());
+    if start >= end {
+        return Some(ann.range);
+    }
+    let slice = &file_text[start..end];
+    let idx = slice.find(&ann.name)?;
+    let name_start = start.saturating_add(idx);
+    let name_end = name_start.saturating_add(ann.name.len());
+    if name_end > file_text.len() {
+        return Some(ann.range);
+    }
+    Some(Span::new(name_start, name_end))
 }
 
 fn alloc_type_param_ids(

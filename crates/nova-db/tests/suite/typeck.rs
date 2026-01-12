@@ -2746,6 +2746,26 @@ class C extends Missing {
 }
 
 #[test]
+fn unresolved_annotation_types_are_anchored() {
+    let src = r#"
+@Missing
+class C {
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for annotation type");
+    let span = diag
+        .span
+        .expect("unresolved-type diagnostic should have a span");
+    assert_eq!(&src[span.start..span.end], "Missing");
+}
+
+#[test]
 fn unresolved_class_type_param_bounds_are_anchored() {
     let src = r#"
 class C<T extends Missing> {
