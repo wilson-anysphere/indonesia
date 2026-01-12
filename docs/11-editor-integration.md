@@ -179,9 +179,13 @@ Notes for client authors:
   available depending on build features and runtime configuration.
 - In particular, `nova/completion/more` is only advertised when `nova-lsp` is built with the `ai`
   feature (enabled by default in this repo).
+- AI completion behavior (including whether multi-token completions are enabled, and how many items
+  may be returned) can also be controlled by **server-side environment variable overrides** that are
+  read at process start (restart required). See the `nova/completion/more` notes in
+  [`protocol-extensions.md`](protocol-extensions.md) for details (including `NOVA_AI_COMPLETIONS_MAX_ITEMS`).
 - The `nova/ai/*` request family is advertised by default, but will return a JSON-RPC error if AI is
   not configured/enabled on the server (e.g. `"AI is not configured"`).
-   
+    
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    NOVA LSP EXTENSIONS                           │
