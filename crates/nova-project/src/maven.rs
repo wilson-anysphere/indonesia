@@ -1917,11 +1917,13 @@ fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
     //
     // We accept both, prefer the last valid value, and best-effort expand `${user.home}` while
     // ignoring other placeholder values.
-    let mut it = contents.split_whitespace().peekable();
+    //
+    // Note: This file behaves like command line args, so quoted values can contain spaces:
+    // `-Dmaven.repo.local="C:\\Users\\Alice\\My Maven Repo"`.
+    let mut it = split_maven_config_args(&contents).into_iter().peekable();
     let mut repo: Option<PathBuf> = None;
 
-    while let Some(raw_token) = it.next() {
-        let token = raw_token.trim_matches(|c| matches!(c, '"' | '\''));
+    while let Some(token) = it.next() {
         if let Some(value) = token.strip_prefix("-Dmaven.repo.local=") {
             if let Some(path) = resolve_maven_repo_path(value, workspace_root) {
                 repo = Some(path);
@@ -1930,9 +1932,8 @@ fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
         }
 
         if token == "-Dmaven.repo.local" {
-            if let Some(raw_value) = it.next() {
-                let value = raw_value.trim_matches(|c| matches!(c, '"' | '\''));
-                if let Some(path) = resolve_maven_repo_path(value, workspace_root) {
+            if let Some(value) = it.next() {
+                if let Some(path) = resolve_maven_repo_path(&value, workspace_root) {
                     repo = Some(path);
                 }
             }
@@ -1941,6 +1942,53 @@ fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
     }
 
     repo
+}
+
+fn split_maven_config_args(contents: &str) -> Vec<String> {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Quote {
+        Single,
+        Double,
+    }
+
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<Quote> = None;
+
+    for ch in contents.chars() {
+        match quote {
+            None => match ch {
+                '\'' => quote = Some(Quote::Single),
+                '"' => quote = Some(Quote::Double),
+                c if c.is_whitespace() => {
+                    if !current.is_empty() {
+                        args.push(std::mem::take(&mut current));
+                    }
+                }
+                c => current.push(c),
+            },
+            Some(Quote::Single) => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some(Quote::Double) => {
+                if ch == '"' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
 }
 
 fn maven_repo_from_user_settings() -> Option<PathBuf> {
@@ -2479,12 +2527,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_repo_local_double_quoted_value_with_spaces() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), r#"-Dmaven.repo.local="repo with spaces""#);
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, dir.path().join("repo with spaces"));
+    }
+
+    #[test]
     fn parses_repo_local_single_quoted_value() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_maven_config(dir.path(), "-Dmaven.repo.local='repo'");
 
         let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
         assert_eq!(repo, dir.path().join("repo"));
+    }
+
+    #[test]
+    fn parses_repo_local_space_separated_double_quoted_value_with_spaces() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), r#"-Dmaven.repo.local "repo with spaces""#);
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, dir.path().join("repo with spaces"));
     }
 
     #[test]
