@@ -429,6 +429,52 @@ class C {
 }
 
 #[test]
+fn static_star_import_resolves_jdk_member_and_produces_no_diagnostic() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+package p;
+import static java.lang.Math.*;
+
+class C {
+    int x = max(1, 2);
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        diags.is_empty(),
+        "expected no import diagnostics for `import static java.lang.Math.*;`, got {diags:?}"
+    );
+
+    let scopes = db.scope_graph(file);
+    let resolved = db.resolve_name(file, scopes.file_scope, Name::from("max"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::StaticMember(StaticMemberResolution::External(
+            StaticMemberId::new("java.lang.Math::max")
+        )))
+    );
+}
+
+#[test]
 fn body_only_edit_does_not_recompute_resolution() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
