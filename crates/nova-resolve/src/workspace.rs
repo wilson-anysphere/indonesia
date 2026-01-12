@@ -78,6 +78,28 @@ impl WorkspaceDefMap {
         names.into_iter()
     }
 
+    /// Return all JPMS modules that define at least one top-level type in `package`.
+    ///
+    /// The result is de-duplicated and treats missing module metadata as the
+    /// classpath "unnamed module".
+    #[must_use]
+    pub fn modules_defining_package(&self, package: &PackageName) -> Vec<ModuleName> {
+        let Some(entries) = self.top_level_by_package.get(package) else {
+            return Vec::new();
+        };
+        let mut out = std::collections::BTreeSet::<ModuleName>::new();
+        for items in entries.values() {
+            for item in items {
+                out.insert(
+                    self.module_for_item(*item)
+                        .cloned()
+                        .unwrap_or_else(ModuleName::unnamed),
+                );
+            }
+        }
+        out.into_iter().collect()
+    }
+
     /// Insert definitions from a single-file [`DefMap`].
     pub fn extend_from_def_map(&mut self, def_map: &DefMap) {
         self.extend_from_def_map_with_module(def_map, ModuleName::unnamed());

@@ -545,6 +545,18 @@ impl<'a> JpmsProjectIndex<'a> {
 
         info.exports_package_to(package, &self.from)
     }
+
+    fn package_is_accessible(&self, package: &str, to: &ModuleName) -> bool {
+        if !self.graph.can_read(&self.from, to) {
+            return false;
+        }
+
+        let Some(info) = self.graph.get(to) else {
+            return true;
+        };
+
+        info.exports_package_to(package, &self.from)
+    }
 }
 
 impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
@@ -587,9 +599,77 @@ impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
     }
 
     fn package_exists(&self, package: &nova_core::PackageName) -> bool {
-        self.workspace.package_exists(package)
-            || self.classpath.package_exists(package)
-            || self.jdk.package_exists(package)
+        let pkg = package.to_dotted();
+
+        // --- Workspace packages ---------------------------------------------
+        for to in self.workspace.modules_defining_package(package) {
+            if self.package_is_accessible(&pkg, &to) {
+                return true;
+            }
+        }
+
+        // --- Classpath/module-path packages ---------------------------------
+        if self.classpath.package_exists(package) {
+            let prefix = if pkg.is_empty() {
+                String::new()
+            } else {
+                format!("{pkg}.")
+            };
+
+            for binary_name in self.classpath.types.class_names_with_prefix(&prefix) {
+                let Some((found_pkg, _)) = binary_name.rsplit_once('.') else {
+                    continue;
+                };
+                if found_pkg != pkg {
+                    continue;
+                }
+
+                let to = self
+                    .classpath
+                    .module_of(&binary_name)
+                    .cloned()
+                    .unwrap_or_else(ModuleName::unnamed);
+                if self.package_is_accessible(&pkg, &to) {
+                    return true;
+                }
+            }
+        }
+
+        // --- JDK packages ---------------------------------------------------
+        if self.jdk.package_exists(package) {
+            let prefix = if pkg.is_empty() {
+                String::new()
+            } else {
+                format!("{pkg}.")
+            };
+
+            let binary_names = match self.jdk.class_names_with_prefix(&prefix) {
+                Ok(names) => names,
+                // Best-effort fallback: if we cannot inspect the package contents
+                // (e.g. due to an indexing error), preserve the old behavior.
+                Err(_) => return true,
+            };
+
+            for binary_name in binary_names {
+                let Some((found_pkg, _)) = binary_name.rsplit_once('.') else {
+                    continue;
+                };
+                if found_pkg != pkg {
+                    continue;
+                }
+
+                let Some(to) = self.jdk.module_of_type(&binary_name) else {
+                    // Without module metadata, we cannot enforce exports. Mirror
+                    // `type_is_accessible` and treat the package as visible.
+                    return true;
+                };
+                if self.package_is_accessible(&pkg, &to) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     fn resolve_static_member(

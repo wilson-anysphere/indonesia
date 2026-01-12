@@ -1140,6 +1140,162 @@ class Use {
 }
 
 #[test]
+fn jpms_non_exported_package_star_import_is_unresolved() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_b_root = tmp.path().join("mod-b");
+
+    let mod_a_src = "module workspace.a { requires workspace.b; }";
+    let mod_b_src = "module workspace.b { }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+    let mod_b_info = lower_module_info_source_strict(mod_b_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: mod_a_info,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: mod_b_info,
+        },
+    ];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let hidden_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        hidden_file,
+        "mod-b/src/main/java/com/example/b/hidden/Hidden.java",
+        r#"
+package com.example.b.hidden;
+public class Hidden {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+import com.example.b.hidden.*;
+
+class Use {
+    Hidden field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![hidden_file, use_file]));
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Hidden"));
+    assert_eq!(resolved, None);
+
+    let diags = db.import_diagnostics(use_file);
+    assert!(
+        diags.iter().any(|d| {
+            d.code.as_ref() == "unresolved-import" && d.message.contains("com.example.b.hidden.*")
+        }),
+        "expected unresolved-import diagnostic for `com.example.b.hidden.*`, got {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_exported_package_star_import_resolves_type() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_b_root = tmp.path().join("mod-b");
+
+    let mod_a_src = "module workspace.a { requires workspace.b; }";
+    let mod_b_src = "module workspace.b { exports com.example.b.hidden; }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+    let mod_b_info = lower_module_info_source_strict(mod_b_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: mod_a_info,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: mod_b_info,
+        },
+    ];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let hidden_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        hidden_file,
+        "mod-b/src/main/java/com/example/b/hidden/Hidden.java",
+        r#"
+package com.example.b.hidden;
+public class Hidden {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+import com.example.b.hidden.*;
+
+class Use {
+    Hidden field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![hidden_file, use_file]));
+
+    let hidden_item = db
+        .def_map(hidden_file)
+        .lookup_top_level(&Name::from("Hidden"))
+        .expect("Hidden should be declared in module B");
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Hidden"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::Source(hidden_item)))
+    );
+
+    let diags = db.import_diagnostics(use_file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected star import to be resolved, got diagnostics: {diags:?}"
+    );
+}
+
+#[test]
 fn same_package_resolves_workspace_type_across_files() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
