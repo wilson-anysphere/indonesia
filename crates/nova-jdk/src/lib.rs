@@ -65,8 +65,11 @@ static BUILTIN_MATH_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
                 signature: None,
             },
         ],
-        // Note: `Math.max`/`min` are overloaded in the real JDK. The built-in index only needs a
-        // small subset, but unit tests expect common primitive overloads to resolve.
+        // Note: `Math.max`/`min` are overloaded in the real JDK.
+        //
+        // The built-in index is used by tests and bootstrapping without requiring a system JDK.
+        // Include the common primitive overload set expected by unit tests so overload resolution
+        // behaves like the real JDK (e.g. `max(long,long)` and `max(float,float)`).
         methods: vec![
             JdkMethodStub {
                 access_flags: ACC_PUBLIC | ACC_STATIC,
