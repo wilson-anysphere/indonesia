@@ -185,6 +185,12 @@ impl TypeName {
     }
 }
 
+impl std::borrow::Borrow<str> for TypeName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl fmt::Debug for TypeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("TypeName").field(&self.0).finish()

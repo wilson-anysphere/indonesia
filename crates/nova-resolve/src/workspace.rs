@@ -49,6 +49,11 @@ impl WorkspaceDefMap {
     }
 
     #[must_use]
+    pub fn item_by_type_name_str(&self, name: &str) -> Option<ItemId> {
+        self.items_by_type_name.get(name).copied()
+    }
+
+    #[must_use]
     pub fn type_name(&self, item: ItemId) -> Option<&TypeName> {
         self.type_names.get(&item)
     }

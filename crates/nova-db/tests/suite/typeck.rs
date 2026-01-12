@@ -3724,6 +3724,104 @@ fn workspace_type_wins_over_classpath_when_binary_names_collide() {
 }
 
 #[test]
+fn workspace_supertype_is_not_overwritten_when_loading_external_subclass() {
+    // dep.jar contains:
+    // - com.example.dep.Foo (no `foo()` method)
+    // - com.example.dep.Bar extends Foo
+    //
+    // This test ensures that when we load the external `Bar` stub, the external loader's
+    // recursive `ensure_class(Foo)` does not overwrite the workspace `Foo` definition.
+
+    let classpath = ClasspathIndex::build_with_deps_store(
+        &[ClasspathEntry::Jar(test_dep_jar())],
+        None,
+        None,
+        None,
+    )
+    .expect("failed to build dep.jar classpath index");
+
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let foo_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    // Workspace defines Foo with `foo()`, but Bar comes from the classpath.
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/com/example/dep/Foo.java",
+        r#"package com.example.dep; class Foo { void foo() {} }"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/com/example/dep/Use.java",
+        r#"
+package com.example.dep;
+class Use {
+    void test() {
+        new Bar().foo();
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![foo_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected Bar to inherit foo() from workspace Foo; got {diags:?}"
+    );
+
+    let tree = db.hir_item_tree(use_file);
+    let test_method = find_method_named(&tree, "test");
+    let body = db.typeck_body(DefWithBodyId::Method(test_method));
+
+    let foo_id = body
+        .env
+        .lookup_class("com.example.dep.Foo")
+        .expect("expected Foo to be present in body env");
+    let foo_def = body.env.class(foo_id).expect("expected Foo ClassDef");
+    assert!(
+        foo_def.methods.iter().any(|m| m.name == "foo"),
+        "expected Foo in env to come from workspace source (contain foo()); got methods={:?}",
+        foo_def
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let bar_id = body
+        .env
+        .lookup_class("com.example.dep.Bar")
+        .expect("expected Bar to be loaded from classpath");
+    let bar_def = body.env.class(bar_id).expect("expected Bar ClassDef");
+    let super_ty = bar_def
+        .super_class
+        .as_ref()
+        .expect("expected Bar to have a super class");
+    match super_ty {
+        Type::Class(ty) => assert_eq!(
+            ty.def, foo_id,
+            "expected Bar super class to resolve to workspace Foo"
+        ),
+        other => panic!("expected Bar super type to be a Class, got {other:?}"),
+    }
+}
+
+#[test]
 fn workspace_type_name_expr_does_not_load_classpath_stub_with_same_binary_name() {
     // Ensure the classpath contains com.example.dep.Foo.
     let classpath = ClasspathIndex::build_with_deps_store(

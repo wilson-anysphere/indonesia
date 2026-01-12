@@ -118,6 +118,63 @@ impl TypeProvider for JavaOnlyJdkTypeProvider<'_> {
     }
 }
 
+/// `TypeProvider` wrapper that prevents external stubs from shadowing workspace source types.
+///
+/// The external type loader (`ExternalTypeLoader`) recursively calls `ensure_class` while building
+/// stubs to preload supertypes, interfaces, and referenced signature types. If an external class
+/// (e.g. `Bar`) references a workspace-defined class name (e.g. `Foo`), those recursive loads must
+/// not overwrite the workspace `ClassDef`.
+///
+/// This wrapper blocks provider lookups for any non-`java.*` binary name that exists in the
+/// workspace definition map, ensuring the workspace definition wins even for *indirect* loads.
+#[derive(Clone, Copy)]
+struct WorkspaceShadowingTypeProvider<'a> {
+    workspace: &'a nova_resolve::WorkspaceDefMap,
+    inner: &'a dyn TypeProvider,
+}
+
+impl<'a> WorkspaceShadowingTypeProvider<'a> {
+    fn new(workspace: &'a nova_resolve::WorkspaceDefMap, inner: &'a dyn TypeProvider) -> Self {
+        Self { workspace, inner }
+    }
+
+    fn is_shadowed(&self, binary_name: &str) -> bool {
+        // Mirror resolver behavior: application class loaders cannot define classes in `java.*`.
+        // Even if the workspace contains a `java.*` definition, we should still allow loading the
+        // real JDK type information for downstream type checking.
+        if binary_name.starts_with("java.") {
+            return false;
+        }
+        self.workspace.item_by_type_name_str(binary_name).is_some()
+    }
+}
+
+impl TypeProvider for WorkspaceShadowingTypeProvider<'_> {
+    fn lookup_type(&self, binary_name: &str) -> Option<nova_types::TypeDefStub> {
+        if self.is_shadowed(binary_name) {
+            None
+        } else {
+            self.inner.lookup_type(binary_name)
+        }
+    }
+
+    fn members(&self, binary_name: &str) -> Vec<nova_types::MemberStub> {
+        if self.is_shadowed(binary_name) {
+            Vec::new()
+        } else {
+            self.inner.members(binary_name)
+        }
+    }
+
+    fn supertypes(&self, binary_name: &str) -> Vec<String> {
+        if self.is_shadowed(binary_name) {
+            Vec::new()
+        } else {
+            self.inner.supertypes(binary_name)
+        }
+    }
+}
+
 /// `TypeProvider` wrapper that enforces JPMS accessibility when lazily loading external stubs.
 ///
 /// In JPMS mode, name resolution already respects:
@@ -176,10 +233,7 @@ impl<'a> JpmsAccessibleTypeProvider<'a> {
     fn type_is_accessible(&self, binary_name: &str) -> bool {
         // Don't let external stubs override workspace defs (source types).
         if let Some(workspace) = self.workspace {
-            if workspace
-                .item_by_type_name(&TypeName::new(binary_name.to_string()))
-                .is_some()
-            {
+            if workspace.item_by_type_name_str(binary_name).is_some() {
                 return false;
             }
         }
@@ -412,7 +466,8 @@ fn type_of_expr_demand_result(
         }
     };
     let jdk_provider: &dyn TypeProvider = &*jdk;
-    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+    let java_provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+    let provider = WorkspaceShadowingTypeProvider::new(&workspace, &java_provider);
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
@@ -710,7 +765,8 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
                 None => &java_provider,
             };
 
-            let mut loader = ExternalTypeLoader::new(&mut store, provider);
+            let provider = WorkspaceShadowingTypeProvider::new(&workspace, provider);
+            let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
             // Define source types in this file so `Type::Class` ids are stable.
             let SourceTypes {
@@ -883,7 +939,8 @@ fn resolve_method_call_demand(
         None => &java_provider,
     };
 
-    let mut loader = ExternalTypeLoader::new(&mut store, provider);
+    let provider = WorkspaceShadowingTypeProvider::new(&workspace, provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
     // this query and static imports can be resolved across files.
@@ -1427,7 +1484,8 @@ fn signature_type_diagnostics(
         }
     };
     let jdk_provider: &dyn TypeProvider = &*jdk;
-    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+    let java_provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+    let provider = WorkspaceShadowingTypeProvider::new(&workspace, &java_provider);
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     let object_ty = Type::class(loader.store.well_known().object, vec![]);
@@ -2338,7 +2396,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         None => &java_provider,
     };
 
-    let mut loader = ExternalTypeLoader::new(&mut store, provider);
+    let provider = WorkspaceShadowingTypeProvider::new(&workspace, provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
     // this body and cross-file member resolution works.
@@ -2778,7 +2837,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let file = def_file(self.owner);
         let project = self.db.file_project(file);
         let workspace = self.db.workspace_def_map(project);
-        let item = workspace.item_by_type_name(&TypeName::new(binary_name.to_string()))?;
+        let item = workspace.item_by_type_name_str(binary_name)?;
 
         let kind = match item {
             nova_hir::ids::ItemId::Interface(_) | nova_hir::ids::ItemId::Annotation(_) => {
