@@ -935,6 +935,7 @@ fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Opt
 fn is_type_token_char(b: u8) -> bool {
     // Allow generic/array/package tokens in best-effort type extraction.
     (b as char).is_ascii_alphanumeric()
+        || b.is_ascii_whitespace()
         || matches!(b, b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?')
 }
 

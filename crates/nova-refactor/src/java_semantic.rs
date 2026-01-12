@@ -1110,18 +1110,32 @@ fn record_body_references(
                     else {
                         return;
                     };
-                    let Some(resolved) = resolver.resolve_method_name(
-                        &scope_result.scopes,
-                        callee_scope,
-                        &Name::from(name.as_str()),
-                    ) else {
-                        return;
-                    };
+                    let name = Name::from(name.as_str());
+                    let resolved =
+                        resolver.resolve_method_name(&scope_result.scopes, callee_scope, &name);
 
+                    // If call-context resolution fails, fall back to treating `foo()` as an
+                    // implicit `this.foo()` call and resolve against the enclosing class. This is a
+                    // best-effort workaround for incomplete method resolution.
                     let method = match resolved {
-                        Resolution::Methods(methods) => methods.first().copied(),
-                        Resolution::StaticMember(StaticMemberResolution::SourceMethod(m)) => Some(m),
-                        _ => None,
+                        Some(Resolution::Methods(methods)) => methods.first().copied(),
+                        Some(Resolution::StaticMember(StaticMemberResolution::SourceMethod(m))) => {
+                            Some(m)
+                        }
+                        Some(_) => None,
+                        None => {
+                            let Some(item) = enclosing_class(&scope_result.scopes, callee_scope)
+                            else {
+                                return;
+                            };
+                            let Some(def) = workspace_def_map.type_def(item) else {
+                                return;
+                            };
+                            let Some(methods) = def.methods.get(&name) else {
+                                return;
+                            };
+                            methods.first().map(|m| m.id)
+                        }
                     };
                     let Some(method) = method else {
                         return;
