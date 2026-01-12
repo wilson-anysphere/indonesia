@@ -127,11 +127,15 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
         .join("src/main/resources/application.properties");
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
 
+    let yaml_path = dir.path().join("src/main/resources/application.yml");
+    std::fs::create_dir_all(yaml_path.parent().unwrap()).unwrap();
+
     let java_path = dir.path().join("src/main/java/C.java");
     std::fs::create_dir_all(java_path.parent().unwrap()).unwrap();
 
     // Ensure the real filesystem paths exist so root discovery prefers the build-marker logic.
     std::fs::write(&config_path, "").unwrap();
+    std::fs::write(&yaml_path, "").unwrap();
     std::fs::write(&java_path, "").unwrap();
 
     // Diagnostics: known key should not be flagged as unknown.
@@ -159,6 +163,14 @@ fn spring_config_intelligence_uses_spring_configuration_metadata() {
     assert!(
         items.iter().any(|i| i.label == "server.port"),
         "expected completion list to contain server.port; got {items:#?}"
+    );
+
+    // YAML key completions should also be metadata-backed.
+    let (db, yaml_file, pos) = fixture(yaml_path.clone(), "server:\n  p<|>", vec![]);
+    let items = completions(&db, yaml_file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "port"),
+        "expected YAML completion list to contain 'port'; got {items:#?}"
     );
 
     // Value completions in application.properties should use metadata hints.
