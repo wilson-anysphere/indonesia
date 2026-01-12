@@ -1,32 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import { readTsSourceFile, unwrapExpression } from './tsAstUtils';
 
 describe('buildIntegration refreshBuildDiagnostics', () => {
   it('logs to output channel (no popups) when refresh is silent', async () => {
     const testDir = path.dirname(fileURLToPath(import.meta.url));
     const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
-    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
-
-    const sourceFile = ts.createSourceFile(buildIntegrationPath, contents, ts.ScriptTarget.ESNext, true);
-
-    const unwrapExpression = (expr: ts.Expression): ts.Expression => {
-      let out = expr;
-      while (true) {
-        if (ts.isParenthesizedExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
-          out = out.expression;
-          continue;
-        }
-        break;
-      }
-      return out;
-    };
+    const sourceFile = await readTsSourceFile(buildIntegrationPath);
 
     const findRefreshBuildDiagnostics = (): ts.FunctionDeclaration | undefined => {
       let found: ts.FunctionDeclaration | undefined;

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import { readTsSourceFile, unwrapExpression } from './tsAstUtils';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUILD_INTEGRATION_PATH = path.resolve(TEST_DIR, '..', 'buildIntegration.ts');
@@ -11,34 +11,9 @@ let buildIntegrationSourceFile: Promise<ts.SourceFile> | undefined;
 
 async function loadBuildIntegrationSourceFile(): Promise<ts.SourceFile> {
   buildIntegrationSourceFile ??= (async () => {
-    const contents = await fs.readFile(BUILD_INTEGRATION_PATH, 'utf8');
-    return ts.createSourceFile(BUILD_INTEGRATION_PATH, contents, ts.ScriptTarget.ESNext, true);
+    return await readTsSourceFile(BUILD_INTEGRATION_PATH);
   })();
   return await buildIntegrationSourceFile;
-}
-
-function unwrapExpression(expr: ts.Expression): ts.Expression {
-  let out = expr;
-  while (true) {
-    if (ts.isParenthesizedExpression(out)) {
-      out = out.expression;
-      continue;
-    }
-    if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
-      out = out.expression;
-      continue;
-    }
-    if (ts.isVoidExpression(out)) {
-      out = out.expression;
-      continue;
-    }
-    if (ts.isAwaitExpression(out)) {
-      out = out.expression;
-      continue;
-    }
-    break;
-  }
-  return out;
 }
 
 function isSilentTrueObject(expr: ts.Expression): boolean {
