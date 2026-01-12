@@ -224,10 +224,13 @@ impl<'a> ScopeBuilder<'a> {
     }
 
     fn package_name(&self) -> Option<PackageName> {
-        self.tree
-            .package
-            .as_ref()
-            .map(|pkg| PackageName::from_dotted(&pkg.name))
+        Some(
+            self.tree
+                .package
+                .as_ref()
+                .map(|pkg| PackageName::from_dotted(&pkg.name))
+                .unwrap_or_else(PackageName::root),
+        )
     }
 
     fn populate_universe(&mut self, universe: ScopeId) {

@@ -345,6 +345,26 @@ class C {}
 }
 
 #[test]
+fn same_package_lookup_resolves_root_package_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C { Foo field; }");
+
+    let mut index = TestIndex::default();
+    let foo = index.add_type("", "Foo");
+
+    let scopes = build_scopes(&db, file);
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+    let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Foo"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(foo)))
+    );
+}
+
+#[test]
 fn star_import_resolves_type() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
