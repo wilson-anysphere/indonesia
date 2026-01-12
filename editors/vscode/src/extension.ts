@@ -1856,6 +1856,20 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let aiResultCounter = 0;
   let aiWorkDoneTokenCounter = 0;
+  const aiVirtualDocuments = new Map<string, string>();
+  const AI_VIRTUAL_DOC_SCHEME = 'nova-ai';
+
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(AI_VIRTUAL_DOC_SCHEME, {
+      provideTextDocumentContent(uri) {
+        const id = new URLSearchParams(uri.query).get('id');
+        if (!id) {
+          return '';
+        }
+        return aiVirtualDocuments.get(id) ?? '';
+      },
+    }),
+  );
 
   const openAiDocs = async (): Promise<void> => {
     try {
@@ -1901,6 +1915,29 @@ export async function activate(context: vscode.ExtensionContext) {
     edit.insert(typed.uri, new vscode.Position(0, 0), opts.content);
     await vscode.workspace.applyEdit(edit);
     await vscode.window.showTextDocument(typed, { preview: false, viewColumn: opts.viewColumn ?? vscode.ViewColumn.Beside });
+    return typed;
+  };
+
+  const openReadonlyAiDocument = async (opts: {
+    title: string;
+    extension: string;
+    languageId: string;
+    content: string;
+    viewColumn?: vscode.ViewColumn;
+  }): Promise<vscode.TextDocument> => {
+    aiResultCounter += 1;
+    const id = String(aiResultCounter);
+    aiVirtualDocuments.set(id, opts.content);
+
+    const uri = vscode.Uri.from({
+      scheme: AI_VIRTUAL_DOC_SCHEME,
+      path: `/${opts.title} (${id}).${opts.extension}`,
+      query: `id=${encodeURIComponent(id)}`,
+    });
+
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const typed = await vscode.languages.setTextDocumentLanguage(doc, opts.languageId);
+    await vscode.window.showTextDocument(typed, { preview: true, viewColumn: opts.viewColumn ?? vscode.ViewColumn.Beside });
     return typed;
   };
 
@@ -2148,7 +2185,7 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const doc = await openUntitledAiDocument({
+        const doc = await openReadonlyAiDocument({
           title: 'Nova AI: Explain Error',
           extension: 'md',
           languageId: 'markdown',
