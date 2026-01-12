@@ -1,3 +1,5 @@
+#[path = "framework_harness/text_fixture.rs"]
+mod text_fixture;
 use nova_db::InMemoryFileStore;
 use nova_ide::{file_navigation_index_build_count_for_file_for_tests, implementation};
 use tempfile::TempDir;

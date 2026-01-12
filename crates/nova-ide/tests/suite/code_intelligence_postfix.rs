@@ -178,28 +178,6 @@ class A {
 }
 
 #[test]
-fn completion_includes_array_length() {
-    let (db, file, pos, _text) = fixture(
-        r#"
-class A { void m(){ int[] xs=null; xs.<|> } }
-"#,
-    );
-
-    let items = completions(&db, file, pos);
-    let item = items
-        .iter()
-        .find(|i| i.label == "length")
-        .expect("expected completion list to contain array.length");
-
-    assert_eq!(item.kind, Some(CompletionItemKind::FIELD));
-    assert!(
-        item.detail.as_deref().unwrap_or("").contains("int"),
-        "expected array.length completion detail to mention int; got {:?}",
-        item.detail
-    );
-}
-
-#[test]
 fn completion_includes_postfix_stream_for_list_and_replaces_full_expr() {
     let (db, file, pos, text) = fixture(
         r#"

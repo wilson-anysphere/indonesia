@@ -1,4 +1,4 @@
-use lsp_types::{CompletionTextEdit, InsertTextFormat};
+use lsp_types::{CompletionItemKind, CompletionTextEdit, InsertTextFormat};
 use nova_db::InMemoryFileStore;
 use nova_ide::{
     call_hierarchy_outgoing_calls, completions, document_symbols, file_diagnostics,
@@ -79,6 +79,29 @@ class A {
         labels.contains(&"length"),
         "expected completion list to contain String.length; got {labels:?}"
     );
+}
+
+#[test]
+fn completion_includes_array_length() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { void m(){ int[] xs=null; xs.<|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "length")
+        .expect("expected completion list to contain array.length");
+
+    assert_eq!(item.kind, Some(CompletionItemKind::FIELD));
+    assert!(
+        item.detail.as_deref().unwrap_or("").contains("int"),
+        "expected array.length completion detail to mention int; got {:?}",
+        item.detail
+    );
+    assert_eq!(item.insert_text.as_deref(), Some("length"));
 }
 
 #[test]
