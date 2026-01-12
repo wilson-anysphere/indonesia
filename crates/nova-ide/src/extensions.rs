@@ -1641,11 +1641,10 @@ fn unused_import_quick_fixes_from_context(
     selection: Span,
     context_diagnostics: &[lsp_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
-    fn spans_overlap(a: Span, b: Span) -> bool {
-        a.start < b.end && b.start < a.end
-    }
-
-    fn single_delete_edit(uri: &lsp_types::Uri, range: lsp_types::Range) -> lsp_types::WorkspaceEdit {
+    fn single_delete_edit(
+        uri: &lsp_types::Uri,
+        range: lsp_types::Range,
+    ) -> lsp_types::WorkspaceEdit {
         let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
         changes.insert(
             uri.clone(),
@@ -1686,7 +1685,7 @@ fn unused_import_quick_fixes_from_context(
             continue;
         };
         let diag_span = Span::new(start, end);
-        if !spans_overlap(selection, diag_span) {
+        if !crate::quick_fix::spans_intersect(selection, diag_span) {
             continue;
         }
 

@@ -30,6 +30,61 @@ fn code_actions_with_context_includes_type_mismatch_quickfix() {
     String s = obj;
   }
 }
+
+#[test]
+fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selection() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = "import java.util.List;\nclass A {}\n";
+    db.set_file_text(file, source.to_string());
+
+    let diag_start = 0;
+    let diag_end = source.find('\n').expect("import line should end with newline");
+    let range = Range::new(
+        offset_to_position_utf16(source, diag_start),
+        offset_to_position_utf16(source, diag_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("unused-import".to_string())),
+        message: "unused import".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    // The LSP can request code actions for a cursor selection (start == end). Ensure we still
+    // surface the unused-import quick fix when the cursor is at/inside the diagnostic range.
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(diag_start, diag_start)),
+        &[diag],
+    );
+
+    let mut found = false;
+    for action in &actions {
+        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
+            continue;
+        };
+        if action.title == "Remove unused import" {
+            found = true;
+            assert_eq!(action.kind, Some(lsp_types::CodeActionKind::QUICKFIX));
+            assert!(
+                action.edit.is_some(),
+                "expected unused import quickfix to include an edit"
+            );
+        }
+    }
+
+    assert!(
+        found,
+        "expected to find `Remove unused import` quick fix; got {actions:?}"
+    );
+}
 "#;
     db.set_file_text(file, source.to_string());
 
