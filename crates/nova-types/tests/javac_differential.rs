@@ -72,7 +72,7 @@ fn ignored_tests_are_restricted_to_javac_smoke() {
 
 /// Differential test harness smoke check.
 ///
-/// These tests are `#[ignore]` by default so the default `cargo test` suite (and `.github/workflows/ci.yml`)
+/// These tests are `#[ignore]` by default so `ci.yml`’s default suite (`cargo nextest run --workspace --profile ci`)
 /// can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 #[test]
 #[ignore]
