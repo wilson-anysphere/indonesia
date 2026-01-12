@@ -16,4 +16,3 @@ nova-ide
 nova-db
 nova-project
 nova-refactor
-nova-framework-spring
