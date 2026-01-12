@@ -1770,6 +1770,24 @@ pub fn inline_variable(
         }) {
             return Err(RefactorError::InlineSideEffects);
         }
+
+        // 4) Reject cases where inlining would reorder the initializer relative to other
+        // side-effectful expressions in the usage statement (e.g. `bar() + a`).
+        //
+        // Before inlining, the initializer executed as its own statement immediately before the
+        // usage statement, so it ran before *any* side effects in the usage statement. After
+        // inlining, the initializer would execute at the usage position, which may be after other
+        // side effects (Java expression evaluation is generally left-to-right).
+        let usage_start = usage.range.start;
+        if usage_stmt.syntax().descendants().any(|node| {
+            if !has_side_effects(&node) {
+                return false;
+            }
+            let range = syntax_range(&node);
+            range.end <= usage_start
+        }) {
+            return Err(RefactorError::InlineSideEffects);
+        }
     }
 
     // --- Initializer dependency stability analysis ---
