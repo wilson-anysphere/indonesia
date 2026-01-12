@@ -19,7 +19,6 @@ nova-db = { path = "../nova-db" }
 nova-framework = { path = "../nova-framework" }
 nova-framework-lombok = { path = "../nova-framework-lombok" }
 nova-index = { path = "../nova-index" }
-nova-flow = { path = "../nova-flow" }
 nova-hir = { path = "../nova-hir" }
 nova-resolve = { path = "../nova-resolve" }
 nova-syntax = { path = "../nova-syntax" }

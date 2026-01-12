@@ -3862,7 +3862,6 @@ dependencies = [
  "nova-db",
  "nova-decompile",
  "nova-ext",
- "nova-flow",
  "nova-framework",
  "nova-framework-dagger",
  "nova-framework-jpa",
