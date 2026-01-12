@@ -1,34 +1,13 @@
-use std::path::{Path, PathBuf};
-
 use nova_framework::{FrameworkAnalyzer, MemoryDatabase};
 use nova_framework_dagger::{analyze_java_files, DaggerAnalyzer, JavaSourceFile, NavigationKind};
 
+use super::fixture_utils::load_fixture_sources;
+
 fn load_fixture(name: &str) -> Vec<JavaSourceFile> {
-    let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join(name);
-
-    let mut files = Vec::new();
-    collect_java_files(&root, &mut files);
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    files
-}
-
-fn collect_java_files(dir: &Path, out: &mut Vec<JavaSourceFile>) {
-    for entry in std::fs::read_dir(dir).expect("read fixture dir") {
-        let entry = entry.expect("read entry");
-        let path = entry.path();
-        if path.is_dir() {
-            collect_java_files(&path, out);
-            continue;
-        }
-        if path.extension().and_then(|s| s.to_str()) != Some("java") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("read java file");
-        out.push(JavaSourceFile { path, text });
-    }
+    load_fixture_sources(name)
+        .into_iter()
+        .map(|(path, text)| JavaSourceFile { path, text })
+        .collect()
 }
 
 fn slice_range(text: &str, range: nova_core::Range) -> String {
