@@ -1,0 +1,9 @@
+# cargo-fuzz will grow the corpus as it discovers new coverage. Keep the
+# repository corpus curated by ignoring auto-generated entries by default.
+*
+!.gitignore
+!minimal_command
+!length_0
+!length_10
+!length_ffff_ffff
+
