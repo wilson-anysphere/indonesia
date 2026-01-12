@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use nova_ai::{ContextRequest, PrivacyMode, SemanticContextBuilder, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsConfig, AiFeaturesConfig};
-use nova_db::InMemoryFileStore;
+use nova_db::{InMemoryFileStore, SalsaDatabase};
 
 fn test_db() -> VirtualWorkspace {
     VirtualWorkspace::new([
@@ -137,6 +137,38 @@ fn semantic_context_builder_can_index_database() {
 
     let mut builder = SemanticContextBuilder::new(&cfg);
     builder.index_database(&store);
+
+    let ctx = builder.build(request(), 1);
+    assert!(ctx.text.contains("## Related code"));
+    assert!(ctx.text.contains("hello world"));
+}
+
+#[test]
+fn semantic_context_builder_can_index_source_database() {
+    let cfg = AiConfig {
+        enabled: true,
+        embeddings: AiEmbeddingsConfig {
+            enabled: false,
+            ..AiEmbeddingsConfig::default()
+        },
+        features: AiFeaturesConfig {
+            semantic_search: true,
+            ..AiFeaturesConfig::default()
+        },
+        ..AiConfig::default()
+    };
+
+    let db = SalsaDatabase::new();
+    let file_id = nova_db::FileId::from_raw(0);
+    db.set_file_text(
+        file_id,
+        "public class Main { public String hello() { return \"hello world\"; } }".to_string(),
+    );
+    db.set_file_path(file_id, "src/Main.java");
+    let snap = db.snapshot();
+
+    let mut builder = SemanticContextBuilder::new(&cfg);
+    builder.index_source_database(&snap);
 
     let ctx = builder.build(request(), 1);
     assert!(ctx.text.contains("## Related code"));
