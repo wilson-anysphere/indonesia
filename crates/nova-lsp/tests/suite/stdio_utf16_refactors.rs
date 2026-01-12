@@ -826,6 +826,135 @@ fn stdio_server_rename_type_updates_multiple_files() {
 }
 
 #[test]
+fn stdio_server_field_rename_across_files_returns_changes_for_multiple_uris() {
+    let _lock = crate::support::stdio_server_lock();
+    let a_uri = Uri::from_str("file:///workspace/src/main/java/p/A.java").unwrap();
+    let b_uri = Uri::from_str("file:///workspace/src/main/java/p/B.java").unwrap();
+
+    let a_source = "package p;\npublic class A { public int foo = 0; }\n";
+    let b_source = "package p;\nclass B { void m(){ A a = new A(); int x = a.foo; } }\n";
+
+    let foo_offset = a_source.find("foo").expect("field foo identifier");
+    let foo_position = lsp_position_utf16(a_source, foo_offset + 1);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) open both documents (overlay-only; no disk IO).
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": a_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": a_source,
+                }
+            }
+        }),
+    );
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": b_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": b_source,
+                }
+            }
+        }),
+    );
+
+    // 3) rename field `foo` declared in A.java and referenced in B.java.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": a_uri },
+                "position": foo_position,
+                "newName": "bar"
+            }
+        }),
+    );
+
+    let rename_resp = read_response_with_id(&mut stdout, 2);
+    let result = rename_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+
+    assert!(
+        edit.document_changes.is_none(),
+        "expected WorkspaceEdit.documentChanges == None for multi-file rename without file ops"
+    );
+
+    let changes = edit.changes.expect("changes map");
+    assert!(
+        changes.contains_key(&a_uri),
+        "expected changes to contain edits for A.java"
+    );
+    assert!(
+        changes.contains_key(&b_uri),
+        "expected changes to contain edits for B.java"
+    );
+
+    let a_edits = changes.get(&a_uri).expect("edits for A.java");
+    let b_edits = changes.get(&b_uri).expect("edits for B.java");
+
+    let a_actual = apply_lsp_text_edits(a_source, a_edits);
+    let b_actual = apply_lsp_text_edits(b_source, b_edits);
+
+    assert!(a_actual.contains("int bar"));
+    assert!(!a_actual.contains("foo"));
+    assert!(b_actual.contains("a.bar"));
+    assert!(!b_actual.contains("a.foo"));
+
+    // 4) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_extract_method_is_utf16_correct_with_crlf() {
     let _lock = crate::support::stdio_server_lock();
     let uri = Uri::from_str("file:///Test.java").unwrap();
