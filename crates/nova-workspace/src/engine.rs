@@ -1986,6 +1986,7 @@ fn reload_project_and_sync(
         };
 
         query_db.set_file_rel_path(file_id, Arc::new(rel_path.clone()));
+        query_db.set_file_path(file_id, rel_path.clone());
         query_db.set_file_project(file_id, project);
         let root_id = source_root_for_path(&source_roots, &path).unwrap_or_else(|| {
             source_roots
@@ -2053,7 +2054,10 @@ mod tests {
     use nova_db::salsa::HasFilePaths;
     use nova_db::NovaInputs;
     use nova_memory::{MemoryBudget, MemoryCategory};
-    use nova_index::{AnnotationLocation, InheritanceEdge, ReferenceLocation, SymbolLocation};
+    use nova_index::{
+        AnnotationLocation, IndexSymbolKind, IndexedSymbol, InheritanceEdge, ReferenceLocation,
+        SymbolLocation,
+    };
     use nova_project::BuildSystem;
     use nova_vfs::{ManualFileWatcher, ManualFileWatcherHandle};
     use std::fs;
@@ -2125,7 +2129,7 @@ mod tests {
         assert!(saw_progress, "expected at least one IndexProgress event");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn trigger_indexing_uses_project_level_indexing_queries() {
         let workspace = crate::Workspace::new_in_memory();
 
@@ -2181,7 +2185,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn trigger_indexing_persists_project_index_shards_to_disk() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
@@ -2235,7 +2239,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn warm_start_reindexes_dirty_overlays_and_ignores_stale_persisted_shards() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
@@ -2490,10 +2494,16 @@ mod tests {
         for idx in 0..64u32 {
             indexes.symbols.insert(
                 format!("Symbol{idx}"),
-                SymbolLocation {
-                    file: "src/Main.java".to_string(),
-                    line: idx,
-                    column: 0,
+                IndexedSymbol {
+                    qualified_name: format!("Symbol{idx}"),
+                    kind: IndexSymbolKind::Class,
+                    container_name: None,
+                    location: SymbolLocation {
+                        file: "src/Main.java".to_string(),
+                        line: idx,
+                        column: 0,
+                    },
+                    ast_id: idx,
                 },
             );
             indexes.references.insert(
@@ -2618,6 +2628,38 @@ mod tests {
 
         let expected_rel_path = normalize_rel_path("src/./Main.java");
         engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_rel_path(file_id).as_str(), expected_rel_path.as_str());
+
+            let file_path = snap.file_path(file_id).expect("file_path should be set");
+            assert!(!file_path.is_empty());
+            assert_eq!(file_path.as_str(), expected_rel_path.as_str());
+        });
+    }
+
+    #[test]
+    fn project_reload_sets_non_tracked_file_path_for_persistence_keys() {
+        use nova_db::salsa::HasFilePaths;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let project = ProjectId::from_raw(0);
+        engine.query_db.with_snapshot(|snap| {
+            let files = snap.project_files(project);
+            assert_eq!(
+                files.len(),
+                1,
+                "expected project reload to discover one Java source file"
+            );
+
+            let file_id = files[0];
+            let expected_rel_path = normalize_rel_path("src/Main.java");
             assert_eq!(snap.file_rel_path(file_id).as_str(), expected_rel_path.as_str());
 
             let file_path = snap.file_path(file_id).expect("file_path should be set");
@@ -3465,7 +3507,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_watcher_propagates_disk_edits_into_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
@@ -3491,7 +3533,7 @@ mod tests {
         let updated = "class Main { int x; }";
         fs::write(&file, updated.as_bytes()).unwrap();
         handle
-            .push(WatchEvent {
+            .push(WatchEvent::Changes {
                 changes: vec![FileChange::Modified { path: vfs_path.clone() }],
             })
             .unwrap();

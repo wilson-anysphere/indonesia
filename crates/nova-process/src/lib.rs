@@ -277,8 +277,47 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
     };
 
     let max_bytes = opts.max_bytes;
-    let stdout_handle = thread::spawn(move || read_bounded(stdout, max_bytes));
-    let stderr_handle = thread::spawn(move || read_bounded(stderr, max_bytes));
+    // Thread creation can fail in constrained environments (low RLIMIT_NPROC / temporary `EAGAIN`).
+    // Avoid panicking from `std::thread::spawn` so callers can fall back gracefully (for example,
+    // `nova-workspace`'s JDK discovery falls back to a tiny built-in index).
+    let mut spawn_err: Option<io::Error> = None;
+    let stdout_handle = match thread::Builder::new()
+        .name("nova-process-stdout".to_string())
+        .spawn(move || read_bounded(stdout, max_bytes))
+    {
+        Ok(handle) => Some(handle),
+        Err(err) => {
+            spawn_err = Some(err);
+            None
+        }
+    };
+    let stderr_handle = match thread::Builder::new()
+        .name("nova-process-stderr".to_string())
+        .spawn(move || read_bounded(stderr, max_bytes))
+    {
+        Ok(handle) => Some(handle),
+        Err(err) => {
+            if spawn_err.is_none() {
+                spawn_err = Some(err);
+            }
+            None
+        }
+    };
+
+    if let Some(err) = spawn_err {
+        // Ensure the child is not left running with undrained pipes.
+        let _ = terminate_process_tree(&mut child, opts.kill_grace);
+        if let Some(handle) = stdout_handle {
+            let _ = handle.join();
+        }
+        if let Some(handle) = stderr_handle {
+            let _ = handle.join();
+        }
+        return Err(err);
+    }
+
+    let stdout_handle = stdout_handle.expect("stdout handle missing without spawn error");
+    let stderr_handle = stderr_handle.expect("stderr handle missing without spawn error");
 
     let start = Instant::now();
     let mut timed_out = false;
