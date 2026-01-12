@@ -711,18 +711,91 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     let classifier = dep.classifier.as_deref();
 
     let group_path = dep.group_id.replace('.', "/");
-    let base = maven_repo
+    let version_dir = maven_repo
         .join(group_path)
         .join(&dep.artifact_id)
         .join(version);
 
-    let file_name = if let Some(classifier) = classifier {
-        format!("{}-{}-{}.jar", dep.artifact_id, version, classifier)
-    } else {
-        format!("{}-{}.jar", dep.artifact_id, version)
+    let default_file_name = |version: &str| {
+        if let Some(classifier) = classifier {
+            format!("{}-{}-{}.jar", dep.artifact_id, version, classifier)
+        } else {
+            format!("{}-{}.jar", dep.artifact_id, version)
+        }
     };
 
-    Some(base.join(file_name))
+    if version.ends_with("-SNAPSHOT") {
+        if let Some(resolved) =
+            resolve_snapshot_jar_file_name(&version_dir, &dep.artifact_id, classifier)
+        {
+            let resolved_path = version_dir.join(&resolved);
+            if resolved_path.is_file() {
+                return Some(resolved_path);
+            }
+        }
+    }
+
+    Some(version_dir.join(default_file_name(version)))
+}
+
+fn resolve_snapshot_jar_file_name(
+    version_dir: &Path,
+    artifact_id: &str,
+    classifier: Option<&str>,
+) -> Option<String> {
+    // Maven stores SNAPSHOT artifacts as timestamped versions in the local repo, e.g.
+    // `dep-1.0-20260112.123456-1.jar`.
+    //
+    // Resolve the timestamped version from `maven-metadata(-local).xml` when present, and fall
+    // back to the conventional `<artifactId>-<version>(-classifier).jar` filename otherwise.
+    let mut best_value: Option<String> = None;
+
+    for metadata_name in ["maven-metadata-local.xml", "maven-metadata.xml"] {
+        let metadata_path = version_dir.join(metadata_name);
+        let Ok(contents) = std::fs::read_to_string(&metadata_path) else {
+            continue;
+        };
+        let Ok(doc) = roxmltree::Document::parse(&contents) else {
+            continue;
+        };
+
+        for node in doc
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "snapshotVersion")
+        {
+            let ext = child_text(&node, "extension");
+            if !ext.is_some_and(|e| e.eq_ignore_ascii_case("jar")) {
+                continue;
+            }
+
+            let node_classifier = child_text(&node, "classifier");
+            let classifier_matches = match (classifier, node_classifier.as_deref()) {
+                (None, None) => true,
+                (Some(wanted), Some(found)) => wanted == found,
+                _ => false,
+            };
+            if !classifier_matches {
+                continue;
+            }
+
+            let Some(value) = child_text(&node, "value") else {
+                continue;
+            };
+
+            // Deterministic tie-breaker: pick the lexicographically max timestamped version.
+            let replace = best_value.as_ref().is_none_or(|best| value > *best);
+            if replace {
+                best_value = Some(value);
+            }
+        }
+    }
+
+    let value = best_value?;
+    Some(if let Some(classifier) = classifier {
+        format!("{artifact_id}-{value}-{classifier}.jar")
+    } else {
+        format!("{artifact_id}-{value}.jar")
+    })
 }
 
 fn child_element<'a>(
