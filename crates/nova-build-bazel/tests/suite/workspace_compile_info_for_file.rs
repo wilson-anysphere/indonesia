@@ -220,6 +220,19 @@ fn compile_info_for_file_returns_none_when_file_is_outside_workspace_root() {
 }
 
 #[test]
+fn compile_info_for_file_returns_none_when_relative_path_escapes_workspace_root() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# test\n");
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let info = workspace
+        .compile_info_for_file(Path::new("..").join("outside").join("Hello.java"))
+        .unwrap();
+    assert_eq!(info, None);
+}
+
+#[test]
 fn compile_info_for_file_returns_none_when_file_is_bazelignored() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();

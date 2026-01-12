@@ -350,6 +350,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 // outside-workspace paths as an error.
                 let message = err.to_string();
                 if message.contains("outside the Bazel workspace root")
+                    || message.contains("path escapes workspace root")
                     || message.contains("failed to canonicalize file path")
                 {
                     return Ok(None);
