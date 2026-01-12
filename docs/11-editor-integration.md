@@ -21,7 +21,8 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │                                                                  │
 │  Legend                                                         │
 │  ✓ = implemented + advertised by `initialize`                    │
-│  ○ = not yet implemented and/or not advertised                   │
+│  △ = implemented (but not advertised / no capability flag)       │
+│  ○ = not yet implemented                                         │
 │                                                                  │
 │  LANGUAGE FEATURES                                               │
 │  ✓ Completion (+ completionItem/resolve)                         │
@@ -52,11 +53,11 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │  ✓ workspace/executeCommand                                      │
 │  ✓ Workspace folders (workspace/didChangeWorkspaceFolders)        │
 │  ✓ File operations (create/delete/rename)                        │
-│  ✓ Configuration reload (workspace/didChangeConfiguration)        │
+│  △ Configuration reload (workspace/didChangeConfiguration)        │
 │                                                                  │
 │  WINDOW FEATURES                                                 │
-│  ✓ window/logMessage (used by AI features)                      │
-│  ✓ $/progress (when a `workDoneToken` is supplied)              │
+│  △ window/logMessage (used by AI features)                      │
+│  △ $/progress (when a `workDoneToken` is supplied)              │
 │  ○ window/showMessage / showMessageRequest / showDocument       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
