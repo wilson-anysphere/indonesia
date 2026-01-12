@@ -1937,7 +1937,15 @@ pub fn file_diagnostics_with_semantic_db(
     }
 
     // 9) MapStruct diagnostics (best-effort, filesystem-based).
-    if is_java && text.contains("org.mapstruct") {
+    //
+    // Use a cheap text guard to avoid running MapStruct parsing + filesystem scanning for files
+    // that obviously aren't participating in MapStruct.
+    let maybe_mapstruct = text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("org.mapstruct");
+
+    if is_java && maybe_mapstruct {
         if let Some(path) = db.file_path(file) {
             let root = crate::framework_cache::project_root_for_path(path);
             let has_mapstruct_dependency = crate::framework_cache::project_config(&root)
