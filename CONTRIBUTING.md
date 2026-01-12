@@ -80,13 +80,13 @@ cargo test -p nova-types --test javac_differential -- --ignored
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)
 
- ```bash
-  ./scripts/run-real-project-tests.sh
-  
-  # or run directly after cloning fixtures:
- cargo test -p nova-project --test harness -- --ignored real_projects::
- cargo test -p nova-cli --test cli -- --ignored real_projects::
- ```
+```bash
+./scripts/run-real-project-tests.sh
+
+# or run directly after cloning fixtures:
+cargo test -p nova-project --test harness -- --ignored real_projects::
+cargo test -p nova-cli --test cli -- --ignored suite::real_projects::
+```
 
 ### Format & lint
 
