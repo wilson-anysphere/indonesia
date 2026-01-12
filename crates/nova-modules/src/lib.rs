@@ -311,6 +311,45 @@ mod tests {
     }
 
     #[test]
+    fn requires_unnamed_does_not_make_all_named_modules_readable() {
+        let mut graph = super::ModuleGraph::new();
+        graph.insert(module(
+            super::ModuleKind::Explicit,
+            "a",
+            vec![super::Requires {
+                module: super::ModuleName::unnamed(),
+                is_transitive: false,
+                is_static: false,
+            }],
+        ));
+        graph.insert(module(super::ModuleKind::Explicit, "b", Vec::new()));
+        graph.insert(module(super::ModuleKind::Automatic, "auto", Vec::new()));
+        graph.insert(module(
+            super::ModuleKind::Unnamed,
+            super::UNNAMED_MODULE,
+            Vec::new(),
+        ));
+
+        let a = super::ModuleName::new("a");
+        let unnamed = super::ModuleName::unnamed();
+        assert!(
+            graph.can_read(&a, &unnamed),
+            "module `a` should read unnamed when it explicitly requires it"
+        );
+
+        // Even though the unnamed module reads all named modules, that readability does not
+        // propagate through to modules that require it (matches `--add-reads <module>=ALL-UNNAMED`).
+        assert!(
+            !graph.can_read(&a, &super::ModuleName::new("b")),
+            "requiring unnamed should not implicitly make other named modules readable"
+        );
+        assert!(
+            !graph.can_read(&a, &super::ModuleName::new("auto")),
+            "requiring unnamed should not implicitly make automatic modules readable"
+        );
+    }
+
+    #[test]
     fn explicit_requires_controls_readability() {
         let mut graph = super::ModuleGraph::new();
         graph.insert(module(
