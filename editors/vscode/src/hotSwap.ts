@@ -28,7 +28,7 @@ export function registerNovaHotSwap(
 
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((doc) => {
-      if (doc.languageId !== 'java' || doc.uri.scheme !== 'file') {
+      if (doc.languageId !== 'java' || doc.isUntitled) {
         return;
       }
 
