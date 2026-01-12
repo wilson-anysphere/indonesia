@@ -246,6 +246,45 @@ fn non_evictable_other_can_force_query_cache_eviction_under_high_pressure() {
 }
 
 #[test]
+fn non_evictable_other_can_scale_down_query_cache_even_if_under_category_target() {
+    // Similar to `non_evictable_other_can_force_query_cache_eviction_under_high_pressure`, but
+    // exercises the non-zero-budget path:
+    //
+    // Even if an evictable cache is under its *category* target, it may still need to shrink when
+    // a large non-evictable category (with no evictors) consumes most of the *global* budget.
+    let budget = MemoryBudget::from_total(1_000);
+    let thresholds = MemoryPressureThresholds {
+        // Make `High` easy to reach deterministically (RSS-independent), but keep `Critical`
+        // unreachable so the test is stable on Linux where RSS can dominate.
+        medium: 0.0,
+        high: 0.5,
+        critical: 1e12,
+    };
+    let manager = MemoryManager::with_thresholds(budget, thresholds);
+
+    let file_texts = manager.register_tracker("file_texts", MemoryCategory::Other);
+    file_texts.tracker().set_bytes(450);
+
+    let cache = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
+    cache.set_bytes(150);
+
+    // Under `High`, category targets are scaled to 50%.
+    let high_target = ((budget.categories.query_cache as f64) * 0.50).round() as u64;
+    assert!(
+        cache.bytes() < high_target,
+        "cache should start under its per-category target to reproduce the regression"
+    );
+
+    assert_eq!(manager.report().pressure, nova_memory::MemoryPressure::High);
+
+    manager.enforce();
+
+    // Global High-pressure target total is 50% of the budget (500). With 450 bytes of non-evictable
+    // inputs, the global evictable budget is 50 bytes, so the cache must shrink accordingly.
+    assert_eq!(cache.bytes(), 50);
+}
+
+#[test]
 fn medium_pressure_scales_targets() {
     let budget = MemoryBudget::from_total(1_000_000_000_000);
     let manager = MemoryManager::new(budget);
