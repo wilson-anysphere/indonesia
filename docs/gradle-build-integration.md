@@ -28,6 +28,10 @@ The relative on-disk path and glob are defined in `nova-build-model`:
    invocation).
 2. **Build integration runs** (explicitly, or via a host opting in): `nova-build` executes Gradle to
    extract a resolved `JavaCompileConfig` (classpath/source roots/output dirs).
+   - Explicit examples: LSP endpoints like `nova/java/classpath` (see `crates/nova-lsp/src/extensions/build.rs`)
+   - Host opt-in example: `nova-workspace` can invoke build tools during load/reload when
+     `NovaConfig.build.mode = "on"` (default is `"auto"` which uses cached metadata only; see
+     `docs/file-watching.md`)
 3. **Snapshot handoff**: `nova-build` writes `.nova/queries/gradle.json` (schema + fingerprint).
 4. **Reload trigger**: file watching / reload logic treats `.nova/queries/gradle.json` as a build
    change and reloads the project model.
