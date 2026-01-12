@@ -5107,7 +5107,12 @@ fn record_lightweight_expr(
         }
         Expr::Name(_)
         | Expr::IntLiteral(_)
+        | Expr::LongLiteral(_)
+        | Expr::FloatLiteral(_)
+        | Expr::DoubleLiteral(_)
+        | Expr::CharLiteral(_)
         | Expr::StringLiteral(_)
+        | Expr::TextBlock(_)
         | Expr::BoolLiteral(_)
         | Expr::NullLiteral(_)
         | Expr::This(_)
