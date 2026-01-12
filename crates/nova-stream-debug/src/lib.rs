@@ -490,6 +490,12 @@ pub struct StreamDebugResult {
 pub enum StreamDebugError {
     #[error(transparent)]
     Analysis(#[from] StreamAnalysisError),
+    #[error(
+        "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
+Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
+Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
+    )]
+    UnsafeExistingStream { stream_expr: String },
     #[error("evaluation cancelled")]
     Cancelled,
     #[error("evaluation exceeded time limit")]
@@ -520,6 +526,20 @@ pub fn debug_stream<C: JdwpClient>(
     };
 
     enforce_limits()?;
+
+    if let StreamSource::ExistingStream { stream_expr } = &chain.source {
+        // `ExistingStream` can be either:
+        // - an actual, already-instantiated Stream value (unsafe: sampling consumes it), or
+        // - a stream-producing expression (usually safe to re-evaluate, e.g. `Arrays.stream(arr)`).
+        //
+        // Heuristic: if the source expression has no call segments, treat it as an existing stream
+        // value and refuse by default.
+        if is_pure_access_expr(stream_expr) {
+            return Err(StreamDebugError::UnsafeExistingStream {
+                stream_expr: stream_expr.clone(),
+            });
+        }
+    }
 
     let mut safe_expr = chain.source.stream_expr().to_string();
     let sample_suffix = sample_suffix(chain.stream_kind, config.max_sample_size);
@@ -1030,6 +1050,17 @@ fn split_angle_args(source: &str) -> Result<(&str, &str), StreamAnalysisError> {
     Err(StreamAnalysisError::UnbalancedParens)
 }
 
+fn is_pure_access_expr(expr: &str) -> bool {
+    match parse_dotted_expr(expr) {
+        Ok(dotted) => dotted
+            .segments
+            .iter()
+            .all(|seg| matches!(seg.kind, SegmentKind::Access)),
+        // If we can't parse confidently, err on the side of safety (treat as a value).
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1203,6 +1234,105 @@ mod tests {
         assert_eq!(
             result.terminal.as_ref().unwrap().value.as_deref(),
             Some("2")
+        );
+    }
+
+    #[test]
+    fn debug_stream_refuses_likely_consumable_existing_stream_values() {
+        let expr = "s.filter(x -> x > 0).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+        assert!(matches!(chain.source, StreamSource::ExistingStream { .. }));
+
+        let mut jdwp = MockJdwpClient::new();
+        let config = StreamDebugConfig {
+            max_sample_size: 2,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+
+        let err = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap_err();
+        match err {
+            StreamDebugError::UnsafeExistingStream { stream_expr } => {
+                assert_eq!(stream_expr, "s");
+            }
+            other => panic!("expected UnsafeExistingStream error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn debug_stream_allows_re_evaluatable_existing_stream_expressions_with_calls() {
+        let expr = "java.util.Arrays.stream(arr).filter(x -> x > 0).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+        assert!(matches!(chain.source, StreamSource::ExistingStream { .. }));
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "java.util.Arrays.stream(arr).limit(2).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 10,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            10,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 2,
+                        sample: vec![JdwpValue::Int(-1), JdwpValue::Int(1)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "java.util.Arrays.stream(arr).filter(x -> x > 0).limit(2).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 11,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            11,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 1,
+                        sample: vec![JdwpValue::Int(1)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "java.util.Arrays.stream(arr).filter(x -> x > 0).limit(2).count()",
+            Ok(JdwpValue::Long(1)),
+        );
+
+        let config = StreamDebugConfig {
+            max_sample_size: 2,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+
+        let result = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap();
+        assert_eq!(result.source_sample.elements, vec!["-1", "1"]);
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].output.elements, vec!["1"]);
+        assert_eq!(
+            result.terminal.as_ref().unwrap().value.as_deref(),
+            Some("1")
         );
     }
 }
