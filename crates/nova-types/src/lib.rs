@@ -1482,11 +1482,18 @@ impl TypeStore {
                 super_class: Some(Type::class(object, vec![])),
                 interfaces: vec![Type::class(list, vec![Type::TypeVar(array_list_e)])],
                 fields: vec![],
-                constructors: vec![ConstructorDef {
-                    params: vec![],
-                    is_varargs: false,
-                    is_accessible: true,
-                }],
+                constructors: vec![
+                    ConstructorDef {
+                        params: vec![],
+                        is_varargs: false,
+                        is_accessible: true,
+                    },
+                    ConstructorDef {
+                        params: vec![Type::Primitive(PrimitiveType::Int)],
+                        is_varargs: false,
+                        is_accessible: true,
+                    },
+                ],
                 methods: vec![],
             },
         );
