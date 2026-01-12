@@ -330,9 +330,12 @@ Look for messages like:
 - `timed out writing request to worker …`
 - `timed out waiting for response from worker …`
 
-If you accidentally run a legacy worker against a v3 router (or vice versa), the handshake will be
-rejected. In v3, this shows up as a `Reject { code, message }` frame (most commonly
-`code=invalid_request` or `code=unsupported_version`).
+If you accidentally connect a legacy v2 worker to a v3 router (or vice versa), the handshake will
+fail. Depending on which side is legacy you may see either:
+
+- a v3 `Reject { code, message }` frame (on the v3 side), or
+- a legacy v2 `RpcMessage::Error { message: \"router only supports v3\" }` response (for clearer
+  diagnostics when a v2 worker talks to a v3 router).
 
 Notes:
 
