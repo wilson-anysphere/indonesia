@@ -120,6 +120,51 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_in_annotation_value() {
+    let fixture = r#"
+class C {
+    @SuppressWarnings(/*start*/"unchecked"/*end*/)
+    void m() {
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn extract_variable_code_action_not_offered_in_switch_case_label() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        switch (x) {
+            case /*start*/1 + 2/*end*/:
+                break;
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn inline_variable_code_actions_apply_expected_edits() {
     let source = r#"
 class C {
