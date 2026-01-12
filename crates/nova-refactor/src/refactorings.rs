@@ -1695,6 +1695,23 @@ pub fn inline_variable(
         }) {
             return Err(RefactorError::InlineSideEffects);
         }
+
+        // 4) Reject cases where inlining would reorder side effects relative to other expressions
+        // in the usage statement.
+        //
+        // The initializer currently executes before the usage statement runs. Inlining moves the
+        // initializer into the statement at the usage site, which is evaluated after any earlier
+        // side-effectful expressions in the statement (e.g. `bar() + a`).
+        let usage_start = usage.range.start;
+        if usage_stmt.syntax().descendants().any(|node| {
+            if !has_side_effects(&node) {
+                return false;
+            }
+            let range = syntax_range(&node);
+            range.end <= usage_start
+        }) {
+            return Err(RefactorError::InlineSideEffects);
+        }
     }
 
     // --- Initializer dependency stability analysis ---
