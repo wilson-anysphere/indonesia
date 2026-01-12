@@ -971,6 +971,10 @@ These endpoints are currently implemented in the `nova-lsp` **binary**
 (`crates/nova-lsp/src/main.rs`) and require AI to be configured (see env vars in `main.rs` like
 `NOVA_AI_PROVIDER`).
 
+`nova/ai/explainError` is an explain-only operation that returns text. `nova/ai/generateMethodBody`
+and `nova/ai/generateTests` are **patch-based code-editing operations** that apply a `WorkspaceEdit`
+via `workspace/applyEdit` and return `null` (on success).
+
 All AI requests accept an optional `workDoneToken` (standard LSP work-done progress token). When
 present, the server emits `$/progress` notifications for user-visible progress.
 
@@ -1024,9 +1028,28 @@ JSON string (the explanation).
 }
 ```
 
+Notes:
+
+- `uri` and `range` are required for patch-based edits.
+- Field names inside args are currently **snake_case** (`method_signature`) because the Rust type
+  does not use `rename_all = "camelCase"`.
+
 #### Response
 
-JSON string (the generated method body snippet).
+`null` (JSON-RPC result `null`).
+
+#### Side effects
+
+On success, the server sends a `workspace/applyEdit` request (label: `"AI: Generate method body"`)
+containing a standard LSP `WorkspaceEdit`.
+
+#### Errors
+
+- `-32600` if AI is not configured, or if the target file is blocked by `ai.privacy.excluded_paths`.
+- `-32602` for invalid params (e.g. missing `uri`/`range`).
+- `-32603` for internal failures (model/provider errors, patch parsing/validation failures) **or**
+  when blocked by privacy policy (cloud code-edit policy enforcement).
+- `-32800` if the request is cancelled.
 
 ---
 
@@ -1048,9 +1071,24 @@ JSON string (the generated method body snippet).
 }
 ```
 
+Notes:
+
+- `uri` and `range` are required for patch-based edits.
+- Field names inside args are currently **snake_case** because the Rust type does not use
+  `rename_all = "camelCase"`.
+
 #### Response
 
-JSON string (the generated tests snippet).
+`null` (JSON-RPC result `null`).
+
+#### Side effects
+
+On success, the server sends a `workspace/applyEdit` request (label: `"AI: Generate tests"`)
+containing a standard LSP `WorkspaceEdit`.
+
+#### Errors
+
+Same as `nova/ai/generateMethodBody`.
 
 ---
 
