@@ -63,6 +63,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_syntax_literals"
+path = "fuzz_targets/fuzz_syntax_literals.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_java"
 path = "fuzz_targets/parse_java.rs"
 test = false
