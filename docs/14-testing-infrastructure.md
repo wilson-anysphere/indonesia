@@ -46,7 +46,7 @@ bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
 ```
 
 Environment variables still apply; just prefix the wrapper instead of `cargo`:
-`BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus`.
+`BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus`.
 
 ## CI-equivalent “smoke” run (what `ci.yml` enforces)
 
@@ -230,16 +230,16 @@ run it via `--test harness` and (optionally) a test-name filter.
 
 ```bash
 # Full `nova-syntax` integration test suite (`harness`)
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
 
 # Just the golden corpus test (test-name filter)
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 ```
 
 **Update / bless expectations (writes `.tree`/`.errors` files next to the fixtures):**
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 ```
 
 #### 2b) Refactoring before/after fixtures
@@ -252,19 +252,19 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::go
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-refactor
+bash scripts/cargo_agent.sh test --locked -p nova-refactor
 ```
 
 **Update / bless the `after/` directories (writes under `tests/fixtures/`):**
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
 ```
 
 Tip: bless a single failing test while iterating:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor move_instance_method_adds_receiver_param_and_updates_calls
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor move_instance_method_adds_receiver_param_and_updates_calls
 ```
 
 #### 2c) Other fixture roots you’ll see in the repo
@@ -292,13 +292,13 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+bash scripts/cargo_agent.sh test --locked -p nova-format --test format_fixtures
 ```
 
 There is also an ignored large-file regression/stress test:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-format formats_large_file_regression -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-format formats_large_file_regression -- --ignored
 ```
 
 #### 2e) In-memory fixture helpers (`nova-test-utils`)
@@ -351,7 +351,7 @@ most tests use in-memory duplex streams + a mock JDWP server).
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap
+bash scripts/cargo_agent.sh test --locked -p nova-dap
 ```
 
 #### 3c) DAP end-to-end tests (real JVM; optional)
@@ -368,7 +368,7 @@ message and returns early so normal CI stays stable.
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test --locked -p nova-dap --test tests suite::real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.
@@ -635,8 +635,8 @@ Set `BLESS=1` to rewrite on-disk expectations for file-based golden tests:
 Example:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
 ```
 
 Always inspect `git diff` after blessing.
@@ -652,7 +652,7 @@ Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
 To update snapshots:
 
 ```bash
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test format_fixtures
 ```
 
 Always inspect `git diff` after updating snapshots.
@@ -714,7 +714,7 @@ locally” near the top of this document).
 2. Generate/update the expected `.tree`/`.errors` outputs with:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 ```
 
 ### Add a new refactoring before/after fixture
@@ -727,7 +727,7 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::go
 4. Generate/update the `after/` directory with:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor <your_test_name>
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor <your_test_name>
 ```
 
 ### Add a new formatter fixture snapshot
@@ -738,7 +738,7 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor <your_test_name>
 3. Generate/update the `.snap` file with:
 
 ```bash
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test format_fixtures
 ```
 
 ---
