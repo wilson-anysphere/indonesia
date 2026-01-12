@@ -537,7 +537,13 @@ include that file’s contents in a prompt, including:
 - semantic search indexing (excluded files are omitted from the semantic index and therefore cannot
   be surfaced as related-code context)
 
-Explain-only actions may still be available, but they will omit code context from excluded files.
+If the **focal file** for an AI request matches `excluded_paths`, the LSP integration rejects the
+request (for example: `nova/ai/explainError`, `nova/ai/generateMethodBody`, `nova/ai/generateTests`)
+instead of calling the model.
+
+When an AI request is otherwise allowed, any “extra files” / “related code” context items whose
+paths match `excluded_paths` are omitted from the prompt (and Nova adds a generic placeholder so the
+model can tell that some context was intentionally removed).
 
 ---
 
