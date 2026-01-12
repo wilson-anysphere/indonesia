@@ -205,10 +205,10 @@ class C {
 }
 
 #[test]
-fn extract_variable_code_actions_only_offer_var_when_explicit_type_inference_fails() {
-    // `x` is a name expression. With only `TextDatabase` available, explicit type inference falls
-    // back to `Object`, so we only offer the `var` variant (explicit-type extraction requires a
-    // more confident type).
+fn extract_variable_code_actions_offer_var_and_explicit_type_for_name_expression() {
+    // `x` is a name expression. Even with only a `TextDatabase` available, the refactor engine can
+    // infer an explicit type for it from its declaration (`Object x`), so both variants are
+    // offered.
     let fixture = r#"
 class C {
     void m(Object x) {
@@ -225,20 +225,17 @@ class C {
     };
 
     let actions = extract_variable_code_actions(&uri, &source, range);
-    assert_eq!(actions.len(), 1);
+    assert_eq!(actions.len(), 2);
     assert!(actions.iter().any(|action| match action {
         lsp_types::CodeActionOrCommand::CodeAction(action) => action.title == "Extract variable…",
         _ => false,
     }));
-    assert!(
-        !actions.iter().any(|action| match action {
-            lsp_types::CodeActionOrCommand::CodeAction(action) => {
-                action.title == "Extract variable… (explicit type)"
-            }
-            _ => false,
-        }),
-        "explicit-type extract variable should not be offered when type inference falls back to Object"
-    );
+    assert!(actions.iter().any(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => {
+            action.title == "Extract variable… (explicit type)"
+        }
+        _ => false,
+    }));
 }
 
 #[test]
