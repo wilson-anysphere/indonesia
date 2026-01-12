@@ -2722,10 +2722,11 @@ mod tests {
         // Populate enough entries so `estimated_bytes()` is non-zero and large enough to exceed
         // the small test budget.
         for idx in 0..64u32 {
+            let sym_name = format!("Symbol{idx}");
             indexes.symbols.insert(
-                format!("Symbol{idx}"),
+                sym_name.clone(),
                 IndexedSymbol {
-                    qualified_name: format!("Symbol{idx}"),
+                    qualified_name: sym_name,
                     kind: IndexSymbolKind::Class,
                     container_name: None,
                     location: SymbolLocation {
