@@ -16,6 +16,7 @@ import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaProjectExplorer } from './projectExplorer';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { toDidRenameFilesParams } from './fileOperations';
+import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
   formatUnsupportedNovaMethodMessage,
   isNovaMethodNotFoundError,
@@ -386,8 +387,8 @@ export async function activate(context: vscode.ExtensionContext) {
     { scheme: 'untitled', language: 'java' },
   ];
 
-  const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*.java');
-  context.subscriptions.push(fileWatcher);
+  const fileWatchers = getNovaWatchedFileGlobPatterns().map((pattern) => vscode.workspace.createFileSystemWatcher(pattern));
+  context.subscriptions.push(...fileWatchers);
 
   // VS Code's file system watcher events may represent renames as delete+create,
   // and can miss `workspace/didRenameFiles` semantics required by Nova's analysis
@@ -422,7 +423,7 @@ export async function activate(context: vscode.ExtensionContext) {
     documentSelector,
     outputChannel: serverOutput,
     synchronize: {
-      fileEvents: fileWatcher,
+      fileEvents: fileWatchers,
     },
     middleware: {
       sendRequest: async (type, param, token, next) => {
