@@ -1115,7 +1115,11 @@ fn find_property_definition_span(
         if found.is_some() {
             return;
         }
-        if node.kind() != "class_declaration" {
+        let decl_kind = node.kind();
+        if !matches!(
+            decl_kind,
+            "class_declaration" | "interface_declaration" | "record_declaration"
+        ) {
             return;
         }
         let name_node = node
@@ -1128,9 +1132,25 @@ fn find_property_definition_span(
             return;
         }
 
+        // Record components live in the header parameter list.
+        if decl_kind == "record_declaration" {
+            if let Some(params) = node
+                .child_by_field_name("parameters")
+                .or_else(|| find_named_child(node, "formal_parameters"))
+            {
+                if let Some(span) = find_formal_parameter_name_span(params, source, property) {
+                    found = Some(span);
+                    return;
+                }
+            }
+        }
+
         let body = node
             .child_by_field_name("body")
-            .or_else(|| find_named_child(node, "class_body"));
+            .or_else(|| match decl_kind {
+                "interface_declaration" => find_named_child(node, "interface_body"),
+                _ => find_named_child(node, "class_body").or_else(|| find_named_child(node, "record_body")),
+            });
         let Some(body) = body else {
             return;
         };
@@ -1142,11 +1162,15 @@ fn find_property_definition_span(
         }
 
         // Then setter/getter.
-        let candidates = [
+        let mut candidates = vec![
             format!("set{}", capitalize(property)),
             format!("get{}", capitalize(property)),
             format!("is{}", capitalize(property)),
         ];
+        // Record accessors use the component name directly (`seatCount()`).
+        if decl_kind == "record_declaration" {
+            candidates.push(property.to_string());
+        }
         for name in candidates {
             if let Some(span) = find_method_name_span_in_body(body, source, &name) {
                 found = Some(span);
@@ -1155,6 +1179,22 @@ fn find_property_definition_span(
         }
     });
     found
+}
+
+fn find_formal_parameter_name_span(params: Node<'_>, source: &str, name: &str) -> Option<Span> {
+    let mut cursor = params.walk();
+    for child in params.named_children(&mut cursor) {
+        if child.kind() != "formal_parameter" {
+            continue;
+        }
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(child, "identifier"))?;
+        if node_text(source, name_node) == name {
+            return Some(Span::new(name_node.start_byte(), name_node.end_byte()));
+        }
+    }
+    None
 }
 
 fn find_field_name_span(body: Node<'_>, source: &str, field_name: &str) -> Option<Span> {
@@ -1223,7 +1263,11 @@ fn properties_for_type(
 fn collect_properties_in_class(root: Node<'_>, source: &str, class_name: &str) -> HashSet<String> {
     let mut props = HashSet::new();
     visit_nodes(root, &mut |node| {
-        if node.kind() != "class_declaration" {
+        let decl_kind = node.kind();
+        if !matches!(
+            decl_kind,
+            "class_declaration" | "interface_declaration" | "record_declaration"
+        ) {
             return;
         }
         let name_node = node
@@ -1236,9 +1280,34 @@ fn collect_properties_in_class(root: Node<'_>, source: &str, class_name: &str) -
             return;
         }
 
+        // Record components (header params) are also properties.
+        if decl_kind == "record_declaration" {
+            if let Some(params) = node
+                .child_by_field_name("parameters")
+                .or_else(|| find_named_child(node, "formal_parameters"))
+            {
+                let mut cursor = params.walk();
+                for child in params.named_children(&mut cursor) {
+                    if child.kind() != "formal_parameter" {
+                        continue;
+                    }
+                    let Some(name_node) = child
+                        .child_by_field_name("name")
+                        .or_else(|| find_named_child(child, "identifier"))
+                    else {
+                        continue;
+                    };
+                    props.insert(node_text(source, name_node).to_string());
+                }
+            }
+        }
+
         let body = node
             .child_by_field_name("body")
-            .or_else(|| find_named_child(node, "class_body"));
+            .or_else(|| match decl_kind {
+                "interface_declaration" => find_named_child(node, "interface_body"),
+                _ => find_named_child(node, "class_body").or_else(|| find_named_child(node, "record_body")),
+            });
         let Some(body) = body else {
             return;
         };

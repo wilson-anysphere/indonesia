@@ -211,7 +211,14 @@ fn top_level_type_names(root: Node<'_>, source: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
-        if child.kind() != "class_declaration" {
+        if !matches!(
+            child.kind(),
+            "class_declaration"
+                | "interface_declaration"
+                | "record_declaration"
+                | "enum_declaration"
+                | "annotation_type_declaration"
+        ) {
             continue;
         }
         let name_node = child.child_by_field_name("name").or_else(|| {
