@@ -8617,15 +8617,11 @@ fn run_ai_generate_tests_legacy(
     Ok(serde_json::Value::String(output))
 }
 
-/// ExecuteCommand implementation for AI code actions that *apply* edits via the
-/// patch-based codegen pipeline (`nova-ai-codegen`).
+/// Patch-based AI code-editing helpers (powered by `nova-ai-codegen`).
 ///
-/// This pipeline is used by both:
-///
-/// - `workspace/executeCommand` commands (`nova.ai.generateMethodBody`, `nova.ai.generateTests`)
-/// - Custom request endpoints (`nova/ai/generateMethodBody`, `nova/ai/generateTests`)
-///
-/// Both variants apply edits via `workspace/applyEdit` and return JSON `null` on success.
+/// The `nova/ai/generateMethodBody` and `nova/ai/generateTests` custom request endpoints apply edits
+/// via `workspace/applyEdit` and return JSON `null` on success. When a work-done token is provided,
+/// these helpers also emit `$/progress` stage updates.
 struct LspCodegenProgress<'a, O: RpcOut + Sync> {
     out: &'a O,
     token: Option<&'a serde_json::Value>,
@@ -8981,6 +8977,13 @@ fn insert_range_for_method_body(
     let close_abs = close_abs.ok_or_else(|| {
         "selection does not contain a matching `}` for the method body".to_string()
     })?;
+
+    let body = source
+        .get(open_abs + 1..close_abs)
+        .ok_or_else(|| "invalid method selection bounds".to_string())?;
+    if !body.trim().is_empty() {
+        return Err("selected method body is not empty; select an empty method".to_string());
+    }
 
     let start = pos
         .lsp_position(open_abs + 1)

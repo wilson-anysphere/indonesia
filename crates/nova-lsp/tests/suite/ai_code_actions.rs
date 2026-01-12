@@ -2025,6 +2025,126 @@ fn stdio_server_ai_generate_method_body_custom_request_sends_apply_edit() {
 }
 
 #[test]
+fn stdio_server_ai_generate_method_body_custom_request_rejects_non_empty_method() {
+    let _lock = crate::support::stdio_server_lock();
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let src_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let file_path = src_dir.join("Example.java");
+    let file_uri = uri_for_path(&file_path);
+
+    let text =
+        "package com.example;\n\npublic class Example {\n    public int answer() { return 1; }\n}\n";
+    std::fs::write(&file_path, text).expect("write file");
+
+    let selection = "public int answer() { return 1; }";
+    let selection_start = text.find(selection).expect("selection present");
+    let selection_end = selection_start + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range::new(
+        pos.lsp_position(selection_start).expect("start pos"),
+        pos.lsp_position(selection_end).expect("end pos"),
+    );
+
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", ai_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
+        .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
+        .env("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "method_signature": "public int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        error.get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| m.contains("method body")),
+        "expected error message mentioning method body, got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(0);
+}
+
+#[test]
 fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let _lock = crate::support::stdio_server_lock();
     let temp = TempDir::new().expect("tempdir");
