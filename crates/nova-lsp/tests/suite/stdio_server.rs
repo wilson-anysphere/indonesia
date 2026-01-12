@@ -2221,6 +2221,7 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
             "params": {
                 "projectRoot": root.to_string_lossy(),
                 "changedFiles": [java_file.to_string_lossy()],
+                "host": "localhost",
                 "port": port
             }
         }),
