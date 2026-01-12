@@ -640,9 +640,27 @@ fn type_of_expr_demand_result(
         let target_expr = expr.expr;
         let target_range = body.exprs[target_expr].range();
 
-        let mut stack = vec![body.root];
-        while let Some(stmt) = stack.pop() {
-            match &body.stmts[stmt] {
+        // If the target expression is nested inside a larger statement-level expression (e.g.
+        // within a lambda argument to a method call), infer that enclosing expression first so
+        // context-sensitive typing (target-typed lambdas, assignments, etc) can populate the type
+        // environment before we query the leaf expression's type.
+        let mut inference_root: Option<(HirExprId, usize, Option<Type>)> = None;
+        {
+            let mut update_inference_root = |expr_id: HirExprId, expected: Option<Type>| {
+                let range = body.exprs[expr_id].range();
+                let size = range.end.saturating_sub(range.start);
+                let replace = match inference_root {
+                    Some((_, best_size, _)) => size < best_size,
+                    None => true,
+                };
+                if replace {
+                    inference_root = Some((expr_id, size, expected));
+                }
+            };
+
+            let mut stack = vec![body.root];
+            while let Some(stmt) = stack.pop() {
+                match &body.stmts[stmt] {
                 HirStmt::Block { statements, .. } => {
                     stack.extend(statements.iter().rev().copied());
                 }
@@ -653,6 +671,29 @@ fn type_of_expr_demand_result(
                         let local_data = &body.locals[*local];
                         let is_infer_var =
                             local_data.ty_text.trim() == "var" && checker.var_inference_enabled();
+
+                        // The initializer expression is a statement-level typing boundary; inferring
+                        // it with an expected type (when available) target-types nested lambdas and
+                        // improves generic/diamond inference.
+                        {
+                            let init_range = body.exprs[*init].range();
+                            let may_contain = init_range.start <= target_range.start
+                                && target_range.end <= init_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
+                                let expected_init = if is_infer_var {
+                                    None
+                                } else {
+                                    let decl_ty = checker.resolve_source_type(
+                                        &mut loader,
+                                        local_data.ty_text.as_str(),
+                                        Some(local_data.ty_range),
+                                    );
+                                    (!decl_ty.is_errorish() && decl_ty != Type::Void)
+                                        .then_some(decl_ty)
+                                };
+                                update_inference_root(*init, expected_init);
+                            }
+                        }
 
                         // If the target expression is the initializer of an explicitly-typed local,
                         // use the declared type as the expected type.
@@ -696,6 +737,21 @@ fn type_of_expr_demand_result(
                 }
                 HirStmt::Return { expr, .. } => {
                     if let Some(ret) = expr {
+                        // Returning expressions are a statement-level typing boundary; infer the
+                        // returned expression using the method's expected return type when
+                        // available so nested poly expressions (lambdas/method refs) have a target.
+                        {
+                            let ret_range = body.exprs[*ret].range();
+                            let may_contain = ret_range.start <= target_range.start
+                                && target_range.end <= ret_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *ret, target_expr) {
+                                let expected_ret = (!checker.expected_return.is_errorish()
+                                    && checker.expected_return != Type::Void)
+                                    .then_some(checker.expected_return.clone());
+                                update_inference_root(*ret, expected_ret);
+                            }
+                        }
+
                         if *ret == target_expr
                             && !checker.expected_return.is_errorish()
                             && checker.expected_return != Type::Void
@@ -743,6 +799,17 @@ fn type_of_expr_demand_result(
                     ..
                 } => {
                     stack.extend(init.iter().rev().copied());
+
+                    // The `for` update list can contain multiple expressions; if the target lies
+                    // within one of them, infer that expression first.
+                    for upd in update {
+                        let upd_range = body.exprs[*upd].range();
+                        let may_contain = upd_range.start <= target_range.start
+                            && target_range.end <= upd_range.end;
+                        if may_contain && contains_expr_in_expr(&body, *upd, target_expr) {
+                            update_inference_root(*upd, None);
+                        }
+                    }
 
                     // Assignment statements inside `for` update clauses should still get expected
                     // type seeding (e.g. `f = s -> s.length()`).
@@ -799,9 +866,19 @@ fn type_of_expr_demand_result(
                         stack.push(*finally);
                     }
                 }
-                HirStmt::Expr {
-                    expr: stmt_expr, ..
-                } => {
+                HirStmt::Expr { expr: stmt_expr, .. } => {
+                    // Expression statements are also typing boundaries (e.g. method calls with
+                    // lambda arguments). Infer the full expression statement first so nested
+                    // target-typed expressions can see their context.
+                    {
+                        let stmt_range = body.exprs[*stmt_expr].range();
+                        let may_contain = stmt_range.start <= target_range.start
+                            && target_range.end <= stmt_range.end;
+                        if may_contain && contains_expr_in_expr(&body, *stmt_expr, target_expr) {
+                            update_inference_root(*stmt_expr, None);
+                        }
+                    }
+
                     // Best-effort: propagate expected types through simple assignments in
                     // expression statements, primarily so target-typed lambdas get parameter types.
                     let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*stmt_expr] else {
@@ -836,7 +913,12 @@ fn type_of_expr_demand_result(
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
                 | HirStmt::Empty { .. } => {}
+                }
             }
+        }
+
+        if let Some((root_expr, _, expected)) = inference_root {
+            let _ = checker.infer_expr_with_expected(&mut loader, root_expr, expected.as_ref());
         }
     }
 

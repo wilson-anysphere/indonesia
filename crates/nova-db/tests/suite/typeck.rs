@@ -7243,6 +7243,42 @@ class C {
 }
 
 #[test]
+fn lambda_param_type_is_inferred_from_call_argument_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void takes(Function<String, Integer> f) { }
+    void m() {
+        takes(s -> s.length());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    db.clear_query_stats();
+
+    let offset = src
+        .find("s.length")
+        .expect("snippet should contain lambda parameter usage");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "type_at_offset_display should not invoke full-body type checking for call-arg lambdas"
+    );
+}
+
+#[test]
 fn lambda_block_return_checked_against_sam() {
     let src = r#"
 import java.util.function.Function;
