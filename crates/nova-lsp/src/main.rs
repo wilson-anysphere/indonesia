@@ -8678,9 +8678,24 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         .and_then(|bytes| source.get(bytes).map(ToString::to_string))
         .filter(|snippet| !snippet.trim().is_empty());
 
+    let derived_test_file = derive_test_file_path(&source, &abs_path);
+
     let file = file_rel;
     let source_file = Some(file.clone());
-    let workspace = VirtualWorkspace::new([(file.clone(), source)]);
+
+    let mut workspace_files = vec![(file.clone(), source)];
+    if let (Some(project_root), Some(test_file)) = (state.project_root.as_deref(), derived_test_file)
+    {
+        if test_file != file {
+            let test_abs_path = project_root.join(Path::new(&test_file));
+            if test_abs_path.is_file() {
+                if let Ok(test_source) = std::fs::read_to_string(&test_abs_path) {
+                    workspace_files.push((test_file, test_source));
+                }
+            }
+        }
+    }
+    let workspace = VirtualWorkspace::new(workspace_files);
 
     let llm = ai.llm();
     let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
@@ -8718,12 +8733,11 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(
-        |err| {
+    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out)
+        .map_err(|err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
-        },
-    )?;
+        })?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
     if work_done_token.is_some() {
         Ok(result)
@@ -8854,95 +8868,12 @@ fn resolve_ai_patch_target(
         )
     })?;
 
-    if let Some(root) = state.project_root.as_deref() {
-        if abs_path.starts_with(root) {
-            if let Ok(rel) = abs_path.strip_prefix(root) {
-                if let Ok(file_rel) = path_to_forward_slash(rel) {
-                    if let Ok(root_uri) = uri_from_path(root) {
-                        validate_patch_rel_path(&file_rel)?;
-                        return Ok((root_uri, file_rel, abs_path));
-                    }
-                }
-            }
-        }
-    }
+    let (root_uri, file_rel) = nova_lsp::patch_paths::patch_root_uri_and_file_rel(
+        state.project_root.as_deref(),
+        &abs_path,
+    );
 
-    let parent = abs_path.parent().ok_or_else(|| {
-        (
-            -32603,
-            format!(
-                "failed to determine parent directory for `{}`",
-                abs_path.display()
-            ),
-        )
-    })?;
-    let file_name = abs_path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .ok_or_else(|| {
-            (
-                -32603,
-                format!("failed to determine file name for `{}`", abs_path.display()),
-            )
-        })?;
-
-    validate_patch_rel_path(&file_name)?;
-    let root_uri = uri_from_path(parent)?;
-    Ok((root_uri, file_name, abs_path))
-}
-
-fn uri_from_path(path: &Path) -> Result<LspUri, (i32, String)> {
-    let abs =
-        nova_core::AbsPathBuf::try_from(path.to_path_buf()).map_err(|e| (-32603, e.to_string()))?;
-    let uri = nova_core::path_to_file_uri(&abs).map_err(|e| (-32603, e.to_string()))?;
-    uri.parse::<LspUri>()
-        .map_err(|e| (-32603, format!("invalid uri: {e}")))
-}
-
-fn path_to_forward_slash(path: &Path) -> Result<String, ()> {
-    use std::path::Component;
-
-    let mut out = String::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(segment) => {
-                if !out.is_empty() {
-                    out.push('/');
-                }
-                out.push_str(&segment.to_string_lossy());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => return Err(()),
-            Component::Prefix(_) | Component::RootDir => return Err(()),
-        }
-    }
-
-    if out.is_empty() {
-        return Err(());
-    }
-    Ok(out)
-}
-
-fn validate_patch_rel_path(path: &str) -> Result<(), (i32, String)> {
-    if path.contains('\\') || path.contains(':') {
-        return Err((
-            -32603,
-            format!(
-                "invalid patch path (must be workspace-relative, forward slashes only): {path}"
-            ),
-        ));
-    }
-    if path.starts_with('/')
-        || path
-            .split('/')
-            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
-    {
-        return Err((
-            -32603,
-            format!("invalid patch path (must be workspace-relative): {path}"),
-        ));
-    }
-    Ok(())
+    Ok((root_uri, file_rel, abs_path))
 }
 
 fn run_ai_generate_method_body(

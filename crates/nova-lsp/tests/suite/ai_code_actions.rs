@@ -3036,6 +3036,10 @@ local_only = true
 
     // ExecuteCommand result is `null`; the actual edit is delivered via `workspace/applyEdit`.
     assert!(
+        exec_resp.get("error").is_none(),
+        "expected executeCommand success, got: {exec_resp:#?}"
+    );
+    assert!(
         exec_resp.get("result").map_or(false, |v| v.is_null()),
         "expected executeCommand result null, got: {exec_resp:#?}"
     );
