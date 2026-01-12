@@ -1930,6 +1930,32 @@ mod tests {
     }
 
     #[test]
+    fn debug_stream_refuses_existing_stream_values_with_parens_in_index() {
+        // `streams[(i)]` is still just an access path to an existing stream value (and therefore
+        // unsafe to sample), even though the expression contains parentheses.
+        let expr = "streams[(i)].filter(x -> x > 0).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+        assert!(matches!(chain.source, StreamSource::ExistingStream { .. }));
+
+        let mut jdwp = MockJdwpClient::new();
+        let config = StreamDebugConfig {
+            max_sample_size: 2,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+
+        let err = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap_err();
+        match err {
+            StreamDebugError::UnsafeExistingStream { stream_expr } => {
+                assert_eq!(stream_expr, "streams[(i)]");
+            }
+            other => panic!("expected UnsafeExistingStream error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn debug_stream_allows_re_evaluatable_existing_stream_expressions_with_calls() {
         let expr = "java.util.Arrays.stream(arr).filter(x -> x > 0).count()";
         let chain = analyze_stream_expression(expr).unwrap();
