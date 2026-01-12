@@ -16,7 +16,9 @@ use nova_db::persistence::PersistenceConfig;
 use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId};
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
-use nova_memory::{BackgroundIndexingMode, MemoryManager, MemoryPressure};
+use nova_memory::{
+    BackgroundIndexingMode, MemoryCategory, MemoryManager, MemoryPressure, MemoryRegistration,
+};
 use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
@@ -139,6 +141,7 @@ impl Drop for WatcherHandle {
 
 pub(crate) struct WorkspaceEngine {
     vfs: Vfs<LocalFs>,
+    overlay_docs_memory_registration: MemoryRegistration,
     pub(crate) query_db: salsa::Database,
     indexes: Arc<Mutex<ProjectIndexes>>,
 
@@ -228,6 +231,12 @@ impl WorkspaceEngine {
         query_db.register_salsa_memo_evictor(&memory);
         query_db.attach_item_tree_store(&memory, open_docs);
         query_db.set_syntax_tree_store(syntax_trees);
+
+        let overlay_docs_memory_registration =
+            memory.register_tracker("vfs_overlay_documents", MemoryCategory::Other);
+        overlay_docs_memory_registration
+            .tracker()
+            .set_bytes(vfs.overlay().estimated_bytes() as u64);
         let default_project = ProjectId::from_raw(0);
         // Ensure fundamental project inputs are always initialized so callers can safely
         // start with an empty/in-memory workspace.
@@ -247,6 +256,7 @@ impl WorkspaceEngine {
         );
         Self {
             vfs,
+            overlay_docs_memory_registration,
             query_db,
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),
@@ -704,6 +714,7 @@ impl WorkspaceEngine {
     pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
         let text_for_db = Arc::new(text.clone());
         let file_id = self.vfs.open_document(path.clone(), text, version);
+        self.sync_overlay_documents_memory();
         self.ensure_file_inputs(file_id, &path);
         self.query_db.set_file_exists(file_id, true);
         self.query_db.set_file_content(file_id, text_for_db);
@@ -717,6 +728,7 @@ impl WorkspaceEngine {
     pub fn close_document(&self, path: &VfsPath) {
         let file_id = self.vfs.get_id(path);
         self.vfs.close_document(path);
+        self.sync_overlay_documents_memory();
 
         if let Some(file_id) = file_id {
             self.ensure_file_inputs(file_id, path);
@@ -740,9 +752,18 @@ impl WorkspaceEngine {
         new_version: i32,
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
-        let evt = self
+        let evt = match self
             .vfs
-            .apply_document_changes(path, new_version, changes)?;
+            .apply_document_changes(path, new_version, changes)
+        {
+            Ok(evt) => evt,
+            Err(err) => {
+                // Best-effort: keep the memory report consistent even when edits fail.
+                self.sync_overlay_documents_memory();
+                return Err(err);
+            }
+        };
+        self.sync_overlay_documents_memory();
         let (file_id, edits) = match evt {
             ChangeEvent::DocumentChanged { file_id, edits, .. } => (file_id, edits),
             other => {
@@ -1114,6 +1135,7 @@ impl WorkspaceEngine {
         let is_new_id = id_from.is_none() && !to_was_known;
 
         let file_id = self.vfs.rename_path(&from_vfs, to_vfs.clone());
+        self.sync_overlay_documents_memory();
 
         self.ensure_file_inputs(file_id, &to_vfs);
         let exists = self.vfs.exists(&to_vfs);
@@ -1247,6 +1269,12 @@ impl WorkspaceEngine {
 
     fn publish(&self, event: WorkspaceEvent) {
         publish_to_subscribers(&self.subscribers, event);
+    }
+
+    fn sync_overlay_documents_memory(&self) {
+        self.overlay_docs_memory_registration
+            .tracker()
+            .set_bytes(self.vfs.overlay().estimated_bytes() as u64);
     }
 
     pub(crate) fn vfs(&self) -> &Vfs<LocalFs> {
@@ -2102,6 +2130,60 @@ mod tests {
             assert!(!file_path.is_empty());
             assert_eq!(file_path.as_str(), expected_rel_path.as_str());
         });
+    }
+
+    #[test]
+    fn overlay_document_memory_is_reported_via_memory_manager() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: PathBuf::new(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory: memory.clone(),
+        });
+
+        let baseline = memory.report().usage.other;
+
+        let dir = tempfile::tempdir().unwrap();
+        let a_path = dir.path().join("a.java");
+        let b_path = dir.path().join("b.java");
+        let a = VfsPath::local(a_path.clone());
+        let b = VfsPath::local(b_path.clone());
+
+        engine.open_document(a.clone(), "aaaa".to_string(), 1);
+        assert_eq!(memory.report().usage.other, baseline + 4);
+
+        engine.open_document(b.clone(), "bb".to_string(), 1);
+        assert_eq!(memory.report().usage.other, baseline + 6);
+
+        engine
+            .apply_changes(&a, 2, &[ContentChange::full("aaaaa")])
+            .unwrap();
+        assert_eq!(memory.report().usage.other, baseline + 7);
+
+        engine.close_document(&b);
+        assert_eq!(memory.report().usage.other, baseline + 5);
+
+        // Rename handling: renaming an open document onto an already-open destination drops the
+        // source document in the overlay, and the tracker should update accordingly.
+        let src_path = dir.path().join("src.java");
+        let dst_path = dir.path().join("dst.java");
+        let src = VfsPath::local(src_path.clone());
+        let dst = VfsPath::local(dst_path.clone());
+
+        engine.open_document(src.clone(), "src".to_string(), 1); // 3 bytes
+        engine.open_document(dst.clone(), "dstt".to_string(), 1); // 4 bytes
+        assert_eq!(memory.report().usage.other, baseline + 12);
+
+        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: src_path,
+            to: dst_path,
+        }]);
+
+        // Only `a` (5) + `dst` (4) remain in the overlay.
+        assert_eq!(memory.report().usage.other, baseline + 9);
     }
 
     #[test]

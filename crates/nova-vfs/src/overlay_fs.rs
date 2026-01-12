@@ -8,29 +8,55 @@ use crate::document::{ContentChange, Document, DocumentError};
 use crate::fs::FileSystem;
 use crate::path::VfsPath;
 
+#[derive(Debug, Default)]
+struct OverlayDocs {
+    docs: HashMap<VfsPath, Document>,
+    /// Best-effort accounting of UTF-8 document bytes currently stored in the overlay.
+    ///
+    /// This tracks `Document::text().len()` (not the `String` capacity) so callers can
+    /// deterministically test and report approximate usage without scanning the map.
+    text_bytes: usize,
+}
+
 /// A file system overlay that serves in-memory `Document`s before delegating to a base file system.
 #[derive(Debug, Clone)]
 pub struct OverlayFs<F: FileSystem> {
     base: F,
-    docs: Arc<Mutex<HashMap<VfsPath, Document>>>,
+    docs: Arc<Mutex<OverlayDocs>>,
 }
 
 impl<F: FileSystem> OverlayFs<F> {
     pub fn new(base: F) -> Self {
         Self {
             base,
-            docs: Arc::new(Mutex::new(HashMap::new())),
+            docs: Arc::new(Mutex::new(OverlayDocs::default())),
         }
     }
 
     pub fn open(&self, path: VfsPath, text: String, version: i32) {
-        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
-        docs.insert(path, Document::new(text, version));
+        let bytes = text.len();
+        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let old = state.docs.insert(path, Document::new(text, version));
+        if let Some(old) = old {
+            state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
+        }
+        state.text_bytes = state.text_bytes.saturating_add(bytes);
     }
 
     pub fn close(&self, path: &VfsPath) {
-        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
-        docs.remove(path);
+        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        if let Some(doc) = state.docs.remove(path) {
+            state.text_bytes = state.text_bytes.saturating_sub(doc.text().len());
+        }
+    }
+
+    /// Best-effort estimate of the total number of UTF-8 bytes stored in open overlay documents.
+    ///
+    /// This is intended for coarse memory accounting (e.g. `nova_memory`) and is updated
+    /// incrementally on open/close/edit/rename operations.
+    pub fn estimated_bytes(&self) -> usize {
+        let state = self.docs.lock().expect("overlay mutex poisoned");
+        state.text_bytes
     }
 
     /// Renames an open document in the overlay from `from` to `to`.
@@ -44,14 +70,17 @@ impl<F: FileSystem> OverlayFs<F> {
             return false;
         }
 
-        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
-        let Some(doc) = docs.remove(from) else {
+        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let Some(doc) = state.docs.remove(from) else {
             return false;
         };
+        let bytes = doc.text().len();
+        state.text_bytes = state.text_bytes.saturating_sub(bytes);
 
-        match docs.entry(to) {
+        match state.docs.entry(to) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(doc);
+                state.text_bytes = state.text_bytes.saturating_add(bytes);
                 true
             }
             std::collections::hash_map::Entry::Occupied(_) => false,
@@ -63,16 +92,24 @@ impl<F: FileSystem> OverlayFs<F> {
     /// This is primarily used to keep the overlay consistent when a file is renamed/moved on disk
     /// while it is open in the editor.
     pub fn rename_overwrite(&self, from: &VfsPath, to: VfsPath) {
-        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
-        let Some(doc) = docs.remove(from) else {
+        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let Some(doc) = state.docs.remove(from) else {
             return;
         };
-        docs.insert(to, doc);
+
+        let bytes = doc.text().len();
+        state.text_bytes = state.text_bytes.saturating_sub(bytes);
+
+        let old = state.docs.insert(to, doc);
+        state.text_bytes = state.text_bytes.saturating_add(bytes);
+        if let Some(old) = old {
+            state.text_bytes = state.text_bytes.saturating_sub(old.text().len());
+        }
     }
 
     pub fn is_open(&self, path: &VfsPath) -> bool {
-        let docs = self.docs.lock().expect("overlay mutex poisoned");
-        docs.contains_key(path)
+        let state = self.docs.lock().expect("overlay mutex poisoned");
+        state.docs.contains_key(path)
     }
 
     pub fn apply_changes(
@@ -81,14 +118,28 @@ impl<F: FileSystem> OverlayFs<F> {
         new_version: i32,
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
-        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
-        let doc = docs.get_mut(path).ok_or(DocumentError::DocumentNotOpen)?;
-        doc.apply_changes(new_version, changes)
+        let mut state = self.docs.lock().expect("overlay mutex poisoned");
+        let doc = state
+            .docs
+            .get_mut(path)
+            .ok_or(DocumentError::DocumentNotOpen)?;
+
+        let before = doc.text().len();
+        let result = doc.apply_changes(new_version, changes);
+        let after = doc.text().len();
+
+        if after >= before {
+            state.text_bytes = state.text_bytes.saturating_add(after - before);
+        } else {
+            state.text_bytes = state.text_bytes.saturating_sub(before - after);
+        }
+
+        result
     }
 
     pub fn document_text(&self, path: &VfsPath) -> Option<String> {
-        let docs = self.docs.lock().expect("overlay mutex poisoned");
-        docs.get(path).map(|d| d.text().to_owned())
+        let state = self.docs.lock().expect("overlay mutex poisoned");
+        state.docs.get(path).map(|d| d.text().to_owned())
     }
 }
 
@@ -147,5 +198,36 @@ mod tests {
 
         overlay.close(&vfs_path);
         assert_eq!(overlay.read_to_string(&vfs_path).unwrap(), "disk");
+    }
+
+    #[test]
+    fn estimated_bytes_tracks_overlay_document_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = OverlayFs::new(LocalFs::new());
+
+        let a = VfsPath::local(dir.path().join("a.java"));
+        let b = VfsPath::local(dir.path().join("b.java"));
+        let c = VfsPath::local(dir.path().join("c.java"));
+
+        overlay.open(a.clone(), "aaa".to_string(), 1);
+        overlay.open(b.clone(), "bbbb".to_string(), 1);
+        assert_eq!(overlay.estimated_bytes(), 7);
+
+        overlay
+            .apply_changes(&b, 2, &[ContentChange::full("bbbbbb")])
+            .unwrap();
+        assert_eq!(overlay.estimated_bytes(), 9);
+
+        overlay.close(&a);
+        assert_eq!(overlay.estimated_bytes(), 6);
+
+        overlay.open(c.clone(), "c".to_string(), 1);
+        assert_eq!(overlay.estimated_bytes(), 7);
+
+        // Renaming onto an already-open destination drops the source document.
+        assert!(!overlay.rename(&b, c.clone()));
+        assert!(!overlay.is_open(&b));
+        assert_eq!(overlay.document_text(&c).unwrap(), "c");
+        assert_eq!(overlay.estimated_bytes(), 1);
     }
 }
