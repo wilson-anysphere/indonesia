@@ -152,12 +152,13 @@ pub fn rewrite_this_tokens(source: &str, replacement: &str) -> String {
 /// is pure and does not invoke `javac` or a JVM.
 pub fn generate_stream_eval_helper_java_source(
     package_name: &str,
+    class_name: &str,
     imports: &[String],
     locals: &[(String, String)],
     fields: &[(String, String)],
     stages: &[String],
+    terminal: Option<&str>,
 ) -> String {
-    const CLASS_NAME: &str = "__NovaStreamEvalHelper";
     const THIS_IDENT: &str = "__this";
     const DEFAULT_IMPORTS: [&str; 4] = [
         "java.util.*",
@@ -167,6 +168,13 @@ pub fn generate_stream_eval_helper_java_source(
     ];
 
     let mut out = String::new();
+
+    let class_name = class_name.trim();
+    let class_name = if class_name.is_empty() {
+        "__NovaStreamEvalHelper"
+    } else {
+        class_name
+    };
 
     let package_name = package_name.trim();
     if !package_name.is_empty() {
@@ -209,10 +217,10 @@ pub fn generate_stream_eval_helper_java_source(
     }
 
     out.push_str("public final class ");
-    out.push_str(CLASS_NAME);
+    out.push_str(class_name);
     out.push_str(" {\n");
     out.push_str("  private ");
-    out.push_str(CLASS_NAME);
+    out.push_str(class_name);
     out.push_str("() {}\n\n");
 
     // Determine the most specific type we can for `this` based on locals.
@@ -323,6 +331,51 @@ pub fn generate_stream_eval_helper_java_source(
 
         if idx + 1 < stages.len() {
             out.push('\n');
+        }
+    }
+
+    if let Some(terminal_expr) = terminal {
+        let terminal_expr = terminal_expr.trim();
+        if !terminal_expr.is_empty() {
+            if !stages.is_empty() {
+                out.push('\n');
+                out.push('\n');
+            }
+
+            let terminal_expr = terminal_expr
+                .strip_suffix(';')
+                .unwrap_or(terminal_expr)
+                .trim();
+            let terminal_expr = rewrite_this_tokens(terminal_expr, THIS_IDENT);
+            let terminal_is_void = is_known_void_stream_expression(&terminal_expr);
+
+            out.push_str("  public static ");
+            if terminal_is_void {
+                out.push_str("void ");
+            } else {
+                out.push_str("Object ");
+            }
+            out.push_str("terminal(");
+
+            for (param_idx, (ty, name)) in params.iter().enumerate() {
+                if param_idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(ty);
+                out.push(' ');
+                out.push_str(name);
+            }
+            out.push_str(") {\n");
+
+            if terminal_is_void {
+                out.push_str("    ");
+                out.push_str(&terminal_expr);
+                out.push_str(";\n  }\n");
+            } else {
+                out.push_str("    return ");
+                out.push_str(&terminal_expr);
+                out.push_str(";\n  }\n");
+            }
         }
     }
 
@@ -613,6 +666,7 @@ mod tests {
     fn java_source_generation_includes_package_imports_and_stage_methods() {
         let src = generate_stream_eval_helper_java_source(
             "com.example",
+            "__NovaStreamEvalHelper",
             &[
                 // Simulate best-effort imports scraped from the paused source file.
                 "import com.acme.Foo".to_string(),
@@ -627,6 +681,7 @@ mod tests {
             ],
             &[],
             &["this.foo()".to_string(), "this.bar()".to_string()],
+            None,
         );
 
         assert!(src.contains("package com.example;"));
@@ -670,6 +725,7 @@ mod tests {
     fn java_source_generation_emits_void_methods_for_foreach_stages() {
         let src = generate_stream_eval_helper_java_source(
             "com.example",
+            "__NovaStreamEvalHelper",
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
@@ -680,6 +736,7 @@ mod tests {
             ],
             &[],
             &["s.forEach(System.out::println)".to_string()],
+            None,
         );
 
         assert!(
@@ -697,6 +754,7 @@ mod tests {
     fn java_source_generation_emits_void_methods_for_foreach_ordered_stages() {
         let src = generate_stream_eval_helper_java_source(
             "com.example",
+            "__NovaStreamEvalHelper",
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
@@ -707,6 +765,7 @@ mod tests {
             ],
             &[],
             &["s.forEachOrdered(System.out::println)".to_string()],
+            None,
         );
 
         assert!(
@@ -724,10 +783,12 @@ mod tests {
     fn java_source_generation_emits_void_methods_for_int_stream_foreach_stages() {
         let src = generate_stream_eval_helper_java_source(
             "com.example",
+            "__NovaStreamEvalHelper",
             &[],
             &[("this".to_string(), "Object".to_string())],
             &[],
             &["java.util.stream.IntStream.range(0, 3).forEach(System.out::println)".to_string()],
+            None,
         );
 
         assert!(
@@ -747,6 +808,7 @@ mod tests {
     fn java_source_generation_includes_bound_fields_after_locals() {
         let src = generate_stream_eval_helper_java_source(
             "",
+            "__NovaStreamEvalHelper",
             &[],
             &[("this".to_string(), "com.example.Foo".to_string())],
             &[(
@@ -754,6 +816,7 @@ mod tests {
                 "java.util.List<java.lang.Integer>".to_string(),
             )],
             &["nums.stream().count()".to_string()],
+            None,
         );
 
         // `__this` always comes first.
@@ -770,6 +833,7 @@ mod tests {
         // `return <void expr>;` which will not compile.
         let src = generate_stream_eval_helper_java_source(
             "com.example",
+            "__NovaStreamEvalHelper",
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
@@ -783,6 +847,7 @@ mod tests {
                 r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"))"#
                     .to_string(),
             ],
+            None,
         );
 
         assert!(
@@ -801,6 +866,7 @@ mod tests {
     fn java_source_generation_resolves_param_name_collisions_deterministically() {
         let src = generate_stream_eval_helper_java_source(
             "",
+            "__NovaStreamEvalHelper",
             &[],
             &[
                 ("this".to_string(), "Foo".to_string()),
@@ -811,6 +877,7 @@ mod tests {
             ],
             &[],
             &["this.toString();".to_string()],
+            None,
         );
 
         assert!(
@@ -825,6 +892,7 @@ mod tests {
     fn java_source_generation_dedupes_imports() {
         let src = generate_stream_eval_helper_java_source(
             "",
+            "__NovaStreamEvalHelper",
             &[
                 "java.util.List".to_string(),
                 "import java.util.List;".to_string(),
@@ -833,8 +901,35 @@ mod tests {
             &[("this".to_string(), "Object".to_string())],
             &[],
             &["this".to_string()],
+            None,
         );
 
         assert_eq!(src.matches("import java.util.List;").count(), 1, "{src}");
+    }
+
+    #[test]
+    fn java_source_generation_emits_void_terminal_for_foreach() {
+        let src = generate_stream_eval_helper_java_source(
+            "com.example",
+            "__NovaStreamEvalHelper",
+            &[],
+            &[
+                ("this".to_string(), "Object".to_string()),
+                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+            ],
+            &[],
+            &[],
+            Some("s.forEach(System.out::println)"),
+        );
+
+        assert!(
+            src.contains("public static void terminal"),
+            "expected terminal to be void for forEach:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.forEach"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+        assert!(src.contains("s.forEach(System.out::println);"));
     }
 }

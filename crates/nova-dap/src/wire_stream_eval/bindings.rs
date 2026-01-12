@@ -252,6 +252,11 @@ async fn collect_instance_fields(
             if name.is_empty() {
                 continue;
             }
+            // Avoid colliding with the synthetic `__this` parameter used by the helper source
+            // generator to represent the frame's receiver.
+            if name == "__this" {
+                continue;
+            }
 
             // Locals shadow fields.
             if local_names.contains(name) {
@@ -400,6 +405,51 @@ mod tests {
             .await
             .unwrap();
         assert!(fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_frame_bindings_prefers_generic_signatures_and_is_deterministic() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let frame = client.frames(thread, 0, 1).await.unwrap()[0];
+
+        let bindings =
+            build_frame_bindings(&client, thread, frame.frame_id, frame.location)
+                .await
+                .unwrap();
+
+        // Locals are sorted by name for deterministic helper signatures.
+        assert_eq!(
+            bindings
+                .locals
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["list", "x"]
+        );
+
+        // Prefer the generic signature when available.
+        assert_eq!(
+            bindings.locals[0].java_type,
+            "java.util.List<java.lang.String>"
+        );
+        assert_eq!(bindings.locals[1].java_type, "int");
+        assert!(matches!(bindings.locals[1].value, JdwpValue::Int(42)));
+
+        // Instance fields on `this` are bound after locals.
+        assert_eq!(bindings.fields.len(), 1);
+        assert_eq!(bindings.fields[0].name, "field");
+        assert_eq!(bindings.fields[0].java_type, "int");
+        assert_eq!(bindings.fields[0].value, JdwpValue::Int(7));
+
+        let args = bindings.args_for_helper();
+        assert_eq!(args.len(), 1 + bindings.locals.len() + bindings.fields.len());
+        assert_eq!(args[0], bindings.this.value);
+        assert_eq!(args[1], bindings.locals[0].value);
+        assert_eq!(args[2], bindings.locals[1].value);
+        assert_eq!(args[3], bindings.fields[0].value);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use nova_dap::wire_stream_eval::define_class_and_invoke_stage0;
 use nova_jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
+use nova_jdwp::wire::mock::DEFINED_STAGE0_METHOD_ID;
+use nova_jdwp::wire::types::INVOKE_SINGLE_THREADED;
 
 #[tokio::test]
 async fn wire_stream_eval_define_class_methods_and_invoke_stage0() {
@@ -42,6 +44,7 @@ async fn wire_stream_eval_define_class_methods_and_invoke_stage0() {
     assert_eq!(invoke_calls.len(), 1);
     assert_eq!(invoke_calls[0].class_id, defined_class_id);
     assert_eq!(invoke_calls[0].thread, thread);
+    assert_eq!(invoke_calls[0].method_id, DEFINED_STAGE0_METHOD_ID);
     assert_eq!(invoke_calls[0].args, vec![JdwpValue::Int(42)]);
-    assert_eq!(invoke_calls[0].options, 0);
+    assert_eq!(invoke_calls[0].options, INVOKE_SINGLE_THREADED);
 }

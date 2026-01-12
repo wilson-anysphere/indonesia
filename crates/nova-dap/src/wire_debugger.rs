@@ -2622,7 +2622,7 @@ impl Debugger {
                                     None => "Optional.empty".to_string(),
                                     Some(v) => format!(
                                         "Optional[{}]",
-                                        format_stream_value(dbg, cancel, &v).await?
+                                        format_stream_value(inspector, cancel, &v).await?
                                     ),
                                 });
                             }

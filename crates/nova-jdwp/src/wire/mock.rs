@@ -845,7 +845,7 @@ const SMART_STEP_BAZ_METHOD_ID: u64 = 0x4005;
 const SMART_STEP_CORGE_METHOD_ID: u64 = 0x4006;
 const SMART_STEP_FOO_METHOD_ID: u64 = 0x4007;
 const SMART_STEP_TRIM_METHOD_ID: u64 = 0x4008;
-const DEFINED_STAGE0_METHOD_ID: u64 = 0x4009;
+pub const DEFINED_STAGE0_METHOD_ID: u64 = 0x4009;
 const SMART_STEP_METHOD_IDS: [u64; 6] = [
     SMART_STEP_BAR_METHOD_ID,
     SMART_STEP_QUX_METHOD_ID,
@@ -2052,6 +2052,10 @@ async fn handle_packet(
                     }
 
                     let value = match (slot, tag) {
+                        // Slot values are keyed by `(slot, tag)` so the mock can support both
+                        // `Method.VariableTable` (where slot 0 is an int) and
+                        // `Method.VariableTableWithGeneric` (where slot 0 can be an object like
+                        // `java.util.List`).
                         (0, b'I') => JdwpValue::Int(42),
                         // Slot 0 is `int x` in the non-generic variable table, but is also used
                         // for `List<String> list` in the mock's generic variable table. When the
@@ -2061,6 +2065,7 @@ async fn handle_packet(
                             tag: b'[',
                             id: ARRAY_OBJECT_ID,
                         },
+                        (1, b'I') => JdwpValue::Int(42),
                         (1, _) => JdwpValue::Object {
                             tag: b'L',
                             id: OBJECT_ID,
