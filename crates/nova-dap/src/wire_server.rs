@@ -2742,11 +2742,9 @@ async fn handle_request_inner(
                 out_tx,
                 seq,
                 request,
-                false,
+                true,
+                Some(json!({ "enabled": true })),
                 None,
-                Some(
-                    "method return values are not implemented in the wire adapter yet".to_string(),
-                ),
             );
         }
         "terminate" => {
