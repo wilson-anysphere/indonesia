@@ -430,6 +430,43 @@ fn invalidate_changed_files_drops_cache_entries_for_bazelrc_imports_when_root_is
 }
 
 #[test]
+#[cfg(unix)]
+fn invalidate_changed_files_drops_cache_entries_for_bazelrc_imports_when_changed_path_is_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let real = tempdir().unwrap();
+    let real_root = real.path();
+    fs::write(real_root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
+    fs::write(real_root.join(".bazelrc"), "try-import tools/bazelconfig\n").unwrap();
+    fs::create_dir_all(real_root.join("tools")).unwrap();
+    fs::write(real_root.join("tools/bazelconfig"), "build --javacopt=-Xlint\n").unwrap();
+
+    let link_parent = tempdir().unwrap();
+    let link_root = link_parent.path().join("ws");
+    symlink(real_root, &link_root).unwrap();
+
+    // Use the canonical (real) workspace root, but invalidate using a symlinked file path.
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(real_root.to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Cache hit.
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 1);
+
+    // Invalidate using the symlink path to the imported file; this should still clear the cache
+    // entry even though the workspace root is canonical.
+    workspace
+        .invalidate_changed_files(&[link_root.join("tools/bazelconfig")])
+        .unwrap();
+
+    let _ = workspace.target_compile_info("//:hello").unwrap();
+    assert_eq!(runner.count_subcommand("aquery"), 2);
+}
+
+#[test]
 fn target_compile_info_cache_is_invalidated_when_any_build_definition_input_changes() {
     let dir = tempdir().unwrap();
     let workspace_root = dir.path().join("workspace");

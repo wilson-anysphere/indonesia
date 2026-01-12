@@ -1114,6 +1114,19 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     changed_norm.push(normalize_absolute_path_lexically(&self.root.join(rel)));
                     continue;
                 }
+
+                // If we have a canonical workspace root, also handle the inverse scenario: the
+                // changed path may have been reported through a symlinked path prefix. In that case
+                // we can canonicalize the changed path and map it back into the workspace.
+                if abs.exists() {
+                    if let Ok(abs_canon) = fs::canonicalize(&abs) {
+                        if let Ok(rel) = abs_canon.strip_prefix(root_canon) {
+                            changed_norm
+                                .push(normalize_absolute_path_lexically(&self.root.join(rel)));
+                            continue;
+                        }
+                    }
+                }
             }
 
             changed_norm.push(abs);
