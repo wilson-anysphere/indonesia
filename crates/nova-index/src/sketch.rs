@@ -491,11 +491,18 @@ impl Index {
         matches!(self.type_kinds.get(type_name), Some(TypeKind::Interface))
     }
 
+    /// Legacy name-only lookup for a method symbol id.
+    ///
+    /// Overloads are supported in the sketch index, so this function returns `Some(id)` **only**
+    /// when `class_name.method_name` is unambiguous (exactly one declaration exists).
+    ///
+    /// If there are zero declarations, or if the method is overloaded (multiple declarations),
+    /// this returns `None` to avoid accidentally picking an arbitrary overload.
+    ///
+    /// Prefer overload-aware APIs like [`Index::method_overload_by_param_types`] or
+    /// [`Index::find_method_by_signature`].
     pub fn method_symbol_id(&self, class_name: &str, method_name: &str) -> Option<SymbolId> {
-        self.method_symbols
-            .get(&(class_name.to_string(), method_name.to_string()))
-            .and_then(|ids| ids.last())
-            .copied()
+        self.find_method(class_name, method_name).map(|sym| sym.id)
     }
 
     /// Return all method overloads matching `class_name.method_name`.

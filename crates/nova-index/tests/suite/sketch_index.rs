@@ -56,14 +56,8 @@ fn overloaded_methods_indexed_with_signatures_and_lookup_works() {
         ["s".to_string(), "y".to_string()]
     );
 
-    // Existing API should still return *some* method symbol id for the name.
-    let legacy = index
-        .method_symbol_id("A", "foo")
-        .expect("method_symbol_id should return a method for foo");
-    assert!(
-        overloads.contains(&legacy),
-        "legacy lookup should return one of the overload ids"
-    );
+    // Legacy name-only API is overload-safe: it returns `None` when multiple overloads exist.
+    assert_eq!(index.method_symbol_id("A", "foo"), None);
 }
 
 #[test]
