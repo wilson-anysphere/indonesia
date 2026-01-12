@@ -102,6 +102,61 @@ fn initialize_advertises_nova_experimental_capabilities() {
     assert!(status.success());
 }
 
+#[test]
+fn stdio_requests_after_shutdown_are_rejected() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 2);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion", "params": {} }),
+    );
+    let completion_resp = read_response_with_id(&mut stdout, 3);
+    assert_eq!(
+        completion_resp
+            .get("error")
+            .and_then(|err| err.get("code"))
+            .and_then(|code| code.as_i64()),
+        Some(-32600),
+        "expected requests after shutdown to be rejected, got: {completion_resp:?}"
+    );
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
 #[cfg(unix)]
 #[test]
 fn stdio_cancel_request_cancels_inflight_request_by_id() {
