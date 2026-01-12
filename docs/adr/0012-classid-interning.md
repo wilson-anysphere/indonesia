@@ -1,0 +1,188 @@
+# ADR 0012: `ClassId` stability and interning policy
+
+## Context
+
+Nova uses `nova_ids::ClassId` as a compact identifier for Java classes in type/semantic data.
+
+Today, `ClassId` is most visibly allocated by `nova_types::TypeStore`:
+
+- `TypeStore::add_class` assigns `ClassId::from_raw(self.classes.len() as u32)` (sequential slot index).
+- `TypeStore::intern_class_id`/`upsert_class` provide “stable as long as the store lives” mapping
+  from binary name → id.
+
+See: `crates/nova-types/src/lib.rs` (`TypeStore::{add_class, intern_class_id, upsert_class}`).
+
+In the Salsa layer, we also have a *database-level* memory eviction mechanism:
+
+- `SalsaDatabase::evict_salsa_memos` rebuilds `ra_salsa::Storage` with `Storage::default()` and
+  reapplies inputs.
+
+See: `crates/nova-db/src/salsa/mod.rs` (`evict_salsa_memos`).
+
+This interacts with the architectural requirement from ADR 0001:
+
+- **Purity rule:** Salsa queries must be deterministic functions of their inputs.
+
+See: `docs/adr/0001-incremental-query-engine.md` (“Purity rule”).
+
+We therefore need to be explicit about what “stable `ClassId`” means, and which interning/id
+allocation strategies are compatible with Salsa purity and with memo eviction.
+
+### Stability dimensions (what “stable” can mean)
+
+For `ClassId`, we care about stability across:
+
+1. **Within a single db instance** (`SalsaDatabase` in one process).
+2. **Across Salsa snapshots** (`ParallelDatabase::snapshot()`).
+3. **Across revisions** (inputs change; unchanged classes should ideally keep the same id).
+4. **Across memo eviction** (`evict_salsa_memos` resets `ra_salsa::Storage`).
+5. **Across process restarts** (new server process; optional depending on persistence strategy).
+
+## Decision
+
+### 1) Define two classes of `ClassId`
+
+**A. Store-local `ClassId` (allowed today)**
+
+`ClassId` values produced by a `nova_types::TypeStore` are **only stable within that `TypeStore`’s
+lifetime**. They MUST NOT be treated as canonical database-wide identity, MUST NOT be persisted,
+and MUST NOT be stored across operations that can rebuild the store.
+
+This matches the current allocation strategy in `crates/nova-types/src/lib.rs` (slot index based).
+
+**B. Database-global `ClassId` (required for Salsa-facing identity)**
+
+If `ClassId` is used in Salsa query keys/results *as a long-lived identity* (e.g. for cross-file
+linking, indexing, persistence keys, or any value that may outlive one query execution), then Nova
+requires:
+
+- **MUST** be stable within a db instance.
+- **MUST** be stable across snapshots (snapshots may be compared/merged with live results).
+- **SHOULD** be stable across revisions for classes whose identity did not change.
+- **MUST** be stable across memo eviction (`evict_salsa_memos` is intended to be a semantic no-op).
+- **NOT REQUIRED** to be stable across process restarts; persisted formats should use a stable
+  *class key* (e.g. binary name + origin) rather than raw `ClassId` integers.
+
+### 2) Purity constraint: non-tracked interners are unsafe inside queries
+
+A “custom interner” stored outside Salsa (e.g. `Mutex<HashMap<ClassKey, ClassId>>`) is unsafe if it
+is read/mutated inside Salsa queries without being modelled as tracked input/state.
+
+Reason (purity violation, ADR 0001):
+
+- If ID assignment depends on insertion history (“first time seen gets the next u32”), then a query
+  can return different `ClassId` values for the same logical class depending on which other queries
+  ran first, thread scheduling, or whether memo eviction occurred.
+- This makes query results depend on hidden mutable state rather than on tracked inputs, breaking
+  determinism and potentially causing spurious cache invalidation or incorrect reuse.
+
+### 3) Provisional recommended policy for Nova
+
+For **database-global** class identity, prefer a **deterministic mapping derived from tracked
+inputs**:
+
+- Define a stable `ClassKey` (at minimum: binary name; in practice likely `(ProjectId, origin,
+  binary_name)` where “origin” distinguishes source/classpath/JDK).
+- Provide a Salsa query that enumerates all `ClassKey`s in a deterministic order (e.g. sorted),
+  and derives `ClassId` from that ordering (or from another deterministic scheme).
+
+This is purity-safe and remains correct under `evict_salsa_memos`, because rebuilding `Storage`
+recomputes the same mapping from the same tracked inputs.
+
+`#[ra_salsa::interned]` is acceptable for storing the *key/value data* of classes, but Nova MUST NOT
+rely on the raw interned integer as a stable `nova_ids::ClassId` unless we also ensure one of:
+
+1. `evict_salsa_memos` preserves intern tables (does not reset interning state), **or**
+2. interned values are (re)created deterministically as part of input application such that storage
+   rebuild produces the same interned ids.
+
+## Alternatives considered
+
+### A) Per-query `TypeStore` ids (current)
+
+Pros:
+- Simple: local allocation (`TypeStore::add_class`) and local lookup.
+- No cross-query global state; easy to reason about within a single algorithm invocation.
+
+Cons:
+- `ClassId` is only meaningful relative to a specific `TypeStore` instance.
+- Not suitable as a database-wide identity (cannot safely compare across query outputs unless the
+  `TypeStore` is shared as well).
+- Cannot be used as persistence keys.
+
+### B) Salsa `#[ra_salsa::interned]` ids
+
+Pros:
+- Integrated with Salsa; easy to use as compact keys in query results.
+- Stable across snapshots and revisions *as long as the underlying `ra_salsa::Storage` (and its
+  intern tables) remain intact*.
+
+Cons:
+- `evict_salsa_memos` rebuilds `ra_salsa::Storage` (`crates/nova-db/src/salsa/mod.rs`), which
+  implies intern tables restart from empty.
+- Interned integer assignment is order-dependent; if interning happens “on demand” inside queries,
+  different evaluation orders (including parallel scheduling) can yield different raw ids after a
+  rebuild, violating the “eviction is a semantic no-op” requirement.
+
+### C) Custom interner stored outside Salsa
+
+Pros:
+- Can outlive Salsa memo eviction if stored outside `ra_salsa::Storage`.
+- Can be made persistent across process restarts if serialized.
+
+Cons:
+- If mutated/read from within queries without being tracked, violates ADR 0001 purity (history
+  dependence / hidden mutable state).
+- Requires careful concurrency control and modelling of invalidation.
+
+When it can be safe:
+- If the interner state is itself a tracked Salsa input, or
+- if it is rebuilt deterministically from tracked inputs at well-defined times (effectively making
+  it a derived cache, not an oracle).
+
+### D) Deterministic derived mapping from tracked inputs (sorted enumeration)
+
+Pros:
+- Purity-safe by construction: mapping is a deterministic function of tracked inputs.
+- Stable across memo eviction (storage rebuild recomputes the same mapping).
+- Naturally supports snapshots and parallel query execution.
+
+Cons:
+- If IDs are derived from “sorted list index”, adding/removing a class can shift many IDs, causing
+  churn in `Eq`-based memoization (correct but potentially less incremental).
+- May require maintaining an explicit “class inventory” query per project (or per compilation unit).
+
+## Consequences
+
+Positive:
+- Makes `ClassId` semantics explicit and prevents accidental reliance on unstable ids.
+- Prevents introducing hidden impurity by “just putting an interner behind a mutex”.
+- Establishes that memo eviction must not change observable query results.
+
+Negative:
+- A deterministic mapping may introduce `ClassId` churn when the set of known classes changes,
+  unless we adopt a more sophisticated stable scheme.
+- If Nova chooses Salsa `#[interned]` for class identity, we likely need follow-up work in
+  `evict_salsa_memos` to preserve intern tables or seed them deterministically.
+
+## Follow-ups
+
+Next implementation steps (not done in this ADR):
+
+1. Define `ClassKey` precisely (include project + origin + binary name).
+2. Add a deterministic “class inventory” Salsa query that returns a stably ordered list/set of
+   `ClassKey`s for a project.
+3. Add `class_id(project, key) -> ClassId` derived from that inventory.
+4. Audit query APIs to ensure:
+   - store-local `ClassId` does not escape without its `TypeStore`, and
+   - persistence keys never use raw `ClassId`.
+
+Test strategy:
+
+- **Order independence:** construct the same inputs but call class-related queries in different
+  orders and assert that returned `ClassId`s are identical.
+- **Memo eviction:** compute a set of `ClassId`s, run `SalsaDatabase::evict_salsa_memos`, recompute,
+  and assert stability.
+- **Snapshot consistency:** compute `ClassId`s in a snapshot and in the live db and compare.
+- **Revision stability:** change an unrelated input and assert `ClassId` for unaffected classes is
+  unchanged (or explicitly document when churn is expected).
