@@ -763,11 +763,40 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 if let Ok(rel) = abs_file.strip_prefix(root_canon) {
                     rel.to_path_buf()
                 } else {
-                    // Fall back to canonicalizing the file if it exists (this can resolve
-                    // symlinks/`..` segments on the file path).
-                    let file_canon = fs::canonicalize(&abs_file).with_context(|| {
-                        format!("failed to canonicalize file path {}", abs_file.display())
-                    })?;
+                    // Fall back to canonicalizing the file path to resolve symlinks/`..` segments.
+                    //
+                    // `canonicalize` fails for non-existent files (common in editor workflows when
+                    // a file is created but not yet written). In that case, try canonicalizing the
+                    // nearest existing ancestor directory and append the remainder.
+                    let file_canon = match fs::canonicalize(&abs_file) {
+                        Ok(path) => path,
+                        Err(err) => {
+                            let mut ancestor = abs_file.as_path();
+                            while !ancestor.exists() {
+                                let Some(parent) = ancestor.parent() else {
+                                    return Err(anyhow::Error::new(err)).with_context(|| {
+                                        format!(
+                                            "failed to canonicalize file path {}",
+                                            abs_file.display()
+                                        )
+                                    });
+                                };
+                                ancestor = parent;
+                            }
+
+                            let ancestor_canon = fs::canonicalize(ancestor).with_context(|| {
+                                format!(
+                                    "failed to canonicalize ancestor path {} while resolving {}",
+                                    ancestor.display(),
+                                    abs_file.display()
+                                )
+                            })?;
+                            let remainder = abs_file
+                                .strip_prefix(ancestor)
+                                .expect("ancestor must lexically prefix abs_file");
+                            ancestor_canon.join(remainder)
+                        }
+                    };
                     file_canon
                         .strip_prefix(root_canon)
                         .map(|rel| rel.to_path_buf())

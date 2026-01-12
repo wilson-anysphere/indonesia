@@ -164,6 +164,28 @@ fn path_to_label_accepts_nonexistent_canonical_paths_when_root_is_symlink() {
 }
 
 #[test]
+#[cfg(unix)]
+fn path_to_label_accepts_nonexistent_file_through_alternate_symlink_path() {
+    use std::os::unix::fs::symlink;
+
+    let real = tempdir().unwrap();
+    std::fs::write(real.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&real.path().join("java/BUILD"), "# java package\n");
+
+    let link_parent = tempdir().unwrap();
+    let link_root_a = link_parent.path().join("ws_a");
+    let link_root_b = link_parent.path().join("ws_b");
+    symlink(real.path(), &link_root_a).unwrap();
+    symlink(real.path(), &link_root_b).unwrap();
+
+    let workspace = BazelWorkspace::new(link_root_a, NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(&link_root_b.join("java/NewFile.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//java:NewFile.java"));
+}
+
+#[test]
 fn path_to_label_recognizes_build_bazel() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
