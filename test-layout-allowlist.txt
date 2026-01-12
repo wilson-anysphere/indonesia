@@ -10,20 +10,15 @@
 # One crate name per line. `#` comments and blank lines are ignored.
 
 nova-lsp
-nova-dap
 nova-ide
 nova-ai
 nova-db
 nova-build
 nova-project
-nova-resolve
 nova-decompile
 nova-classpath
 nova-index
 nova-refactor
 nova-framework-spring
-nova-framework-quarkus
 nova-framework-dagger
-nova-framework-jpa
-nova-framework-mapstruct
 nova-framework-micronaut
