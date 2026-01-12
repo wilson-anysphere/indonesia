@@ -27,7 +27,7 @@ fn runner() -> &'static Runner {
 
             for input in input_rx {
                 let file = nova_refactor::FileId::new("Fuzz.java");
-                let db = nova_refactor::InMemoryJavaDatabase::new([(file.clone(), input.clone())]);
+                let db = nova_refactor::RefactorJavaDatabase::new([(file.clone(), input.clone())]);
 
                 // Organize imports is explicitly best-effort: errors are fine, panics aren't.
                 if let Ok(edit) = nova_refactor::organize_imports(

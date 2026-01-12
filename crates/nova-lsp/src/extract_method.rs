@@ -1,9 +1,6 @@
 use lsp_types::{Range, Uri, WorkspaceEdit as LspWorkspaceEdit};
 use nova_ide::code_action::ExtractMethodCommandArgs;
-use nova_refactor::{
-    extract_method::ExtractMethod, workspace_edit_to_lsp, FileId, TextDatabase,
-    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
-};
+use nova_refactor::{extract_method::ExtractMethod, workspace_edit_to_lsp, FileId, TextDatabase};
 
 pub fn code_action(source: &str, uri: Uri, range: Range) -> Option<lsp_types::CodeAction> {
     nova_ide::code_action::extract_method_code_action(source, uri, range)
@@ -25,13 +22,7 @@ pub fn execute(source: &str, args: ExtractMethodCommandArgs) -> Result<LspWorksp
     };
 
     let db = TextDatabase::new([(FileId::new(file.clone()), source.to_string())]);
-    let edits = refactoring.apply(source)?;
-    let edit = RefactorWorkspaceEdit::new(
-        edits
-            .into_iter()
-            .map(WorkspaceTextEdit::from)
-            .collect::<Vec<_>>(),
-    );
+    let edit = refactoring.apply(source)?;
     workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
 }
 

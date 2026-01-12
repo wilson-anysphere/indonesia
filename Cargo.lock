@@ -4086,9 +4086,13 @@ dependencies = [
  "criterion",
  "lsp-types",
  "nova-core",
+ "nova-db",
  "nova-format",
+ "nova-hir",
  "nova-index",
+ "nova-jdk",
  "nova-project",
+ "nova-resolve",
  "nova-syntax",
  "nova-test-utils",
  "nova-types",
@@ -4098,8 +4102,6 @@ dependencies = [
  "serde",
  "similar",
  "thiserror 1.0.69",
- "tree-sitter",
- "tree-sitter-java",
 ]
 
 [[package]]

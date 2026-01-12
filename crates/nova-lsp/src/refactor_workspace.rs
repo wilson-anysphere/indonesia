@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use lsp_types::Uri;
 use nova_index::Index;
 use nova_project::ProjectError;
-use nova_refactor::{FileId, InMemoryJavaDatabase, RefactorDatabase};
+use nova_refactor::{FileId, RefactorDatabase, RefactorJavaDatabase};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -42,7 +42,7 @@ pub struct WorkspaceFile {
 pub struct RefactorWorkspaceSnapshot {
     project_root: PathBuf,
     files: BTreeMap<FileId, WorkspaceFile>,
-    db: InMemoryJavaDatabase,
+    db: RefactorJavaDatabase,
 }
 
 impl RefactorWorkspaceSnapshot {
@@ -143,7 +143,7 @@ impl RefactorWorkspaceSnapshot {
             db_files.push((file_id, text));
         }
 
-        let db = InMemoryJavaDatabase::new_shared(db_files);
+        let db = RefactorJavaDatabase::new_shared(db_files);
 
         Ok(Self {
             project_root,
@@ -160,7 +160,7 @@ impl RefactorWorkspaceSnapshot {
         &self.files
     }
 
-    pub fn db(&self) -> &InMemoryJavaDatabase {
+    pub fn db(&self) -> &RefactorJavaDatabase {
         &self.db
     }
 

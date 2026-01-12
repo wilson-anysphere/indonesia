@@ -1,8 +1,8 @@
 use lsp_types::Uri;
 use nova_core::{LineIndex, TextSize};
 use nova_refactor::{
-    position_to_offset_utf16, workspace_edit_to_lsp, FileId, InMemoryJavaDatabase, WorkspaceEdit,
-    WorkspaceTextEdit, WorkspaceTextRange,
+    position_to_offset_utf16, workspace_edit_to_lsp, FileId, TextDatabase, WorkspaceEdit, WorkspaceTextEdit,
+    WorkspaceTextRange,
 };
 use pretty_assertions::assert_eq;
 
@@ -13,7 +13,7 @@ fn workspace_edit_to_lsp_uses_utf16_for_surrogate_pairs() {
     let file = FileId::new(uri.to_string());
     let text = "a😀b";
 
-    let db = InMemoryJavaDatabase::new([(file.clone(), text.to_string())]);
+    let db = TextDatabase::new([(file.clone(), text.to_string())]);
     let edit = WorkspaceEdit::new(vec![WorkspaceTextEdit::replace(
         file.clone(),
         WorkspaceTextRange::new(5, 6), // replace `b`
@@ -48,7 +48,7 @@ fn workspace_edit_to_lsp_does_not_treat_character_as_utf8_bytes() {
     let file = FileId::new(uri.to_string());
     let text = "aéb";
 
-    let db = InMemoryJavaDatabase::new([(file.clone(), text.to_string())]);
+    let db = TextDatabase::new([(file.clone(), text.to_string())]);
     let edit = WorkspaceEdit::new(vec![WorkspaceTextEdit::replace(
         file.clone(),
         WorkspaceTextRange::new(3, 4), // replace `b`
@@ -90,7 +90,7 @@ fn workspace_edit_to_lsp_uses_line_index_crlf_semantics() {
     // Target the `\n` byte inside the CRLF sequence.
     let offset = text.find('\n').expect("expected CRLF newline");
 
-    let db = InMemoryJavaDatabase::new([(file.clone(), text.to_string())]);
+    let db = TextDatabase::new([(file.clone(), text.to_string())]);
     let edit = WorkspaceEdit::new(vec![WorkspaceTextEdit::replace(
         file.clone(),
         WorkspaceTextRange::new(offset, offset),

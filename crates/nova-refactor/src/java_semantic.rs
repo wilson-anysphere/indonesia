@@ -1,6 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use nova_core::Name;
+use nova_db::salsa::{Database as SalsaDatabase, NovaHir};
+use nova_db::{FileId as DbFileId, ProjectId};
+use nova_hir::hir;
+use nova_hir::queries::HirDatabase;
+use nova_resolve::{BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult};
+
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
 
@@ -26,70 +33,100 @@ pub enum JavaSymbolKind {
     Parameter,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScopeKind {
-    Root,
-    TypeBody,
-    MethodBody,
-    Block,
-}
-
-struct ScopeData {
-    parent: Option<u32>,
-    kind: ScopeKind,
-    symbols: HashMap<String, SymbolId>,
-}
-
+#[derive(Clone, Debug)]
 struct SymbolData {
     def: SymbolDefinition,
     kind: JavaSymbolKind,
 }
 
-#[derive(Clone, Debug)]
-struct Token {
-    kind: TokenKind,
-    range: TextRange,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ResolutionKey {
+    Local(LocalRef),
+    Param(ParamRef),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum TokenKind {
-    Ident(String),
-    Keyword(String),
-    Symbol(char),
-    StringLiteral,
-    CharLiteral,
-    Comment,
-    Whitespace,
-    Other,
-}
-
-#[derive(Clone, Debug)]
-struct PendingParam {
+#[derive(Debug, Clone)]
+struct SymbolCandidate {
+    key: ResolutionKey,
+    file: FileId,
     name: String,
-    range: TextRange,
+    name_range: TextRange,
+    scope: u32,
+    kind: JavaSymbolKind,
 }
 
-#[derive(Clone, Debug)]
-enum PendingScope {
-    TypeBody,
-    MethodBody { params: Vec<PendingParam> },
+#[derive(Debug, Clone, Default)]
+struct ScopeInterner {
+    map: HashMap<(DbFileId, nova_resolve::ScopeId), u32>,
+    reverse: Vec<(DbFileId, nova_resolve::ScopeId)>,
 }
 
-/// A tiny, best-effort semantic index for a Java-like language.
+impl ScopeInterner {
+    fn intern(&mut self, file: DbFileId, scope: nova_resolve::ScopeId) -> u32 {
+        if let Some(id) = self.map.get(&(file, scope)) {
+            return *id;
+        }
+        let id = self.reverse.len() as u32;
+        self.reverse.push((file, scope));
+        self.map.insert((file, scope), id);
+        id
+    }
+
+    fn lookup(&self, id: u32) -> Option<(DbFileId, nova_resolve::ScopeId)> {
+        self.reverse.get(id as usize).copied()
+    }
+}
+
+struct HirAdapter<'a> {
+    snap: &'a nova_db::salsa::Snapshot,
+    files: &'a HashMap<DbFileId, Arc<str>>,
+}
+
+impl HirDatabase for HirAdapter<'_> {
+    fn file_text(&self, file: DbFileId) -> Arc<str> {
+        self.files
+            .get(&file)
+            .cloned()
+            .unwrap_or_else(|| Arc::<str>::from(""))
+    }
+
+    fn hir_item_tree(&self, file: DbFileId) -> Arc<nova_hir::item_tree::ItemTree> {
+        self.snap.hir_item_tree(file)
+    }
+
+    fn hir_body(&self, method: nova_hir::ids::MethodId) -> Arc<hir::Body> {
+        self.snap.hir_body(method)
+    }
+
+    fn hir_constructor_body(&self, constructor: nova_hir::ids::ConstructorId) -> Arc<hir::Body> {
+        self.snap.hir_constructor_body(constructor)
+    }
+
+    fn hir_initializer_body(&self, initializer: nova_hir::ids::InitializerId) -> Arc<hir::Body> {
+        self.snap.hir_initializer_body(initializer)
+    }
+}
+
+/// Salsa-backed semantic database used by Nova refactorings.
 ///
-/// This is *not* a full Java parser. It exists to make refactorings testable in
-/// this repository and to provide a concrete implementation of
-/// [`RefactorDatabase`]. The production Nova implementation is expected to
-/// replace this with a real semantic model.
-pub struct InMemoryJavaDatabase {
+/// This provides a minimal [`RefactorDatabase`] implementation by lowering Java source through
+/// Nova's canonical syntax + HIR + scope graph pipeline (`nova-syntax`, `nova-hir`, `nova-resolve`)
+/// and projecting the resulting locals/parameters into the stable `SymbolId` space expected by
+/// the semantic refactoring engine (`rename`, `inline_variable`, ...).
+pub struct RefactorJavaDatabase {
     files: BTreeMap<FileId, Arc<str>>,
-    scopes: Vec<ScopeData>,
+
+    scopes: HashMap<DbFileId, ScopeBuildResult>,
+    scope_interner: ScopeInterner,
+
     symbols: Vec<SymbolData>,
     references: Vec<Vec<Reference>>,
     spans: Vec<(FileId, TextRange, SymbolId)>,
+
+    resolution_to_symbol: HashMap<ResolutionKey, SymbolId>,
 }
 
-impl InMemoryJavaDatabase {
+impl RefactorJavaDatabase {
     pub fn new(files: impl IntoIterator<Item = (FileId, String)>) -> Self {
         Self::new_shared(
             files
@@ -99,20 +136,228 @@ impl InMemoryJavaDatabase {
     }
 
     pub fn new_shared(files: impl IntoIterator<Item = (FileId, Arc<str>)>) -> Self {
-        let mut db = Self {
-            files: BTreeMap::new(),
-            scopes: Vec::new(),
-            symbols: Vec::new(),
-            references: Vec::new(),
-            spans: Vec::new(),
-        };
+        let files: BTreeMap<FileId, Arc<str>> = files.into_iter().collect();
 
-        for (file, text) in files {
-            db.files.insert(file, text);
+        let salsa = SalsaDatabase::new();
+        let project = ProjectId::from_raw(0);
+        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+        salsa.set_classpath_index(project, None);
+
+        let mut file_ids: BTreeMap<FileId, DbFileId> = BTreeMap::new();
+        let mut texts_by_id: HashMap<DbFileId, Arc<str>> = HashMap::new();
+
+        for (idx, (file, text)) in files.iter().enumerate() {
+            let id = DbFileId::from_raw(idx as u32);
+            file_ids.insert(file.clone(), id);
+            texts_by_id.insert(id, text.clone());
+
+            salsa.set_file_text(id, text.to_string());
+            salsa.set_file_rel_path(id, Arc::new(file.0.clone()));
         }
 
-        db.rebuild();
-        db
+        let project_files: Vec<DbFileId> = file_ids.values().copied().collect();
+        salsa.set_project_files(project, Arc::new(project_files));
+
+        let snap = salsa.snapshot();
+        let hir = HirAdapter {
+            snap: &snap,
+            files: &texts_by_id,
+        };
+
+        let mut scope_interner = ScopeInterner::default();
+        let mut scopes: HashMap<DbFileId, ScopeBuildResult> = HashMap::new();
+        let mut candidates: Vec<SymbolCandidate> = Vec::new();
+
+        // Build per-file scope graphs + symbol definitions.
+        for (file, file_id) in &file_ids {
+            let scope_result = nova_resolve::build_scopes(&hir, *file_id);
+            let tree = snap.hir_item_tree(*file_id);
+
+            // Parameters live in method/constructor scopes.
+            let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
+            method_ids.sort();
+            for method in method_ids {
+                let method_scope = scope_result
+                    .method_scopes
+                    .get(&method)
+                    .copied()
+                    .expect("method scope map must contain key");
+                let scope = scope_interner.intern(*file_id, method_scope);
+                let method_data = tree.method(method);
+                for (idx, param) in method_data.params.iter().enumerate() {
+                    candidates.push(SymbolCandidate {
+                        key: ResolutionKey::Param(ParamRef {
+                            owner: ParamOwner::Method(method),
+                            index: idx,
+                        }),
+                        file: file.clone(),
+                        name: param.name.clone(),
+                        name_range: TextRange::new(param.name_range.start, param.name_range.end),
+                        scope,
+                        kind: JavaSymbolKind::Parameter,
+                    });
+                }
+            }
+
+            let mut ctor_ids: Vec<_> = scope_result.constructor_scopes.keys().copied().collect();
+            ctor_ids.sort();
+            for ctor in ctor_ids {
+                let ctor_scope = scope_result
+                    .constructor_scopes
+                    .get(&ctor)
+                    .copied()
+                    .expect("constructor scope map must contain key");
+                let scope = scope_interner.intern(*file_id, ctor_scope);
+                let ctor_data = tree.constructor(ctor);
+                for (idx, param) in ctor_data.params.iter().enumerate() {
+                    candidates.push(SymbolCandidate {
+                        key: ResolutionKey::Param(ParamRef {
+                            owner: ParamOwner::Constructor(ctor),
+                            index: idx,
+                        }),
+                        file: file.clone(),
+                        name: param.name.clone(),
+                        name_range: TextRange::new(param.name_range.start, param.name_range.end),
+                        scope,
+                        kind: JavaSymbolKind::Parameter,
+                    });
+                }
+            }
+
+            // Locals live in block scopes. We intern each block scope exactly once (in allocation
+            // order) so global scope IDs are deterministic.
+            let mut body_cache: HashMap<BodyOwner, Arc<hir::Body>> = HashMap::new();
+            for &block_scope in scope_result.block_scopes.iter() {
+                let scope = scope_interner.intern(*file_id, block_scope);
+                let data = scope_result.scopes.scope(block_scope);
+                for res in data.values().values() {
+                    let Resolution::Local(local_ref) = res else {
+                        continue;
+                    };
+
+                    let body = body_cache.entry(local_ref.owner).or_insert_with(|| match local_ref.owner {
+                        BodyOwner::Method(m) => snap.hir_body(m),
+                        BodyOwner::Constructor(c) => snap.hir_constructor_body(c),
+                        BodyOwner::Initializer(i) => snap.hir_initializer_body(i),
+                    });
+                    let local = &body.locals[local_ref.local];
+
+                    candidates.push(SymbolCandidate {
+                        key: ResolutionKey::Local(*local_ref),
+                        file: file.clone(),
+                        name: local.name.clone(),
+                        name_range: TextRange::new(local.name_range.start, local.name_range.end),
+                        scope,
+                        kind: JavaSymbolKind::Local,
+                    });
+                }
+            }
+
+            scopes.insert(*file_id, scope_result);
+        }
+
+        candidates.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.name_range.start.cmp(&b.name_range.start))
+                .then_with(|| a.name_range.end.cmp(&b.name_range.end))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        let mut symbols: Vec<SymbolData> = Vec::new();
+        let mut references: Vec<Vec<Reference>> = Vec::new();
+        let mut spans: Vec<(FileId, TextRange, SymbolId)> = Vec::new();
+        let mut resolution_to_symbol: HashMap<ResolutionKey, SymbolId> = HashMap::new();
+
+        for (idx, candidate) in candidates.into_iter().enumerate() {
+            let symbol = SymbolId::new(idx as u32);
+            symbols.push(SymbolData {
+                def: SymbolDefinition {
+                    file: candidate.file.clone(),
+                    name: candidate.name.clone(),
+                    name_range: candidate.name_range,
+                    scope: candidate.scope,
+                },
+                kind: candidate.kind,
+            });
+            references.push(Vec::new());
+            spans.push((candidate.file, candidate.name_range, symbol));
+            resolution_to_symbol.insert(candidate.key, symbol);
+        }
+
+        // Collect reference spans by walking HIR name expressions and resolving them via the scope graph.
+        let jdk = nova_jdk::JdkIndex::new();
+        let resolver = Resolver::new(&jdk);
+
+        for (file, file_id) in &file_ids {
+            let Some(scope_result) = scopes.get(file_id) else {
+                continue;
+            };
+
+            let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
+            method_ids.sort();
+            for method in method_ids {
+                let body = snap.hir_body(method);
+                record_body_references(
+                    file,
+                    &body,
+                    scope_result,
+                    &resolver,
+                    &resolution_to_symbol,
+                    &mut references,
+                    &mut spans,
+                );
+            }
+
+            let mut ctor_ids: Vec<_> = scope_result.constructor_scopes.keys().copied().collect();
+            ctor_ids.sort();
+            for ctor in ctor_ids {
+                let body = snap.hir_constructor_body(ctor);
+                record_body_references(
+                    file,
+                    &body,
+                    scope_result,
+                    &resolver,
+                    &resolution_to_symbol,
+                    &mut references,
+                    &mut spans,
+                );
+            }
+
+            let mut init_ids: Vec<_> = scope_result.initializer_scopes.keys().copied().collect();
+            init_ids.sort();
+            for init in init_ids {
+                let body = snap.hir_initializer_body(init);
+                record_body_references(
+                    file,
+                    &body,
+                    scope_result,
+                    &resolver,
+                    &resolution_to_symbol,
+                    &mut references,
+                    &mut spans,
+                );
+            }
+        }
+
+        spans.sort_by(|(file_a, range_a, sym_a), (file_b, range_b, sym_b)| {
+            file_a
+                .cmp(file_b)
+                .then_with(|| range_a.start.cmp(&range_b.start))
+                .then_with(|| range_a.end.cmp(&range_b.end))
+                .then_with(|| sym_a.0.cmp(&sym_b.0))
+        });
+        spans.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1 && a.2 == b.2);
+
+        Self {
+            files,
+            scopes,
+            scope_interner,
+            symbols,
+            references,
+            spans,
+            resolution_to_symbol,
+        }
     }
 
     pub fn single_file(path: impl Into<String>, text: impl Into<String>) -> Self {
@@ -133,294 +378,14 @@ impl InMemoryJavaDatabase {
         self.symbols.get(symbol.as_usize()).map(|s| s.kind)
     }
 
-    fn rebuild(&mut self) {
-        self.scopes.clear();
-        self.symbols.clear();
-        self.references.clear();
-        self.spans.clear();
-
-        for (file, text) in self.files.clone() {
-            self.index_file(file, &text);
-        }
-    }
-
-    fn index_file(&mut self, file: FileId, text: &str) {
-        let root_scope = self.scopes.len() as u32;
-        self.scopes.push(ScopeData {
-            parent: None,
-            kind: ScopeKind::Root,
-            symbols: HashMap::new(),
-        });
-
-        let tokens = tokenize_java(text);
-        let sig_tokens: Vec<Token> = tokens
-            .into_iter()
-            .filter(|t| {
-                matches!(
-                    t.kind,
-                    TokenKind::Ident(_) | TokenKind::Keyword(_) | TokenKind::Symbol(_)
-                )
-            })
-            .collect();
-
-        let mut scope_stack: Vec<u32> = vec![root_scope];
-        let mut pending_scope: Option<PendingScope> = None;
-
-        let mut i = 0;
-        while i < sig_tokens.len() {
-            let tok = &sig_tokens[i];
-            match &tok.kind {
-                TokenKind::Symbol('{') => {
-                    let parent = *scope_stack.last().unwrap();
-                    let (kind, params) = match pending_scope.take() {
-                        Some(PendingScope::TypeBody) => (ScopeKind::TypeBody, Vec::new()),
-                        Some(PendingScope::MethodBody { params }) => {
-                            (ScopeKind::MethodBody, params)
-                        }
-                        None => (ScopeKind::Block, Vec::new()),
-                    };
-
-                    let new_scope = self.scopes.len() as u32;
-                    self.scopes.push(ScopeData {
-                        parent: Some(parent),
-                        kind,
-                        symbols: HashMap::new(),
-                    });
-                    scope_stack.push(new_scope);
-
-                    if kind == ScopeKind::MethodBody && !params.is_empty() {
-                        for param in params {
-                            let symbol = self.add_symbol(
-                                file.clone(),
-                                param.name.clone(),
-                                param.range,
-                                new_scope,
-                                JavaSymbolKind::Parameter,
-                            );
-                            self.scopes[new_scope as usize]
-                                .symbols
-                                .insert(param.name, symbol);
-                        }
-                    }
-
-                    i += 1;
-                    continue;
-                }
-                TokenKind::Symbol('}') => {
-                    scope_stack.pop();
-                    if scope_stack.is_empty() {
-                        scope_stack.push(root_scope);
-                    }
-                    i += 1;
-                    continue;
-                }
-                TokenKind::Symbol(';') => {
-                    // Abstract/interface methods end with ';' and won't have a body.
-                    if matches!(pending_scope, Some(PendingScope::MethodBody { .. })) {
-                        pending_scope = None;
-                    }
-                }
-                _ => {}
-            }
-
-            // Type declaration.
-            if let TokenKind::Keyword(keyword) = &tok.kind {
-                if is_type_decl_keyword(keyword) {
-                    if let Some(Token {
-                        kind: TokenKind::Ident(name),
-                        range,
-                    }) = sig_tokens.get(i + 1)
-                    {
-                        let scope = *scope_stack.last().unwrap();
-                        let symbol = self.add_symbol(
-                            file.clone(),
-                            name.clone(),
-                            *range,
-                            scope,
-                            JavaSymbolKind::Type,
-                        );
-                        self.scopes[scope as usize]
-                            .symbols
-                            .insert(name.clone(), symbol);
-                        pending_scope = Some(PendingScope::TypeBody);
-                        i += 2;
-                        continue;
-                    }
-                }
-            }
-
-            let current_scope = *scope_stack.last().unwrap();
-            let current_kind = self.scopes[current_scope as usize].kind;
-
-            // Method declarations only make sense in type bodies.
-            if current_kind == ScopeKind::TypeBody {
-                if let Some((next_i, params, return_type_token, method_name_token)) =
-                    try_parse_method_decl(&sig_tokens, i)
-                {
-                    if let TokenKind::Ident(method_name) = &method_name_token.kind {
-                        let symbol = self.add_symbol(
-                            file.clone(),
-                            method_name.clone(),
-                            method_name_token.range,
-                            current_scope,
-                            JavaSymbolKind::Method,
-                        );
-                        self.scopes[current_scope as usize]
-                            .symbols
-                            .insert(method_name.clone(), symbol);
-
-                        self.maybe_record_type_reference(&file, current_scope, &return_type_token);
-
-                        for param in &params {
-                            // Parameter types are handled by `try_parse_method_decl`.
-                            let _ = param;
-                        }
-
-                        pending_scope = Some(PendingScope::MethodBody { params });
-                        i = next_i;
-                        continue;
-                    }
-                }
-
-                // Field declaration (best-effort).
-                if let Some((next_i, ty_token, name_token)) =
-                    try_parse_variable_decl(&sig_tokens, i)
-                {
-                    if let TokenKind::Ident(field_name) = &name_token.kind {
-                        let symbol = self.add_symbol(
-                            file.clone(),
-                            field_name.clone(),
-                            name_token.range,
-                            current_scope,
-                            JavaSymbolKind::Field,
-                        );
-                        self.scopes[current_scope as usize]
-                            .symbols
-                            .insert(field_name.clone(), symbol);
-                        self.maybe_record_type_reference(&file, current_scope, ty_token);
-                        i = next_i;
-                        continue;
-                    }
-                }
-            } else if current_kind == ScopeKind::MethodBody || current_kind == ScopeKind::Block {
-                if let Some((next_i, ty_token, name_token)) =
-                    try_parse_variable_decl(&sig_tokens, i)
-                {
-                    if let TokenKind::Ident(local_name) = &name_token.kind {
-                        let symbol = self.add_symbol(
-                            file.clone(),
-                            local_name.clone(),
-                            name_token.range,
-                            current_scope,
-                            JavaSymbolKind::Local,
-                        );
-                        self.scopes[current_scope as usize]
-                            .symbols
-                            .insert(local_name.clone(), symbol);
-                        self.maybe_record_type_reference(&file, current_scope, ty_token);
-                        i = next_i;
-                        continue;
-                    }
-                }
-            }
-
-            // Record references.
-            if let TokenKind::Ident(name) = &tok.kind {
-                let prev = sig_tokens.get(i.wrapping_sub(1));
-                let next = sig_tokens.get(i + 1);
-
-                if is_declaration_context(prev, tok, next) {
-                    // Declaration sites are handled by the declaration parsing above.
-                    i += 1;
-                    continue;
-                }
-
-                if is_method_call(prev, tok, next) {
-                    if let Some(symbol) =
-                        resolve_by_kind(self, &scope_stack, name, JavaSymbolKind::Method)
-                    {
-                        self.record_reference(file.clone(), symbol, tok.range);
-                    }
-                    i += 1;
-                    continue;
-                }
-
-                if let Some(Token {
-                    kind: TokenKind::Symbol('.'),
-                    ..
-                }) = prev
-                {
-                    if let Some(symbol) = resolve_member(self, &scope_stack, name) {
-                        self.record_reference(file.clone(), symbol, tok.range);
-                    }
-                    i += 1;
-                    continue;
-                }
-
-                if let Some(symbol) = resolve_any(self, &scope_stack, name) {
-                    self.record_reference(file.clone(), symbol, tok.range);
-                }
-            }
-
-            i += 1;
-        }
-    }
-
-    fn add_symbol(
-        &mut self,
-        file: FileId,
-        name: String,
-        name_range: TextRange,
-        scope: u32,
-        kind: JavaSymbolKind,
-    ) -> SymbolId {
-        let id = SymbolId(self.symbols.len() as u32);
-        self.symbols.push(SymbolData {
-            def: SymbolDefinition {
-                file: file.clone(),
-                name: name.clone(),
-                name_range,
-                scope,
-            },
-            kind,
-        });
-        self.references.push(Vec::new());
-        self.spans.push((file, name_range, id));
-        id
-    }
-
-    fn record_reference(&mut self, file: FileId, symbol: SymbolId, range: TextRange) {
-        self.references[symbol.as_usize()].push(Reference {
-            file: file.clone(),
-            range,
-        });
-        self.spans.push((file, range, symbol));
-    }
-
-    fn maybe_record_type_reference(&mut self, file: &FileId, current_scope: u32, token: &Token) {
-        if let TokenKind::Ident(type_name) = &token.kind {
-            let stack = self.scope_stack(current_scope);
-            if let Some(symbol) = resolve_by_kind(self, &stack, type_name, JavaSymbolKind::Type) {
-                self.record_reference(file.clone(), symbol, token.range);
-            }
-        }
-    }
-
-    fn scope_stack(&self, scope: u32) -> Vec<u32> {
-        let mut out = Vec::new();
-        let mut current = Some(scope);
-        while let Some(id) = current {
-            out.push(id);
-            current = self.scopes.get(id as usize).and_then(|s| s.parent);
-        }
-        out.reverse();
-        out
+    fn decode_scope(&self, scope: u32) -> Option<(DbFileId, nova_resolve::ScopeId)> {
+        self.scope_interner.lookup(scope)
     }
 }
 
-impl RefactorDatabase for InMemoryJavaDatabase {
+impl RefactorDatabase for RefactorJavaDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str> {
-        self.files.get(file).map(|s| s.as_ref())
+        self.files.get(file).map(|text| text.as_ref())
     }
 
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition> {
@@ -436,20 +401,47 @@ impl RefactorDatabase for InMemoryJavaDatabase {
     }
 
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
-        self.scopes
-            .get(scope as usize)
-            .and_then(|s| s.symbols.get(name))
-            .copied()
+        let (file, local_scope) = self.decode_scope(scope)?;
+        let scope_result = self.scopes.get(&file)?;
+        let data = scope_result.scopes.scope(local_scope);
+        let resolution = data.values().get(&Name::from(name))?;
+        match resolution {
+            Resolution::Local(local) => self
+                .resolution_to_symbol
+                .get(&ResolutionKey::Local(*local))
+                .copied(),
+            Resolution::Parameter(param) => self
+                .resolution_to_symbol
+                .get(&ResolutionKey::Param(*param))
+                .copied(),
+            _ => None,
+        }
     }
 
     fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId> {
-        let mut current = self.scopes.get(scope as usize).and_then(|s| s.parent);
+        let (file, local_scope) = self.decode_scope(scope)?;
+        let scope_result = self.scopes.get(&file)?;
+
+        let mut current = scope_result.scopes.scope(local_scope).parent();
         while let Some(scope_id) = current {
-            if let Some(symbol) = self.resolve_name_in_scope(scope_id, name) {
-                return Some(symbol);
+            let data = scope_result.scopes.scope(scope_id);
+            if let Some(resolution) = data.values().get(&Name::from(name)) {
+                let key = match resolution {
+                    Resolution::Local(local) => ResolutionKey::Local(*local),
+                    Resolution::Parameter(param) => ResolutionKey::Param(*param),
+                    _ => {
+                        current = data.parent();
+                        continue;
+                    }
+                };
+                if let Some(symbol) = self.resolution_to_symbol.get(&key).copied() {
+                    return Some(symbol);
+                }
             }
-            current = self.scopes.get(scope_id as usize).and_then(|s| s.parent);
+
+            current = data.parent();
         }
+
         None
     }
 
@@ -461,418 +453,179 @@ impl RefactorDatabase for InMemoryJavaDatabase {
     }
 }
 
-fn is_type_decl_keyword(keyword: &str) -> bool {
-    matches!(keyword, "class" | "interface" | "enum" | "record")
-}
+fn record_body_references(
+    file: &FileId,
+    body: &hir::Body,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    walk_hir_body(body, |expr_id| {
+        let hir::Expr::Name { name, range } = &body.exprs[expr_id] else {
+            return;
+        };
 
-fn is_modifier(keyword: &str) -> bool {
-    matches!(
-        keyword,
-        "public"
-            | "private"
-            | "protected"
-            | "static"
-            | "final"
-            | "abstract"
-            | "synchronized"
-            | "native"
-            | "strictfp"
-            | "default"
-    )
-}
+        let Some(&scope) = scope_result.expr_scopes.get(&expr_id) else {
+            return;
+        };
 
-fn is_type_keyword(keyword: &str) -> bool {
-    matches!(
-        keyword,
-        "void"
-            | "var"
-            | "byte"
-            | "short"
-            | "int"
-            | "long"
-            | "float"
-            | "double"
-            | "boolean"
-            | "char"
-    )
-}
+        let Some(resolved) =
+            resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))
+        else {
+            return;
+        };
 
-fn token_is_type(token: &Token) -> bool {
-    match &token.kind {
-        TokenKind::Keyword(k) => is_type_keyword(k),
-        TokenKind::Ident(_) => true,
-        _ => false,
-    }
-}
+        let key = match resolved {
+            Resolution::Local(local) => ResolutionKey::Local(local),
+            Resolution::Parameter(param) => ResolutionKey::Param(param),
+            _ => return,
+        };
 
-fn try_parse_method_decl(
-    tokens: &[Token],
-    start: usize,
-) -> Option<(usize, Vec<PendingParam>, Token, Token)> {
-    let mut i = start;
-    while let Some(Token {
-        kind: TokenKind::Keyword(k),
-        ..
-    }) = tokens.get(i)
-    {
-        if is_modifier(k) {
-            i += 1;
-        } else {
-            break;
-        }
-    }
+        let Some(&symbol) = resolution_to_symbol.get(&key) else {
+            return;
+        };
 
-    let return_type = tokens.get(i)?;
-    if !token_is_type(return_type) {
-        return None;
-    }
-
-    let method_name = tokens.get(i + 1)?;
-    let TokenKind::Ident(_) = &method_name.kind else {
-        return None;
-    };
-
-    let open_paren = tokens.get(i + 2)?;
-    if open_paren.kind != TokenKind::Symbol('(') {
-        return None;
-    }
-
-    // Parse the parameter list to the matching ')'.
-    let mut depth = 1usize;
-    let mut idx = i + 3;
-    let mut params: Vec<PendingParam> = Vec::new();
-
-    while idx < tokens.len() {
-        let t = &tokens[idx];
-        match t.kind {
-            TokenKind::Symbol('(') => depth += 1,
-            TokenKind::Symbol(')') => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-
-        if depth == 1 {
-            // Very naive parameter parsing: [final]? <type> <name>
-            let mut p = idx;
-            while let Some(Token {
-                kind: TokenKind::Keyword(k),
-                ..
-            }) = tokens.get(p)
-            {
-                if k == "final" {
-                    p += 1;
-                } else {
-                    break;
-                }
-            }
-
-            let ty = tokens.get(p);
-            let name = tokens.get(p + 1);
-            if let (Some(ty), Some(name)) = (ty, name) {
-                if token_is_type(ty) {
-                    if let TokenKind::Ident(param_name) = &name.kind {
-                        params.push(PendingParam {
-                            name: param_name.clone(),
-                            range: name.range,
-                        });
-                        idx = p + 2;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        idx += 1;
-    }
-
-    // Expect closing ')'.
-    if idx >= tokens.len() || tokens[idx].kind != TokenKind::Symbol(')') {
-        return None;
-    }
-
-    Some((idx + 1, params, return_type.clone(), method_name.clone()))
-}
-
-fn try_parse_variable_decl(tokens: &[Token], start: usize) -> Option<(usize, &Token, &Token)> {
-    let mut i = start;
-    while let Some(Token {
-        kind: TokenKind::Keyword(k),
-        ..
-    }) = tokens.get(i)
-    {
-        if is_modifier(k) || k == "final" {
-            i += 1;
-        } else {
-            break;
-        }
-    }
-
-    let ty = tokens.get(i)?;
-    if !token_is_type(ty) {
-        return None;
-    }
-
-    let name = tokens.get(i + 1)?;
-    if !matches!(name.kind, TokenKind::Ident(_)) {
-        return None;
-    }
-
-    let next = tokens.get(i + 2)?;
-    if next.kind == TokenKind::Symbol('(') {
-        return None; // method/constructor
-    }
-
-    Some((i + 2, ty, name))
-}
-
-fn is_declaration_context(_prev: Option<&Token>, _tok: &Token, _next: Option<&Token>) -> bool {
-    false
-}
-
-fn is_method_call(prev: Option<&Token>, tok: &Token, next: Option<&Token>) -> bool {
-    if next.map(|t| t.kind.clone()) != Some(TokenKind::Symbol('(')) {
-        return false;
-    }
-
-    if let Some(Token {
-        kind: TokenKind::Keyword(k),
-        ..
-    }) = prev
-    {
-        if k == "new" {
-            return false;
-        }
-    }
-
-    matches!(tok.kind, TokenKind::Ident(_))
-}
-
-fn resolve_any(db: &InMemoryJavaDatabase, stack: &[u32], name: &str) -> Option<SymbolId> {
-    for scope in stack.iter().rev() {
-        if let Some(symbol) = db.resolve_name_in_scope(*scope, name) {
-            return Some(symbol);
-        }
-    }
-    None
-}
-
-fn resolve_by_kind(
-    db: &InMemoryJavaDatabase,
-    stack: &[u32],
-    name: &str,
-    kind: JavaSymbolKind,
-) -> Option<SymbolId> {
-    for scope in stack.iter().rev() {
-        if let Some(symbol) = db.resolve_name_in_scope(*scope, name) {
-            if db.symbol_kind(symbol) == Some(kind) {
-                return Some(symbol);
-            }
-        }
-    }
-    None
-}
-
-fn resolve_member(db: &InMemoryJavaDatabase, stack: &[u32], name: &str) -> Option<SymbolId> {
-    for scope in stack.iter().rev() {
-        if let Some(symbol) = db.resolve_name_in_scope(*scope, name) {
-            match db.symbol_kind(symbol) {
-                Some(JavaSymbolKind::Field | JavaSymbolKind::Method | JavaSymbolKind::Type) => {
-                    return Some(symbol)
-                }
-                _ => continue,
-            }
-        }
-    }
-    None
-}
-
-fn tokenize_java(source: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let bytes = source.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        let c = b as char;
-
-        // Whitespace
-        if c.is_ascii_whitespace() {
-            let start = i;
-            i += 1;
-            while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
-                i += 1;
-            }
-            tokens.push(Token {
-                kind: TokenKind::Whitespace,
-                range: TextRange::new(start, i),
-            });
-            continue;
-        }
-
-        // Comments
-        if c == '/' && i + 1 < bytes.len() {
-            let next = bytes[i + 1] as char;
-            if next == '/' {
-                let start = i;
-                i += 2;
-                while i < bytes.len() && (bytes[i] as char) != '\n' {
-                    i += 1;
-                }
-                tokens.push(Token {
-                    kind: TokenKind::Comment,
-                    range: TextRange::new(start, i),
-                });
-                continue;
-            }
-            if next == '*' {
-                let start = i;
-                i += 2;
-                while i + 1 < bytes.len() {
-                    if bytes[i] as char == '*' && bytes[i + 1] as char == '/' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-                tokens.push(Token {
-                    kind: TokenKind::Comment,
-                    range: TextRange::new(start, i),
-                });
-                continue;
-            }
-        }
-
-        // String literal
-        if c == '"' {
-            let start = i;
-            i += 1;
-            while i < bytes.len() {
-                let ch = bytes[i] as char;
-                if ch == '\\' {
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                if ch == '"' {
-                    break;
-                }
-            }
-            tokens.push(Token {
-                kind: TokenKind::StringLiteral,
-                range: TextRange::new(start, i),
-            });
-            continue;
-        }
-
-        // Char literal
-        if c == '\'' {
-            let start = i;
-            i += 1;
-            while i < bytes.len() {
-                let ch = bytes[i] as char;
-                if ch == '\\' {
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                if ch == '\'' {
-                    break;
-                }
-            }
-            tokens.push(Token {
-                kind: TokenKind::CharLiteral,
-                range: TextRange::new(start, i),
-            });
-            continue;
-        }
-
-        // Identifier / keyword
-        if is_ident_start(c) {
-            let start = i;
-            i += 1;
-            while i < bytes.len() {
-                let ch = bytes[i] as char;
-                if is_ident_continue(ch) {
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
-            let text = &source[start..i];
-            let kind = if is_java_keyword(text) {
-                TokenKind::Keyword(text.to_string())
-            } else {
-                TokenKind::Ident(text.to_string())
-            };
-            tokens.push(Token {
-                kind,
-                range: TextRange::new(start, i),
-            });
-            continue;
-        }
-
-        // Symbols
-        if "{}();,=.".contains(c) {
-            tokens.push(Token {
-                kind: TokenKind::Symbol(c),
-                range: TextRange::new(i, i + 1),
-            });
-            i += 1;
-            continue;
-        }
-
-        // Everything else
-        tokens.push(Token {
-            kind: TokenKind::Other,
-            range: TextRange::new(i, i + 1),
+        let range = TextRange::new(range.start, range.end);
+        references[symbol.as_usize()].push(Reference {
+            file: file.clone(),
+            range,
         });
-        i += 1;
+        spans.push((file.clone(), range, symbol));
+    });
+}
+
+fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
+    fn walk_stmt(body: &hir::Body, stmt: hir::StmtId, f: &mut impl FnMut(hir::ExprId)) {
+        match &body.stmts[stmt] {
+            hir::Stmt::Block { statements, .. } => {
+                for stmt in statements {
+                    walk_stmt(body, *stmt, f);
+                }
+            }
+            hir::Stmt::Let { initializer, .. } => {
+                if let Some(expr) = initializer {
+                    walk_expr(body, *expr, f);
+                }
+            }
+            hir::Stmt::Expr { expr, .. } => walk_expr(body, *expr, f),
+            hir::Stmt::Return { expr, .. } => {
+                if let Some(expr) = expr {
+                    walk_expr(body, *expr, f);
+                }
+            }
+            hir::Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                walk_expr(body, *condition, f);
+                walk_stmt(body, *then_branch, f);
+                if let Some(stmt) = else_branch {
+                    walk_stmt(body, *stmt, f);
+                }
+            }
+            hir::Stmt::While { condition, body: inner, .. } => {
+                walk_expr(body, *condition, f);
+                walk_stmt(body, *inner, f);
+            }
+            hir::Stmt::For {
+                init,
+                condition,
+                update,
+                body: inner,
+                ..
+            } => {
+                for stmt in init {
+                    walk_stmt(body, *stmt, f);
+                }
+                if let Some(expr) = condition {
+                    walk_expr(body, *expr, f);
+                }
+                for expr in update {
+                    walk_expr(body, *expr, f);
+                }
+                walk_stmt(body, *inner, f);
+            }
+            hir::Stmt::ForEach {
+                iterable, body: inner, ..
+            } => {
+                walk_expr(body, *iterable, f);
+                walk_stmt(body, *inner, f);
+            }
+            hir::Stmt::Switch {
+                selector, body: inner, ..
+            } => {
+                walk_expr(body, *selector, f);
+                walk_stmt(body, *inner, f);
+            }
+            hir::Stmt::Try {
+                body: inner,
+                catches,
+                finally,
+                ..
+            } => {
+                walk_stmt(body, *inner, f);
+                for catch in catches {
+                    walk_stmt(body, catch.body, f);
+                }
+                if let Some(finally) = finally {
+                    walk_stmt(body, *finally, f);
+                }
+            }
+            hir::Stmt::Throw { expr, .. } => walk_expr(body, *expr, f),
+            hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } | hir::Stmt::Empty { .. } => {}
+        }
     }
 
-    tokens
-}
+    fn walk_expr(body: &hir::Body, expr: hir::ExprId, f: &mut impl FnMut(hir::ExprId)) {
+        f(expr);
+        match &body.exprs[expr] {
+            hir::Expr::Name { .. }
+            | hir::Expr::Literal { .. }
+            | hir::Expr::Null { .. }
+            | hir::Expr::This { .. }
+            | hir::Expr::Super { .. }
+            | hir::Expr::Missing { .. } => {}
+            hir::Expr::FieldAccess { receiver, .. }
+            | hir::Expr::MethodReference { receiver, .. }
+            | hir::Expr::ConstructorReference { receiver, .. } => walk_expr(body, *receiver, f),
+            hir::Expr::ClassLiteral { ty, .. } => walk_expr(body, *ty, f),
+            hir::Expr::Call { callee, args, .. } => {
+                walk_expr(body, *callee, f);
+                for arg in args {
+                    walk_expr(body, *arg, f);
+                }
+            }
+            hir::Expr::New { args, .. } => {
+                for arg in args {
+                    walk_expr(body, *arg, f);
+                }
+            }
+            hir::Expr::Unary { expr, .. } => walk_expr(body, *expr, f),
+            hir::Expr::Binary { lhs, rhs, .. }
+            | hir::Expr::Assign { lhs, rhs, .. } => {
+                walk_expr(body, *lhs, f);
+                walk_expr(body, *rhs, f);
+            }
+            hir::Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                walk_expr(body, *condition, f);
+                walk_expr(body, *then_expr, f);
+                walk_expr(body, *else_expr, f);
+            }
+            hir::Expr::Lambda { body: lambda_body, .. } => match lambda_body {
+                hir::LambdaBody::Expr(expr) => walk_expr(body, *expr, f),
+                hir::LambdaBody::Block(stmt) => walk_stmt(body, *stmt, f),
+            },
+        }
+    }
 
-fn is_ident_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_' || c == '$'
-}
-
-fn is_ident_continue(c: char) -> bool {
-    is_ident_start(c) || c.is_ascii_digit()
-}
-
-fn is_java_keyword(text: &str) -> bool {
-    matches!(
-        text,
-        "class"
-            | "interface"
-            | "enum"
-            | "record"
-            | "void"
-            | "var"
-            | "package"
-            | "import"
-            | "public"
-            | "private"
-            | "protected"
-            | "static"
-            | "final"
-            | "abstract"
-            | "synchronized"
-            | "native"
-            | "strictfp"
-            | "default"
-            | "new"
-            | "return"
-            | "byte"
-            | "short"
-            | "int"
-            | "long"
-            | "float"
-            | "double"
-            | "boolean"
-            | "char"
-    )
+    walk_stmt(body, body.root, &mut f);
 }

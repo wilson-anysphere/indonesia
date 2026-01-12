@@ -1,6 +1,6 @@
 use nova_refactor::{
     apply_text_edits, extract_variable, rename, Conflict, ExtractVariableParams, FileId,
-    RenameParams, SemanticRefactorError, TreeSitterJavaDatabase, WorkspaceTextRange,
+    RefactorJavaDatabase, RenameParams, SemanticRefactorError, WorkspaceTextRange,
 };
 use pretty_assertions::assert_eq;
 
@@ -15,7 +15,7 @@ fn rename_updates_all_occurrences_not_strings() {
   }
 }
 "#;
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
     let offset = src.find("int foo").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
@@ -47,7 +47,7 @@ fn rename_conflict_detection_triggers_on_collision() {
   }
 }
 "#;
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
     let offset = src.find("int foo").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
@@ -82,7 +82,7 @@ fn extract_variable_generates_valid_edit() {
 }
 "#;
 
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let expr_start = src.find("1 + 2").unwrap();
     let expr_end = expr_start + "1 + 2".len();
 
@@ -121,7 +121,7 @@ fn rename_local_variable_does_not_touch_shadowed_field() {
 }
 "#;
 
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let offset = src.find("int foo = 1").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at local foo");
 
@@ -159,7 +159,7 @@ fn rename_parameter_updates_body_references() {
 }
 "#;
 
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let offset = src.find("int foo").unwrap() + "int ".len() + 1;
     let symbol = db
         .symbol_at(&file, offset)
@@ -199,7 +199,7 @@ fn rename_local_variable_does_not_touch_type_arguments_or_annotations() {
 }
 "#;
 
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let offset = src.find("int Foo = 1").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at local Foo");
 
@@ -244,7 +244,7 @@ fn rename_shadowing_conflict_detected_in_nested_block_scope() {
 }
 "#;
 
-    let db = TreeSitterJavaDatabase::new([(file.clone(), src.to_string())]);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let offset = src.find("int inner").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at inner");
 

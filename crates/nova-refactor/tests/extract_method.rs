@@ -1,24 +1,20 @@
-use nova_refactor::apply_edits;
 use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
+use nova_refactor::{apply_workspace_edit, FileId, WorkspaceEdit};
 use nova_test_utils::extract_range;
 use std::collections::BTreeMap;
 
-fn apply_single_file(file: &str, source: &str, edits: &[nova_refactor::TextEdit]) -> String {
+fn apply_single_file(file: &str, source: &str, edit: &WorkspaceEdit) -> String {
     let mut files = BTreeMap::new();
-    files.insert(file.to_string(), source.to_string());
-    let out = apply_edits(&files, edits);
-    out.get(file).cloned().expect("file must exist")
+    let file_id = FileId::new(file.to_string());
+    files.insert(file_id.clone(), source.to_string());
+    let out = apply_workspace_edit(&files, edit).expect("apply workspace edit");
+    out.get(&file_id).cloned().expect("file must exist")
 }
 
-fn assert_no_overlaps(edits: &[nova_refactor::TextEdit]) {
-    let mut edit = nova_refactor::WorkspaceEdit::new(
-        edits
-            .iter()
-            .cloned()
-            .map(nova_refactor::WorkspaceTextEdit::from)
-            .collect(),
-    );
-    edit.normalize()
+fn assert_no_overlaps(edit: &WorkspaceEdit) {
+    let mut normalized = edit.clone();
+    normalized
+        .normalize()
         .expect("edits should normalize without overlaps");
 }
 
@@ -43,9 +39,9 @@ class C {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let edits = refactoring.apply(&source).expect("apply should succeed");
-    assert_no_overlaps(&edits);
-    let actual = apply_single_file("Main.java", &source, &edits);
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
 
     let expected = r#"
 class C {
@@ -86,9 +82,9 @@ class C {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let edits = refactoring.apply(&source).expect("apply should succeed");
-    assert_no_overlaps(&edits);
-    let actual = apply_single_file("Main.java", &source, &edits);
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
 
     let expected = r#"
 class C {
@@ -156,7 +152,7 @@ class C {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let edits = refactoring.apply(&source).expect("apply should succeed");
-    assert_no_overlaps(&edits);
-    let _ = apply_single_file("Main.java", &source, &edits);
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let _ = apply_single_file("Main.java", &source, &edit);
 }

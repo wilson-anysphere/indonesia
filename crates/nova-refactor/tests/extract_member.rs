@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use nova_refactor::{
-    apply_edits, extract_constant, extract_field, ExtractError, ExtractOptions, TextRange,
+    apply_workspace_edit, extract_constant, extract_field, ExtractError, ExtractOptions, FileId,
+    TextRange,
 };
 use pretty_assertions::assert_eq;
 
@@ -29,17 +30,16 @@ class A {
 "#,
     );
 
-    let edits = extract_constant("A.java", &code, range, ExtractOptions::default())
-        .unwrap()
-        .edits;
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
 
     let mut files = BTreeMap::new();
-    files.insert("A.java".to_string(), code);
-    let updated = apply_edits(&files, &edits);
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
 
     assert_eq!(
-        updated.get("A.java").unwrap(),
-        r#"
+        updated.get(&file_id).unwrap(),
+         r#"
 class A {
     private static final int VALUE = 1 + 2;
 
@@ -64,7 +64,7 @@ class A {
 "#,
     );
 
-    let edits = extract_constant(
+    let outcome = extract_constant(
         "A.java",
         &code,
         range,
@@ -73,16 +73,16 @@ class A {
             ..Default::default()
         },
     )
-    .unwrap()
-    .edits;
+    .unwrap();
 
     let mut files = BTreeMap::new();
-    files.insert("A.java".to_string(), code);
-    let updated = apply_edits(&files, &edits);
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
 
     assert_eq!(
-        updated.get("A.java").unwrap(),
-        r#"
+        updated.get(&file_id).unwrap(),
+         r#"
 class A {
     private static final int VALUE = 1 + 2;
 
@@ -124,17 +124,16 @@ class A {
 "#,
     );
 
-    let edits = extract_field("A.java", &code, range, ExtractOptions::default())
-        .unwrap()
-        .edits;
+    let outcome = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap();
 
     let mut files = BTreeMap::new();
-    files.insert("A.java".to_string(), code);
-    let updated = apply_edits(&files, &edits);
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
 
     assert_eq!(
-        updated.get("A.java").unwrap(),
-        r#"
+        updated.get(&file_id).unwrap(),
+         r#"
 class A {
     private final int value = 1 + 2;
 

@@ -1,8 +1,10 @@
-use crate::TextEdit;
-use nova_index::TextRange;
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
-use tree_sitter::{Node, Parser};
+
+use nova_format::NewlineStyle;
+use nova_syntax::java::{self, ast as jast};
+
+use crate::edit::{FileId, TextEdit, TextRange, WorkspaceEdit};
+use crate::java::is_ident_char_byte;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InlineMethodOptions {
@@ -44,29 +46,23 @@ pub enum InlineMethodError {
 }
 
 #[derive(Debug, Clone)]
-struct ParameterInfo {
-    name: String,
-    ty_text: String,
+struct Invocation<'a> {
+    name: &'a str,
+    args: Vec<&'a jast::Expr>,
+    receiver: Option<&'a jast::Expr>,
+    call_range: nova_types::Span,
+    stmt_range: nova_types::Span,
+    stmt_indent: String,
+    enclosing_method_locals: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
-struct MethodInfo<'tree> {
-    name: String,
-    is_private: bool,
-    has_bad_modifiers: bool,
-    has_type_params: bool,
-    return_type_text: String,
-    parameters: Vec<ParameterInfo>,
-    body: Node<'tree>,
-    decl_range: TextRange,
-}
-
-#[derive(Debug, Clone)]
-struct InvocationInfo<'tree> {
-    node: Node<'tree>,
-    name: String,
-    args: Vec<Node<'tree>>,
-    receiver: Option<Node<'tree>>,
+struct MethodToInline<'a> {
+    decl: &'a jast::MethodDecl,
+    params: Vec<&'a jast::ParamDecl>,
+    body: &'a jast::Block,
+    return_expr: &'a jast::Expr,
+    locals: Vec<&'a jast::LocalVarStmt>,
 }
 
 pub fn inline_method(
@@ -74,767 +70,670 @@ pub fn inline_method(
     source: &str,
     cursor_byte_offset: usize,
     options: InlineMethodOptions,
-) -> Result<Vec<TextEdit>, InlineMethodError> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_java::language())
-        .expect("tree-sitter-java language should load");
+) -> Result<WorkspaceEdit, InlineMethodError> {
+    let parsed = java::parse(source);
+    let unit = parsed.compilation_unit();
 
-    let tree = parser
-        .parse(source, None)
-        .ok_or(InlineMethodError::NotOnInvocation)?;
+    let invocation =
+        find_invocation_at_offset(unit, source, cursor_byte_offset).ok_or(InlineMethodError::NotOnInvocation)?;
+    validate_receiver(invocation.receiver, source)?;
 
-    let root = tree.root_node();
-    let invocation_node = find_invocation_at_offset(root, cursor_byte_offset)
-        .ok_or(InlineMethodError::NotOnInvocation)?;
-    let invocation_info =
-        parse_invocation(invocation_node, source).ok_or(InlineMethodError::NotOnInvocation)?;
+    let method = find_method_to_inline(unit, invocation.name, invocation.args.len())?;
+    validate_method(source, method.decl)?;
 
-    let invocation_name = invocation_info.name.clone();
-    let invocation_arg_count = invocation_info.args.len();
-
-    let method_node = find_method_declaration(root, source, &invocation_info)
-        .ok_or(InlineMethodError::MethodNotFound)?;
-    let method_info = analyze_method(method_node, source)?;
-
-    if !method_info.is_private {
-        return Err(InlineMethodError::MethodNotPrivate);
-    }
-    if method_info.has_bad_modifiers {
-        return Err(InlineMethodError::UnsupportedModifiers);
-    }
-    if method_info.has_type_params {
-        return Err(InlineMethodError::UnsupportedTypeParameters);
-    }
-
-    if method_info.return_type_text.trim() == "void" {
+    if method.decl.return_ty.text.trim() == "void" {
         return Err(InlineMethodError::VoidMethodNotSupported);
     }
 
-    if is_recursive(&method_info, source) {
+    if is_recursive(source, method.decl.name.as_str(), method.body) {
         return Err(InlineMethodError::RecursiveMethod);
     }
 
-    if has_unsupported_control_flow(&method_info, source) {
-        return Err(InlineMethodError::UnsupportedControlFlow);
-    }
-
-    let return_stmt = extract_single_return_statement(&method_info, source)?;
-    let return_expr = return_stmt
-        .child_by_field_name("value")
-        .or_else(|| return_stmt.named_child(0))
-        .ok_or(InlineMethodError::MultipleReturns)?;
-
-    // Call sites: either the single invocation at cursor or all invocations in the file.
+    // Collect call sites.
     let call_sites = if options.inline_all {
-        find_all_invocations(root, source, &invocation_name, invocation_arg_count)
+        find_all_return_call_sites(unit, source, invocation.name, invocation.args.len())?
     } else {
-        vec![invocation_info]
+        vec![invocation]
     };
 
-    // Receiver restrictions for the initial implementation: no receiver / this / super only.
-    for site in &call_sites {
-        if let Some(receiver) = site.receiver {
-            let recv_text = source[receiver.byte_range()].trim();
-            if recv_text != "this" && recv_text != "super" {
-                return Err(InlineMethodError::UnsupportedReceiver);
-            }
+    let mut edits: Vec<TextEdit> = Vec::new();
+    let file_id = FileId::new(file.to_string());
+    let newline = NewlineStyle::detect(source).as_str().to_string();
+
+    for site in call_sites {
+        validate_receiver(site.receiver, source)?;
+
+        if site.args.len() != method.params.len() {
+            return Err(InlineMethodError::ArgumentCountMismatch);
         }
-    }
 
-    let mut edits = Vec::new();
-
-    for call_site in call_sites {
-        let stmt =
-            enclosing_statement(call_site.node).ok_or(InlineMethodError::UnsupportedCallSite)?;
-        let stmt_range = node_replacement_range(source, stmt);
-
-        let replacement =
-            inline_into_statement(source, &method_info, return_expr, &call_site, stmt)?;
-
-        edits.push(TextEdit {
-            file: file.to_string(),
-            range: stmt_range,
+        let replacement = inline_at_site(source, &newline, &method, &site);
+        let stmt_range_including_indent =
+            TextRange::new(line_start(source, site.stmt_range.start), site.stmt_range.end);
+        edits.push(TextEdit::replace(
+            file_id.clone(),
+            stmt_range_including_indent,
             replacement,
-        });
-    }
-
-    if options.inline_all {
-        edits.push(TextEdit {
-            file: file.to_string(),
-            range: method_info.decl_range,
-            replacement: String::new(),
-        });
-    }
-
-    Ok(edits)
-}
-
-fn find_invocation_at_offset<'tree>(root: Node<'tree>, offset: usize) -> Option<Node<'tree>> {
-    let node = root.descendant_for_byte_range(offset, offset)?;
-    let mut cur = node;
-    loop {
-        if cur.kind() == "method_invocation" {
-            return Some(cur);
-        }
-        cur = cur.parent()?;
-    }
-}
-
-fn find_named_child_by_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
-}
-
-fn parse_invocation<'tree>(invocation: Node<'tree>, source: &str) -> Option<InvocationInfo<'tree>> {
-    if invocation.kind() != "method_invocation" {
-        return None;
-    }
-
-    let receiver = invocation.child_by_field_name("object");
-
-    let name_node = invocation
-        .child_by_field_name("name")
-        .or_else(|| find_named_child_by_kind(invocation, "identifier"))?;
-    let name = source[name_node.byte_range()].to_string();
-
-    let args_node = invocation
-        .child_by_field_name("arguments")
-        .or_else(|| find_named_child_by_kind(invocation, "argument_list"))?;
-    let mut cursor = args_node.walk();
-    let args: Vec<_> = args_node.named_children(&mut cursor).collect();
-
-    Some(InvocationInfo {
-        node: invocation,
-        name,
-        args,
-        receiver,
-    })
-}
-
-fn find_method_declaration<'tree>(
-    root: Node<'tree>,
-    source: &str,
-    invocation: &InvocationInfo<'tree>,
-) -> Option<Node<'tree>> {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "method_declaration" {
-            let name_node = node
-                .child_by_field_name("name")
-                .or_else(|| find_named_child_by_kind(node, "identifier"));
-            if let Some(name_node) = name_node {
-                let name = source[name_node.byte_range()].trim();
-                if name == invocation.name {
-                    let params_node = node
-                        .child_by_field_name("parameters")
-                        .or_else(|| find_named_child_by_kind(node, "formal_parameters"))?;
-                    let mut c = params_node.walk();
-                    let param_count = params_node
-                        .named_children(&mut c)
-                        .filter(|p| {
-                            p.kind() == "formal_parameter" || p.kind() == "spread_parameter"
-                        })
-                        .count();
-                    if param_count == invocation.args.len() {
-                        return Some(node);
-                    }
-                }
-            }
-        }
-
-        let mut c = node.walk();
-        for child in node.named_children(&mut c) {
-            stack.push(child);
-        }
-    }
-    None
-}
-
-fn analyze_method<'tree>(
-    method: Node<'tree>,
-    source: &str,
-) -> Result<MethodInfo<'tree>, InlineMethodError> {
-    let name_node = method
-        .child_by_field_name("name")
-        .or_else(|| find_named_child_by_kind(method, "identifier"))
-        .ok_or(InlineMethodError::MethodNotFound)?;
-    let name = source[name_node.byte_range()].to_string();
-
-    let modifiers_text = method
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child_by_kind(method, "modifiers"))
-        .map(|n| source[n.byte_range()].to_string())
-        .unwrap_or_default();
-    let is_private = modifiers_text.split_whitespace().any(|t| t == "private");
-    let has_bad_modifiers = modifiers_text
-        .split_whitespace()
-        .any(|t| matches!(t, "abstract" | "native" | "synchronized"));
-
-    let has_type_params = method
-        .child_by_field_name("type_parameters")
-        .or_else(|| find_named_child_by_kind(method, "type_parameters"))
-        .is_some();
-
-    let return_type_text = method
-        .child_by_field_name("type")
-        .map(|n| source[n.byte_range()].to_string())
-        .unwrap_or_default();
-
-    let params_node = method
-        .child_by_field_name("parameters")
-        .or_else(|| find_named_child_by_kind(method, "formal_parameters"))
-        .ok_or(InlineMethodError::MethodNotFound)?;
-    let mut params_cursor = params_node.walk();
-    let mut parameters = Vec::new();
-    for param in params_node
-        .named_children(&mut params_cursor)
-        .filter(|p| p.kind() == "formal_parameter")
-    {
-        let name_node = param
-            .child_by_field_name("name")
-            .or_else(|| find_named_child_by_kind(param, "identifier"));
-        let ty_node = param.child_by_field_name("type").or_else(|| {
-            // tree-sitter-java tends to expose type nodes as named children; keep this as a fallback.
-            let mut cursor = param.walk();
-            for child in param.named_children(&mut cursor) {
-                if child.kind().ends_with("_type")
-                    || matches!(
-                        child.kind(),
-                        "type_identifier"
-                            | "scoped_type_identifier"
-                            | "array_type"
-                            | "generic_type"
-                    )
-                {
-                    return Some(child);
-                }
-            }
-            None
-        });
-
-        let (Some(name_node), Some(ty_node)) = (name_node, ty_node) else {
-            continue;
-        };
-        parameters.push(ParameterInfo {
-            name: source[name_node.byte_range()].to_string(),
-            ty_text: source[ty_node.byte_range()].to_string(),
-        });
-    }
-
-    let body = method
-        .child_by_field_name("body")
-        .or_else(|| find_named_child_by_kind(method, "block"))
-        .ok_or(InlineMethodError::MethodNotFound)?;
-
-    Ok(MethodInfo {
-        name,
-        is_private,
-        has_bad_modifiers,
-        has_type_params,
-        return_type_text,
-        parameters,
-        body,
-        decl_range: node_replacement_range(source, method),
-    })
-}
-
-fn node_replacement_range(source: &str, node: Node<'_>) -> TextRange {
-    let start = source[..node.start_byte()]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let mut end = node.end_byte();
-    let bytes = source.as_bytes();
-    while end < bytes.len() {
-        match bytes[end] {
-            b' ' | b'\t' => end += 1,
-            b'\r' => {
-                end += 1;
-                if end < bytes.len() && bytes[end] == b'\n' {
-                    end += 1;
-                }
-                break;
-            }
-            b'\n' => {
-                end += 1;
-                break;
-            }
-            _ => break,
-        }
-    }
-
-    TextRange::new(start, end)
-}
-
-fn is_recursive(method: &MethodInfo<'_>, source: &str) -> bool {
-    let mut stack = vec![method.body];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "method_invocation" {
-            if let Some(name_node) = node
-                .child_by_field_name("name")
-                .or_else(|| find_named_child_by_kind(node, "identifier"))
-            {
-                if source[name_node.byte_range()].trim() == method.name {
-                    return true;
-                }
-            }
-        }
-
-        let mut c = node.walk();
-        for child in node.named_children(&mut c) {
-            stack.push(child);
-        }
-    }
-    false
-}
-
-fn has_unsupported_control_flow(method: &MethodInfo<'_>, _source: &str) -> bool {
-    const UNSUPPORTED: &[&str] = &[
-        "if_statement",
-        "for_statement",
-        "enhanced_for_statement",
-        "while_statement",
-        "do_statement",
-        "switch_expression",
-        "switch_statement",
-        "try_statement",
-        "catch_clause",
-        "finally_clause",
-        "synchronized_statement",
-        "break_statement",
-        "continue_statement",
-        "yield_statement",
-        "throw_statement",
-    ];
-
-    let mut stack = vec![method.body];
-    while let Some(node) = stack.pop() {
-        if UNSUPPORTED.contains(&node.kind()) {
-            return true;
-        }
-        let mut c = node.walk();
-        for child in node.named_children(&mut c) {
-            stack.push(child);
-        }
-    }
-    false
-}
-
-fn extract_single_return_statement<'tree>(
-    method: &MethodInfo<'tree>,
-    _source: &str,
-) -> Result<Node<'tree>, InlineMethodError> {
-    let mut cursor = method.body.walk();
-    let stmts: Vec<_> = method.body.named_children(&mut cursor).collect();
-    let return_stmts: Vec<_> = stmts
-        .iter()
-        .copied()
-        .filter(|s| s.kind() == "return_statement")
-        .collect();
-
-    if return_stmts.len() != 1 {
-        return Err(InlineMethodError::MultipleReturns);
-    }
-
-    // Enforce that the (single) return is the last top-level statement.
-    if stmts.last().copied() != Some(return_stmts[0]) {
-        return Err(InlineMethodError::MultipleReturns);
-    }
-
-    // For the first iteration we only support a "simple block": local variable declarations
-    // followed by a single return.
-    for stmt in stmts.iter().take(stmts.len().saturating_sub(1)) {
-        if stmt.kind() != "local_variable_declaration" {
-            return Err(InlineMethodError::UnsupportedControlFlow);
-        }
-    }
-
-    Ok(return_stmts[0])
-}
-
-fn enclosing_statement<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
-    let mut cur = node;
-    loop {
-        let kind = cur.kind();
-        if kind.ends_with("_statement") || kind == "local_variable_declaration" {
-            return Some(cur);
-        }
-        cur = cur.parent()?;
-    }
-}
-
-fn find_all_invocations<'tree>(
-    root: Node<'tree>,
-    source: &str,
-    name: &str,
-    arg_count: usize,
-) -> Vec<InvocationInfo<'tree>> {
-    let mut invocations = Vec::new();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "method_invocation" {
-            if let Some(info) = parse_invocation(node, source) {
-                if info.name == name && info.args.len() == arg_count {
-                    invocations.push(info);
-                }
-            }
-        }
-
-        let mut c = node.walk();
-        for child in node.named_children(&mut c) {
-            stack.push(child);
-        }
-    }
-
-    invocations
-}
-
-fn inline_into_statement<'tree>(
-    source: &str,
-    method: &MethodInfo<'tree>,
-    return_expr: Node<'tree>,
-    call_site: &InvocationInfo<'tree>,
-    stmt: Node<'tree>,
-) -> Result<String, InlineMethodError> {
-    if method.parameters.len() != call_site.args.len() {
-        return Err(InlineMethodError::ArgumentCountMismatch);
-    }
-
-    let (_, indent) = line_indent_at(source, stmt.start_byte());
-
-    let enclosing_method =
-        enclosing_method_declaration(stmt).ok_or(InlineMethodError::UnsupportedCallSite)?;
-    let mut used_names = collect_declared_names(enclosing_method, source);
-
-    // Parameter temp variables: evaluate arguments exactly once, in order.
-    let mut param_value_names = HashMap::new();
-    let mut param_decls = String::new();
-    for (param, arg) in method.parameters.iter().zip(call_site.args.iter()) {
-        let base = format!("{}_arg", param.name);
-        let unique = make_unique_name(&base, &mut used_names);
-        param_value_names.insert(param.name.clone(), unique.clone());
-        let arg_text = source[arg.byte_range()].trim();
-        param_decls.push_str(&format!(
-            "{indent}{} {} = {};\n",
-            param.ty_text.trim(),
-            unique,
-            arg_text
         ));
     }
 
-    // Local variable renaming from the inlined body.
-    let local_vars = top_level_local_var_names(method.body, source);
-    let mut local_rename = HashMap::new();
-    for name in local_vars {
-        if used_names.contains(&name) {
-            let base = format!("{name}_inlined");
-            let unique = make_unique_name(&base, &mut used_names);
-            local_rename.insert(name, unique);
-        } else {
-            used_names.insert(name.clone());
-        }
+    // Best-effort: delete the declaration when inlining all usages.
+    if options.inline_all {
+        let decl_range = method_decl_deletion_range(source, method.decl);
+        edits.push(TextEdit::delete(file_id.clone(), decl_range));
     }
 
-    let mut replacements = HashMap::new();
-    replacements.extend(param_value_names);
-    replacements.extend(local_rename);
+    Ok(WorkspaceEdit::new(edits))
+}
 
-    let mut inlined_stmts = String::new();
-    let mut cursor = method.body.walk();
-    let stmts: Vec<_> = method.body.named_children(&mut cursor).collect();
-    for stmt_node in stmts.iter().take(stmts.len().saturating_sub(1)) {
-        let rewritten = rewrite_with_identifier_map(*stmt_node, source, &replacements);
-        inlined_stmts.push_str(&reindent_preserving_relative(&rewritten, &indent));
-    }
-
-    let rewritten_return_expr = rewrite_with_identifier_map(return_expr, source, &replacements);
-
-    // Only support cases where the invocation is directly the return expression / initializer /
-    // assignment rhs. For the initial implementation we focus on return statements.
-    let replaced_stmt = match stmt.kind() {
-        "return_statement" => {
-            let value_node = stmt
-                .child_by_field_name("value")
-                .or_else(|| stmt.named_child(0));
-            if value_node.map(|n| n.byte_range()) != Some(call_site.node.byte_range()) {
-                return Err(InlineMethodError::UnsupportedCallSite);
-            }
-            format!("{indent}return {rewritten_return_expr};\n")
-        }
-        "local_variable_declaration" => {
-            let initializer = local_var_initializer(stmt)?;
-            if initializer.byte_range() != call_site.node.byte_range() {
-                return Err(InlineMethodError::UnsupportedCallSite);
-            }
-            let decl_text = source[stmt.byte_range()].to_string();
-            replace_range_in_text(
-                &decl_text,
-                stmt.byte_range(),
-                call_site.node.byte_range(),
-                &rewritten_return_expr,
-            )
-        }
-        "expression_statement" => {
-            let expr = stmt
-                .named_child(0)
-                .ok_or(InlineMethodError::UnsupportedCallSite)?;
-            if expr.kind() == "assignment_expression" {
-                let right = expr
-                    .child_by_field_name("right")
-                    .or_else(|| expr.named_child(1));
-                if right.map(|n| n.byte_range()) != Some(call_site.node.byte_range()) {
-                    return Err(InlineMethodError::UnsupportedCallSite);
-                }
-                let stmt_text = source[stmt.byte_range()].to_string();
-                replace_range_in_text(
-                    &stmt_text,
-                    stmt.byte_range(),
-                    call_site.node.byte_range(),
-                    &rewritten_return_expr,
-                )
-            } else {
-                return Err(InlineMethodError::UnsupportedCallSite);
-            }
-        }
-        _ => return Err(InlineMethodError::UnsupportedCallSite),
+fn validate_receiver(receiver: Option<&jast::Expr>, source: &str) -> Result<(), InlineMethodError> {
+    let Some(receiver) = receiver else {
+        return Ok(());
     };
 
-    let mut out = String::new();
-    out.push_str(&param_decls);
-    out.push_str(&inlined_stmts);
-    out.push_str(&reindent_preserving_relative(&replaced_stmt, &indent));
-
-    Ok(out)
-}
-
-fn local_var_initializer<'tree>(stmt: Node<'tree>) -> Result<Node<'tree>, InlineMethodError> {
-    if stmt.kind() != "local_variable_declaration" {
-        return Err(InlineMethodError::UnsupportedCallSite);
-    }
-    let mut cursor = stmt.walk();
-    let declarators: Vec<_> = stmt
-        .named_children(&mut cursor)
-        .filter(|c| c.kind() == "variable_declarator")
-        .collect();
-    if declarators.len() != 1 {
-        return Err(InlineMethodError::UnsupportedCallSite);
-    }
-    declarators[0]
-        .child_by_field_name("value")
-        .ok_or(InlineMethodError::UnsupportedCallSite)
-}
-
-fn line_indent_at(text: &str, byte: usize) -> (usize, String) {
-    let line_start = text[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let indent = text[line_start..byte]
-        .chars()
-        .take_while(|c| *c == ' ' || *c == '\t')
-        .collect::<String>();
-    (line_start, indent)
-}
-
-fn enclosing_method_declaration<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
-    let mut cur = node;
-    loop {
-        if cur.kind() == "method_declaration" {
-            return Some(cur);
+    match receiver {
+        jast::Expr::Missing(_) | jast::Expr::This(_) | jast::Expr::Super(_) => Ok(()),
+        jast::Expr::Name(name) => match name.name.as_str() {
+            "this" | "super" => Ok(()),
+            _ => Err(InlineMethodError::UnsupportedReceiver),
+        },
+        _ => {
+            // Anything more complex (e.g. `foo().bar`) is not supported yet.
+            let _ = source;
+            Err(InlineMethodError::UnsupportedReceiver)
         }
-        cur = cur.parent()?;
     }
 }
 
-fn collect_declared_names<'tree>(method: Node<'tree>, source: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
-    let mut stack = vec![method];
-    while let Some(node) = stack.pop() {
-        match node.kind() {
-            "formal_parameter" => {
-                if let Some(name_node) = node
-                    .child_by_field_name("name")
-                    .or_else(|| find_named_child_by_kind(node, "identifier"))
-                {
-                    names.insert(source[name_node.byte_range()].to_string());
-                }
+fn validate_method(source: &str, method: &jast::MethodDecl) -> Result<(), InlineMethodError> {
+    let prefix = source
+        .get(method.range.start..method.name_range.start)
+        .unwrap_or("");
+
+    if !contains_word(prefix, "private") {
+        return Err(InlineMethodError::MethodNotPrivate);
+    }
+
+    if contains_word(prefix, "abstract") || contains_word(prefix, "native") || contains_word(prefix, "synchronized") {
+        return Err(InlineMethodError::UnsupportedModifiers);
+    }
+
+    if prefix.contains('<') {
+        // Extremely conservative: treat any `<` in the prefix as a type parameter list.
+        return Err(InlineMethodError::UnsupportedTypeParameters);
+    }
+
+    Ok(())
+}
+
+fn contains_word(text: &str, needle: &str) -> bool {
+    let bytes = text.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut i = 0usize;
+    while let Some(pos) = text[i..].find(needle) {
+        let start = i + pos;
+        let end = start + needle_bytes.len();
+        let before_ok = start == 0 || !is_ident_char_byte(bytes[start.saturating_sub(1)]);
+        let after_ok = end >= bytes.len() || !is_ident_char_byte(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        i = end;
+    }
+    false
+}
+
+fn find_method_to_inline<'a>(
+    unit: &'a jast::CompilationUnit,
+    name: &str,
+    arity: usize,
+) -> Result<MethodToInline<'a>, InlineMethodError> {
+    let mut fallback_error: Option<InlineMethodError> = None;
+
+    for ty in &unit.types {
+        for member in ty.members() {
+            let jast::MemberDecl::Method(method) = member else {
+                continue;
+            };
+            if method.name != name || method.params.len() != arity {
+                continue;
             }
-            "variable_declarator" => {
-                if let Some(name_node) = node
-                    .child_by_field_name("name")
-                    .or_else(|| find_named_child_by_kind(node, "identifier"))
-                {
-                    names.insert(source[name_node.byte_range()].to_string());
-                }
-            }
-            _ => {}
-        }
+            let Some(body) = method.body.as_ref() else {
+                continue;
+            };
 
-        let mut c = node.walk();
-        for child in node.named_children(&mut c) {
-            stack.push(child);
-        }
-    }
-    names
-}
+            let mut locals: Vec<&jast::LocalVarStmt> = Vec::new();
+            let mut return_expr: Option<&jast::Expr> = None;
+            let mut return_count = 0usize;
+            let mut unsupported = false;
 
-fn make_unique_name(base: &str, used: &mut HashSet<String>) -> String {
-    if !used.contains(base) {
-        used.insert(base.to_string());
-        return base.to_string();
-    }
-    for i in 1.. {
-        let candidate = format!("{base}{i}");
-        if !used.contains(&candidate) {
-            used.insert(candidate.clone());
-            return candidate;
-        }
-    }
-    unreachable!()
-}
-
-fn top_level_local_var_names<'tree>(body: Node<'tree>, source: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut cursor = body.walk();
-    for stmt in body.named_children(&mut cursor) {
-        if stmt.kind() != "local_variable_declaration" {
-            continue;
-        }
-        let mut c = stmt.walk();
-        for declarator in stmt
-            .named_children(&mut c)
-            .filter(|child| child.kind() == "variable_declarator")
-        {
-            if let Some(name_node) = declarator
-                .child_by_field_name("name")
-                .or_else(|| find_named_child_by_kind(declarator, "identifier"))
-            {
-                names.push(source[name_node.byte_range()].to_string());
-            }
-        }
-    }
-    names
-}
-
-#[derive(Debug, Clone)]
-struct LocalEdit {
-    range: Range<usize>,
-    replacement: String,
-}
-
-fn rewrite_with_identifier_map<'tree>(
-    node: Node<'tree>,
-    source: &str,
-    replacements: &HashMap<String, String>,
-) -> String {
-    let mut edits = Vec::new();
-    collect_identifier_rewrites(node, source, replacements, &mut edits);
-    apply_rewrites(&source[node.byte_range()], node.start_byte(), edits)
-}
-
-fn collect_identifier_rewrites<'tree>(
-    node: Node<'tree>,
-    source: &str,
-    replacements: &HashMap<String, String>,
-    out: &mut Vec<LocalEdit>,
-) {
-    if node.kind() == "identifier" {
-        let ident = source[node.byte_range()].to_string();
-        if let Some(repl) = replacements.get(&ident) {
-            // Skip method names in method invocations / field names in field accesses.
-            if let Some(parent) = node.parent() {
-                if parent.kind() == "method_invocation" {
-                    if let Some(name_node) = parent.child_by_field_name("name") {
-                        if name_node.byte_range() == node.byte_range() {
-                            return;
+            for stmt in &body.statements {
+                match stmt {
+                    jast::Stmt::LocalVar(local) => locals.push(local),
+                    jast::Stmt::Return(ret) => {
+                        return_count += 1;
+                        if return_count == 1 {
+                            return_expr = ret.expr.as_ref();
                         }
                     }
-                }
-                if parent.kind() == "field_access" {
-                    if let Some(field_node) = parent.child_by_field_name("field") {
-                        if field_node.byte_range() == node.byte_range() {
-                            return;
-                        }
+                    jast::Stmt::Empty(_) => {}
+                    _ => {
+                        unsupported = true;
+                        break;
                     }
                 }
             }
-            out.push(LocalEdit {
-                range: node.byte_range(),
-                replacement: repl.clone(),
+
+            if unsupported {
+                fallback_error.get_or_insert(InlineMethodError::UnsupportedControlFlow);
+                continue;
+            }
+
+            if return_count > 1 {
+                fallback_error.get_or_insert(InlineMethodError::MultipleReturns);
+                continue;
+            }
+
+            let Some(return_expr) = return_expr else {
+                continue;
+            };
+
+            return Ok(MethodToInline {
+                decl: method,
+                params: method.params.iter().collect(),
+                body,
+                return_expr,
+                locals,
             });
         }
     }
 
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        collect_identifier_rewrites(child, source, replacements, out);
+    Err(fallback_error.unwrap_or(InlineMethodError::MethodNotFound))
+}
+
+fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
+    fn walk_stmt(source: &str, method_name: &str, stmt: &jast::Stmt) -> bool {
+        match stmt {
+            jast::Stmt::LocalVar(local) => local
+                .initializer
+                .as_ref()
+                .is_some_and(|e| walk_expr(source, method_name, e)),
+            jast::Stmt::Expr(expr) => walk_expr(source, method_name, &expr.expr),
+            jast::Stmt::Return(ret) => ret
+                .expr
+                .as_ref()
+                .is_some_and(|e| walk_expr(source, method_name, e)),
+            jast::Stmt::Block(block) => block
+                .statements
+                .iter()
+                .any(|s| walk_stmt(source, method_name, s)),
+            jast::Stmt::If(stmt) => {
+                walk_expr(source, method_name, &stmt.condition)
+                    || walk_stmt(source, method_name, stmt.then_branch.as_ref())
+                    || stmt
+                        .else_branch
+                        .as_ref()
+                        .is_some_and(|s| walk_stmt(source, method_name, s.as_ref()))
+            }
+            jast::Stmt::While(stmt) => {
+                walk_expr(source, method_name, &stmt.condition)
+                    || walk_stmt(source, method_name, stmt.body.as_ref())
+            }
+            jast::Stmt::For(stmt) => {
+                stmt.init
+                    .iter()
+                    .any(|s| walk_stmt(source, method_name, s))
+                    || stmt
+                        .condition
+                        .as_ref()
+                        .is_some_and(|e| walk_expr(source, method_name, e))
+                    || stmt
+                        .update
+                        .iter()
+                        .any(|e| walk_expr(source, method_name, e))
+                    || walk_stmt(source, method_name, stmt.body.as_ref())
+            }
+            jast::Stmt::ForEach(stmt) => {
+                stmt.var
+                    .initializer
+                    .as_ref()
+                    .is_some_and(|e| walk_expr(source, method_name, e))
+                    || walk_expr(source, method_name, &stmt.iterable)
+                    || walk_stmt(source, method_name, stmt.body.as_ref())
+            }
+            jast::Stmt::Switch(stmt) => {
+                walk_expr(source, method_name, &stmt.selector)
+                    || stmt
+                        .body
+                        .statements
+                        .iter()
+                        .any(|s| walk_stmt(source, method_name, s))
+            }
+            jast::Stmt::Try(stmt) => {
+                stmt.body
+                    .statements
+                    .iter()
+                    .any(|s| walk_stmt(source, method_name, s))
+                    || stmt.catches.iter().any(|catch| {
+                        catch
+                            .body
+                            .statements
+                            .iter()
+                            .any(|s| walk_stmt(source, method_name, s))
+                    })
+                    || stmt.finally.as_ref().is_some_and(|block| {
+                        block
+                            .statements
+                            .iter()
+                            .any(|s| walk_stmt(source, method_name, s))
+                    })
+            }
+            jast::Stmt::Throw(stmt) => walk_expr(source, method_name, &stmt.expr),
+            jast::Stmt::Break(_) | jast::Stmt::Continue(_) | jast::Stmt::Empty(_) => false,
+        }
+    }
+
+    fn walk_expr(source: &str, method_name: &str, expr: &jast::Expr) -> bool {
+        match expr {
+            jast::Expr::Call(call) => {
+                if let Some((name, receiver)) = call_name_and_receiver(call) {
+                    if name == method_name {
+                        let is_self_receiver = match receiver {
+                            None => true,
+                            Some(receiver) => matches!(receiver, jast::Expr::This(_) | jast::Expr::Missing(_))
+                                || matches!(
+                                    receiver,
+                                    jast::Expr::Name(name) if name.name.as_str() == "this"
+                                ),
+                        };
+                        if is_self_receiver {
+                            return true;
+                        }
+                    }
+                }
+                walk_expr(source, method_name, call.callee.as_ref())
+                    || call.args.iter().any(|a| walk_expr(source, method_name, a))
+            }
+            jast::Expr::FieldAccess(field) => walk_expr(source, method_name, &field.receiver),
+            jast::Expr::MethodReference(expr) => walk_expr(source, method_name, &expr.receiver),
+            jast::Expr::ConstructorReference(expr) => walk_expr(source, method_name, &expr.receiver),
+            jast::Expr::ClassLiteral(expr) => walk_expr(source, method_name, &expr.ty),
+            jast::Expr::New(expr) => expr.args.iter().any(|arg| walk_expr(source, method_name, arg)),
+            jast::Expr::Unary(expr) => walk_expr(source, method_name, &expr.expr),
+            jast::Expr::Binary(bin) => {
+                walk_expr(source, method_name, &bin.lhs) || walk_expr(source, method_name, &bin.rhs)
+            }
+            jast::Expr::Assign(expr) => {
+                walk_expr(source, method_name, &expr.lhs) || walk_expr(source, method_name, &expr.rhs)
+            }
+            jast::Expr::Conditional(expr) => {
+                walk_expr(source, method_name, &expr.condition)
+                    || walk_expr(source, method_name, &expr.then_expr)
+                    || walk_expr(source, method_name, &expr.else_expr)
+            }
+            jast::Expr::Lambda(expr) => match &expr.body {
+                jast::LambdaBody::Expr(expr) => walk_expr(source, method_name, expr.as_ref()),
+                jast::LambdaBody::Block(block) => block
+                    .statements
+                    .iter()
+                    .any(|stmt| walk_stmt(source, method_name, stmt)),
+            },
+            jast::Expr::Name(_)
+            | jast::Expr::IntLiteral(_)
+            | jast::Expr::StringLiteral(_)
+            | jast::Expr::BoolLiteral(_)
+            | jast::Expr::NullLiteral(_)
+            | jast::Expr::This(_)
+            | jast::Expr::Super(_)
+            | jast::Expr::Missing(_) => false,
+        }
+    }
+
+    let _ = source;
+    body.statements.iter().any(|s| walk_stmt(source, method_name, s))
+}
+
+fn call_name_and_receiver<'a>(call: &'a jast::CallExpr) -> Option<(&'a str, Option<&'a jast::Expr>)> {
+    match call.callee.as_ref() {
+        jast::Expr::Name(name) => Some((name.name.as_str(), None)),
+        jast::Expr::FieldAccess(field) => Some((field.name.as_str(), Some(field.receiver.as_ref()))),
+        _ => None,
     }
 }
 
-fn apply_rewrites(fragment: &str, base_offset: usize, mut edits: Vec<LocalEdit>) -> String {
-    if edits.is_empty() {
-        return fragment.to_string();
+fn find_invocation_at_offset<'a>(
+    unit: &'a jast::CompilationUnit,
+    source: &str,
+    offset: usize,
+) -> Option<Invocation<'a>> {
+    let mut best: Option<Invocation<'a>> = None;
+
+    for ty in &unit.types {
+        for member in ty.members() {
+            let jast::MemberDecl::Method(method) = member else {
+                continue;
+            };
+            let Some(body) = method.body.as_ref() else {
+                continue;
+            };
+
+            // Collect locals in the enclosing method for collision avoidance.
+            let locals = collect_local_names(body);
+
+            for stmt in &body.statements {
+                let jast::Stmt::Return(ret) = stmt else {
+                    continue;
+                };
+                let Some(expr) = ret.expr.as_ref() else {
+                    continue;
+                };
+                let jast::Expr::Call(call) = expr else {
+                    continue;
+                };
+
+                let range = call.range;
+                if !(range.start <= offset && offset < range.end) {
+                    continue;
+                }
+
+                let (name, receiver) = call_name_and_receiver(call)?;
+                let args: Vec<&jast::Expr> = call.args.iter().collect();
+                let stmt_range = ret.range;
+                let stmt_indent = indentation_at(source, stmt_range.start);
+
+                let candidate = Invocation {
+                    name,
+                    args,
+                    receiver,
+                    call_range: range,
+                    stmt_range,
+                    stmt_indent,
+                    enclosing_method_locals: locals.clone(),
+                };
+                best = Some(match best {
+                    Some(prev) if span_len(prev.call_range) <= span_len(candidate.call_range) => prev,
+                    _ => candidate,
+                });
+            }
+        }
     }
 
-    edits.sort_by_key(|e| e.range.start);
-    let mut out = fragment.to_string();
-    for edit in edits.into_iter().rev() {
-        let start = edit.range.start - base_offset;
-        let end = edit.range.end - base_offset;
-        out.replace_range(start..end, &edit.replacement);
+    best
+}
+
+fn find_all_return_call_sites<'a>(
+    unit: &'a jast::CompilationUnit,
+    source: &str,
+    name: &str,
+    arity: usize,
+) -> Result<Vec<Invocation<'a>>, InlineMethodError> {
+    let mut out = Vec::new();
+    for ty in &unit.types {
+        for member in ty.members() {
+            let jast::MemberDecl::Method(method) = member else {
+                continue;
+            };
+            let Some(body) = method.body.as_ref() else {
+                continue;
+            };
+            let locals = collect_local_names(body);
+
+            for stmt in &body.statements {
+                let jast::Stmt::Return(ret) = stmt else {
+                    continue;
+                };
+                let Some(expr) = ret.expr.as_ref() else {
+                    continue;
+                };
+                let jast::Expr::Call(call) = expr else {
+                    continue;
+                };
+                let Some((call_name, receiver)) = call_name_and_receiver(call) else {
+                    continue;
+                };
+                if call_name != name || call.args.len() != arity {
+                    continue;
+                }
+
+                validate_receiver(receiver, source)?;
+
+                out.push(Invocation {
+                    name: call_name,
+                    args: call.args.iter().collect(),
+                    receiver,
+                    call_range: call.range,
+                    stmt_range: ret.range,
+                    stmt_indent: indentation_at(source, ret.range.start),
+                    enclosing_method_locals: locals.clone(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn collect_local_names(block: &jast::Block) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    fn walk_stmt(stmt: &jast::Stmt, out: &mut HashSet<String>) {
+        match stmt {
+            jast::Stmt::LocalVar(local) => {
+                out.insert(local.name.clone());
+            }
+            jast::Stmt::Block(block) => {
+                for stmt in &block.statements {
+                    walk_stmt(stmt, out);
+                }
+            }
+            jast::Stmt::If(stmt) => {
+                walk_stmt(stmt.then_branch.as_ref(), out);
+                if let Some(else_branch) = &stmt.else_branch {
+                    walk_stmt(else_branch.as_ref(), out);
+                }
+            }
+            jast::Stmt::While(stmt) => walk_stmt(stmt.body.as_ref(), out),
+            jast::Stmt::For(stmt) => {
+                for init_stmt in &stmt.init {
+                    walk_stmt(init_stmt, out);
+                }
+                walk_stmt(stmt.body.as_ref(), out);
+            }
+            jast::Stmt::ForEach(stmt) => {
+                out.insert(stmt.var.name.clone());
+                walk_stmt(stmt.body.as_ref(), out);
+            }
+            jast::Stmt::Switch(stmt) => {
+                for stmt in &stmt.body.statements {
+                    walk_stmt(stmt, out);
+                }
+            }
+            jast::Stmt::Try(stmt) => {
+                for stmt in &stmt.body.statements {
+                    walk_stmt(stmt, out);
+                }
+                for catch in &stmt.catches {
+                    out.insert(catch.param.name.clone());
+                    for stmt in &catch.body.statements {
+                        walk_stmt(stmt, out);
+                    }
+                }
+                if let Some(finally) = &stmt.finally {
+                    for stmt in &finally.statements {
+                        walk_stmt(stmt, out);
+                    }
+                }
+            }
+            jast::Stmt::Expr(_)
+            | jast::Stmt::Return(_)
+            | jast::Stmt::Throw(_)
+            | jast::Stmt::Break(_)
+            | jast::Stmt::Continue(_)
+            | jast::Stmt::Empty(_) => {}
+        }
+    }
+
+    for stmt in &block.statements {
+        walk_stmt(stmt, &mut out);
     }
     out
 }
 
-fn reindent_preserving_relative(text: &str, new_indent: &str) -> String {
-    let lines: Vec<&str> = text.split('\n').collect();
-    if lines.len() <= 1 {
-        return format!("{new_indent}{}\n", text.trim_end());
+fn inline_at_site(source: &str, newline: &str, method: &MethodToInline<'_>, site: &Invocation<'_>) -> String {
+    let mut used_names = site.enclosing_method_locals.clone();
+
+    // 1) Parameter temps (`<param>_arg`) to preserve evaluation order.
+    let mut param_map: HashMap<String, String> = HashMap::new();
+    let mut arg_lines: Vec<String> = Vec::new();
+    for (param, arg) in method.params.iter().zip(site.args.iter()) {
+        let base = format!("{}_arg", param.name);
+        let temp = make_unique(&base, &mut used_names);
+        param_map.insert(param.name.clone(), temp.clone());
+
+        let arg_text = slice_span(source, arg.range());
+        arg_lines.push(format!(
+            "{indent}{ty} {name} = {expr};",
+            indent = site.stmt_indent,
+            ty = param.ty.text,
+            name = temp,
+            expr = arg_text.trim()
+        ));
     }
 
-    let mut min_indent = None::<usize>;
-    for line in &lines {
-        if line.trim().is_empty() {
+    // 2) Inline local declarations from the callee method, renaming collisions.
+    let mut local_map: HashMap<String, String> = HashMap::new();
+    let mut inlined_lines: Vec<String> = Vec::new();
+    for local in &method.locals {
+        let base = local.name.clone();
+        let name = if used_names.contains(&base) {
+            make_unique(&format!("{base}_inlined"), &mut used_names)
+        } else {
+            used_names.insert(base.clone());
+            base.clone()
+        };
+        local_map.insert(local.name.clone(), name.clone());
+
+        let init_text = local
+            .initializer
+            .as_ref()
+            .map(|expr| slice_span(source, expr.range()).trim().to_string());
+        let init_text = init_text
+            .as_deref()
+            .unwrap_or_default()
+            .to_string();
+
+        let mut mapping = combined_mapping(&param_map, &local_map);
+        let init_text = substitute_idents(&init_text, &mut mapping);
+
+        inlined_lines.push(format!(
+            "{indent}{ty} {name} = {init};",
+            indent = site.stmt_indent,
+            ty = local.ty.text,
+            name = name,
+            init = init_text
+        ));
+    }
+
+    // 3) Return statement.
+    let return_text = slice_span(source, method.return_expr.range()).trim().to_string();
+    let mut mapping = combined_mapping(&param_map, &local_map);
+    let return_text = substitute_idents(&return_text, &mut mapping);
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.extend(arg_lines);
+    lines.extend(inlined_lines);
+    lines.push(format!("{indent}return {expr};", indent = site.stmt_indent, expr = return_text));
+
+    lines.join(newline)
+}
+
+fn combined_mapping(param_map: &HashMap<String, String>, local_map: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (k, v) in param_map {
+        out.insert(k.clone(), v.clone());
+    }
+    for (k, v) in local_map {
+        out.insert(k.clone(), v.clone());
+    }
+    out
+}
+
+fn substitute_idents(text: &str, mapping: &mut HashMap<String, String>) -> String {
+    if mapping.is_empty() || text.is_empty() {
+        return text.to_string();
+    }
+
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if is_ident_char_byte(bytes[i]) {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_char_byte(bytes[i]) {
+                i += 1;
+            }
+            out.push_str(&text[last..start]);
+            let ident = &text[start..i];
+            if let Some(repl) = mapping.get(ident) {
+                out.push_str(repl);
+            } else {
+                out.push_str(ident);
+            }
+            last = i;
             continue;
         }
-        let count = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
-        min_indent = Some(min_indent.map_or(count, |m| m.min(count)));
+        i += 1;
     }
-    let min_indent = min_indent.unwrap_or(0);
+    out.push_str(&text[last..]);
+    out
+}
 
+fn make_unique(base: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let mut i = 2usize;
+    loop {
+        let candidate = format!("{base}{i}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+fn method_decl_deletion_range(source: &str, method: &jast::MethodDecl) -> TextRange {
+    // Include trailing newline if present.
+    let start = line_start(source, method.range.start);
+    let mut end = method.range.end;
+    if source.get(end..).is_some_and(|rest| rest.starts_with('\n')) {
+        end += 1;
+    }
+    TextRange::new(start, end)
+}
+
+fn indentation_at(text: &str, offset: usize) -> String {
+    let start = line_start(text, offset);
     let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        if i == lines.len() - 1 && line.is_empty() {
+    for ch in text[start..].chars() {
+        if ch == ' ' || ch == '\t' {
+            out.push(ch);
+        } else {
             break;
         }
-        if line.trim().is_empty() {
-            out.push('\n');
-            continue;
-        }
-        let stripped = line.chars().skip(min_indent).collect::<String>();
-        out.push_str(new_indent);
-        out.push_str(stripped.trim_end());
-        out.push('\n');
     }
     out
 }
 
-fn replace_range_in_text(
-    original_stmt_text: &str,
-    stmt_range: Range<usize>,
-    target_range: Range<usize>,
-    replacement: &str,
-) -> String {
-    let relative_start = target_range.start - stmt_range.start;
-    let relative_end = target_range.end - stmt_range.start;
-    let mut out = original_stmt_text.to_string();
-    out.replace_range(relative_start..relative_end, replacement);
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out
+fn line_start(text: &str, offset: usize) -> usize {
+    text[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0)
+}
+
+fn span_len(span: nova_types::Span) -> usize {
+    span.end.saturating_sub(span.start)
+}
+
+fn slice_span<'a>(text: &'a str, span: nova_types::Span) -> &'a str {
+    text.get(span.start..span.end).unwrap_or("")
 }

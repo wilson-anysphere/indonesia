@@ -8,10 +8,9 @@ use nova_index::SymbolId;
 use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, extract_variable,
     inline_variable, safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError,
-    ConvertToRecordOptions, ExtractVariableParams, FileId, InMemoryJavaDatabase,
-    InlineVariableParams, JavaSymbolKind, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
-    SemanticRefactorError, TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit,
-    WorkspaceTextRange,
+    ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
+    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError,
+    TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -223,7 +222,7 @@ pub fn extract_variable_code_actions(
     // when it can't be applied.
     let file_path = uri.to_string();
     let file = FileId::new(file_path.clone());
-    let db = InMemoryJavaDatabase::single_file(file_path, source);
+    let db = TextDatabase::new([(file.clone(), source.to_string())]);
     if extract_variable(
         &db,
         ExtractVariableParams {
@@ -290,7 +289,7 @@ pub fn resolve_extract_variable_code_action(
     let expr_range = WorkspaceTextRange::new(start, end);
     let file_path = uri.to_string();
     let file = FileId::new(file_path.clone());
-    let db = InMemoryJavaDatabase::single_file(file_path, source);
+    let db = TextDatabase::new([(file.clone(), source.to_string())]);
 
     let edit = match extract_variable(
         &db,
@@ -349,7 +348,7 @@ pub fn inline_variable_code_actions(
 
     let file_path = uri.to_string();
     let file = FileId::new(file_path.clone());
-    let db = InMemoryJavaDatabase::single_file(file_path, source);
+    let db = RefactorJavaDatabase::single_file(file_path, source);
 
     let Some(symbol) = db.symbol_at(&file, offset) else {
         return Vec::new();

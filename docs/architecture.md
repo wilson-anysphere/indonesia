@@ -84,7 +84,7 @@ Notable “delta” areas to be aware of:
 - **Incremental engine coverage (ADR 0001):**
   - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but many “shipping” features still bypass it:
     - `crates/nova-lsp/src/main.rs` uses an in-memory `HashMap<String, nova_vfs::Document>` for open documents.
-    - Refactorings in the LSP stdio server run on `nova_refactor::InMemoryJavaDatabase` (see `crates/nova-lsp/src/main.rs`).
+    - Refactorings use a Salsa-backed semantic snapshot (`nova_refactor::RefactorJavaDatabase`) and can run against open-document overlays (see `crates/nova-lsp/src/refactor_workspace.rs`), but the stdio server still maintains its own document store rather than using the full `nova-vfs` overlay model.
     - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
 - **Syntax tree usage (ADR 0002):**
   - `crates/nova-syntax` provides both a token-level green tree (`parse`) and a rowan-based parser (`parse_java`).

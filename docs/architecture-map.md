@@ -155,7 +155,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   `crates/nova-db/src/salsa/mod.rs` (`RootDatabase`, `Database` wrapper, snapshots).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Salsa exists, but many “shipped” paths still use ad-hoc in-memory DBs (e.g. `nova-refactor::InMemoryJavaDatabase`).
+  - Salsa exists, but many “shipped” paths still use ad-hoc in-memory DBs. Refactorings now use a Salsa-backed snapshot (`nova_refactor::RefactorJavaDatabase`), but other subsystems still bypass the query DB.
 
 ### `nova-decompile`
 - **Purpose:** decompile `.class` to Java-like stub source as a navigation fallback.
@@ -398,7 +398,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-refactor/src/lib.rs` (`rename`, `organize_imports`, `WorkspaceEdit`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Refactorings mostly run on `InMemoryJavaDatabase`, not integrated with the incremental DB or VFS overlays.
+  - Refactorings run on the canonical syntax/HIR pipeline and a Salsa-backed semantic snapshot (`RefactorJavaDatabase`). Multi-file refactorings in `nova-lsp` apply open-document overlays, but integration with a long-lived workspace DB is still evolving.
 
 ### `nova-remote-proto`
 - **Purpose:** on-the-wire message types for distributed mode (router ↔ worker RPC).

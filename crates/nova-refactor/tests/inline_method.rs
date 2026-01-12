@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use nova_refactor::{apply_edits, inline_method, InlineMethodError, InlineMethodOptions};
+use nova_refactor::{
+    apply_workspace_edit, inline_method, FileId, InlineMethodError, InlineMethodOptions,
+};
 use pretty_assertions::assert_eq;
 
 fn extract_caret(input: &str) -> (String, usize) {
@@ -24,7 +26,7 @@ fn inline_expression_bodied_method() {
 "#,
     );
 
-    let edits = inline_method(
+    let edit = inline_method(
         "A.java",
         &src,
         caret,
@@ -32,11 +34,12 @@ fn inline_expression_bodied_method() {
     )
     .unwrap();
     let mut files = BTreeMap::new();
-    files.insert("A.java".to_string(), src);
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), src);
 
-    let updated = apply_edits(&files, &edits);
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
     assert_eq!(
-        updated.get("A.java").unwrap(),
+        updated.get(&file_id).unwrap(),
         r#"class A {
   private int addOne(int x) { return x + 1; }
 
@@ -66,13 +69,14 @@ fn inline_method_with_local_temp_renames_to_avoid_collision() {
 "#,
     );
 
-    let edits = inline_method("A.java", &src, caret, InlineMethodOptions::default()).unwrap();
+    let edit = inline_method("A.java", &src, caret, InlineMethodOptions::default()).unwrap();
     let mut files = BTreeMap::new();
-    files.insert("A.java".to_string(), src);
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), src);
 
-    let updated = apply_edits(&files, &edits);
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
     assert_eq!(
-        updated.get("A.java").unwrap(),
+        updated.get(&file_id).unwrap(),
         r#"class A {
   private int inc(int x) {
     int tmp = x + 1;
@@ -127,13 +131,14 @@ fn preserves_argument_evaluation_order_with_parameter_temps() {
 "#,
     );
 
-    let edits = inline_method("A.java", &src, caret, InlineMethodOptions::default()).unwrap();
+    let edit = inline_method("A.java", &src, caret, InlineMethodOptions::default()).unwrap();
     let mut files = BTreeMap::new();
-    files.insert("A.java".to_string(), src);
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), src);
 
-    let updated = apply_edits(&files, &edits);
+    let updated = apply_workspace_edit(&files, &edit).expect("apply workspace edit");
     assert_eq!(
-        updated.get("A.java").unwrap(),
+        updated.get(&file_id).unwrap(),
         r#"class A {
   private int swap(int a, int b) {
     return b + a;

@@ -24,8 +24,8 @@ use nova_perf::{
 };
 use nova_refactor::{
     apply_text_edits as apply_refactor_text_edits, organize_imports as refactor_organize_imports,
-    rename as refactor_rename, Conflict, FileId as RefactorFileId, InMemoryJavaDatabase,
-    OrganizeImportsParams, RenameParams, SemanticRefactorError, TreeSitterJavaDatabase,
+    rename as refactor_rename, Conflict, FileId as RefactorFileId, OrganizeImportsParams,
+    RefactorJavaDatabase, RenameParams, SemanticRefactorError, TextDatabase,
     WorkspaceTextEdit as RefactorTextEdit,
 };
 use nova_syntax::parse;
@@ -1207,7 +1207,7 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
 
     let file_str = display_path(&args.file);
     let file_id = RefactorFileId::new(file_str.clone());
-    let db = InMemoryJavaDatabase::new([(file_id.clone(), source.clone())]);
+    let db = TextDatabase::new([(file_id.clone(), source.clone())]);
 
     let mut edit = refactor_organize_imports(
         &db,
@@ -1355,7 +1355,7 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     let mut file_texts: BTreeMap<String, String> = BTreeMap::new();
     file_texts.insert(target_file_id_str.clone(), target_text.clone());
 
-    let db = TreeSitterJavaDatabase::single_file(target_file_id_str.clone(), target_text.clone());
+    let db = RefactorJavaDatabase::single_file(target_file_id_str.clone(), target_text.clone());
 
     let pos = match parse_cli_position(args.line, args.col) {
         Ok(pos) => pos,

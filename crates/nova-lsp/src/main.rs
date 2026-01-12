@@ -33,8 +33,8 @@ use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams,
-    RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
-    TreeSitterJavaDatabase,
+    RefactorJavaDatabase, RenameParams as RefactorRenameParams, SafeDeleteTarget,
+    SemanticRefactorError,
 };
 use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
 use nova_workspace::Workspace;
@@ -2090,7 +2090,7 @@ fn handle_prepare_rename(
 
     let file_path = uri.to_string();
     let file = RefactorFileId::new(file_path.clone());
-    let db = TreeSitterJavaDatabase::single_file(file_path, source.clone());
+    let db = RefactorJavaDatabase::single_file(file_path, source.clone());
 
     let symbol = db.symbol_at(&file, offset).or_else(|| {
         offset
@@ -2140,7 +2140,7 @@ fn handle_rename(
 
     let file_path = uri.to_string();
     let file = RefactorFileId::new(file_path.clone());
-    let db = TreeSitterJavaDatabase::single_file(file_path, source.clone());
+    let db = RefactorJavaDatabase::single_file(file_path, source.clone());
 
     let symbol = db.symbol_at(&file, offset).or_else(|| {
         offset

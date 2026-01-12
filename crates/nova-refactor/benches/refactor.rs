@@ -3,8 +3,8 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 
 use nova_refactor::{
-    organize_imports, rename, FileId, InMemoryJavaDatabase, JavaSymbolKind, OrganizeImportsParams,
-    RenameParams,
+    organize_imports, rename, FileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
+    RenameParams, TextDatabase,
 };
 
 const ORGANIZE_IMPORTS_FIXTURE: &str = r#"package bench;
@@ -34,11 +34,12 @@ public class ImportsFixture {
 
 fn rename_fixture() -> String {
     let mut out = String::from("package bench;\n\npublic class RenameFixture {\n");
-    out.push_str("  void target() {}\n\n");
-    out.push_str("  void run() {\n");
+    out.push_str("  void run(int a) {\n");
+    out.push_str("    int foo = a;\n");
     for _ in 0..200u32 {
-        out.push_str("    target();\n");
+        out.push_str("    foo = foo + 1;\n");
     }
+    out.push_str("    System.out.println(foo);\n");
     out.push_str("  }\n}\n");
     out
 }
@@ -51,7 +52,7 @@ fn bench_refactorings(c: &mut Criterion) {
 
     group.bench_function("organize_imports", |b| {
         let file = FileId::new("ImportsFixture.java");
-        let db = InMemoryJavaDatabase::new([(file.clone(), ORGANIZE_IMPORTS_FIXTURE.to_string())]);
+        let db = TextDatabase::new([(file.clone(), ORGANIZE_IMPORTS_FIXTURE.to_string())]);
 
         let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
             .expect("organize_imports must succeed on fixture");
@@ -75,21 +76,22 @@ fn bench_refactorings(c: &mut Criterion) {
     group.bench_function("rename_method", |b| {
         let file = FileId::new("RenameFixture.java");
         let source = rename_fixture();
-        let db = InMemoryJavaDatabase::new([(file.clone(), source.clone())]);
+        let db = RefactorJavaDatabase::new([(file.clone(), source.clone())]);
 
         let offset = source
-            .find("target(")
-            .expect("rename fixture must contain target method");
+            .find("int foo")
+            .map(|idx| idx + "int ".len())
+            .expect("rename fixture must contain local");
         let symbol = db
             .symbol_at(&file, offset)
             .expect("expected a symbol at target method name");
         assert_eq!(
             db.symbol_kind(symbol),
-            Some(JavaSymbolKind::Method),
-            "expected target symbol to be a method"
+            Some(JavaSymbolKind::Local),
+            "expected target symbol to be a local"
         );
 
-        let new_name = "targetRenamed".to_string();
+        let new_name = "bar".to_string();
         let edit = rename(
             &db,
             RenameParams {

@@ -93,9 +93,9 @@ pub struct Reference {
 
 /// Abstraction over Nova's semantic database/index.
 ///
-/// The production implementation will use Nova's real semantic crates. For
-/// unit tests and early prototyping we ship a small in-memory Java index that
-/// implements this trait.
+/// The production implementation is backed by Nova's canonical semantic crates
+/// (`nova-syntax` + `nova-hir` + `nova-resolve` via Salsa). Fixture tests can
+/// construct a lightweight database from in-memory file contents.
 pub trait RefactorDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str>;
 

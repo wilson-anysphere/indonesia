@@ -7,7 +7,6 @@ use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range
 use nova_refactor::{
     extract_constant, extract_field, inline_method, workspace_edit_to_lsp, ExtractError,
     ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
-    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -106,17 +105,11 @@ pub fn inline_method_code_actions(
         (true, "Inline method (all usages)"),
     ] {
         let options = InlineMethodOptions { inline_all };
-        let Ok(edits) = inline_method(&file, source, offset, options) else {
+        let Ok(edit) = inline_method(&file, source, offset, options) else {
             continue;
         };
 
         let db = TextDatabase::new([(FileId::new(file.clone()), source.to_string())]);
-        let edit = RefactorWorkspaceEdit::new(
-            edits
-                .into_iter()
-                .map(WorkspaceTextEdit::from)
-                .collect::<Vec<_>>(),
-        );
         let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) else {
             continue;
         };
@@ -171,15 +164,8 @@ pub fn resolve_extract_member_code_action(
     };
 
     let db = TextDatabase::new([(FileId::new(file.clone()), source.to_string())]);
-    let edit = RefactorWorkspaceEdit::new(
-        outcome
-            .edits
-            .into_iter()
-            .map(WorkspaceTextEdit::from)
-            .collect::<Vec<_>>(),
-    );
     action.edit =
-        Some(workspace_edit_to_lsp(&db, &edit).map_err(|_| ExtractError::InvalidSelection)?);
+        Some(workspace_edit_to_lsp(&db, &outcome.edit).map_err(|_| ExtractError::InvalidSelection)?);
 
     Ok(())
 }
