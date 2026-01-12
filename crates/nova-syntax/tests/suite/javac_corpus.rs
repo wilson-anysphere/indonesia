@@ -6,8 +6,6 @@ use nova_test_utils::javac::{
     javac_available, javac_version, run_javac_files_with_options, JavacOptions,
 };
 
-mod suite;
-
 fn collect_java_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).expect("fixture directory readable") {
@@ -82,8 +80,7 @@ fn javac_corpus_ok() {
                 ("PackagedClass.java", packaged.as_str()),
                 ("package-info.java", package_info.as_str()),
             ];
-            run_javac_files_with_options(files.as_slice(), &opts)
-                .expect("javac invocation succeeds")
+            run_javac_files_with_options(files.as_slice(), &opts).expect("javac invocation succeeds")
         } else {
             run_javac_files_with_options(&[(&filename, &src)], &opts)
                 .expect("javac invocation succeeds")
