@@ -55,18 +55,21 @@ pub enum WireServerError {
 type Result<T> = std::result::Result<T, WireServerError>;
 
 const OUTGOING_HIGH_CAPACITY: usize = 256;
+const OUTGOING_SHUTDOWN_CAPACITY: usize = 16;
 const OUTGOING_OUTPUT_CAPACITY: usize = 128;
 
 #[derive(Clone)]
 struct OutgoingSender {
+    shutdown: mpsc::Sender<Value>,
     hi: mpsc::Sender<Value>,
     lo: mpsc::Sender<Value>,
     output_dropped: Arc<AtomicBool>,
 }
 
 impl OutgoingSender {
-    fn new(hi: mpsc::Sender<Value>, lo: mpsc::Sender<Value>) -> Self {
+    fn new(shutdown: mpsc::Sender<Value>, hi: mpsc::Sender<Value>, lo: mpsc::Sender<Value>) -> Self {
         Self {
+            shutdown,
             hi,
             lo,
             output_dropped: Arc::new(AtomicBool::new(false)),
@@ -180,9 +183,10 @@ where
     #[cfg(unix)]
     ignore_sigpipe();
 
+    let (out_shutdown_tx, mut out_shutdown_rx) = mpsc::channel::<Value>(OUTGOING_SHUTDOWN_CAPACITY);
     let (out_hi_tx, mut out_hi_rx) = mpsc::channel::<Value>(OUTGOING_HIGH_CAPACITY);
     let (out_lo_tx, mut out_lo_rx) = mpsc::channel::<Value>(OUTGOING_OUTPUT_CAPACITY);
-    let out_tx = OutgoingSender::new(out_hi_tx, out_lo_tx);
+    let out_tx = OutgoingSender::new(out_shutdown_tx, out_hi_tx, out_lo_tx);
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let exited_sent = Arc::new(AtomicBool::new(false));
@@ -212,6 +216,11 @@ where
             }
             tokio::select! {
                 biased;
+                Some(msg) = out_shutdown_rx.recv() => {
+                    if writer.write_value(&msg).await.is_err() {
+                        break;
+                    }
+                }
                 Some(msg) = out_hi_rx.recv() => {
                     if writer.write_value(&msg).await.is_err() {
                         break;
@@ -5008,6 +5017,8 @@ async fn send_event(
             }
             Err(mpsc::error::TrySendError::Closed(_value)) => {}
         }
+    } else if matches!(event.as_str(), "terminated" | "exited") {
+        let _ = tx.shutdown.send(value).await;
     } else {
         let _ = tx.hi.send(value).await;
     }
@@ -5042,10 +5053,12 @@ async fn send_response(
     }
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let resp = make_response(s, request, success, body, message);
-    let _ = tx
-        .hi
-        .send(serde_json::to_value(resp).unwrap_or_else(|_| json!({})))
-        .await;
+    let value = serde_json::to_value(resp).unwrap_or_else(|_| json!({}));
+    if matches!(request.command.as_str(), "disconnect" | "terminate") {
+        let _ = tx.shutdown.send(value).await;
+    } else {
+        let _ = tx.hi.send(value).await;
+    }
 }
 
 #[cfg(all(not(test), not(debug_assertions)))]
@@ -5778,9 +5791,10 @@ mod tests {
     #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
         let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
         let (lo_tx, mut rx) = mpsc::channel::<Value>(8);
-        let tx = OutgoingSender::new(hi_tx, lo_tx);
+        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
 
@@ -5832,9 +5846,10 @@ mod tests {
     #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines_without_newline() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
         let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
         let (lo_tx, mut rx) = mpsc::channel::<Value>(8);
-        let tx = OutgoingSender::new(hi_tx, lo_tx);
+        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
 
@@ -5873,9 +5888,10 @@ mod tests {
     #[tokio::test]
     async fn spawn_output_task_truncates_overlong_lines_on_stderr() {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
         let (hi_tx, _hi_rx) = mpsc::channel::<Value>(1);
         let (lo_tx, mut rx) = mpsc::channel::<Value>(8);
-        let tx = OutgoingSender::new(hi_tx, lo_tx);
+        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
         let seq = Arc::new(AtomicI64::new(1));
         let shutdown = CancellationToken::new();
 
