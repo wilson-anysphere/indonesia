@@ -1179,6 +1179,24 @@ class C implements I1 {
 }
 
 #[test]
+fn go_to_declaration_on_override_returns_superclass_method_even_if_concrete() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Base.java
+class Base { void $1foo(){} }
+//- /Derived.java
+class Derived extends Base { @Override void $0foo(){} }
+"#,
+    );
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_on_field_receiver_resolves_receiver_type() {
     let fixture = FileIdFixture::parse(
         r#"

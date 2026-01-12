@@ -611,10 +611,18 @@ where
     }
 
     // Then walk the superclass chain.
+    let mut seen: HashSet<String> = HashSet::new();
     let mut cur = type_info.def().super_class.clone();
     while let Some(next) = cur {
+        if !seen.insert(next.clone()) {
+            // Cycle in the superclass chain.
+            break;
+        }
+
+        // For best-effort `textDocument/declaration` on overrides, consider any matching
+        // superclass method a valid target, even if it has a body (i.e. is "concrete").
         if let Some(loc) =
-            declaration_in_type::<TI, FTypeInfo, FFile>(lookup_type_info, file, &next, method_name)
+            method_in_type_any::<TI, FTypeInfo, FFile>(lookup_type_info, file, &next, method_name)
         {
             return Some(loc);
         }
@@ -628,6 +636,30 @@ where
         .methods
         .iter()
         .find(|m| m.name == method_name)?;
+    Some(Location {
+        uri: type_info.uri().clone(),
+        range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, method.name_span),
+    })
+}
+
+fn method_in_type_any<'a, TI, FTypeInfo, FFile>(
+    lookup_type_info: &'a FTypeInfo,
+    file: &'a FFile,
+    ty_name: &str,
+    method_name: &str,
+) -> Option<Location>
+where
+    TI: NavTypeInfo + 'a,
+    FTypeInfo: Fn(&str) -> Option<&'a TI>,
+    FFile: Fn(&Uri) -> Option<&'a ParsedFile>,
+{
+    let type_info = lookup_type_info(ty_name)?;
+    let method = type_info
+        .def()
+        .methods
+        .iter()
+        .find(|m| m.name == method_name)?;
+    let parsed = file(type_info.uri())?;
     Some(Location {
         uri: type_info.uri().clone(),
         range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, method.name_span),

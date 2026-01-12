@@ -932,6 +932,16 @@ fn parse_type_body(
             continue;
         }
 
+        // Skip top-level annotations. Without this, the annotation name token (e.g. `Override` in
+        // `@Override void foo() {}`) is later re-visited and can be misclassified as a field type,
+        // causing us to miss the actual method declaration.
+        if tokens.get(i).and_then(|t| t.symbol()) == Some('@') {
+            if let Some(next) = skip_annotation(tokens, i, body_end) {
+                i = next;
+                continue;
+            }
+        }
+
         // Method decl/def: <...> name ( ... ) { ... } | ;
         let prev_ident = tokens.get(i.wrapping_sub(1)).and_then(|t| t.ident());
         let prev_symbol = tokens.get(i.wrapping_sub(1)).and_then(|t| t.symbol());
