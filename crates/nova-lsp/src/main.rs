@@ -6,6 +6,7 @@ use rpc_out::RpcOut;
 use crossbeam_channel::{Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::{
+    CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
@@ -13,6 +14,7 @@ use lsp_types::{
     InlayHintParams as LspInlayHintParams, Position as LspTypesPosition, Range as LspTypesRange,
     RenameParams as LspRenameParams, SymbolInformation, SymbolKind as LspSymbolKind,
     TextDocumentPositionParams, TextEdit, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
+    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
     WorkspaceSymbolParams,
 };
 use nova_ai::context::{
@@ -553,6 +555,8 @@ fn initialize_result_json() -> serde_json::Value {
             "implementationProvider": true,
             "declarationProvider": true,
             "typeDefinitionProvider": true,
+            "callHierarchyProvider": true,
+            "typeHierarchyProvider": true,
             "diagnosticProvider": {
                 "identifier": "nova",
                 "interFileDependencies": false,
@@ -1555,6 +1559,78 @@ fn handle_request_json(
                 return Ok(server_shutting_down_error(id));
             }
             let result = handle_type_definition(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/prepareCallHierarchy" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_prepare_call_hierarchy(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "callHierarchy/incomingCalls" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_call_hierarchy_incoming_calls(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "callHierarchy/outgoingCalls" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_call_hierarchy_outgoing_calls(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/prepareTypeHierarchy" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_prepare_type_hierarchy(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "typeHierarchy/supertypes" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_type_hierarchy_supertypes(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "typeHierarchy/subtypes" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_type_hierarchy_subtypes(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -3178,6 +3254,130 @@ fn handle_type_definition(
         Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
         None => Ok(serde_json::Value::Null),
     }
+}
+
+fn handle_prepare_call_hierarchy(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: CallHierarchyPrepareParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = &params.text_document_position_params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!([]));
+    }
+
+    let items = nova_ide::code_intelligence::prepare_call_hierarchy(
+        &state.analysis,
+        file_id,
+        params.text_document_position_params.position,
+    )
+    .unwrap_or_default();
+    serde_json::to_value(items).map_err(|e| e.to_string())
+}
+
+fn handle_call_hierarchy_incoming_calls(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: CallHierarchyIncomingCallsParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = &params.item.uri;
+    let file_id = state.analysis.ensure_loaded(uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!([]));
+    }
+
+    let calls = nova_ide::code_intelligence::call_hierarchy_incoming_calls(
+        &state.analysis,
+        file_id,
+        params.item.name.as_str(),
+    );
+    serde_json::to_value(calls).map_err(|e| e.to_string())
+}
+
+fn handle_call_hierarchy_outgoing_calls(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: CallHierarchyOutgoingCallsParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = &params.item.uri;
+    let file_id = state.analysis.ensure_loaded(uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!([]));
+    }
+
+    let calls = nova_ide::code_intelligence::call_hierarchy_outgoing_calls(
+        &state.analysis,
+        file_id,
+        params.item.name.as_str(),
+    );
+    serde_json::to_value(calls).map_err(|e| e.to_string())
+}
+
+fn handle_prepare_type_hierarchy(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TypeHierarchyPrepareParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = &params.text_document_position_params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!([]));
+    }
+
+    let items = nova_ide::code_intelligence::prepare_type_hierarchy(
+        &state.analysis,
+        file_id,
+        params.text_document_position_params.position,
+    )
+    .unwrap_or_default();
+    serde_json::to_value(items).map_err(|e| e.to_string())
+}
+
+fn handle_type_hierarchy_supertypes(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TypeHierarchySupertypesParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = &params.item.uri;
+    let file_id = state.analysis.ensure_loaded(uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!([]));
+    }
+
+    let items = nova_ide::code_intelligence::type_hierarchy_supertypes(
+        &state.analysis,
+        file_id,
+        params.item.name.as_str(),
+    );
+    serde_json::to_value(items).map_err(|e| e.to_string())
+}
+
+fn handle_type_hierarchy_subtypes(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TypeHierarchySubtypesParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = &params.item.uri;
+    let file_id = state.analysis.ensure_loaded(uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(json!([]));
+    }
+
+    let items = nova_ide::code_intelligence::type_hierarchy_subtypes(
+        &state.analysis,
+        file_id,
+        params.item.name.as_str(),
+    );
+    serde_json::to_value(items).map_err(|e| e.to_string())
 }
 
 fn handle_document_diagnostic(
