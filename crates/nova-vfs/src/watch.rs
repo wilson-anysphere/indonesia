@@ -181,12 +181,12 @@ pub trait FileWatcher: Send {
 }
 
 impl<W: ?Sized + FileWatcher> FileWatcher for Box<W> {
-    fn watch_root(&mut self, root: &Path) -> io::Result<()> {
-        self.as_mut().watch_root(root)
+    fn watch_path(&mut self, path: &Path, mode: WatchMode) -> io::Result<()> {
+        self.as_mut().watch_path(path, mode)
     }
 
-    fn unwatch_root(&mut self, root: &Path) -> io::Result<()> {
-        self.as_mut().unwatch_root(root)
+    fn unwatch_path(&mut self, path: &Path) -> io::Result<()> {
+        self.as_mut().unwatch_path(path)
     }
 
     fn receiver(&self) -> &channel::Receiver<WatchMessage> {
@@ -838,7 +838,11 @@ mod notify_impl {
                     let parent = path.parent().ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidInput, "path has no parent")
                     })?;
-                    self.add_requested_watch(requested, parent.to_path_buf(), WatchMode::NonRecursive)
+                    self.add_requested_watch(
+                        requested,
+                        parent.to_path_buf(),
+                        WatchMode::NonRecursive,
+                    )
                 }
             }
         }
@@ -1406,7 +1410,9 @@ mod tests {
 
         let mut watcher = ManualFileWatcher::new();
         watcher.watch_path(&root_a, WatchMode::Recursive).unwrap();
-        watcher.watch_path(&root_b, WatchMode::NonRecursive).unwrap();
+        watcher
+            .watch_path(&root_b, WatchMode::NonRecursive)
+            .unwrap();
         watcher.unwatch_path(&root_a).unwrap();
 
         assert_eq!(
