@@ -2017,7 +2017,6 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
-
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
