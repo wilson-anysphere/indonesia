@@ -1235,6 +1235,100 @@ pub fn core_file_diagnostics(
     diagnostics
 }
 
+pub(crate) fn core_file_diagnostics_cancelable(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &nova_scheduler::CancellationToken,
+) -> Vec<nova_types::Diagnostic> {
+    // Match `core_file_diagnostics`, but add additional cancellation checkpoints so stale requests
+    // can avoid starting expensive work (parsing, Salsa-backed typeck/flow diagnostics).
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    // Avoid emitting Java-centric token diagnostics for application config files; those are handled
+    // by the framework layer.
+    if let Some(path) = db.file_path(file) {
+        if is_spring_properties_file(path) || is_spring_yaml_file(path) {
+            return Vec::new();
+        }
+    }
+
+    let text = db.file_content(file);
+    let is_java = db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
+
+    let mut diagnostics = Vec::new();
+
+    // Checkpoint: before parsing.
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    // 1) Syntax errors.
+    //
+    // `nova_syntax::parse` is a lightweight token-level parser that reports
+    // unterminated literals/comments. For richer "unexpected token" errors we
+    // also run the full Java grammar parser (`parse_java`) when the file is a
+    // Java source file.
+    let parse = nova_syntax::parse(text);
+    diagnostics.extend(parse.errors.into_iter().map(|e| {
+        Diagnostic::error(
+            "SYNTAX",
+            e.message,
+            Some(Span::new(e.range.start as usize, e.range.end as usize)),
+        )
+    }));
+
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let java_parse = is_java.then(|| nova_syntax::parse_java(text));
+    if let Some(parse) = java_parse.as_ref() {
+        diagnostics.extend(parse.errors.iter().map(|e| {
+            Diagnostic::error(
+                "SYNTAX",
+                e.message.clone(),
+                Some(Span::new(e.range.start as usize, e.range.end as usize)),
+            )
+        }));
+    }
+
+    // 2) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
+    if is_java {
+        // Checkpoint: before starting Salsa work.
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+            diagnostics.extend(snap.type_diagnostics(file));
+            diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        });
+    }
+
+    // 3) Unresolved references (best-effort).
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let analysis = analyze(text);
+    for call in &analysis.calls {
+        if call.receiver.is_some() {
+            continue;
+        }
+        if analysis.methods.iter().any(|m| m.name == call.name) {
+            continue;
+        }
+        diagnostics.push(Diagnostic::error(
+            "UNRESOLVED_REFERENCE",
+            format!("Cannot resolve symbol '{}'", call.name),
+            Some(call.name_span),
+        ));
+    }
+
+    diagnostics
+}
+
 /// Aggregate all diagnostics for a single file, computing semantic diagnostics using `semantic_db`.
 pub fn file_diagnostics_with_semantic_db(
     db: &dyn Database,

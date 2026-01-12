@@ -757,7 +757,7 @@ where
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
-        let mut diagnostics = crate::code_intelligence::core_file_diagnostics(
+        let mut diagnostics = crate::code_intelligence::core_file_diagnostics_cancelable(
             self.db.as_ref().as_dyn_nova_db(),
             file,
             &cancel,
