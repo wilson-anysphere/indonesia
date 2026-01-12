@@ -46,7 +46,7 @@ Notes:
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
   - `cargo test` is blocked unless scoped with `-p/--package` or `--manifest-path`.
     To override (rare): set `NOVA_CARGO_ALLOW_UNSCOPED_TEST=1` and re-run.
-  - For faster iteration, further scope tests with --lib, --bin <name>, or --test <name>.
+  - For faster iteration, further scope tests with --lib, --bin <name>, or --test=<name>.
 EOF
 }
 
