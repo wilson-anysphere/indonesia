@@ -105,3 +105,60 @@ fn gradle_module_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
         consumer.classpath
     );
 }
+
+#[test]
+fn gradle_included_build_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path().join("workspace");
+    let included_build_root = tmp.path().join("build-logic");
+
+    fs::create_dir_all(&workspace_root).expect("mkdir workspace");
+    write(
+        &workspace_root.join("settings.gradle"),
+        // `includeBuild` can also accept paths containing `..` components.
+        "includeBuild '../build-logic'\n",
+    );
+    write(&workspace_root.join("build.gradle"), "");
+
+    // Included build lives outside the workspace root (sibling directory).
+    write(
+        &included_build_root.join("src/main/java/com/example/buildlogic/BuildLogic.java"),
+        "package com.example.buildlogic; class BuildLogic {}",
+    );
+
+    let model = load_workspace_model(&workspace_root).expect("load workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+    assert_eq!(
+        model.modules[0].id, "gradle::",
+        "expected root module to remain first for determinism"
+    );
+
+    let expected_included_root =
+        fs::canonicalize(&included_build_root).expect("canonicalize included build root");
+    let module = model
+        .modules
+        .iter()
+        .find(|m| m.root == expected_included_root)
+        .expect("expected included build module to be discovered");
+    assert_eq!(module.id, "gradle::__includedBuild_build-logic");
+
+    let expected_source_root = expected_included_root.join("src/main/java");
+    assert!(
+        module
+            .source_roots
+            .iter()
+            .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_source_root),
+        "expected canonical included-build source root; got: {:?}",
+        module.source_roots
+    );
+
+    // `module_for_path` should work when the caller provides canonical file paths.
+    let java_file = fs::canonicalize(
+        included_build_root.join("src/main/java/com/example/buildlogic/BuildLogic.java"),
+    )
+    .expect("canonicalize file");
+    let matched = model.module_for_path(&java_file).expect("module_for_path");
+    assert_eq!(matched.module.id, module.id);
+    assert_eq!(matched.source_root.kind, SourceRootKind::Main);
+    assert_eq!(matched.source_root.path, expected_source_root);
+}
