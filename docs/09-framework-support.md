@@ -54,6 +54,8 @@ It consists of:
 - `nova_framework::FrameworkAnalyzer`: optional hooks (virtual members, diagnostics, completions, …).
 - `nova_framework::AnalyzerRegistry` (aka `FrameworkRegistry`): runs all applicable analyzers and
   aggregates their results.
+- `nova-framework-builtins`: helper crate that centralizes construction of Nova’s built-in
+  `nova-framework-*` analyzers (feature-gated for heavier frameworks like Spring/JPA).
 
 ### `nova_framework::Database` (real signature)
 
