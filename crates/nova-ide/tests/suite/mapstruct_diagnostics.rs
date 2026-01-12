@@ -57,11 +57,13 @@ class Target {
     );
 
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY" && d.severity == Severity::Error),
-        "expected MAPSTRUCT_MISSING_DEPENDENCY; got {diags:#?}"
+    let count = diags
+        .iter()
+        .filter(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY" && d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        count, 1,
+        "expected exactly one MAPSTRUCT_MISSING_DEPENDENCY; got {diags:#?}"
     );
 }
 

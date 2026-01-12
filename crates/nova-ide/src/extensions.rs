@@ -927,7 +927,34 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
             self.project,
             cancel,
         );
-        self.registry.diagnostics(ctx, DiagnosticParams { file })
+        let mut diagnostics = self.registry.diagnostics(ctx, DiagnosticParams { file });
+
+        // Providers may overlap (e.g. legacy framework-cache MapStruct diagnostics + analyzer-based
+        // MapStruct diagnostics). Deduplicate for a cleaner user-facing diagnostics list.
+        fn severity_rank(severity: nova_ext::Severity) -> u8 {
+            match severity {
+                nova_ext::Severity::Error => 0,
+                nova_ext::Severity::Warning => 1,
+                nova_ext::Severity::Info => 2,
+            }
+        }
+
+        fn span_key(span: Option<Span>) -> (usize, usize) {
+            match span {
+                Some(span) => (span.start, span.end),
+                None => (usize::MAX, usize::MAX),
+            }
+        }
+
+        diagnostics.sort_by(|a, b| {
+            span_key(a.span)
+                .cmp(&span_key(b.span))
+                .then_with(|| severity_rank(a.severity).cmp(&severity_rank(b.severity)))
+                .then_with(|| a.code.as_ref().cmp(b.code.as_ref()))
+                .then_with(|| a.message.cmp(&b.message))
+        });
+        diagnostics.dedup();
+        diagnostics
     }
 
     pub fn completions(
