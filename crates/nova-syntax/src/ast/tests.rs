@@ -1129,6 +1129,43 @@ fn new_expression_constructor_type_arguments_are_accessible() {
 }
 
 #[test]
+fn qualified_new_expression_type_arguments_are_accessible() {
+    let src = r#"
+        class Outer {
+          class Inner {
+            <T> Inner(T t) {}
+          }
+          void m(Outer o, String s) { o.<String>new Inner(s); }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let new_expr = parse
+        .syntax()
+        .descendants()
+        .filter_map(NewExpression::cast)
+        .find(|expr| expr.qualifier().is_some() && expr.type_arguments().is_some())
+        .expect("expected a qualified new expression with type arguments");
+
+    assert_eq!(
+        new_expr
+            .qualifier()
+            .unwrap()
+            .syntax()
+            .text()
+            .to_string(),
+        "o"
+    );
+
+    let args = new_expr.type_arguments().unwrap();
+    assert_eq!(args.arguments().count(), 1);
+    let arg = args.arguments().next().unwrap().ty().unwrap();
+    assert_eq!(arg.syntax().text().to_string(), "String");
+}
+
+#[test]
 fn generic_method_invocation_type_arguments_are_on_field_access() {
     let src = r#"
         class Foo {
