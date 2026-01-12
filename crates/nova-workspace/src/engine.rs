@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender};
 use crossbeam_channel as channel;
+use lsp_types::Position;
 use notify::{RecursiveMode, Watcher};
 use nova_cache::normalize_rel_path;
 use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
 use nova_db::persistence::PersistenceConfig;
-use nova_db::{salsa, NovaIndexing, NovaInputs, ProjectId, SourceRootId};
+use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId};
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
 use nova_memory::MemoryManager;
@@ -553,10 +554,19 @@ impl WorkspaceEngine {
     }
 
     pub fn completions(&self, path: &VfsPath, offset: usize) -> Vec<CompletionItem> {
-        match self.vfs.read_to_string(path) {
-            Ok(text) => nova_ide::analysis::completions(&text, offset),
-            Err(_) => Vec::new(),
-        }
+        let Some(file_id) = self.vfs.get_id(path) else {
+            return Vec::new();
+        };
+        let snapshot = crate::WorkspaceSnapshot::from_engine(self);
+        let text = snapshot.file_content(file_id);
+        let position = offset_to_lsp_position(text, offset);
+        nova_ide::completions(&snapshot, file_id, position)
+            .into_iter()
+            .map(|item| CompletionItem {
+                label: item.label,
+                detail: item.detail,
+            })
+            .collect()
     }
 
     pub fn trigger_indexing(&self) {
@@ -819,16 +829,67 @@ impl WorkspaceEngine {
     }
 
     fn publish_diagnostics(&self, file: VfsPath) {
-        let diagnostics = match self.vfs.read_to_string(&file) {
-            Ok(text) => nova_ide::analysis::diagnostics(&text),
-            Err(_) => Vec::new(),
+        // Publishing diagnostics for a path that no longer has a `FileId` (e.g. the source path
+        // during a rename) should *not* allocate a new id. Downstream consumers typically want an
+        // empty diagnostics set to clear stale results, but we can't run code intelligence without
+        // a stable `FileId`.
+        let Some(file_id) = self.vfs.get_id(&file) else {
+            self.publish(WorkspaceEvent::DiagnosticsUpdated {
+                file,
+                diagnostics: Vec::new(),
+            });
+            return;
         };
+        let snapshot = crate::WorkspaceSnapshot::from_engine(self);
+        let diagnostics = nova_ide::file_diagnostics(&snapshot, file_id);
 
         self.publish(WorkspaceEvent::DiagnosticsUpdated { file, diagnostics });
     }
 
     fn publish(&self, event: WorkspaceEvent) {
         publish_to_subscribers(&self.subscribers, event);
+    }
+
+    pub(crate) fn vfs(&self) -> &Vfs<LocalFs> {
+        &self.vfs
+    }
+
+    pub(crate) fn salsa_file_content(&self, file: FileId) -> Option<std::sync::Arc<String>> {
+        self.query_db.with_snapshot(|snap| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if snap.file_exists(file) {
+                    Some(snap.file_content(file))
+                } else {
+                    None
+                }
+            }))
+            .ok()
+            .flatten()
+        })
+    }
+}
+
+fn offset_to_lsp_position(text: &str, offset: usize) -> Position {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut cur: usize = 0;
+
+    for ch in text.chars() {
+        if cur >= offset {
+            break;
+        }
+        cur += ch.len_utf8();
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+    }
+
+    Position {
+        line,
+        character: col_utf16,
     }
 }
 

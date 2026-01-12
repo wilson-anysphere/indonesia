@@ -20,9 +20,11 @@ use std::time::Instant;
 use walkdir::WalkDir;
 
 mod engine;
+mod snapshot;
 mod watch;
 
 pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
+pub use snapshot::WorkspaceSnapshot;
 pub use watch::{ChangeCategory, EventNormalizer, NormalizedEvent, WatchConfig};
 
 /// A minimal, library-first backend for the `nova` CLI.
@@ -160,6 +162,15 @@ impl Workspace {
         offset: usize,
     ) -> Vec<nova_types::CompletionItem> {
         self.engine.completions(path, offset)
+    }
+
+    /// Capture an owned, thread-safe view of the current workspace files.
+    ///
+    /// The resulting snapshot implements `nova_db::Database`, which allows callers to run
+    /// `nova_ide::code_intelligence` queries (diagnostics, completion, navigation) with
+    /// workspace context while preserving the `FileId`s allocated by the VFS.
+    pub fn snapshot(&self) -> WorkspaceSnapshot {
+        WorkspaceSnapshot::from_engine(self.engine.as_ref())
     }
 
     pub fn trigger_indexing(&self) {
