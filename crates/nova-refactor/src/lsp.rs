@@ -377,11 +377,16 @@ fn validate_text_range_in_text(
         });
     }
 
-    if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
+    if !text.is_char_boundary(range.start) {
         return Err(EditError::InvalidUtf8Boundary {
             file: file.clone(),
-            range,
-            len,
+            offset: range.start,
+        });
+    }
+    if !text.is_char_boundary(range.end) {
+        return Err(EditError::InvalidUtf8Boundary {
+            file: file.clone(),
+            offset: range.end,
         });
     }
 

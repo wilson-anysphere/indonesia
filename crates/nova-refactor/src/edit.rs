@@ -585,14 +585,8 @@ pub enum EditError {
         range: TextRange,
         len: usize,
     },
-    #[error(
-        "text edit range {range:?} does not lie on UTF-8 character boundaries (len={len}) in {file:?}"
-    )]
-    InvalidUtf8Boundary {
-        file: FileId,
-        range: TextRange,
-        len: usize,
-    },
+    #[error("offset {offset} is not a UTF-8 character boundary in {file:?}")]
+    InvalidUtf8Boundary { file: FileId, offset: usize },
     #[error("unknown file {0:?}")]
     UnknownFile(FileId),
     #[error("file already exists {0:?}")]
@@ -650,6 +644,19 @@ pub fn apply_text_edits(original: &str, edits: &[TextEdit]) -> Result<String, Ed
                 file: edit.file,
                 range: edit.range,
                 len,
+            });
+        }
+
+        if !out.is_char_boundary(edit.range.start) {
+            return Err(EditError::InvalidUtf8Boundary {
+                file: edit.file,
+                offset: edit.range.start,
+            });
+        }
+        if !out.is_char_boundary(edit.range.end) {
+            return Err(EditError::InvalidUtf8Boundary {
+                file: edit.file,
+                offset: edit.range.end,
             });
         }
 
@@ -1070,5 +1077,34 @@ mod tests {
             merged_ab.text_edits,
             vec![TextEdit::insert(file, 0, "ab")]
         );
+    }
+
+    #[test]
+    fn apply_text_edits_errors_on_invalid_utf8_boundaries() {
+        let file = FileId::new("file:///test");
+        let original = "aé"; // 'é' is two bytes in UTF-8; valid boundaries are 0, 1, 3.
+
+        let edit = TextEdit::replace(file.clone(), TextRange::new(2, 3), "e");
+        let err = apply_text_edits(original, &[edit]).unwrap_err();
+
+        assert_eq!(
+            err,
+            EditError::InvalidUtf8Boundary {
+                file,
+                offset: 2,
+            },
+        );
+    }
+
+    #[test]
+    fn apply_text_edits_accepts_valid_utf8_boundaries() {
+        let file = FileId::new("file:///test");
+        let original = "aé";
+
+        // Replace the whole 'é' character (byte range 1..3).
+        let edit = TextEdit::replace(file, TextRange::new(1, 3), "e");
+        let updated = apply_text_edits(original, &[edit]).unwrap();
+
+        assert_eq!(updated, "ae");
     }
 }
