@@ -1141,6 +1141,80 @@ mod tests {
     }
 
     #[test]
+    fn debug_long_stream_evaluates_each_stage_with_mock_jdwp() {
+        let expr = "LongStream.range(0, 10).map(x -> x + 1).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "LongStream.range(0, 10).limit(3).boxed().collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 20,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            20,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 3,
+                        sample: vec![JdwpValue::Long(0), JdwpValue::Long(1), JdwpValue::Long(2)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "LongStream.range(0, 10).map(x -> x + 1).limit(3).boxed().collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 21,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            21,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 3,
+                        sample: vec![JdwpValue::Long(1), JdwpValue::Long(2), JdwpValue::Long(3)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "LongStream.range(0, 10).map(x -> x + 1).limit(3).count()",
+            Ok(JdwpValue::Long(3)),
+        );
+
+        let config = StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+        let result = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap();
+
+        assert_eq!(result.source_sample.elements, vec!["0", "1", "2"]);
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].output.elements, vec!["1", "2", "3"]);
+        assert_eq!(
+            result.terminal.as_ref().unwrap().value.as_deref(),
+            Some("3")
+        );
+    }
+
+    #[test]
     fn debug_stream_evaluates_each_stage_with_mock_jdwp() {
         let expr = "list.stream().filter(x -> x > 0).map(x -> x * 2).count()";
         let chain = analyze_stream_expression(expr).unwrap();
