@@ -4527,18 +4527,50 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 };
 
                 if let Some(init) = self.local_initializers[local.idx()] {
-                    let init_ty = self.infer_expr(loader, init).ty;
-                    let init_is_null = matches!(&self.body.exprs[init], HirExpr::Null { .. })
-                        || init_ty == Type::Null;
-                    if init_is_null {
+                    let init_range = self.body.exprs[init].range();
+                    let init_is_poly = matches!(
+                        &self.body.exprs[init],
+                        HirExpr::Lambda { .. }
+                            | HirExpr::MethodReference { .. }
+                            | HirExpr::ConstructorReference { .. }
+                    );
+                    if init_is_poly {
+                        // Still walk the expression for internal errors/best-effort IDE info.
+                        let _ = self.infer_expr(loader, init);
                         self.diagnostics.push(Diagnostic::error(
-                            "invalid-var",
-                            "cannot infer a `var` local variable type from `null`",
-                            Some(self.body.exprs[init].range()),
+                            "var-poly-expression",
+                            "cannot infer `var` from a poly expression without a target type",
+                            Some(init_range),
                         ));
                         Type::Error
                     } else {
-                        init_ty
+                        let init_ty = self.infer_expr(loader, init).ty;
+                        let init_is_null = matches!(&self.body.exprs[init], HirExpr::Null { .. })
+                            || init_ty == Type::Null;
+                        if init_is_null {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-var",
+                                "cannot infer a `var` local variable type from `null`",
+                                Some(init_range),
+                            ));
+                            Type::Error
+                        } else if init_ty == Type::Void {
+                            self.diagnostics.push(Diagnostic::error(
+                                "var-void-initializer",
+                                "cannot infer `var` from `void` initializer",
+                                Some(init_range),
+                            ));
+                            Type::Error
+                        } else if init_ty.is_errorish() {
+                            self.diagnostics.push(Diagnostic::error(
+                                "var-cannot-infer",
+                                "cannot infer `var` type from initializer",
+                                Some(diag_span),
+                            ));
+                            init_ty
+                        } else {
+                            init_ty
+                        }
                     }
                 } else {
                     self.diagnostics.push(Diagnostic::error(

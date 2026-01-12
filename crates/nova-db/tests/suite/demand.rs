@@ -230,6 +230,160 @@ class C {
 }
 
 #[test]
+fn demand_reports_var_poly_expression_for_local_var_initializer() {
+    let src = r#"
+class C {
+    void m() {
+        var f = (s) -> s;
+        f.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let call_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "var-poly-expression"),
+        "expected demand-driven type inference to report var-poly-expression for `var f = (s) -> s;`, got {:?}",
+        res.diagnostics
+    );
+}
+
+#[test]
+fn demand_reports_var_void_initializer_for_local_var_initializer() {
+    let src = r#"
+class C {
+    void foo() {}
+    void m() {
+        var x = foo();
+        x.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let call_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "var-void-initializer"),
+        "expected demand-driven type inference to report var-void-initializer for `var x = foo();`, got {:?}",
+        res.diagnostics
+    );
+}
+
+#[test]
+fn demand_reports_var_cannot_infer_for_error_initializer() {
+    let src = r#"
+class C {
+    void m() {
+        var x = doesNotExist();
+        x.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let call_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "var-cannot-infer"),
+        "expected demand-driven type inference to report var-cannot-infer for `var x = doesNotExist();`, got {:?}",
+        res.diagnostics
+    );
+}
+
+#[test]
 fn demand_type_of_expr_sees_cast_target_type_for_lambda() {
     let src = r#"
 class C {
