@@ -1763,3 +1763,81 @@ fn string_template_expression_accessors_multiple_interpolations() {
         .collect();
     assert_eq!(names, vec!["a", "b"]);
 }
+
+#[test]
+fn string_template_expression_accessors_brace_depth() {
+    // Regression test: ensure interpolation parsing tracks brace depth so nested blocks don't
+    // prematurely terminate `\{ ... }`.
+    let src = r#"
+        class Foo {
+          void m() {
+            String s = STR."Lambda: \{() -> { return 1; }} done";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    match processor {
+        Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
+        other => panic!("expected processor NameExpression, got {other:?}"),
+    }
+
+    let template = template_expr.template().expect("expected string template");
+    assert_eq!(template.start_token().unwrap().text(), "\"");
+    assert_eq!(template.end_token().unwrap().text(), "\"");
+
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Lambda: ", " done"]);
+
+    let interpolations: Vec<_> = template.parts().collect();
+    assert_eq!(interpolations.len(), 1);
+    let interpolation = &interpolations[0];
+
+    let expr_start = interpolation
+        .syntax()
+        .first_token()
+        .expect("expected interpolation to start with a token");
+    assert_eq!(expr_start.kind(), SyntaxKind::StringTemplateExprStart);
+    assert_eq!(expr_start.text(), r"\{");
+
+    let expr_end = interpolation
+        .syntax()
+        .last_token()
+        .expect("expected interpolation to end with a token");
+    assert_eq!(expr_end.kind(), SyntaxKind::StringTemplateExprEnd);
+    assert_eq!(expr_end.text(), "}");
+
+    let interp_expr = interpolation
+        .expression()
+        .expect("expected interpolation expression");
+    let lambda = match interp_expr {
+        Expression::LambdaExpression(lambda) => lambda,
+        other => panic!("expected interpolation LambdaExpression, got {other:?}"),
+    };
+
+    let body = lambda.body().expect("expected lambda body");
+    let block = body.block().expect("expected block lambda body");
+    let return_stmt = block
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::ReturnStatement(it) => Some(it),
+            _ => None,
+        })
+        .expect("expected a return statement inside lambda block");
+    let returned = return_stmt.expression().expect("expected return expression");
+    assert_eq!(returned.syntax().text().to_string(), "1");
+}
