@@ -570,7 +570,9 @@ expression: schema
     "jdk": {
       "description": "Workspace-level JDK override configuration.",
       "default": {
-        "home": null
+        "home": null,
+        "release": null,
+        "toolchains": {}
       },
       "allOf": [
         {
@@ -1226,6 +1228,24 @@ expression: schema
             "null"
           ],
           "minLength": 1
+        },
+        "release": {
+          "description": "Default Java feature release used for `--release`-style API selection when callers don't provide one explicitly.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "toolchains": {
+          "description": "Per-release JDK installation overrides.\n\nThe TOML representation is a table mapping `release -> jdk_home`: ```toml [jdk] toolchains = { \"8\" = \"/opt/jdks/jdk8\", \"17\" = \"/opt/jdks/jdk-17\" } ```",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
