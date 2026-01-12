@@ -15,7 +15,7 @@ export type NovaRequest = <R>(
 
 type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
-const NOT_SUPPORTED_MESSAGE = 'Not supported by this Nova version';
+const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
 interface WebEndpointsResponse {
   endpoints: WebEndpoint[];
 }
