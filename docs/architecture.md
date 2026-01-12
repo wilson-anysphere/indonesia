@@ -90,13 +90,13 @@ This repository contains working code **and** forward-looking design docs. Some 
 Notable “delta” areas to be aware of:
 
 - **Incremental engine coverage (ADR 0001):**
-  - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but many “shipping” features still bypass it:
+  - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but several “shipping” subsystems still mix Salsa with ad-hoc state/overlays:
     - `crates/nova-lsp/src/main.rs` tracks open documents in `ServerState::analysis: AnalysisState`, which wraps a `nova_vfs::Vfs<LspFs>` overlay (where `LspFs` is a small adapter around `LocalFs` + the file-backed `nova_decompile::DecompiledDocumentStore`) plus small `HashMap` caches for file text/paths.
     - Refactorings use a Salsa-backed semantic snapshot (`nova_refactor::RefactorJavaDatabase`) and can run against open-document overlays extracted from the VFS (see `ServerState::refactor_snapshot` in `crates/nova-lsp/src/main.rs` and `crates/nova-lsp/src/refactor_workspace.rs`).
-    - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
+    - The CLI/workspace engine in `crates/nova-workspace/` maintains a long-lived `nova_db::SalsaDatabase` and exports `WorkspaceSnapshot` for `nova-ide` consumers, plus persists `nova-index` symbol-search shards (see `Workspace::workspace_symbols_cancelable` in `crates/nova-workspace/src/lib.rs`).
 - **Syntax tree usage (ADR 0002):**
   - `crates/nova-syntax` provides both a token-level green tree (`parse`) and a rowan-based parser (`parse_java`).
-  - Several subsystems still use non-rowan parsing approaches (e.g. `crates/nova-framework-mapstruct/` uses Tree-sitter; `crates/nova-framework-web/` and `crates/nova-workspace/` use regex/text scans).
+  - Several subsystems still use non-rowan parsing approaches (e.g. `crates/nova-framework-mapstruct/` uses Tree-sitter; `crates/nova-framework-web/` uses regex/text scans).
 - **LSP transport framework (ADR 0003):**
   - The shipped `nova-lsp` binary uses `lsp-server` for the stdio transport (I/O threads, `Content-Length` framing, JSON-RPC parsing) and the `initialize` handshake (`lsp_server::Connection::stdio()` / `initialize_start` / `initialize_finish` in `crates/nova-lsp/src/main.rs`).
   - Request/notification handling is still Nova-owned: a custom router for `$/cancelRequest` + a manual `match` dispatch on method strings lives in `crates/nova-lsp/src/main.rs` (rather than a higher-level framework).
