@@ -79,6 +79,136 @@ class C {
 }
 
 #[test]
+fn extract_method_from_interface_default_method() {
+    let fixture = r#"
+interface I {
+    default void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::EndOfClass,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+interface I {
+    default void m(int a) {
+        int b = 1;
+        extracted(a, b);
+        System.out.println("done");
+    }
+
+    private void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_from_enum_instance_method() {
+    let fixture = r#"
+enum E {
+    A;
+
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::EndOfClass,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+enum E {
+    A;
+
+    void m(int a) {
+        int b = 1;
+        extracted(a, b);
+        System.out.println("done");
+    }
+
+    private void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_from_record_method() {
+    let fixture = r#"
+record R(int x) {
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::EndOfClass,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+record R(int x) {
+    void m(int a) {
+        int b = 1;
+        extracted(a, b);
+        System.out.println("done");
+    }
+
+    private void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_preserves_static_context() {
     let fixture = r#"
 class C {

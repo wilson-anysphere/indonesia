@@ -35,9 +35,9 @@ impl Visibility {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InsertionStrategy {
-    /// Insert the extracted method immediately after the enclosing method.
+    /// Insert the extracted method immediately after the enclosing member (method/constructor/initializer).
     AfterCurrentMethod,
-    /// Insert the extracted method at the end of the enclosing class.
+    /// Insert the extracted method at the end of the enclosing type.
     EndOfClass,
 }
 
@@ -143,10 +143,7 @@ impl ExtractMethod {
             });
         };
 
-        let class_decl = method
-            .syntax()
-            .ancestors()
-            .find_map(ast::ClassDeclaration::cast);
+        let enclosing_type_body = find_enclosing_type_body(method.syntax());
 
         let mut issues = Vec::new();
         if !is_valid_java_identifier(&self.name) {
@@ -154,12 +151,14 @@ impl ExtractMethod {
                 name: self.name.clone(),
             });
         }
-        if let Some(class_decl) = class_decl.as_ref() {
-            if issues.is_empty() && class_has_method_named(class_decl, &self.name) {
+        if let Some(enclosing_type_body) = enclosing_type_body.as_ref() {
+            if issues.is_empty() && type_body_has_method_named(enclosing_type_body, &self.name) {
                 issues.push(ExtractMethodIssue::NameCollision {
                     name: self.name.clone(),
                 });
             }
+        } else {
+            issues.push(ExtractMethodIssue::InvalidSelection);
         }
 
         let Some(selection_info) = find_statement_selection(&method_body, selection) else {
@@ -273,11 +272,8 @@ impl ExtractMethod {
         let (method, _method_body) = find_enclosing_method(root.clone(), selection)
             .ok_or("selection must be inside a method, constructor, or initializer block")?;
         let enclosing_method_is_static = method.is_static();
-        let class_decl = method
-            .syntax()
-            .ancestors()
-            .find_map(ast::ClassDeclaration::cast)
-            .ok_or("selection must be inside a class")?;
+        let enclosing_type_body = find_enclosing_type_body(method.syntax())
+            .ok_or("selection must be inside a type declaration")?;
 
         let method_indent = indentation_at(source, syntax_range(method.syntax()).start);
         let call_indent = indentation_at(source, selection.start);
@@ -285,7 +281,7 @@ impl ExtractMethod {
         let insertion_offset = match self.insertion_strategy {
             InsertionStrategy::AfterCurrentMethod => syntax_range(method.syntax()).end,
             InsertionStrategy::EndOfClass => {
-                insertion_offset_end_of_class(source, &class_decl, newline)
+                insertion_offset_end_of_type_body(source, enclosing_type_body.syntax(), newline)
             }
         };
 
@@ -594,17 +590,59 @@ fn find_statement_selection(method_body: &ast::Block, selection: TextRange) -> O
     best.map(|(_, sel)| sel)
 }
 
-fn class_has_method_named(class_decl: &ast::ClassDeclaration, name: &str) -> bool {
-    let Some(body) = class_decl.body() else {
-        return false;
-    };
-    let found = body.members().any(|member| {
-        let ast::ClassMember::MethodDeclaration(method) = member else {
-            return false;
-        };
-        method.name_token().is_some_and(|tok| tok.text() == name)
-    });
-    found
+#[derive(Debug, Clone)]
+enum EnclosingTypeBody {
+    Class(ast::ClassBody),
+    Interface(ast::InterfaceBody),
+    Enum(ast::EnumBody),
+    Record(ast::RecordBody),
+    Annotation(ast::AnnotationBody),
+}
+
+impl EnclosingTypeBody {
+    fn syntax(&self) -> &nova_syntax::SyntaxNode {
+        match self {
+            EnclosingTypeBody::Class(b) => b.syntax(),
+            EnclosingTypeBody::Interface(b) => b.syntax(),
+            EnclosingTypeBody::Enum(b) => b.syntax(),
+            EnclosingTypeBody::Record(b) => b.syntax(),
+            EnclosingTypeBody::Annotation(b) => b.syntax(),
+        }
+    }
+}
+
+fn find_enclosing_type_body(node: &nova_syntax::SyntaxNode) -> Option<EnclosingTypeBody> {
+    node.ancestors().find_map(|ancestor| {
+        if let Some(class_decl) = ast::ClassDeclaration::cast(ancestor.clone()) {
+            return class_decl.body().map(EnclosingTypeBody::Class);
+        }
+        if let Some(intf_decl) = ast::InterfaceDeclaration::cast(ancestor.clone()) {
+            return intf_decl.body().map(EnclosingTypeBody::Interface);
+        }
+        if let Some(enum_decl) = ast::EnumDeclaration::cast(ancestor.clone()) {
+            return enum_decl.body().map(EnclosingTypeBody::Enum);
+        }
+        if let Some(record_decl) = ast::RecordDeclaration::cast(ancestor.clone()) {
+            return record_decl.body().map(EnclosingTypeBody::Record);
+        }
+        if let Some(annot_decl) = ast::AnnotationTypeDeclaration::cast(ancestor.clone()) {
+            return annot_decl.body().map(EnclosingTypeBody::Annotation);
+        }
+        None
+    })
+}
+
+fn type_body_has_method_named(type_body: &EnclosingTypeBody, name: &str) -> bool {
+    type_body
+        .syntax()
+        .children()
+        .filter_map(ast::ClassMember::cast)
+        .any(|member| {
+            let ast::ClassMember::MethodDeclaration(method) = member else {
+                return false;
+            };
+            method.name_token().is_some_and(|tok| tok.text() == name)
+        })
 }
 
 fn collect_control_flow_hazards(
@@ -1272,26 +1310,15 @@ fn add_expr_uses(body: &Body, expr: ExprId, live: &mut HashSet<LocalId>) {
     }
 }
 
-fn insertion_offset_end_of_class(
-    source: &str,
-    class_decl: &ast::ClassDeclaration,
-    newline: &str,
-) -> usize {
-    let Some(body) = class_decl.body() else {
-        return syntax_range(class_decl.syntax()).end;
-    };
+fn insertion_offset_end_of_type_body(source: &str, body: &nova_syntax::SyntaxNode, newline: &str) -> usize {
     // Insert immediately before the newline that starts the closing brace line.
     let mut close = None;
-    for tok in body
-        .syntax()
-        .children_with_tokens()
-        .filter_map(|el| el.into_token())
-    {
+    for tok in body.children_with_tokens().filter_map(|el| el.into_token()) {
         if tok.kind() == SyntaxKind::RBrace {
             close = Some(u32::from(tok.text_range().start()) as usize);
         }
     }
-    let close = close.unwrap_or_else(|| syntax_range(body.syntax()).end);
+    let close = close.unwrap_or_else(|| syntax_range(body).end);
     let line_start = line_start_offset(source, close);
     line_start.saturating_sub(newline.len())
 }
