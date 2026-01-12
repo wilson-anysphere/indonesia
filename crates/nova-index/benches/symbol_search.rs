@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use nova_index::{CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolSearchIndex};
+use nova_index::{CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex};
 
 const SYMBOL_COUNT: usize = 100_000;
 const LIMIT: usize = 100;
@@ -110,6 +110,35 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
     out
 }
 
+/// Synthetic corpus for stressing the bounded full-scan fallback with *many matches*.
+///
+/// All symbols contain the letter `z` but none start with `z`, so a single-letter
+/// query `"z"` triggers the bounded full scan (prefix bucket is empty) and matches
+/// essentially every candidate in the scan window.
+fn synthetic_symbols_full_scan_many(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol> {
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let name = format!("Azzzz{i:06}");
+        let qualified_name = match mode {
+            QualifiedNameMode::EqualToName => name.clone(),
+            QualifiedNameMode::WithPackagePrefix => format!("com.example.fullscan.{name}"),
+        };
+        out.push(SearchSymbol {
+            name,
+            qualified_name,
+            kind: IndexSymbolKind::Class,
+            container_name: None,
+            location: SymbolLocation {
+                file: "A.java".into(),
+                line: 0,
+                column: 0,
+            },
+            ast_id: i as u32,
+        });
+    }
+    out
+}
+
 fn bench_symbol_search(c: &mut Criterion) {
     configure_rayon();
 
@@ -118,6 +147,13 @@ fn bench_symbol_search(c: &mut Criterion) {
 
     let symbols_qualified = synthetic_symbols(SYMBOL_COUNT, QualifiedNameMode::WithPackagePrefix);
     let index_qualified = SymbolSearchIndex::build(symbols_qualified);
+
+    let full_scan_equal = synthetic_symbols_full_scan_many(SYMBOL_COUNT, QualifiedNameMode::EqualToName);
+    let full_scan_index_equal = SymbolSearchIndex::build(full_scan_equal);
+
+    let full_scan_qualified =
+        synthetic_symbols_full_scan_many(SYMBOL_COUNT, QualifiedNameMode::WithPackagePrefix);
+    let full_scan_index_qualified = SymbolSearchIndex::build(full_scan_qualified);
 
     // Sanity-check the benchmark scenarios: if these change, the numbers stop being meaningful.
     for (label, index) in [("equal", &index_equal), ("qualified", &index_qualified)] {
@@ -217,6 +253,42 @@ fn bench_symbol_search(c: &mut Criterion) {
     }
 
     group.finish();
+
+    // Separate group for the "many full-scan matches" scenario so we don't
+    // accidentally change the baseline corpus used by the other benchmarks.
+    let mut full_scan_group = c.benchmark_group("symbol_search_full_scan_many");
+    full_scan_group.warm_up_time(Duration::from_secs(1));
+    full_scan_group.measurement_time(Duration::from_secs(2));
+    full_scan_group.sample_size(20);
+
+    for (label, index) in [
+        ("equal", &full_scan_index_equal),
+        ("qualified", &full_scan_index_qualified),
+    ] {
+        let (results, stats) = index.search_with_stats("z", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::FullScan,
+            "expected \"z\" to force bounded full scan fallback ({label})"
+        );
+        assert_eq!(
+            stats.candidates_considered, 50_000,
+            "expected bounded full scan to consider 50k candidates ({label})"
+        );
+        assert_eq!(
+            results.len(),
+            LIMIT,
+            "expected full-scan-many scenario to return LIMIT results ({label})"
+        );
+
+        full_scan_group.bench_with_input(
+            BenchmarkId::new("full_scan_z_many_matches", label),
+            index,
+            |b, index| b.iter(|| black_box(index.search_with_stats(black_box("z"), black_box(LIMIT)))),
+        );
+    }
+
+    full_scan_group.finish();
 }
 
 criterion_group!(benches, bench_symbol_search);
