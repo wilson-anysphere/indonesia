@@ -1561,6 +1561,43 @@ class Foo {
 }
 
 #[test]
+fn ensure_workspace_class_preserves_constructor_defs() {
+    let src = r#"
+class Foo {
+    Foo(int... xs) {}
+    void bar() {}
+}
+
+class Use {
+    void m() {
+        Foo f = null;
+        f.bar();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+
+    let result = db.typeck_body(DefWithBodyId::Method(m_id));
+    let env = &*result.env;
+    let foo = env.lookup_class("Foo").expect("expected Foo to be in env");
+    let def = env.class(foo).expect("expected Foo class def");
+    assert_eq!(def.constructors.len(), 1, "expected one constructor");
+    assert!(
+        def.constructors[0].is_varargs,
+        "expected Foo(int... xs) constructor to remain tagged as varargs"
+    );
+}
+
+#[test]
 fn target_typing_infers_generic_method_return_from_expected_type() {
     let src = r#"
  import java.util.*;

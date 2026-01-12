@@ -2638,7 +2638,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         // Best-effort: treat class type params as in-scope for constructor
                         // signatures.
                         let vars = class_vars.clone();
-
                         let params = ctor
                             .params
                             .iter()
