@@ -812,7 +812,11 @@ fn normalize_exclusions(exclusions: &mut BTreeSet<(String, String)>) {
     });
 }
 
-fn exclusion_matches(exclusions: &BTreeSet<(String, String)>, group_id: &str, artifact_id: &str) -> bool {
+fn exclusion_matches(
+    exclusions: &BTreeSet<(String, String)>,
+    group_id: &str,
+    artifact_id: &str,
+) -> bool {
     exclusions
         .iter()
         .any(|(g, a)| (g == "*" || g == group_id) && (a == "*" || a == artifact_id))
@@ -822,10 +826,7 @@ fn exclusion_intersection(
     a: &BTreeSet<(String, String)>,
     b: &BTreeSet<(String, String)>,
 ) -> BTreeSet<(String, String)> {
-    fn intersect_pattern(
-        left: (&str, &str),
-        right: (&str, &str),
-    ) -> Option<(String, String)> {
+    fn intersect_pattern(left: (&str, &str), right: (&str, &str)) -> Option<(String, String)> {
         let (g1, a1) = left;
         let (g2, a2) = right;
 
@@ -855,7 +856,9 @@ fn exclusion_intersection(
     let mut out = BTreeSet::new();
     for (ag, aa) in a {
         for (bg, ba) in b {
-            if let Some(intersection) = intersect_pattern((ag.as_str(), aa.as_str()), (bg.as_str(), ba.as_str())) {
+            if let Some(intersection) =
+                intersect_pattern((ag.as_str(), aa.as_str()), (bg.as_str(), ba.as_str()))
+            {
                 out.insert(intersection);
             }
         }

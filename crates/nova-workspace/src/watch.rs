@@ -112,7 +112,10 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
         // like a build change so we reload the project config instead of only updating file
         // contents.
-        if path.file_name().is_some_and(|name| name == "module-info.java") {
+        if path
+            .file_name()
+            .is_some_and(|name| name == "module-info.java")
+        {
             return Some(ChangeCategory::Build);
         }
         // Many build files are detected based on path components (e.g. ignoring `build/` output

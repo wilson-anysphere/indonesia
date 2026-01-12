@@ -303,7 +303,8 @@ impl ExtractMethod {
             );
 
             let declared_types = collect_declared_types(source, &method, &method_body);
-            let declared_types_by_name = collect_declared_types_by_name(source, &method, &method_body);
+            let declared_types_by_name =
+                collect_declared_types_by_name(source, &method, &method_body);
             let thrown_exceptions = collect_thrown_exceptions_in_statements(
                 source,
                 &selection_info.statements,
@@ -528,8 +529,9 @@ impl ExtractMethod {
         }
         let root = parsed.syntax();
 
-        let (method, method_body, type_params_text) = find_enclosing_method(source, root.clone(), selection)
-            .ok_or("selection must be inside a method, constructor, or initializer block")?;
+        let (method, method_body, type_params_text) =
+            find_enclosing_method(source, root.clone(), selection)
+                .ok_or("selection must be inside a method, constructor, or initializer block")?;
         let enclosing_method_is_static = method.is_static();
         let enclosing_type_body = find_enclosing_type_body(method.syntax())
             .ok_or("selection must be inside a type declaration")?;
@@ -802,7 +804,12 @@ fn find_enclosing_method(
                 .as_ref()
                 .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::Method(method), body, type_params_text));
+                best = Some((
+                    span,
+                    EnclosingMethod::Method(method),
+                    body,
+                    type_params_text,
+                ));
             }
         }
     }
@@ -826,7 +833,12 @@ fn find_enclosing_method(
                 .as_ref()
                 .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::Constructor(ctor), body, type_params_text));
+                best = Some((
+                    span,
+                    EnclosingMethod::Constructor(ctor),
+                    body,
+                    type_params_text,
+                ));
             }
         }
     }
@@ -901,12 +913,12 @@ fn find_statement_selection(
             continue;
         }
 
-        let start_idx = stmts
-            .iter()
-            .position(|stmt| non_trivia_range(stmt.syntax()).is_some_and(|range| range.start == selection.start));
-        let end_idx = stmts
-            .iter()
-            .position(|stmt| non_trivia_range(stmt.syntax()).is_some_and(|range| range.end == selection.end));
+        let start_idx = stmts.iter().position(|stmt| {
+            non_trivia_range(stmt.syntax()).is_some_and(|range| range.start == selection.start)
+        });
+        let end_idx = stmts.iter().position(|stmt| {
+            non_trivia_range(stmt.syntax()).is_some_and(|range| range.end == selection.end)
+        });
         let (Some(start_idx), Some(end_idx)) = (start_idx, end_idx) else {
             continue;
         };
@@ -1099,7 +1111,8 @@ fn collect_control_flow_hazards(
                         });
                     } else if let Some(target) = nearest_break_target(brk.syntax()) {
                         let target_range = syntax_range(target.syntax());
-                        if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                        if !(selection.start <= target_range.start
+                            && target_range.end <= selection.end)
                         {
                             issues.push(ExtractMethodIssue::IllegalControlFlow {
                                 hazard: ControlFlowHazard::Break,
@@ -1120,7 +1133,8 @@ fn collect_control_flow_hazards(
                         });
                     } else if let Some(target) = nearest_continue_target(cont.syntax()) {
                         let target_range = syntax_range(target.syntax());
-                        if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                        if !(selection.start <= target_range.start
+                            && target_range.end <= selection.end)
                         {
                             issues.push(ExtractMethodIssue::IllegalControlFlow {
                                 hazard: ControlFlowHazard::Continue,
@@ -1215,7 +1229,10 @@ fn collect_declared_types(
             let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
                 continue;
             };
-            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            let ty_text = slice_syntax(source, ty.syntax())
+                .unwrap_or("Object")
+                .trim()
+                .to_string();
             types.insert(span_of_token(&name_tok), ty_text);
         }
     }
@@ -1272,7 +1289,10 @@ fn collect_declared_types(
                 continue;
             };
             let name_span = span_of_token(&name_tok);
-            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            let ty_text = slice_syntax(source, ty.syntax())
+                .unwrap_or("Object")
+                .trim()
+                .to_string();
             types.insert(name_span, ty_text);
             if let Some(initializer) = decl.initializer() {
                 initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
@@ -1336,7 +1356,10 @@ fn collect_declared_types(
         let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
             continue;
         };
-        let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+        let ty_text = slice_syntax(source, ty.syntax())
+            .unwrap_or("Object")
+            .trim()
+            .to_string();
         types.insert(span_of_token(&name_tok), ty_text);
     }
     DeclaredTypes {
@@ -1831,11 +1854,17 @@ fn collect_first_local_use_in_stmt(
                 collect_first_local_use_in_stmt(body, *else_branch, local, after, best);
             }
         }
-        StmtKind::While { condition, body: inner } => {
+        StmtKind::While {
+            condition,
+            body: inner,
+        } => {
             collect_first_local_use_in_expr(body, *condition, local, after, best);
             collect_first_local_use_in_stmt(body, *inner, local, after, best);
         }
-        StmtKind::DoWhile { body: inner, condition } => {
+        StmtKind::DoWhile {
+            body: inner,
+            condition,
+        } => {
             collect_first_local_use_in_stmt(body, *inner, local, after, best);
             collect_first_local_use_in_expr(body, *condition, local, after, best);
         }

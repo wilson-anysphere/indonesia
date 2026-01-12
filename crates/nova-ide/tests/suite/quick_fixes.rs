@@ -161,7 +161,9 @@ fn unresolved_type_offers_create_class_quick_fix() {
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
-    let missing_start = source.find("MissingType").expect("expected MissingType in fixture");
+    let missing_start = source
+        .find("MissingType")
+        .expect("expected MissingType in fixture");
     let missing_end = missing_start + "MissingType".len();
     let missing_span = Span::new(missing_start, missing_end);
 
@@ -207,8 +209,7 @@ fn unresolved_type_offers_create_class_quick_fix() {
 
     let updated = apply_single_text_edit(source, edit);
     assert_eq!(
-        updated,
-        "class A { MissingType x; }\n\nclass MissingType {\n}\n",
+        updated, "class A { MissingType x; }\n\nclass MissingType {\n}\n",
         "unexpected updated text:\n{updated}"
     );
 }

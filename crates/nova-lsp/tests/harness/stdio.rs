@@ -55,12 +55,12 @@ mod stdio_jdk_type_definition;
 mod stdio_misc_language_features;
 #[path = "../suite/stdio_navigation.rs"]
 mod stdio_navigation;
-#[path = "../suite/stdio_references.rs"]
-mod stdio_references;
 #[path = "../suite/stdio_organize_imports.rs"]
 mod stdio_organize_imports;
 #[path = "../suite/stdio_refactor_code_actions.rs"]
 mod stdio_refactor_code_actions;
+#[path = "../suite/stdio_references.rs"]
+mod stdio_references;
 #[path = "../suite/stdio_safe_delete.rs"]
 mod stdio_safe_delete;
 #[path = "../suite/stdio_safe_mode_enforcement.rs"]

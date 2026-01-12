@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use nova_db::salsa::FileExprId;
-use nova_db::{ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_db::{
+    ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
+};
 use nova_jdk::JdkIndex;
 use nova_resolve::ids::DefWithBodyId;
 use nova_types::format_type;

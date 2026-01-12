@@ -673,7 +673,12 @@ fn type_of_expr_demand_result(
                         }
 
                         if matches!(body.exprs[*rhs], HirExpr::Lambda { .. }) {
-                            seed_lambda_params_from_target(&mut checker, &mut loader, *rhs, &lhs_ty);
+                            seed_lambda_params_from_target(
+                                &mut checker,
+                                &mut loader,
+                                *rhs,
+                                &lhs_ty,
+                            );
                         }
                     }
 
@@ -695,7 +700,9 @@ fn type_of_expr_demand_result(
                         stack.push(*finally);
                     }
                 }
-                HirStmt::Expr { expr: stmt_expr, .. } => {
+                HirStmt::Expr {
+                    expr: stmt_expr, ..
+                } => {
                     // Best-effort: propagate expected types through simple assignments in
                     // expression statements, primarily so target-typed lambdas get parameter types.
                     let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*stmt_expr] else {
@@ -725,7 +732,7 @@ fn type_of_expr_demand_result(
                         seed_lambda_params_from_target(&mut checker, &mut loader, *rhs, &lhs_ty);
                     }
                 }
-                | HirStmt::Throw { .. }
+                HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
                 | HirStmt::Empty { .. } => {}
@@ -4046,7 +4053,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             .get(local.idx())
             .copied()
             .unwrap_or(false);
-        let ty = if data.ty_text.trim() == "var" && self.var_inference_enabled() && !is_catch_param {
+        let ty = if data.ty_text.trim() == "var" && self.var_inference_enabled() && !is_catch_param
+        {
             if self.local_is_let_decl[local.idx()] {
                 let diag_span = if data.ty_range.is_empty() {
                     data.range
@@ -4216,7 +4224,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 name_range,
                 ..
             } => self.infer_field_access(loader, *receiver, name.as_str(), *name_range, expr),
-            HirExpr::ArrayAccess { array, index, range } => {
+            HirExpr::ArrayAccess {
+                array,
+                index,
+                range,
+            } => {
                 let array_ty = self.infer_expr(loader, *array).ty;
                 let index_ty = self.infer_expr(loader, *index).ty;
 
@@ -7551,7 +7563,8 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
     match &body.exprs[expr] {
         HirExpr::FieldAccess { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
         HirExpr::ArrayAccess { array, index, .. } => {
-            contains_expr_in_expr(body, *array, target) || contains_expr_in_expr(body, *index, target)
+            contains_expr_in_expr(body, *array, target)
+                || contains_expr_in_expr(body, *index, target)
         }
         HirExpr::MethodReference { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
         HirExpr::ConstructorReference { receiver, .. } => {

@@ -5,10 +5,7 @@ use nova_memory::{MemoryBudget, MemoryManager, MemoryPressureThresholds};
 use nova_vfs::VfsPath;
 use nova_workspace::Workspace;
 
-fn find_component_bytes(
-    components: &[nova_memory::ComponentUsage],
-    name: &str,
-) -> Option<u64> {
+fn find_component_bytes(components: &[nova_memory::ComponentUsage], name: &str) -> Option<u64> {
     components.iter().find(|c| c.name == name).map(|c| c.bytes)
 }
 
@@ -44,11 +41,7 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
 
     // Open one document with an unsaved overlay; it must stay pinned across eviction.
     let overlay_text = "class Open { /* overlay */ }".to_string();
-    let open_id = ws.open_document(
-        VfsPath::local(open_path.clone()),
-        overlay_text.clone(),
-        1,
-    );
+    let open_id = ws.open_document(VfsPath::local(open_path.clone()), overlay_text.clone(), 1);
 
     // Discover the closed file ids.
     let snap = ws.snapshot();

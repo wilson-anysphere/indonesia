@@ -744,7 +744,10 @@ mod tests {
                 ),
             ],
             &[],
-            &[r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"))"#.to_string()],
+            &[
+                r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"))"#
+                    .to_string(),
+            ],
         );
 
         assert!(
@@ -755,6 +758,7 @@ mod tests {
             !src.contains("return s.map"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src.contains(r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"));"#));
+        assert!(src
+            .contains(r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"));"#));
     }
 }

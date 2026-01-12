@@ -18,4 +18,3 @@ fn move_package_workspace_edit_does_not_panic_on_unicode_in_block_comment() {
     )
     .expect("refactoring succeeds");
 }
-

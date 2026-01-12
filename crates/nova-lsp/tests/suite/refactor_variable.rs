@@ -471,7 +471,8 @@ class C {
 }
 
 #[test]
-fn extract_variable_code_action_not_offered_for_switch_rule_statement_body_without_braces_multiline() {
+fn extract_variable_code_action_not_offered_for_switch_rule_statement_body_without_braces_multiline(
+) {
     let fixture = r#"
 class C {
     void m(int x) {
@@ -611,10 +612,7 @@ class C {
 "#;
 
     let uri = Uri::from_str("file:///Test.java").unwrap();
-    let offset = source
-        .find("int a = 1 + 2;")
-        .expect("declaration exists")
-        + "int ".len();
+    let offset = source.find("int a = 1 + 2;").expect("declaration exists") + "int ".len();
     let position = offset_to_position(source, offset);
 
     let actions = inline_variable_code_actions(&uri, source, position);

@@ -142,8 +142,9 @@ impl JavaParseStore {
                 }
                 (None, removed)
             } else {
-                let cached =
-                    inner.get(&file).and_then(|entry| Arc::ptr_eq(&entry.text, text).then(|| entry.parse.clone()));
+                let cached = inner
+                    .get(&file)
+                    .and_then(|entry| Arc::ptr_eq(&entry.text, text).then(|| entry.parse.clone()));
 
                 if cached.is_some() {
                     if !removed.is_empty() {

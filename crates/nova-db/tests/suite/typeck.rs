@@ -960,7 +960,9 @@ class C { int m(int a){ return a[0]; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "invalid-array-access"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-array-access"),
         "expected invalid-array-access diagnostic; got {diags:?}"
     );
 }
@@ -4888,7 +4890,10 @@ class C {
         "expected inferred return type to be assignable; got {diags:?}"
     );
 
-    let offset = src.find("t.id(\"x\")").expect("snippet should contain call") + "t.id".len();
+    let offset = src
+        .find("t.id(\"x\")")
+        .expect("snippet should contain call")
+        + "t.id".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");

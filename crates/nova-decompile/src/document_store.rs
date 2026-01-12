@@ -750,8 +750,8 @@ fn open_cache_file_read(path: &Path) -> io::Result<std::fs::File> {
         let file_name = path
             .file_name()
             .ok_or_else(|| io::Error::other("cache file has no filename"))?;
-        let file_c =
-            CString::new(file_name.as_bytes()).map_err(|_| io::Error::other("filename contains NUL"))?;
+        let file_c = CString::new(file_name.as_bytes())
+            .map_err(|_| io::Error::other("filename contains NUL"))?;
 
         let fd = unsafe {
             libc::openat(

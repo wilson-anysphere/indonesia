@@ -35,9 +35,7 @@ fn rename_type_updates_inheritance_and_body_type_occurrences() {
     ]);
     let updated = apply_workspace_edit(&files, &edit).expect("workspace edit applies");
 
-    let derived_after = updated
-        .get(&derived_file)
-        .expect("Derived.java updated");
+    let derived_after = updated.get(&derived_file).expect("Derived.java updated");
 
     assert!(
         derived_after.contains("extends Renamed"),
@@ -70,4 +68,3 @@ fn rename_type_updates_inheritance_and_body_type_occurrences() {
         "expected catch type to remain unchanged: {derived_after}"
     );
 }
-

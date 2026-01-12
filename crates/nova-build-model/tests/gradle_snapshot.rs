@@ -52,8 +52,8 @@ fn gradle_snapshot_roundtrip_json() {
         value["javaCompileConfigs"][":app"]["enablePreview"],
         serde_json::Value::from(true)
     );
-    let expected_path = serde_json::to_value(PathBuf::from("out").join("main"))
-        .expect("serialize path");
+    let expected_path =
+        serde_json::to_value(PathBuf::from("out").join("main")).expect("serialize path");
     assert_eq!(
         value["javaCompileConfigs"][":app"]["compileClasspath"][0],
         expected_path

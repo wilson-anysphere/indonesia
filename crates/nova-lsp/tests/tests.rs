@@ -20,12 +20,12 @@ mod mapstruct_goto_definition;
 mod micronaut_extensions;
 #[path = "suite/navigation.rs"]
 mod navigation;
-#[path = "suite/references.rs"]
-mod references;
 #[path = "suite/refactor_variable.rs"]
 mod refactor_variable;
 #[path = "suite/refactor_workspace_snapshot.rs"]
 mod refactor_workspace_snapshot;
+#[path = "suite/references.rs"]
+mod references;
 #[path = "suite/stdio_ai_completion_more.rs"]
 mod stdio_ai_completion_more;
 #[path = "suite/stdio_lifecycle.rs"]

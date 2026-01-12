@@ -99,7 +99,10 @@ impl SyntaxTreeStore {
         self.open_docs.is_open(file)
     }
 
-    fn prune_closed_files_locked(&self, inner: &mut HashMap<FileId, StoredTree>) -> Vec<(FileId, u64)> {
+    fn prune_closed_files_locked(
+        &self,
+        inner: &mut HashMap<FileId, StoredTree>,
+    ) -> Vec<(FileId, u64)> {
         let mut removed = Vec::new();
         inner.retain(|file, stored| {
             let keep = self.open_docs.is_open(*file);

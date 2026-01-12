@@ -446,7 +446,8 @@ impl MemoryEvictor for ClosedFileTextStore {
 
             // Replace with a shared empty `Arc<String>` to drop the strong reference to the large
             // allocation while keeping Salsa inputs well-formed.
-            self.query_db.set_file_content(file_id, empty_file_content());
+            self.query_db
+                .set_file_content(file_id, empty_file_content());
             // Mark dirty so persistence logic doesn't overwrite on-disk caches with the evicted
             // placeholder contents.
             self.query_db.set_file_is_dirty(file_id, true);
@@ -754,7 +755,8 @@ impl WorkspaceEngine {
         let java_parse_store = JavaParseStore::new(&memory, open_docs.clone());
         query_db.set_java_parse_store(Some(java_parse_store));
 
-        let closed_file_texts = ClosedFileTextStore::new(&memory, query_db.clone(), open_docs.clone());
+        let closed_file_texts =
+            ClosedFileTextStore::new(&memory, query_db.clone(), open_docs.clone());
 
         let overlay_docs_memory_registration =
             memory.register_tracker("vfs_documents", MemoryCategory::Other);
@@ -1673,7 +1675,8 @@ impl WorkspaceEngine {
             } else {
                 // The overlay was closed and the file doesn't exist on disk; drop the last-known
                 // contents to avoid holding onto large inputs for deleted/unsaved buffers.
-                self.query_db.set_file_content(file_id, empty_file_content());
+                self.query_db
+                    .set_file_content(file_id, empty_file_content());
                 self.closed_file_texts.clear(file_id);
             }
             if !exists || restored_from_disk {
@@ -1767,7 +1770,8 @@ impl WorkspaceEngine {
             return Vec::new();
         }
         let cap = report.degraded.completion_candidate_cap;
-        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        self.closed_file_texts
+            .restore_if_evicted(&self.vfs, file_id);
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
         let text = snapshot.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
@@ -2067,7 +2071,8 @@ impl WorkspaceEngine {
     }
 
     pub(crate) fn salsa_parse_java(&self, file_id: FileId) -> Arc<nova_syntax::JavaParseResult> {
-        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        self.closed_file_texts
+            .restore_if_evicted(&self.vfs, file_id);
         self.query_db.with_snapshot(|snap| snap.parse_java(file_id))
     }
 
@@ -2141,7 +2146,8 @@ impl WorkspaceEngine {
                         self.query_db.set_file_exists(file_id, false);
                         exists = false;
                         self.query_db.set_file_is_dirty(file_id, false);
-                        self.query_db.set_file_content(file_id, empty_file_content());
+                        self.query_db
+                            .set_file_content(file_id, empty_file_content());
                         self.closed_file_texts.clear(file_id);
                     }
                     Err(_) if !was_known => {
@@ -2158,7 +2164,8 @@ impl WorkspaceEngine {
             }
         } else if !open_docs.is_open(file_id) {
             self.query_db.set_file_is_dirty(file_id, false);
-            self.query_db.set_file_content(file_id, empty_file_content());
+            self.query_db
+                .set_file_content(file_id, empty_file_content());
             self.closed_file_texts.clear(file_id);
         }
 
@@ -2230,7 +2237,8 @@ impl WorkspaceEngine {
                 }
             }
         } else if !open_docs.is_open(file_id) {
-            self.query_db.set_file_content(file_id, empty_file_content());
+            self.query_db
+                .set_file_content(file_id, empty_file_content());
             self.closed_file_texts.clear(file_id);
         }
 
@@ -2270,7 +2278,8 @@ impl WorkspaceEngine {
                 self.query_db.unpin_item_tree(id_from);
                 self.query_db.set_file_exists(id_from, false);
                 if !open_docs.is_open(id_from) {
-                    self.query_db.set_file_content(id_from, empty_file_content());
+                    self.query_db
+                        .set_file_content(id_from, empty_file_content());
                     self.closed_file_texts.clear(id_from);
                 }
                 self.update_project_files_membership(&from_vfs, id_from, false);
@@ -2403,7 +2412,8 @@ impl WorkspaceEngine {
             return self.syntax_diagnostics_only(file, file_id);
         }
 
-        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        self.closed_file_texts
+            .restore_if_evicted(&self.vfs, file_id);
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
         self.query_db.with_snapshot(|snap| {
             nova_ide::file_diagnostics_with_semantic_db(&snapshot, snap, file_id)
@@ -6469,7 +6479,11 @@ enabled = false
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
         fs::create_dir_all(project_root.join("src")).unwrap();
-        fs::write(project_root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let project_root = project_root.canonicalize().unwrap();
 
@@ -6755,7 +6769,9 @@ enabled = false
 
         timeout(Duration::from_secs(5), async {
             loop {
-                let text = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+                let text = engine
+                    .query_db
+                    .with_snapshot(|snap| snap.file_content(file_id));
                 if text.as_str() == "class Main { int x; }" {
                     break;
                 }

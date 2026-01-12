@@ -1604,7 +1604,8 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let test_file_path = test_dir.join("ExampleTest.java");
     let test_file_rel = "src/test/java/com/example/ExampleTest.java";
     let test_file_uri = uri_for_path(&test_file_path);
-    let test_source = "package com.example;\n\npublic class ExampleTest {\n    // AI_TESTS_PLACEHOLDER\n}\n";
+    let test_source =
+        "package com.example;\n\npublic class ExampleTest {\n    // AI_TESTS_PLACEHOLDER\n}\n";
     std::fs::write(&test_file_path, test_source).expect("write test file");
 
     let placeholder_line = "    // AI_TESTS_PLACEHOLDER";
@@ -1613,7 +1614,9 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("placeholder start");
     let placeholder_end = placeholder_start + placeholder_line.len();
     let test_pos = TextPos::new(test_source);
-    let replace_start = test_pos.lsp_position(placeholder_start).expect("replace start");
+    let replace_start = test_pos
+        .lsp_position(placeholder_start)
+        .expect("replace start");
     let replace_end = test_pos.lsp_position(placeholder_end).expect("replace end");
 
     let patch = json!({
@@ -1627,7 +1630,8 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
           "text": "    // AI-generated tests would go here\n"
         }
       ]
-    }).to_string();
+    })
+    .to_string();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -2179,9 +2183,7 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     );
     let end = index.position(
         text,
-        TextSize::from(
-            u32::try_from(emoji_offset + '😀'.len_utf8()).expect("offset fits in u32"),
-        ),
+        TextSize::from(u32::try_from(emoji_offset + '😀'.len_utf8()).expect("offset fits in u32")),
     );
     let start = Position::new(start.line, start.character);
     let end = Position::new(end.line, end.character);

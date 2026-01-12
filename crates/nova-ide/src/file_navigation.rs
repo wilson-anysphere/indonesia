@@ -388,9 +388,12 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
                 || parsed.text.contains("org.mapstruct"))
         {
             let root = framework_cache::project_root_for_path(path);
-            if let Ok(targets) =
-                nova_framework_mapstruct::goto_definition_in_source(&root, path, &parsed.text, offset)
-            {
+            if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
+                &root,
+                path,
+                &parsed.text,
+                offset,
+            ) {
                 if let Some(target) = targets.into_iter().next() {
                     if target
                         .file

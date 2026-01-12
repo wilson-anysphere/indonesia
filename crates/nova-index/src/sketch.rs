@@ -589,8 +589,7 @@ impl Index {
 
         let mut out = Vec::new();
         for subtype in self.all_subtypes(container) {
-            if let Some(id) =
-                self.method_overload_by_param_types(&subtype, &sym.name, param_types)
+            if let Some(id) = self.method_overload_by_param_types(&subtype, &sym.name, param_types)
             {
                 out.push(id);
             }

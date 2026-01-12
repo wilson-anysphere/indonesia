@@ -113,4 +113,3 @@ class Leaf extends Mid {}
         vec!["Mid".to_string(), "Leaf".to_string()]
     );
 }
-

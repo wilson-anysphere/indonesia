@@ -53,4 +53,3 @@ pub struct GradleSnapshotJavaCompileConfig {
     #[serde(default)]
     pub enable_preview: bool,
 }
-

@@ -1267,7 +1267,11 @@ val doc = """includeBuild(":other")"""
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
 
-        std::fs::write(project_root.join("settings.gradle.kts"), "include(\":app\")\n").unwrap();
+        std::fs::write(
+            project_root.join("settings.gradle.kts"),
+            "include(\":app\")\n",
+        )
+        .unwrap();
 
         assert!(gradle_settings_suggest_multi_project(project_root));
     }

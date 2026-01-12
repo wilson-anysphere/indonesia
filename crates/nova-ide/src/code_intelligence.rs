@@ -7951,7 +7951,12 @@ fn is_boolean_condition_context(tokens: &[Token], offset: usize) -> bool {
     false
 }
 
-fn offset_in_for_condition(tokens: &[Token], open_idx: usize, close_idx: usize, offset: usize) -> bool {
+fn offset_in_for_condition(
+    tokens: &[Token],
+    open_idx: usize,
+    close_idx: usize,
+    offset: usize,
+) -> bool {
     // `for (<init>; <condition>; <update>)`
     //
     // We only treat the *condition* segment as boolean-expected. Enhanced-for (`:`) is ignored.

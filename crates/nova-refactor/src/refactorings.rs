@@ -279,9 +279,10 @@ fn annotation_value_shorthand_updates(
                     let name_range = syntax_token_range(&name_tok);
                     // If the semantic DB already records this as a reference, rely on the normal
                     // rename path to avoid overlapping edits.
-                    if existing_refs.iter().any(|r| {
-                        r.file == file && ranges_overlap(r.range, name_range)
-                    }) {
+                    if existing_refs
+                        .iter()
+                        .any(|r| r.file == file && ranges_overlap(r.range, name_range))
+                    {
                         continue;
                     }
 
@@ -897,13 +898,7 @@ pub fn inline_variable(
     }
 
     ensure_inline_variable_dependencies_not_shadowed(
-        db,
-        &parsed,
-        &def.file,
-        text,
-        init_range,
-        &init_expr,
-        &targets,
+        db, &parsed, &def.file, text, init_range, &init_expr, &targets,
     )?;
 
     // Reject inlining across lambda execution-context boundaries. Inlining a local into a lambda

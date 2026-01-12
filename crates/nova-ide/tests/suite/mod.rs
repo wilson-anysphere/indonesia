@@ -43,6 +43,6 @@ mod snapshot_navigation;
 mod source_types;
 mod spring_config_metadata_intel;
 mod spring_di_intel;
-mod unused_imports;
 mod unicode_lsp_positions;
+mod unused_imports;
 mod unused_imports;

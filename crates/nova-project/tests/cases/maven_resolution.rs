@@ -222,13 +222,10 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
     write_file(&repo_jar_path(&repo, "com.dep", "dep-profile", "3.0.0"), "");
 
     // Fake jars for resolved dependencies so classpath resolution includes them.
-    for (group, artifact, version) in [
-        ("com.dep", "dep-a", "1.0.0"),
-        ("com.dep", "dep-b", "2.0.0"),
-    ] {
+    for (group, artifact, version) in [("com.dep", "dep-a", "1.0.0"), ("com.dep", "dep-b", "2.0.0")]
+    {
         let jar_path = repo_jar_path(&repo, group, artifact, version);
-        std::fs::create_dir_all(jar_path.parent().expect("jar parent"))
-            .expect("create jar parent");
+        std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("create jar parent");
         std::fs::write(&jar_path, b"not really a jar").expect("write jar placeholder");
     }
 

@@ -168,13 +168,11 @@ excluded_paths = ["secret/**"]
     ];
     for cmd in code_edit_commands {
         assert!(
-            actions
-                .iter()
-                .all(|a| a
-                    .get("command")
-                    .and_then(|c| c.get("command"))
-                    .and_then(|v| v.as_str())
-                    != Some(cmd)),
+            actions.iter().all(|a| a
+                .get("command")
+                .and_then(|c| c.get("command"))
+                .and_then(|v| v.as_str())
+                != Some(cmd)),
             "expected AI code edit action {cmd:?} to be suppressed, got: {actions:?}"
         );
     }

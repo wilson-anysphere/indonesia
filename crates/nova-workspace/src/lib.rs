@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_db::{FileId, NovaIndexing, SalsaDatabase};
+#[cfg(test)]
+use nova_index::SymbolLocation;
 use nova_index::{
     load_sharded_index_view_lazy_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
-#[cfg(test)]
-use nova_index::SymbolLocation;
 use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryManager};
 use nova_project::ProjectError;
 use nova_scheduler::{CancellationToken, Cancelled};
@@ -210,10 +210,7 @@ impl Workspace {
     /// This is primarily exposed for integration tests and debug tooling.
     pub fn memory_report_detailed(
         &self,
-    ) -> (
-        nova_memory::MemoryReport,
-        Vec<nova_memory::ComponentUsage>,
-    ) {
+    ) -> (nova_memory::MemoryReport, Vec<nova_memory::ComponentUsage>) {
         self.memory.report_detailed()
     }
 

@@ -20,7 +20,9 @@ pub enum ExtractError {
     SideEffectfulExpression,
     #[error("expression depends on method-local variables or parameters")]
     DependsOnLocal,
-    #[error("expression is not in an instance context and cannot be extracted to an instance field")]
+    #[error(
+        "expression is not in an instance context and cannot be extracted to an instance field"
+    )]
     NotInstanceContext,
     #[error("expression is not safe to extract to a static context")]
     NotStaticSafe,
@@ -397,7 +399,10 @@ fn is_in_static_context(expr: &ast::Expression, class_body: &ast::ClassBody) -> 
 }
 
 fn has_static_modifier(modifiers: Option<ast::Modifiers>) -> bool {
-    modifiers.is_some_and(|mods| mods.keywords().any(|tok| tok.kind() == SyntaxKind::StaticKw))
+    modifiers.is_some_and(|mods| {
+        mods.keywords()
+            .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+    })
 }
 
 fn enclosing_executable_container(

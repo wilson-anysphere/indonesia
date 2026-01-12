@@ -4987,15 +4987,24 @@ fn goto_definition_jdk(
     // Best-effort: try to use the persisted decompiled-document store so we can compute a precise
     // symbol range without re-running the decompiler.
     let store = state.analysis.decompiled_store.as_ref();
-    if let Some((text, mappings)) = vfs_path.as_decompiled().and_then(|(content_hash, binary_name)| {
-        store
-            .load_document(content_hash, binary_name)
-            .ok()
-            .flatten()
-    }) {
+    if let Some((text, mappings)) =
+        vfs_path
+            .as_decompiled()
+            .and_then(|(content_hash, binary_name)| {
+                store
+                    .load_document(content_hash, binary_name)
+                    .ok()
+                    .flatten()
+            })
+    {
         let cached_range = member_symbol
             .as_ref()
-            .and_then(|symbol| mappings.iter().find(|m| &m.symbol == symbol).map(|m| m.range))
+            .and_then(|symbol| {
+                mappings
+                    .iter()
+                    .find(|m| &m.symbol == symbol)
+                    .map(|m| m.range)
+            })
             .or_else(|| {
                 mappings
                     .iter()
@@ -5004,10 +5013,7 @@ fn goto_definition_jdk(
             });
 
         if let Some(range) = cached_range {
-            state
-                .analysis
-                .vfs
-                .store_virtual_document(vfs_path, text);
+            state.analysis.vfs.store_virtual_document(vfs_path, text);
             // Virtual documents are cached outside the "open documents" set; refresh our coarse
             // memory accounting so they still contribute to memory pressure and can trigger
             // eviction elsewhere.
@@ -5028,9 +5034,12 @@ fn goto_definition_jdk(
     // Persist the decompiled output (text + mappings) for future requests.
     // Ignore errors and fall back to the in-memory virtual document store.
     if let Some((content_hash, binary_name)) = vfs_path.as_decompiled() {
-        if let Err(err) =
-            store.store_document(content_hash, binary_name, &decompiled.text, &decompiled.mappings)
-        {
+        if let Err(err) = store.store_document(
+            content_hash,
+            binary_name,
+            &decompiled.text,
+            &decompiled.mappings,
+        ) {
             tracing::warn!(
                 target = "nova.lsp",
                 uri = %uri_string,
