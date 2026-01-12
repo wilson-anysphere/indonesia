@@ -1391,15 +1391,15 @@ function extractPathText(arg: unknown): string | undefined {
     return undefined;
   }
 
+  const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
+  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
+    return projectRoot.trim();
+  }
+
   const workspace = (arg as { workspace?: unknown }).workspace;
   const asNestedFolder = asWorkspaceFolder(workspace);
   if (asNestedFolder) {
     return asNestedFolder.uri.fsPath;
-  }
-
-  const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
-  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
-    return projectRoot.trim();
   }
 
   const uri = (arg as { uri?: unknown }).uri;
