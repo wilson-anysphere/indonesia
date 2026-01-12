@@ -101,6 +101,13 @@ pub fn reparse_java(
     {
         return parse_java(new_text);
     }
+    // Fragment parsers treat the end of the fragment slice as EOF. If they report an error "found
+    // end of file" but the reparsed region does not actually reach the end of the document, error
+    // recovery can differ from a full parse (which would see the following tokens). Fall back to a
+    // full parse in that case to keep diagnostics consistent.
+    if !fragment_reaches_eof && fragment_has_eof_parse_error(&fragment) {
+        return parse_java(new_text);
+    }
 
     if fragment.syntax().kind() != plan.target_node.kind() {
         return parse_java(new_text);
@@ -136,6 +143,13 @@ fn fragment_has_unterminated_lex_error(fragment: &JavaParseResult) -> bool {
         .errors
         .iter()
         .any(|e| e.message.starts_with("unterminated "))
+}
+
+fn fragment_has_eof_parse_error(fragment: &JavaParseResult) -> bool {
+    fragment
+        .errors
+        .iter()
+        .any(|e| e.message.contains("found end of file"))
 }
 
 fn fragment_ends_in_line_comment(fragment_text: &str) -> bool {
