@@ -174,7 +174,6 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     fn expr_scopes(&self, owner: DefWithBodyId) -> ArcEq<ExprScopes>;
 
     fn typeck_body(&self, owner: DefWithBodyId) -> Arc<BodyTypeckResult>;
-
     fn type_of_expr(&self, file: FileId, expr: FileExprId) -> Type;
     fn type_of_expr_demand_result(&self, file: FileId, expr: FileExprId) -> Arc<DemandExprTypeckResult>;
     fn type_of_expr_demand(&self, file: FileId, expr: FileExprId) -> Type;
@@ -1618,6 +1617,17 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     }
 
     drop(loader);
+
+    // Pre-intern workspace (source) types in deterministic order so `ClassId`s are stable
+    // across body-local clones even when different bodies load workspace types in different
+    // orders.
+    let workspace = db.workspace_def_map(project);
+    let mut workspace_names = workspace.iter_type_names().cloned().collect::<Vec<_>>();
+    workspace_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    for (idx, name) in workspace_names.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+        store.intern_class_id(name.as_str());
+    }
 
     db.record_query_stat("project_base_type_store", start.elapsed());
     ArcEq::new(Arc::new(store))

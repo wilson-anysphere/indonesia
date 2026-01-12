@@ -126,6 +126,8 @@ fn external_class_ids_are_stable_across_bodies_in_same_file() {
     let file = FileId::from_raw(1);
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new("src/C.java".to_string()));
+    db.set_all_file_ids(Arc::new(vec![file]));
+    db.set_project_files(project, Arc::new(vec![file]));
 
     let src = r#"
 class C {
@@ -141,8 +143,6 @@ class C {
 }
 "#;
     db.set_file_text(file, src);
-    db.set_all_file_ids(Arc::new(vec![file]));
-    db.set_project_files(project, Arc::new(vec![file]));
 
     let tree = db.hir_item_tree(file);
     let method_a = find_method_named(&tree, "a");
@@ -171,4 +171,59 @@ class C {
 
     assert_eq!(foo_a, foo_b, "expected Foo to have stable ClassId across bodies");
     assert_eq!(bar_a, bar_b, "expected Bar to have stable ClassId across bodies");
+}
+
+#[test]
+fn workspace_class_ids_are_stable_across_bodies() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+    db.set_file_project(file_a, project);
+    db.set_file_project(file_b, project);
+    db.set_file_rel_path(file_a, Arc::new("src/p/A.java".to_string()));
+    db.set_file_rel_path(file_b, Arc::new("src/p/B.java".to_string()));
+    db.set_all_file_ids(Arc::new(vec![file_a, file_b]));
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let src_a = r#"
+package p;
+class A {
+    A id() { return null; }
+}
+"#;
+    let src_b = r#"
+package p;
+class B {
+    A m() { return null; }
+}
+"#;
+
+    db.set_file_text(file_a, src_a);
+    db.set_file_text(file_b, src_b);
+
+    let tree_a = db.hir_item_tree(file_a);
+    let tree_b = db.hir_item_tree(file_b);
+    let method_a = find_method_named(&tree_a, "id");
+    let method_b = find_method_named(&tree_b, "m");
+
+    let body_a = db.typeck_body(DefWithBodyId::Method(method_a));
+    let body_b = db.typeck_body(DefWithBodyId::Method(method_b));
+
+    let a_in_a = body_a
+        .env
+        .lookup_class("p.A")
+        .expect("A should be interned in body A env");
+    let a_in_b = body_b
+        .env
+        .lookup_class("p.A")
+        .expect("A should be interned in body B env");
+
+    assert_eq!(
+        a_in_a, a_in_b,
+        "expected workspace type to have stable ClassId across bodies"
+    );
 }
