@@ -304,7 +304,11 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
 
     fn typeck_body(&self, owner: DefWithBodyId) -> Arc<BodyTypeckResult>;
     fn type_of_expr(&self, file: FileId, expr: FileExprId) -> Type;
-    fn type_of_expr_demand_result(&self, file: FileId, expr: FileExprId) -> Arc<DemandExprTypeckResult>;
+    fn type_of_expr_demand_result(
+        &self,
+        file: FileId,
+        expr: FileExprId,
+    ) -> Arc<DemandExprTypeckResult>;
     fn type_of_expr_demand(&self, file: FileId, expr: FileExprId) -> Type;
     fn type_of_def(&self, def: DefWithBodyId) -> Type;
 
@@ -594,9 +598,11 @@ fn type_of_expr_demand_result(
     let ty = if expr.expr.idx() < body.exprs.len() {
         let target_expr = expr.expr;
         match expected_ty.as_ref() {
-            Some(expected) => checker
-                .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
-                .ty,
+            Some(expected) => {
+                checker
+                    .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
+                    .ty
+            }
             None => checker.infer_expr(&mut loader, target_expr).ty,
         }
     } else {
@@ -1870,13 +1876,7 @@ fn type_at_offset_display(db: &dyn NovaTypeck, file: FileId, offset: u32) -> Opt
     }
 
     let (owner, expr, _) = best?;
-    let expr_res = db.type_of_expr_demand_result(
-        file,
-        FileExprId {
-            owner,
-            expr,
-        },
-    );
+    let expr_res = db.type_of_expr_demand_result(file, FileExprId { owner, expr });
     let rendered = format_type(&*expr_res.env, &expr_res.ty);
 
     db.record_query_stat("type_at_offset_display", start.elapsed());
@@ -2604,6 +2604,7 @@ fn is_placeholder_class_def(def: &ClassDef) -> bool {
 struct BodyChecker<'a, 'idx> {
     db: &'a dyn NovaTypeck,
     owner: DefWithBodyId,
+    var_inference_enabled: bool,
     resolver: &'a nova_resolve::Resolver<'idx>,
     scopes: &'a nova_resolve::ScopeGraph,
     scope_id: nova_resolve::ScopeId,
@@ -2615,6 +2616,7 @@ struct BodyChecker<'a, 'idx> {
     local_types: Vec<Type>,
     local_ty_states: Vec<LocalTyState>,
     local_initializers: Vec<Option<HirExprId>>,
+    local_is_let_decl: Vec<bool>,
     local_foreach_iterables: Vec<Option<HirExprId>>,
     lazy_locals: bool,
     param_types: Vec<Type>,
@@ -2650,25 +2652,39 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         java_level: JavaLanguageLevel,
         lazy_locals: bool,
     ) -> Self {
+        let file = def_file(owner);
+        let level = db.java_language_level(file);
+        let var_inference_enabled = level.major >= 10;
+
         let local_types = vec![Type::Unknown; body.locals.len()];
         let local_ty_states = vec![LocalTyState::Uncomputed; body.locals.len()];
-        let (local_initializers, local_foreach_iterables) = if lazy_locals {
+        let (local_initializers, local_is_let_decl, local_foreach_iterables) = if lazy_locals {
             let mut initializers = vec![None; body.locals.len()];
+            let mut is_let_decl = vec![false; body.locals.len()];
             let mut foreach_iterables = vec![None; body.locals.len()];
             for (_, stmt) in body.stmts.iter() {
                 match stmt {
-                    HirStmt::Let { local, initializer, .. } => {
+                    HirStmt::Let {
+                        local, initializer, ..
+                    } => {
+                        is_let_decl[local.idx()] = true;
                         initializers[local.idx()] = *initializer;
                     }
-                    HirStmt::ForEach { local, iterable, .. } => {
+                    HirStmt::ForEach {
+                        local, iterable, ..
+                    } => {
                         foreach_iterables[local.idx()] = Some(*iterable);
                     }
                     _ => {}
                 }
             }
-            (initializers, foreach_iterables)
+            (initializers, is_let_decl, foreach_iterables)
         } else {
-            (vec![None; body.locals.len()], vec![None; body.locals.len()])
+            (
+                vec![None; body.locals.len()],
+                vec![false; body.locals.len()],
+                vec![None; body.locals.len()],
+            )
         };
         let expr_info = vec![None; body.exprs.len()];
         let call_resolutions = vec![None; body.exprs.len()];
@@ -2676,6 +2692,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         Self {
             db,
             owner,
+            var_inference_enabled,
             resolver,
             scopes,
             scope_id,
@@ -2687,6 +2704,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             local_types,
             local_ty_states,
             local_initializers,
+            local_is_let_decl,
             local_foreach_iterables,
             lazy_locals,
             param_types,
@@ -3174,8 +3192,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
                     let Some(init) = initializer else {
                         self.diagnostics.push(Diagnostic::error(
-                            "var-requires-initializer",
-                            "`var` variables require an initializer",
+                            "invalid-var",
+                            "`var` local variables require an initializer",
                             Some(diag_span),
                         ));
                         self.local_types[local.idx()] = Type::Error;
@@ -3211,11 +3229,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         || init_ty == Type::Null;
                     if init_is_null {
                         self.diagnostics.push(Diagnostic::error(
-                            "var-null-initializer",
-                            "cannot infer `var` from `null` initializer",
+                            "invalid-var",
+                            "cannot infer a `var` local variable type from `null`",
                             Some(init_range),
                         ));
                         self.local_types[local.idx()] = Type::Error;
+                        self.local_ty_states[local.idx()] = LocalTyState::Computed;
                         return;
                     }
 
@@ -3226,6 +3245,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(init_range),
                         ));
                         self.local_types[local.idx()] = Type::Error;
+                        self.local_ty_states[local.idx()] = LocalTyState::Computed;
                         return;
                     }
 
@@ -3617,13 +3637,42 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
         let data = &self.body.locals[local];
         let ty = if data.ty_text.trim() == "var" && self.var_inference_enabled() {
-            if let Some(init) = self.local_initializers[local.idx()] {
-                self.infer_expr(loader, init).ty
+            if self.local_is_let_decl[local.idx()] {
+                let diag_span = if data.ty_range.is_empty() {
+                    data.range
+                } else {
+                    data.ty_range
+                };
+
+                if let Some(init) = self.local_initializers[local.idx()] {
+                    let init_ty = self.infer_expr(loader, init).ty;
+                    let init_is_null = matches!(&self.body.exprs[init], HirExpr::Null { .. })
+                        || init_ty == Type::Null;
+                    if init_is_null {
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-var",
+                            "cannot infer a `var` local variable type from `null`",
+                            Some(self.body.exprs[init].range()),
+                        ));
+                        Type::Error
+                    } else {
+                        init_ty
+                    }
+                } else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-var",
+                        "`var` local variables require an initializer",
+                        Some(diag_span),
+                    ));
+                    Type::Error
+                }
             } else if let Some(iterable) = self.local_foreach_iterables[local.idx()] {
                 let iterable_ty = self.infer_expr(loader, iterable).ty;
                 self.infer_foreach_element_type(loader, &iterable_ty)
             } else {
-                Type::Unknown
+                // `var` is only a reserved type name in certain contexts; treat any other use
+                // (e.g. catch parameters) as a normal type name.
+                self.resolve_source_type(loader, data.ty_text.as_str(), Some(data.ty_range))
             }
         } else {
             self.resolve_source_type(loader, data.ty_text.as_str(), Some(data.ty_range))
@@ -4815,24 +4864,27 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     .scope_for_expr(expr)
                     .unwrap_or_else(|| self.expr_scopes.root_scope());
                 let first_name = Name::from(first.as_str());
-                let first_is_local_or_param = self
-                    .expr_scopes
-                    .resolve_name(scope, &first_name)
-                    .is_some();
-                let first_resolution = self
-                    .resolver
-                    .resolve_name_detailed(self.scopes, self.scope_id, &first_name);
-                let first_is_field =
-                    matches!(&first_resolution, NameResolution::Resolved(Resolution::Field(_)));
-                let first_is_type =
-                    matches!(&first_resolution, NameResolution::Resolved(Resolution::Type(_)));
+                let first_is_local_or_param =
+                    self.expr_scopes.resolve_name(scope, &first_name).is_some();
+                let first_resolution =
+                    self.resolver
+                        .resolve_name_detailed(self.scopes, self.scope_id, &first_name);
+                let first_is_field = matches!(
+                    &first_resolution,
+                    NameResolution::Resolved(Resolution::Field(_))
+                );
+                let first_is_type = matches!(
+                    &first_resolution,
+                    NameResolution::Resolved(Resolution::Type(_))
+                );
 
                 if !first_is_local_or_param && !first_is_field && !first_is_type {
                     let q = QualifiedName::from_dotted(&segments.join("."));
-                    if let Some(resolved) = self
-                        .resolver
-                        .resolve_qualified_type_in_scope(self.scopes, self.scope_id, &q)
-                    {
+                    if let Some(resolved) = self.resolver.resolve_qualified_type_in_scope(
+                        self.scopes,
+                        self.scope_id,
+                        &q,
+                    ) {
                         let binary_name = resolved.as_str().to_string();
                         if let Some(id) = self
                             .ensure_workspace_class(loader, &binary_name)
@@ -5495,7 +5547,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
             if let Some(failure) = cand.failures.first() {
                 message.push_str("\n    ");
-                message.push_str(&format_method_candidate_failure_reason(env, &failure.reason));
+                message.push_str(&format_method_candidate_failure_reason(
+                    env,
+                    &failure.reason,
+                ));
             }
         }
 
@@ -6783,7 +6838,10 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
         }
         HirStmt::While {
             condition, body: b, ..
-        } => contains_expr_in_expr(body, *condition, target) || contains_expr_in_stmt(body, *b, target),
+        } => {
+            contains_expr_in_expr(body, *condition, target)
+                || contains_expr_in_stmt(body, *b, target)
+        }
         HirStmt::For {
             init,
             condition,
@@ -6791,19 +6849,28 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
             body: b,
             ..
         } => {
-            init.iter().any(|stmt| contains_expr_in_stmt(body, *stmt, target))
+            init.iter()
+                .any(|stmt| contains_expr_in_stmt(body, *stmt, target))
                 || condition
                     .as_ref()
                     .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
-                || update.iter().any(|expr| contains_expr_in_expr(body, *expr, target))
+                || update
+                    .iter()
+                    .any(|expr| contains_expr_in_expr(body, *expr, target))
                 || contains_expr_in_stmt(body, *b, target)
         }
         HirStmt::ForEach {
             iterable, body: b, ..
-        } => contains_expr_in_expr(body, *iterable, target) || contains_expr_in_stmt(body, *b, target),
+        } => {
+            contains_expr_in_expr(body, *iterable, target)
+                || contains_expr_in_stmt(body, *b, target)
+        }
         HirStmt::Switch {
             selector, body: b, ..
-        } => contains_expr_in_expr(body, *selector, target) || contains_expr_in_stmt(body, *b, target),
+        } => {
+            contains_expr_in_expr(body, *selector, target)
+                || contains_expr_in_stmt(body, *b, target)
+        }
         HirStmt::Try {
             body: b,
             catches,
@@ -6831,13 +6898,19 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
     match &body.exprs[expr] {
         HirExpr::FieldAccess { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
         HirExpr::MethodReference { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
-        HirExpr::ConstructorReference { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
+        HirExpr::ConstructorReference { receiver, .. } => {
+            contains_expr_in_expr(body, *receiver, target)
+        }
         HirExpr::ClassLiteral { ty, .. } => contains_expr_in_expr(body, *ty, target),
         HirExpr::Call { callee, args, .. } => {
             contains_expr_in_expr(body, *callee, target)
-                || args.iter().any(|expr| contains_expr_in_expr(body, *expr, target))
+                || args
+                    .iter()
+                    .any(|expr| contains_expr_in_expr(body, *expr, target))
         }
-        HirExpr::New { args, .. } => args.iter().any(|expr| contains_expr_in_expr(body, *expr, target)),
+        HirExpr::New { args, .. } => args
+            .iter()
+            .any(|expr| contains_expr_in_expr(body, *expr, target)),
         HirExpr::Unary { expr, .. } => contains_expr_in_expr(body, *expr, target),
         HirExpr::Binary { lhs, rhs, .. } => {
             contains_expr_in_expr(body, *lhs, target) || contains_expr_in_expr(body, *rhs, target)

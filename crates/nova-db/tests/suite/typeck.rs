@@ -926,8 +926,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
-            || !d.message.contains("substring")),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-method" || !d.message.contains("substring")),
         "expected substring call to resolve, got {diags:?}"
     );
 
@@ -1104,8 +1105,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "static-context"
-            && d.message.contains("static context")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
         "expected static context to reject implicit-this call, got {diags:?}"
     );
 }
@@ -1124,8 +1126,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "static-context"
-            && d.message.contains("static context")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
         "expected static context to reject implicit-this field access, got {diags:?}"
     );
 }
@@ -1240,9 +1243,9 @@ class C {
 
     for name in ["toString", "equals", "hashCode"] {
         assert!(
-            diags.iter().all(|d| {
-                d.code.as_ref() != "unresolved-method" || !d.message.contains(name)
-            }),
+            diags
+                .iter()
+                .all(|d| { d.code.as_ref() != "unresolved-method" || !d.message.contains(name) }),
             "expected `{name}` to resolve via java.lang.Object, got {diags:?}"
         );
     }
@@ -2121,10 +2124,7 @@ class C {
 "#;
 
     let (db, file) = setup_db(src);
-    let offset = src
-        .find("xs.add")
-        .expect("snippet should contain xs.add")
-        + 1;
+    let offset = src.find("xs.add").expect("snippet should contain xs.add") + 1;
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -2260,7 +2260,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "this-in-static-context"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "this-in-static-context"),
         "expected `this-in-static-context` diagnostic; got {diags:?}"
     );
 }
@@ -2278,7 +2280,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "super-in-static-context"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "super-in-static-context"),
         "expected `super-in-static-context` diagnostic; got {diags:?}"
     );
 }
@@ -2632,10 +2636,7 @@ class B {
         .expect("expected a type at offset for F");
     assert_eq!(f_ty, "int");
 
-    let offset_m = src_b
-        .find("m(1)")
-        .expect("snippet should contain m(1)")
-        + "m".len();
+    let offset_m = src_b.find("m(1)").expect("snippet should contain m(1)") + "m".len();
     let m_ty = db
         .type_at_offset_display(b_file, offset_m as u32)
         .expect("expected a type at offset for m(1)");
@@ -2903,8 +2904,10 @@ class C { double m(){ return PI; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-static-member"
-            && d.code.as_ref() != "unresolved-field"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-static-member"
+                && d.code.as_ref() != "unresolved-field"),
         "expected static-imported Math.PI to resolve; got {diags:?}"
     );
 
@@ -2962,7 +2965,13 @@ fn cross_file_type_reference_resolves_via_import_in_signature() {
     let a_file = FileId::from_raw(1);
     let b_file = FileId::from_raw(2);
 
-    set_file(&mut db, project, a_file, "src/p/A.java", "package p; public class A {}");
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/A.java",
+        "package p; public class A {}",
+    );
     set_file(
         &mut db,
         project,
@@ -3038,7 +3047,13 @@ fn cross_file_signature_return_type_resolves_in_same_package() {
     let a_file = FileId::from_raw(1);
     let b_file = FileId::from_raw(2);
 
-    set_file(&mut db, project, a_file, "src/p/A.java", "package p; class A {}");
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/A.java",
+        "package p; class A {}",
+    );
     set_file(
         &mut db,
         project,
@@ -3073,7 +3088,13 @@ fn cross_file_signature_type_resolves_via_import() {
     let foo_file = FileId::from_raw(1);
     let bar_file = FileId::from_raw(2);
 
-    set_file(&mut db, project, foo_file, "src/p/Foo.java", "package p; class Foo {}");
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/p/Foo.java",
+        "package p; class Foo {}",
+    );
     set_file(
         &mut db,
         project,
@@ -3108,7 +3129,13 @@ fn cross_file_signature_type_resolves_via_star_import() {
     let foo_file = FileId::from_raw(1);
     let bar_file = FileId::from_raw(2);
 
-    set_file(&mut db, project, foo_file, "src/p/Foo.java", "package p; class Foo {}");
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/p/Foo.java",
+        "package p; class Foo {}",
+    );
     set_file(
         &mut db,
         project,
@@ -3500,11 +3527,15 @@ class C {
     let (db, file) = setup_db_with_source(src, JavaVersion::JAVA_8);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
         "expected `var` to be treated as an unresolved type below Java 10; got {diags:?}"
     );
 
-    let offset = src.find("x.toString").expect("snippet should contain `x.toString`");
+    let offset = src
+        .find("x.toString")
+        .expect("snippet should contain `x.toString`");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -3526,7 +3557,9 @@ class C {
     let (db, file) = setup_db_with_source(src, JavaVersion::JAVA_8);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
         "expected `var` to be treated as an unresolved type below Java 10; got {diags:?}"
     );
     assert!(
@@ -4266,7 +4299,9 @@ class D { void m(){ new C(1); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected constructor call to resolve; got {diags:?}"
     );
 }
@@ -4366,7 +4401,9 @@ class D { void m(){ new C("x"); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-constructor"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-constructor"),
         "expected unresolved-constructor diagnostic; got {diags:?}"
     );
 }
@@ -4450,9 +4487,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
-            .any(|d| d.code.as_ref() == "var-requires-initializer"),
-        "expected var-requires-initializer diagnostic; got {diags:?}"
+        diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
+        "expected invalid-var diagnostic; got {diags:?}"
     );
 }
 
@@ -4469,8 +4505,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "var-null-initializer"),
-        "expected var-null-initializer diagnostic; got {diags:?}"
+        diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
+        "expected invalid-var diagnostic; got {diags:?}"
     );
 }
 
@@ -4487,7 +4523,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "var-poly-expression"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-poly-expression"),
         "expected var-poly-expression diagnostic; got {diags:?}"
     );
 }
