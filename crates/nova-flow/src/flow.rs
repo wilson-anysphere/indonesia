@@ -1813,4 +1813,189 @@ mod tests {
         let result = analyze(&body, FlowConfig::default());
         assert_eq!(count_kind(&result.diagnostics, "FLOW_NULL_DEREF"), 0);
     }
+
+    #[test]
+    fn null_check_narrows_then_branch_on_and_and() {
+        // if (x != null && cond) { x.foo(); }
+        let mut b = BodyBuilder::new();
+        let x = b.local("x", LocalKind::Param);
+        let cond_local = b.local("cond", LocalKind::Param);
+
+        let x_cond = b.expr(ExprKind::Local(x));
+        let null = b.expr(ExprKind::Null);
+        let x_not_null = b.expr(ExprKind::Binary {
+            op: BinaryOp::NotEq,
+            lhs: x_cond,
+            rhs: null,
+        });
+        let cond_expr = b.expr(ExprKind::Local(cond_local));
+        let cond = b.expr(ExprKind::Binary {
+            op: BinaryOp::AndAnd,
+            lhs: x_not_null,
+            rhs: cond_expr,
+        });
+
+        let x_call = b.expr(ExprKind::Local(x));
+        let call = b.expr(ExprKind::Call {
+            receiver: Some(x_call),
+            name: "foo".into(),
+            args: vec![],
+        });
+        let then_stmt = b.stmt(StmtKind::Expr(call));
+        let then_block = b.stmt(StmtKind::Block(vec![then_stmt]));
+
+        let else_block = b.stmt(StmtKind::Block(vec![]));
+        let if_stmt = b.stmt(StmtKind::If {
+            condition: cond,
+            then_branch: then_block,
+            else_branch: Some(else_block),
+        });
+
+        let root = b.stmt(StmtKind::Block(vec![if_stmt]));
+        let body = b.finish(root);
+
+        let result = analyze(&body, FlowConfig::default());
+        assert_eq!(count_kind(&result.diagnostics, "FLOW_NULL_DEREF"), 0);
+    }
+
+    #[test]
+    fn null_check_narrows_after_or_or() {
+        // if (x == null || cond) { return; }
+        // x.foo();
+        let mut b = BodyBuilder::new();
+        let x = b.local("x", LocalKind::Param);
+        let cond_local = b.local("cond", LocalKind::Param);
+
+        let x_cond = b.expr(ExprKind::Local(x));
+        let null = b.expr(ExprKind::Null);
+        let x_is_null = b.expr(ExprKind::Binary {
+            op: BinaryOp::EqEq,
+            lhs: x_cond,
+            rhs: null,
+        });
+        let cond_expr = b.expr(ExprKind::Local(cond_local));
+        let cond = b.expr(ExprKind::Binary {
+            op: BinaryOp::OrOr,
+            lhs: x_is_null,
+            rhs: cond_expr,
+        });
+
+        let ret_stmt = b.stmt(StmtKind::Return(None));
+        let then_block = b.stmt(StmtKind::Block(vec![ret_stmt]));
+        let if_stmt = b.stmt(StmtKind::If {
+            condition: cond,
+            then_branch: then_block,
+            else_branch: None,
+        });
+
+        let x_call = b.expr(ExprKind::Local(x));
+        let call = b.expr(ExprKind::Call {
+            receiver: Some(x_call),
+            name: "foo".into(),
+            args: vec![],
+        });
+        let call_stmt = b.stmt(StmtKind::Expr(call));
+
+        let root = b.stmt(StmtKind::Block(vec![if_stmt, call_stmt]));
+        let body = b.finish(root);
+
+        let result = analyze(&body, FlowConfig::default());
+        assert_eq!(count_kind(&result.diagnostics, "FLOW_NULL_DEREF"), 0);
+    }
+
+    #[test]
+    fn null_check_narrows_receiver_for_rhs_of_and_and_condition() {
+        // Best-effort: avoid false positives for `if (x != null && x.foo())`.
+        let mut b = BodyBuilder::new();
+        let x = b.local("x", LocalKind::Param);
+
+        let x_cond = b.expr(ExprKind::Local(x));
+        let null = b.expr(ExprKind::Null);
+        let x_not_null = b.expr(ExprKind::Binary {
+            op: BinaryOp::NotEq,
+            lhs: x_cond,
+            rhs: null,
+        });
+
+        let x_call = b.expr(ExprKind::Local(x));
+        let call = b.expr(ExprKind::Call {
+            receiver: Some(x_call),
+            name: "foo".into(),
+            args: vec![],
+        });
+
+        let cond = b.expr(ExprKind::Binary {
+            op: BinaryOp::AndAnd,
+            lhs: x_not_null,
+            rhs: call,
+        });
+
+        let then_block = b.stmt(StmtKind::Block(vec![]));
+        let else_block = b.stmt(StmtKind::Block(vec![]));
+        let if_stmt = b.stmt(StmtKind::If {
+            condition: cond,
+            then_branch: then_block,
+            else_branch: Some(else_block),
+        });
+
+        let root = b.stmt(StmtKind::Block(vec![if_stmt]));
+        let body = b.finish(root);
+
+        let result = analyze(&body, FlowConfig::default());
+        assert_eq!(count_kind(&result.diagnostics, "FLOW_NULL_DEREF"), 0);
+    }
+
+    #[test]
+    fn short_circuit_skips_rhs_in_expression() {
+        // `false && x.foo()` never evaluates the RHS.
+        let mut b = BodyBuilder::new();
+        let x = b.local("x", LocalKind::Param);
+
+        let lhs = b.expr(ExprKind::Bool(false));
+        let x_call = b.expr(ExprKind::Local(x));
+        let rhs = b.expr(ExprKind::Call {
+            receiver: Some(x_call),
+            name: "foo".into(),
+            args: vec![],
+        });
+
+        let expr = b.expr(ExprKind::Binary {
+            op: BinaryOp::AndAnd,
+            lhs,
+            rhs,
+        });
+        let stmt = b.stmt(StmtKind::Expr(expr));
+        let root = b.stmt(StmtKind::Block(vec![stmt]));
+        let body = b.finish(root);
+
+        let result = analyze(&body, FlowConfig::default());
+        assert_eq!(count_kind(&result.diagnostics, "FLOW_NULL_DEREF"), 0);
+    }
+
+    #[test]
+    fn short_circuit_skips_use_before_assignment_in_expression() {
+        // `false && x` never evaluates the RHS, so x need not be assigned.
+        let mut b = BodyBuilder::new();
+        let x = b.local("x", LocalKind::Local);
+
+        let decl_x = b.stmt(StmtKind::Let {
+            local: x,
+            initializer: None,
+        });
+
+        let lhs = b.expr(ExprKind::Bool(false));
+        let rhs = b.expr(ExprKind::Local(x));
+        let expr = b.expr(ExprKind::Binary {
+            op: BinaryOp::AndAnd,
+            lhs,
+            rhs,
+        });
+        let stmt = b.stmt(StmtKind::Expr(expr));
+
+        let root = b.stmt(StmtKind::Block(vec![decl_x, stmt]));
+        let body = b.finish(root);
+
+        let result = analyze(&body, FlowConfig::default());
+        assert_eq!(count_kind(&result.diagnostics, "FLOW_UNASSIGNED"), 0);
+    }
 }
