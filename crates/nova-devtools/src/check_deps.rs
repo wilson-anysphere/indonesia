@@ -306,7 +306,7 @@ mod tests {
             ]),
             crates: BTreeMap::from([
                 ("nova-core".to_string(), "core".to_string()),
-                ("nova-semantic".to_string(), "semantic".to_string()),
+                ("nova-hir".to_string(), "semantic".to_string()),
                 ("nova-lsp".to_string(), "protocol".to_string()),
             ]),
             policy: PolicyConfig {
@@ -343,20 +343,20 @@ mod tests {
     #[test]
     fn reports_forbidden_normal_upward_edge() {
         let config = test_config();
-        let graph = graph_with_edge(DepKind::Normal, "nova-core", "nova-semantic");
+        let graph = graph_with_edge(DepKind::Normal, "nova-core", "nova-hir");
         let violations = validate(&graph, &config);
         assert_eq!(violations.len(), 1);
         let rendered = violations[0].to_string();
         assert!(rendered.contains("forbidden normal dependency edge"));
         assert!(rendered.contains("nova-core"));
-        assert!(rendered.contains("nova-semantic"));
+        assert!(rendered.contains("nova-hir"));
         assert!(rendered.contains("extract a shared helper"));
     }
 
     #[test]
     fn dev_edge_upward_is_allowed_except_into_protocol() {
         let mut config = test_config();
-        let graph = graph_with_edge(DepKind::Dev, "nova-core", "nova-semantic");
+        let graph = graph_with_edge(DepKind::Dev, "nova-core", "nova-hir");
         let violations = validate(&graph, &config);
         assert!(violations.is_empty());
 
@@ -386,8 +386,8 @@ mod tests {
                     PathBuf::from("crates/nova-core/Cargo.toml"),
                 ),
                 (
-                    "nova-semantic".to_string(),
-                    PathBuf::from("crates/nova-semantic/Cargo.toml"),
+                    "nova-hir".to_string(),
+                    PathBuf::from("crates/nova-hir/Cargo.toml"),
                 ),
                 (
                     "nova-lsp".to_string(),
@@ -428,8 +428,8 @@ mod tests {
                     PathBuf::from("crates/nova-core/Cargo.toml"),
                 ),
                 (
-                    "nova-semantic".to_string(),
-                    PathBuf::from("crates/nova-semantic/Cargo.toml"),
+                    "nova-hir".to_string(),
+                    PathBuf::from("crates/nova-hir/Cargo.toml"),
                 ),
                 (
                     "nova-lsp".to_string(),
@@ -470,13 +470,13 @@ mod tests {
     #[test]
     fn suggest_violation_message_is_stable() {
         let config = test_config();
-        let graph = graph_with_edge(DepKind::Normal, "nova-core", "nova-semantic");
+        let graph = graph_with_edge(DepKind::Normal, "nova-core", "nova-hir");
 
         let violations = validate(&graph, &config);
         let diag = violations[0].to_diagnostic();
         assert_eq!(diag.code, "crate-boundary");
         assert!(diag.message.contains("nova-core"));
-        assert!(diag.message.contains("nova-semantic"));
+        assert!(diag.message.contains("nova-hir"));
         assert!(diag.suggestion.unwrap().contains("remediation:"));
     }
 }

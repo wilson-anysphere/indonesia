@@ -69,7 +69,7 @@ static SEMANTIC_TOKENS_RESULT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_semantic_tokens_result_id() -> String {
     let id = SEMANTIC_TOKENS_RESULT_ID.fetch_add(1, Ordering::Relaxed);
-    format!("nova-semantic:{id}")
+    format!("nova-lsp-semantic-tokens:{id}")
 }
 
 #[derive(Debug, Clone)]
