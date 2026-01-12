@@ -1262,6 +1262,23 @@ fn pretty_tabs_indentation_does_not_rewrite_text_block_contents() {
 }
 
 #[test]
+fn pretty_tabs_indentation_does_not_rewrite_string_template_text() {
+    let input = "class Foo{String s = STR.\"\"\"\n    hi \\{name}\n    \"\"\";}\n";
+    let config = FormatConfig {
+        indent_style: IndentStyle::Tabs,
+        ..FormatConfig::default()
+    };
+    let edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::JavaPrettyAst);
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n\tString s = STR.\"\"\"\n    hi \\{name}\n    \"\"\";\n}\n"
+    );
+}
+
+#[test]
 fn pretty_indents_after_existing_newlines_inside_block() {
     let input = "class Foo{int x;\nint y;}\n";
     let edits = edits_for_document_formatting_with_strategy(
