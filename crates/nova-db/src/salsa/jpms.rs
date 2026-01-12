@@ -54,8 +54,34 @@ pub(crate) struct JpmsProjectIndex<'a> {
     pub(crate) from: ModuleName,
 }
 
+fn is_java_package(package: &PackageName) -> bool {
+    package
+        .segments()
+        .first()
+        .is_some_and(|seg| seg.as_str() == "java")
+}
+
+fn is_java_qualified_name(name: &QualifiedName) -> bool {
+    name.segments()
+        .first()
+        .is_some_and(|seg| seg.as_str() == "java")
+}
+
+fn is_java_binary_name(binary_name: &str) -> bool {
+    binary_name
+        .split('.')
+        .next()
+        .is_some_and(|seg| seg == "java")
+}
+
 impl<'a> JpmsProjectIndex<'a> {
     fn module_of_type(&self, ty: &nova_core::TypeName) -> Option<ModuleName> {
+        // Mirror `nova_resolve::Resolver`'s `java.*` behavior: application class loaders cannot
+        // define `java.*` packages, so `java.*` names should resolve exclusively through the JDK.
+        if is_java_binary_name(ty.as_str()) {
+            return self.jdk.module_of_type(ty.as_str());
+        }
+
         if let Some(item) = self.workspace.item_by_type_name(ty) {
             if let Some(module) = self.workspace.module_for_item(item) {
                 return Some(module.clone());
@@ -106,6 +132,13 @@ impl<'a> JpmsProjectIndex<'a> {
 
 impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
     fn resolve_type(&self, name: &QualifiedName) -> Option<nova_core::TypeName> {
+        // Match `nova_resolve::Resolver` semantics for `java.*`: ignore workspace and external
+        // indices so "fake" `java.*` types on the module-path/classpath cannot affect resolution.
+        if is_java_qualified_name(name) {
+            let ty = self.jdk.resolve_type(name)?;
+            return self.type_is_accessible(&ty).then_some(ty);
+        }
+
         if let Some(ty) = self.workspace.resolve_type(name) {
             if self.type_is_accessible(&ty) {
                 return Some(ty);
@@ -127,6 +160,11 @@ impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
         package: &PackageName,
         name: &Name,
     ) -> Option<nova_core::TypeName> {
+        if is_java_package(package) {
+            let ty = self.jdk.resolve_type_in_package(package, name)?;
+            return self.type_is_accessible(&ty).then_some(ty);
+        }
+
         if let Some(ty) = self.workspace.resolve_type_in_package(package, name) {
             if self.type_is_accessible(&ty) {
                 return Some(ty);
@@ -146,41 +184,43 @@ impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
     fn package_exists(&self, package: &PackageName) -> bool {
         let pkg = package.to_dotted();
 
-        // --- Workspace packages ---------------------------------------------
-        for to in self.workspace.modules_defining_package(package) {
-            if self.package_is_accessible(&pkg, &to) {
-                return true;
-            }
-        }
-
-        // --- Classpath/module-path packages ---------------------------------
-        if self.classpath.package_exists(package) {
-            let prefix = if pkg.is_empty() {
-                String::new()
-            } else {
-                format!("{pkg}.")
-            };
-
-            let names = self.classpath.types.binary_names_sorted();
-            let start = names.partition_point(|name| name.as_str() < prefix.as_str());
-            for binary_name in &names[start..] {
-                if !binary_name.starts_with(prefix.as_str()) {
-                    break;
-                }
-                let Some((found_pkg, _)) = binary_name.rsplit_once('.') else {
-                    continue;
-                };
-                if found_pkg != pkg {
-                    continue;
-                }
-
-                let to = self
-                    .classpath
-                    .module_of(binary_name)
-                    .cloned()
-                    .unwrap_or_else(ModuleName::unnamed);
+        if !is_java_package(package) {
+            // --- Workspace packages ---------------------------------------------
+            for to in self.workspace.modules_defining_package(package) {
                 if self.package_is_accessible(&pkg, &to) {
                     return true;
+                }
+            }
+
+            // --- Classpath/module-path packages ---------------------------------
+            if self.classpath.package_exists(package) {
+                let prefix = if pkg.is_empty() {
+                    String::new()
+                } else {
+                    format!("{pkg}.")
+                };
+
+                let names = self.classpath.types.binary_names_sorted();
+                let start = names.partition_point(|name| name.as_str() < prefix.as_str());
+                for binary_name in &names[start..] {
+                    if !binary_name.starts_with(prefix.as_str()) {
+                        break;
+                    }
+                    let Some((found_pkg, _)) = binary_name.rsplit_once('.') else {
+                        continue;
+                    };
+                    if found_pkg != pkg {
+                        continue;
+                    }
+
+                    let to = self
+                        .classpath
+                        .module_of(binary_name)
+                        .cloned()
+                        .unwrap_or_else(ModuleName::unnamed);
+                    if self.package_is_accessible(&pkg, &to) {
+                        return true;
+                    }
                 }
             }
         }
@@ -233,6 +273,10 @@ impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
     ) -> Option<nova_core::StaticMemberId> {
         if !self.type_is_accessible(owner) {
             return None;
+        }
+
+        if is_java_binary_name(owner.as_str()) {
+            return self.jdk.resolve_static_member(owner, name);
         }
 
         self.workspace

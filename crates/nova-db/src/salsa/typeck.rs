@@ -2919,6 +2919,9 @@ fn project_base_type_store_for_module(
         if let Some(cp) = db.classpath_index(project).as_deref() {
             for (idx, name) in cp.binary_names_sorted().iter().enumerate() {
                 cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+                if name.starts_with("java.") {
+                    continue;
+                }
                 store.intern_class_id(name);
             }
         }
@@ -2935,6 +2938,9 @@ fn project_base_type_store_for_module(
     let graph = &env.env.graph;
     for (idx, name) in env.classpath.types.binary_names_sorted().iter().enumerate() {
         cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+        if name.starts_with("java.") {
+            continue;
+        }
 
         let to = env.classpath.module_of(name).unwrap_or(&unnamed);
         if !graph.can_read(&from, to) {

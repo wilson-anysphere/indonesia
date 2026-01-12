@@ -2,8 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_hir::module_info::lower_module_info_source_strict;
 use nova_jdk::JdkIndex;
-use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
+use nova_modules::ModuleName;
+use nova_project::{
+    BuildSystem, ClasspathEntry as ProjectClasspathEntry, ClasspathEntryKind, JavaConfig,
+    JpmsModuleRoot, Module, ProjectConfig,
+};
 use tempfile::TempDir;
 
 fn base_project_config(root: PathBuf) -> ProjectConfig {
@@ -38,6 +43,78 @@ fn set_file(
     db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
     db.set_source_root(file, SourceRootId::from_raw(0));
     db.set_file_text(file, text);
+}
+
+fn minimal_class_file_bytes(internal_name: &str) -> Vec<u8> {
+    fn u16_be(v: u16) -> [u8; 2] {
+        v.to_be_bytes()
+    }
+    fn u32_be(v: u32) -> [u8; 4] {
+        v.to_be_bytes()
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&u32_be(0xCAFEBABE));
+    out.extend_from_slice(&u16_be(0)); // minor
+    out.extend_from_slice(&u16_be(52)); // major (Java 8)
+
+    // constant_pool_count = entries + 1
+    out.extend_from_slice(&u16_be(7));
+
+    // 1: Utf8 this_class internal name
+    out.push(1);
+    out.extend_from_slice(&u16_be(internal_name.len() as u16));
+    out.extend_from_slice(internal_name.as_bytes());
+
+    // 2: Class #1
+    out.push(7);
+    out.extend_from_slice(&u16_be(1));
+
+    // 3: Utf8 java/lang/Object
+    let super_name = "java/lang/Object";
+    out.push(1);
+    out.extend_from_slice(&u16_be(super_name.len() as u16));
+    out.extend_from_slice(super_name.as_bytes());
+
+    // 4: Class #3
+    out.push(7);
+    out.extend_from_slice(&u16_be(3));
+
+    // 5: Utf8 method name `bar`
+    let bar_name = "bar";
+    out.push(1);
+    out.extend_from_slice(&u16_be(bar_name.len() as u16));
+    out.extend_from_slice(bar_name.as_bytes());
+
+    // 6: Utf8 method descriptor `()V`
+    let bar_desc = "()V";
+    out.push(1);
+    out.extend_from_slice(&u16_be(bar_desc.len() as u16));
+    out.extend_from_slice(bar_desc.as_bytes());
+
+    // access_flags (public | interface | abstract)
+    out.extend_from_slice(&u16_be(0x0601));
+    // this_class
+    out.extend_from_slice(&u16_be(2));
+    // super_class
+    out.extend_from_slice(&u16_be(4));
+    // interfaces_count
+    out.extend_from_slice(&u16_be(0));
+    // fields_count
+    out.extend_from_slice(&u16_be(0));
+
+    // methods_count
+    out.extend_from_slice(&u16_be(1));
+    // method[0]: `public abstract void bar()`
+    out.extend_from_slice(&u16_be(0x0401)); // public | abstract
+    out.extend_from_slice(&u16_be(5)); // name_index
+    out.extend_from_slice(&u16_be(6)); // descriptor_index
+    out.extend_from_slice(&u16_be(0)); // attributes_count
+
+    // attributes_count
+    out.extend_from_slice(&u16_be(0));
+
+    out
 }
 
 #[test]
@@ -88,6 +165,96 @@ class C {
 
     let file = FileId::from_raw(1);
     set_file(&mut db, project, file, "src/Test.java", src);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| {
+            d.code.as_ref() == "unresolved-type" && d.message.contains("java.fake.Foo")
+        }),
+        "expected unresolved-type diagnostic for java.fake.Foo, got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("bar")),
+        "expected unresolved-method diagnostic for bar, got {diags:?}"
+    );
+}
+
+#[test]
+fn typeck_jpms_does_not_load_java_types_from_module_path_stubs() {
+    let project = ProjectId::from_raw(0);
+    let mut db = SalsaRootDatabase::default();
+    let tmp = TempDir::new().unwrap();
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    // JPMS projects still read the `classpath_index` input even if typeck ignores it.
+    db.set_classpath_index(project, None);
+
+    // Create an automatic module-path entry that (incorrectly) defines a `java.*` class. The
+    // resolver should ignore these (mirroring JVM restrictions), and JPMS-aware type checking
+    // should not be able to "rescue" the type by lazily loading it from module-path stubs.
+    let dep_root = tmp.path().join("evil");
+    let class_path = dep_root.join("java/fake/Foo.class");
+    std::fs::create_dir_all(class_path.parent().unwrap()).unwrap();
+    std::fs::write(&class_path, minimal_class_file_bytes("java/fake/Foo")).unwrap();
+
+    let dep_module = nova_classpath::derive_automatic_module_name_from_path(&dep_root)
+        .expect("expected automatic module name to be derived for module-path directory");
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_info_src = format!("module workspace.a {{ requires {}; }}", dep_module.as_str());
+    let mod_a_info =
+        lower_module_info_source_strict(&mod_a_info_src).expect("module-info should parse");
+
+    let cfg = ProjectConfig {
+        workspace_root: tmp.path().to_path_buf(),
+        build_system: BuildSystem::Simple,
+        java: JavaConfig::default(),
+        modules: vec![Module {
+            name: "dummy".to_string(),
+            root: tmp.path().to_path_buf(),
+            annotation_processing: Default::default(),
+        }],
+        jpms_modules: vec![JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: mod_a_info,
+        }],
+        jpms_workspace: None,
+        source_roots: Vec::new(),
+        module_path: vec![ProjectClasspathEntry {
+            kind: ClasspathEntryKind::Directory,
+            path: dep_root,
+        }],
+        classpath: Vec::new(),
+        output_dirs: Vec::new(),
+        dependencies: Vec::new(),
+        workspace_model: None,
+    };
+    db.set_project_config(project, Arc::new(cfg));
+
+    let src = r#"
+package com.example.a;
+
+class C {
+  void m() {
+    java.fake.Foo f = null;
+    f.bar();
+  }
+}
+"#;
+
+    let file = FileId::from_raw(1);
+    db.set_file_project(file, project);
+    db.set_file_rel_path(
+        file,
+        Arc::new("mod-a/src/main/java/com/example/a/C.java".to_string()),
+    );
+    db.set_source_root(file, SourceRootId::from_raw(0));
+    db.set_file_text(file, src);
+    db.set_all_file_ids(Arc::new(vec![file]));
     db.set_project_files(project, Arc::new(vec![file]));
 
     let diags = db.type_diagnostics(file);
