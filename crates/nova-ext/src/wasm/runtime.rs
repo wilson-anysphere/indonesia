@@ -143,16 +143,6 @@ pub trait WasmHostDb {
     }
 }
 
-impl WasmHostDb for dyn nova_db::Database + Send + Sync {
-    fn file_text(&self, file: FileId) -> &str {
-        nova_db::Database::file_content(self, file)
-    }
-
-    fn file_path(&self, file: FileId) -> Option<&Path> {
-        nova_db::Database::file_path(self, file)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct WasmPluginConfig {
     pub timeout: Duration,

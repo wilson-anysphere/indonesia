@@ -16,14 +16,12 @@ wasm-extensions = [
     "dep:serde_json",
     "dep:wasmtime",
     "dep:wat",
-    "dep:nova-db",
 ]
 
 [dependencies]
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-metrics = { path = "../nova-metrics" }
-nova-db = { path = "../nova-db", optional = true }
 nova-types = { path = "../nova-types" }
 nova-scheduler = { path = "../nova-scheduler" }
 tracing = { workspace = true }
