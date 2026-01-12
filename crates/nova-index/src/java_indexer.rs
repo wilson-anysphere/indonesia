@@ -444,6 +444,7 @@ fn collect_hir_item(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_hir_type(
     tree: &HirItemTree,
     kind: IndexSymbolKind,

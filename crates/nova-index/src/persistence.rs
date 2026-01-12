@@ -286,37 +286,30 @@ impl ProjectIndexesView {
             .archived()
             .symbols
             .iter()
-            .filter_map(move |(name, locations)| {
-                locations
-                    .iter()
-                    .any(|loc| {
-                        let file = loc.location.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
-                    .then(|| name.as_str())
-            });
+            .filter(move |&(_name, locations)| {
+                locations.iter().any(|loc| {
+                    let file = loc.location.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            })
+            .map(|(name, _locations)| name.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            let invalidated_files = invalidated_files;
-            let file_to_segment = file_to_segment;
-
             let names = segment
                 .archive
                 .archived()
                 .symbols
                 .symbols
                 .iter()
-                .filter_map(move |(name, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.location.file.as_str();
-                            !invalidated_files.contains(file)
-                                && file_to_segment.get(file).copied() == Some(segment_idx)
-                        })
-                        .then(|| name.as_str())
-                });
+                .filter(move |&(_name, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.location.file.as_str();
+                        !invalidated_files.contains(file)
+                            && file_to_segment.get(file).copied() == Some(segment_idx)
+                    })
+                })
+                .map(|(name, _locations)| name.as_str());
 
             iter = Box::new(merge_sorted_dedup(iter, names));
         }
@@ -340,21 +333,16 @@ impl ProjectIndexesView {
             .iter()
             .skip_while(move |(name, _)| name.as_str() < prefix)
             .take_while(move |(name, _)| name.as_str().starts_with(prefix))
-            .filter_map(move |(name, locations)| {
-                locations
-                    .iter()
-                    .any(|loc| {
-                        let file = loc.location.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
-                    .then(|| name.as_str())
-            });
+            .filter(move |&(_name, locations)| {
+                locations.iter().any(|loc| {
+                    let file = loc.location.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            })
+            .map(|(name, _locations)| name.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            let invalidated_files = invalidated_files;
-            let file_to_segment = file_to_segment;
-
             let names = segment
                 .archive
                 .archived()
@@ -363,16 +351,14 @@ impl ProjectIndexesView {
                 .iter()
                 .skip_while(move |(name, _)| name.as_str() < prefix)
                 .take_while(move |(name, _)| name.as_str().starts_with(prefix))
-                .filter_map(move |(name, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.location.file.as_str();
-                            !invalidated_files.contains(file)
-                                && file_to_segment.get(file).copied() == Some(segment_idx)
-                        })
-                        .then(|| name.as_str())
-                });
+                .filter(move |&(_name, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.location.file.as_str();
+                        !invalidated_files.contains(file)
+                            && file_to_segment.get(file).copied() == Some(segment_idx)
+                    })
+                })
+                .map(|(name, _locations)| name.as_str());
 
             iter = Box::new(merge_sorted_dedup(iter, names));
         }
@@ -550,37 +536,30 @@ impl ProjectIndexesView {
                 .archived()
                 .annotations
                 .iter()
-                .filter_map(move |(name, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.file.as_str();
-                            !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                        })
-                        .then(|| name.as_str())
-                });
+                .filter(move |&(_name, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
+                })
+                .map(|(name, _locations)| name.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            let invalidated_files = invalidated_files;
-            let file_to_segment = file_to_segment;
-
             let names = segment
                 .archive
                 .archived()
                 .annotations
                 .annotations
                 .iter()
-                .filter_map(move |(name, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.file.as_str();
-                            !invalidated_files.contains(file)
-                                && file_to_segment.get(file).copied() == Some(segment_idx)
-                        })
-                        .then(|| name.as_str())
-                });
+                .filter(move |&(_name, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file)
+                            && file_to_segment.get(file).copied() == Some(segment_idx)
+                    })
+                })
+                .map(|(name, _locations)| name.as_str());
 
             iter = Box::new(merge_sorted_dedup(iter, names));
         }
@@ -604,21 +583,16 @@ impl ProjectIndexesView {
             .iter()
             .skip_while(move |(name, _)| name.as_str() < prefix)
             .take_while(move |(name, _)| name.as_str().starts_with(prefix))
-            .filter_map(move |(name, locations)| {
-                locations
-                    .iter()
-                    .any(|loc| {
-                        let file = loc.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
-                    .then(|| name.as_str())
-            });
+            .filter(move |&(_name, locations)| {
+                locations.iter().any(|loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            })
+            .map(|(name, _locations)| name.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            let invalidated_files = invalidated_files;
-            let file_to_segment = file_to_segment;
-
             let names = segment
                 .archive
                 .archived()
@@ -627,16 +601,14 @@ impl ProjectIndexesView {
                 .iter()
                 .skip_while(move |(name, _)| name.as_str() < prefix)
                 .take_while(move |(name, _)| name.as_str().starts_with(prefix))
-                .filter_map(move |(name, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.file.as_str();
-                            !invalidated_files.contains(file)
-                                && file_to_segment.get(file).copied() == Some(segment_idx)
-                        })
-                        .then(|| name.as_str())
-                });
+                .filter(move |&(_name, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file)
+                            && file_to_segment.get(file).copied() == Some(segment_idx)
+                    })
+                })
+                .map(|(name, _locations)| name.as_str());
 
             iter = Box::new(merge_sorted_dedup(iter, names));
         }
@@ -748,37 +720,30 @@ impl ProjectIndexesView {
                 .archived()
                 .references
                 .iter()
-                .filter_map(move |(symbol, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.file.as_str();
-                            !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                        })
-                        .then(|| symbol.as_str())
-                });
+                .filter(move |&(_symbol, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
+                })
+                .map(|(symbol, _locations)| symbol.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            let invalidated_files = invalidated_files;
-            let file_to_segment = file_to_segment;
-
             let names = segment
                 .archive
                 .archived()
                 .references
                 .references
                 .iter()
-                .filter_map(move |(symbol, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.file.as_str();
-                            !invalidated_files.contains(file)
-                                && file_to_segment.get(file).copied() == Some(segment_idx)
-                        })
-                        .then(|| symbol.as_str())
-                });
+                .filter(move |&(_symbol, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file)
+                            && file_to_segment.get(file).copied() == Some(segment_idx)
+                    })
+                })
+                .map(|(symbol, _locations)| symbol.as_str());
 
             iter = Box::new(merge_sorted_dedup(iter, names));
         }
@@ -802,21 +767,16 @@ impl ProjectIndexesView {
             .iter()
             .skip_while(move |(name, _)| name.as_str() < prefix)
             .take_while(move |(name, _)| name.as_str().starts_with(prefix))
-            .filter_map(move |(symbol, locations)| {
-                locations
-                    .iter()
-                    .any(|loc| {
-                        let file = loc.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
-                    .then(|| symbol.as_str())
-            });
+            .filter(move |&(_symbol, locations)| {
+                locations.iter().any(|loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            })
+            .map(|(symbol, _locations)| symbol.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            let invalidated_files = invalidated_files;
-            let file_to_segment = file_to_segment;
-
             let names = segment
                 .archive
                 .archived()
@@ -825,16 +785,14 @@ impl ProjectIndexesView {
                 .iter()
                 .skip_while(move |(name, _)| name.as_str() < prefix)
                 .take_while(move |(name, _)| name.as_str().starts_with(prefix))
-                .filter_map(move |(symbol, locations)| {
-                    locations
-                        .iter()
-                        .any(|loc| {
-                            let file = loc.file.as_str();
-                            !invalidated_files.contains(file)
-                                && file_to_segment.get(file).copied() == Some(segment_idx)
-                        })
-                        .then(|| symbol.as_str())
-                });
+                .filter(move |&(_symbol, locations)| {
+                    locations.iter().any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file)
+                            && file_to_segment.get(file).copied() == Some(segment_idx)
+                    })
+                })
+                .map(|(symbol, _locations)| symbol.as_str());
 
             iter = Box::new(merge_sorted_dedup(iter, names));
         }
@@ -1799,6 +1757,7 @@ fn next_generation(previous_generation: u64) -> u64 {
     std::cmp::max(now, previous_generation.saturating_add(1))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merged_locations<ArchivedLoc, Out, SegmentGet, FileOf, Convert>(
     _key: &str,
     file_to_segment: &BTreeMap<String, usize>,
@@ -1999,7 +1958,6 @@ impl ShardedIndexView {
     ///
     /// This is a convenience helper for consumers that want a global view without
     /// deserializing the entire index set.
-    #[must_use]
     pub fn symbol_locations<'a>(
         &'a self,
         symbol: &str,
@@ -2026,7 +1984,6 @@ impl ShardedIndexView {
 
     /// Return all symbol definition locations for `symbol`, merging persisted
     /// results (with invalidated files filtered out) and the in-memory overlay.
-    #[must_use]
     pub fn symbol_locations_merged<'a>(
         &'a self,
         symbol: &str,
@@ -2138,7 +2095,6 @@ impl ShardedIndexView {
         )
     }
 
-    #[must_use]
     pub fn reference_locations<'a>(
         &'a self,
         symbol: &str,
@@ -2165,7 +2121,6 @@ impl ShardedIndexView {
 
     /// Returns reference locations for `symbol`, merging persisted results (with
     /// invalidated files filtered out) and the in-memory overlay.
-    #[must_use]
     pub fn reference_locations_merged<'a>(
         &'a self,
         symbol: &str,
@@ -2283,7 +2238,6 @@ impl ShardedIndexView {
         )
     }
 
-    #[must_use]
     pub fn annotation_locations<'a>(
         &'a self,
         annotation: &str,
@@ -2310,7 +2264,6 @@ impl ShardedIndexView {
 
     /// Returns annotation locations for `annotation`, merging persisted results
     /// (with invalidated files filtered out) and the in-memory overlay.
-    #[must_use]
     pub fn annotation_locations_merged<'a>(
         &'a self,
         annotation: &str,
@@ -2496,7 +2449,6 @@ impl LazyShardedIndexView {
     ///
     /// This convenience helper will load every shard (lazily) to answer the query. Callers that
     /// only need to inspect a subset of shards should instead call [`Self::shard`] directly.
-    #[must_use]
     pub fn symbol_locations<'a>(
         &'a self,
         symbol: &str,
@@ -2526,7 +2478,6 @@ impl LazyShardedIndexView {
 
     /// Return all symbol definition locations for `symbol`, merging persisted results (with
     /// invalidated files filtered out) and the in-memory overlay.
-    #[must_use]
     pub fn symbol_locations_merged<'a>(
         &'a self,
         symbol: &str,
@@ -2649,7 +2600,6 @@ impl LazyShardedIndexView {
         )
     }
 
-    #[must_use]
     pub fn reference_locations<'a>(
         &'a self,
         symbol: &str,
@@ -2679,7 +2629,6 @@ impl LazyShardedIndexView {
 
     /// Returns reference locations for `symbol`, merging persisted results (with invalidated files
     /// filtered out) and the in-memory overlay.
-    #[must_use]
     pub fn reference_locations_merged<'a>(
         &'a self,
         symbol: &str,
@@ -2808,7 +2757,6 @@ impl LazyShardedIndexView {
         )
     }
 
-    #[must_use]
     pub fn annotation_locations<'a>(
         &'a self,
         annotation: &str,
@@ -2838,7 +2786,6 @@ impl LazyShardedIndexView {
 
     /// Returns annotation locations for `annotation`, merging persisted results (with invalidated
     /// files filtered out) and the in-memory overlay.
-    #[must_use]
     pub fn annotation_locations_merged<'a>(
         &'a self,
         annotation: &str,

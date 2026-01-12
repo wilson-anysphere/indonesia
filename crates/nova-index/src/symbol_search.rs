@@ -209,7 +209,7 @@ fn starts_with_case_insensitive(candidate: &[u8], query: &[u8]) -> bool {
         return false;
     }
     for i in 0..query.len() {
-        if candidate[i].to_ascii_lowercase() != query[i].to_ascii_lowercase() {
+        if !candidate[i].eq_ignore_ascii_case(&query[i]) {
             return false;
         }
     }
@@ -775,7 +775,7 @@ impl WorkspaceSymbolSearcher {
                         search_symbols.push(Symbol {
                             name: name.clone(),
                             qualified_name: entry.qualified_name.clone(),
-                            kind: entry.kind.clone(),
+                            kind: entry.kind,
                             container_name: entry.container_name.clone(),
                             location: entry.location.clone(),
                             ast_id: entry.ast_id,

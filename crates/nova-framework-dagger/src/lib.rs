@@ -399,6 +399,7 @@ struct Dep {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ProviderKind {
     ProvidesMethod { module: String, method: String },
     BindsMethod { module: String, method: String },
@@ -428,6 +429,7 @@ struct EntryPoint {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ComponentInfo {
     name: String,
     span: Location,
@@ -450,8 +452,7 @@ fn analyze_project(files: &[JavaSourceFile]) -> DaggerAnalysis {
     // traversal by treating every `@Inject` constructor as an entry point.
     let mut analysis = DaggerAnalysis::default();
     if parsed.components.is_empty() {
-        let mut visited = HashSet::new();
-        let mut stack = Vec::new();
+        let mut state = ResolveState::default();
         let bindings = build_bindings_for_modules(&parsed, HashSet::new());
         for provider in &parsed.providers {
             if matches!(provider.kind, ProviderKind::InjectConstructor { .. }) {
@@ -461,8 +462,7 @@ fn analyze_project(files: &[JavaSourceFile]) -> DaggerAnalysis {
                     None,
                     &provider.key,
                     &provider.span,
-                    &mut visited,
-                    &mut stack,
+                    &mut state,
                     &mut analysis,
                 );
             }
@@ -474,8 +474,7 @@ fn analyze_project(files: &[JavaSourceFile]) -> DaggerAnalysis {
         let included_modules = component_included_modules(&parsed.modules, &component.modules);
         let bindings = build_bindings_for_modules(&parsed, included_modules);
 
-        let mut visited = HashSet::new();
-        let mut stack = Vec::new();
+        let mut state = ResolveState::default();
 
         for entry in &component.entry_points {
             resolve_key(
@@ -484,8 +483,7 @@ fn analyze_project(files: &[JavaSourceFile]) -> DaggerAnalysis {
                 component.scope.as_deref(),
                 &entry.key,
                 &entry.span,
-                &mut visited,
-                &mut stack,
+                &mut state,
                 &mut analysis,
             );
         }
@@ -498,6 +496,12 @@ fn analyze_project(files: &[JavaSourceFile]) -> DaggerAnalysis {
 struct Bindings {
     // key -> provider ids
     providers_for_key: HashMap<BindingKey, Vec<usize>>,
+}
+
+#[derive(Debug, Default)]
+struct ResolveState {
+    visited: HashSet<BindingKey>,
+    stack: Vec<BindingKey>,
 }
 
 fn build_bindings_for_modules(
@@ -561,8 +565,7 @@ fn resolve_key(
     component_scope: Option<&str>,
     key: &BindingKey,
     injection_span: &Location,
-    visited: &mut HashSet<BindingKey>,
-    stack: &mut Vec<BindingKey>,
+    state: &mut ResolveState,
     analysis: &mut DaggerAnalysis,
 ) {
     let candidates = bindings.providers_for_key.get(key);
@@ -576,7 +579,6 @@ fn resolve_key(
                 format!("Missing binding for {}", key.display()),
                 Some("DAGGER_MISSING_BINDING".to_string()),
             ));
-            return;
         }
         Some(candidates) if candidates.len() > 1 => {
             analysis.diagnostics.push(CoreDiagnostic::new(
@@ -586,7 +588,6 @@ fn resolve_key(
                 format!("Duplicate bindings for {}", key.display()),
                 Some("DAGGER_DUPLICATE_BINDING".to_string()),
             ));
-            return;
         }
         Some(candidates) => {
             let provider_id = candidates[0];
@@ -632,7 +633,7 @@ fn resolve_key(
             }
 
             // Cycle detection and recursive traversal.
-            if stack.contains(key) {
+            if state.stack.contains(key) {
                 analysis.diagnostics.push(CoreDiagnostic::new(
                     injection_span.file.clone(),
                     injection_span.range,
@@ -643,12 +644,12 @@ fn resolve_key(
                 return;
             }
 
-            let already_visited = !visited.insert(key.clone());
+            let already_visited = !state.visited.insert(key.clone());
             if already_visited {
                 return;
             }
 
-            stack.push(key.clone());
+            state.stack.push(key.clone());
             for dep in &provider.deps {
                 resolve_key(
                     bindings,
@@ -656,12 +657,11 @@ fn resolve_key(
                     component_scope,
                     &dep.key,
                     &dep.span,
-                    visited,
-                    stack,
+                    state,
                     analysis,
                 );
             }
-            stack.pop();
+            state.stack.pop();
         }
     }
 }
@@ -710,7 +710,7 @@ struct ParsedJavaFile {
     module_provider_ids: Vec<(String, Vec<usize>)>,
 }
 
-fn parse_java_file(path: &PathBuf, text: &str) -> ParsedJavaFile {
+fn parse_java_file(path: &Path, text: &str) -> ParsedJavaFile {
     let mut modules: Vec<ModuleInfo> = Vec::new();
     let mut components: Vec<ComponentInfo> = Vec::new();
     let mut providers: Vec<Provider> = Vec::new();
@@ -1105,7 +1105,7 @@ fn extract_class_list(args: &str, attr: &str) -> Vec<String> {
         let inner = rhs.trim_start_matches('{').trim_end_matches('}').trim();
         inner
             .split(',')
-            .filter_map(|item| normalize_class_literal(item))
+            .filter_map(normalize_class_literal)
             .collect()
     } else {
         normalize_class_literal(rhs).into_iter().collect()
@@ -1136,7 +1136,7 @@ fn normalize_type(raw: &str) -> String {
         None => raw,
     };
 
-    raw.split('.').last().unwrap_or(raw).to_string()
+    raw.split('.').next_back().unwrap_or(raw).to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -1157,7 +1157,7 @@ struct ParsedMethodSig {
 fn parse_method_signature_with_lookahead(
     lines: &[&str],
     line_idx: usize,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<ParsedMethodSig> {
     let raw_line = *lines.get(line_idx)?;
     let line = raw_line.trim();
@@ -1176,7 +1176,7 @@ fn parse_method_signature_with_lookahead(
 fn parse_method_signature_multiline(
     lines: &[&str],
     line_idx: usize,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<ParsedMethodSig> {
     let raw_line = *lines.get(line_idx)?;
     let line = raw_line.trim();
@@ -1228,8 +1228,8 @@ fn parse_method_signature_multiline(
     )?);
 
     // Consume subsequent lines until we find the closing ')'.
-    for next_idx in (line_idx + 1)..lines.len() {
-        let raw = lines[next_idx];
+    for (next_idx, raw) in lines.iter().enumerate().skip(line_idx + 1) {
+        let raw = *raw;
         let mut seg = raw;
         let mut done = false;
         if let Some(end) = raw.find(')') {
@@ -1257,7 +1257,7 @@ fn parse_method_signature_multiline(
 fn parse_method_signature(
     raw_line: &str,
     line_idx: u32,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<ParsedMethodSig> {
     let line = raw_line.trim();
     if !line.contains('(') || !line.contains(')') {
@@ -1294,7 +1294,7 @@ fn parse_method_signature(
 fn parse_params_from_segment(
     raw_line: &str,
     line_idx: u32,
-    path: &PathBuf,
+    path: &Path,
     segment_start: usize,
     segment: &str,
 ) -> Option<Vec<ParsedParam>> {
@@ -1339,7 +1339,7 @@ fn parse_params_from_segment(
         let col_utf16 = utf16_col(raw_line, col_byte);
         let end_utf16 = utf16_col(raw_line, col_byte + ty.len());
         let span = Location::new(
-            path.clone(),
+            path.to_path_buf(),
             Range::new(
                 Position::new(line_idx, col_utf16),
                 Position::new(line_idx, end_utf16),
@@ -1359,7 +1359,7 @@ fn parse_params_from_segment(
 fn parse_constructor_signature(
     raw_line: &str,
     line_idx: u32,
-    path: &PathBuf,
+    path: &Path,
     class_name: &str,
 ) -> Option<ParsedMethodSig> {
     let line = raw_line.trim();
@@ -1385,7 +1385,7 @@ fn parse_constructor_signature(
 fn parse_params_from_line(
     raw_line: &str,
     line_idx: u32,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<Vec<ParsedParam>> {
     let start_paren = raw_line.find('(')?;
     let end_paren = raw_line.rfind(')')?;
@@ -1434,7 +1434,7 @@ fn parse_params_from_line(
         let col_utf16 = utf16_col(raw_line, col_byte);
         let end_utf16 = utf16_col(raw_line, col_byte + ty.len());
         let span = Location::new(
-            path.clone(),
+            path.to_path_buf(),
             Range::new(
                 Position::new(line_idx, col_utf16),
                 Position::new(line_idx, end_utf16),
@@ -1456,12 +1456,13 @@ fn find_token_column(line: &str, token: &str, from: usize) -> Option<usize> {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ParsedField {
     ty: String,
     span: Location,
 }
 
-fn parse_field_declaration(raw_line: &str, line_idx: u32, path: &PathBuf) -> Option<ParsedField> {
+fn parse_field_declaration(raw_line: &str, line_idx: u32, path: &Path) -> Option<ParsedField> {
     // `Foo bar;`
     let line = raw_line.trim();
     if !line.ends_with(';') {
@@ -1474,7 +1475,7 @@ fn parse_field_declaration(raw_line: &str, line_idx: u32, path: &PathBuf) -> Opt
     let col_utf16 = utf16_col(raw_line, col_byte);
     let end_utf16 = utf16_col(raw_line, col_byte + ty.len());
     let span = Location::new(
-        path.clone(),
+        path.to_path_buf(),
         Range::new(
             Position::new(line_idx, col_utf16),
             Position::new(line_idx, end_utf16),
@@ -1497,7 +1498,7 @@ enum ComponentMethodKind {
 fn parse_component_method(
     raw_line: &str,
     line_idx: u32,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<ParsedComponentMethod> {
     let line = raw_line.trim();
     if line.is_empty() || line.starts_with("//") {
@@ -1526,7 +1527,7 @@ fn parse_component_method(
     let col_utf16 = utf16_col(raw_line, col_byte);
     let end_utf16 = utf16_col(raw_line, col_byte + return_type.len());
     let span = Location::new(
-        path.clone(),
+        path.to_path_buf(),
         Range::new(
             Position::new(line_idx, col_utf16),
             Position::new(line_idx, end_utf16),
@@ -1537,12 +1538,12 @@ fn parse_component_method(
     })
 }
 
-fn span_for_token(path: &PathBuf, line_idx: u32, raw_line: &str, token: &str) -> Option<Location> {
+fn span_for_token(path: &Path, line_idx: u32, raw_line: &str, token: &str) -> Option<Location> {
     let col_byte = raw_line.find(token)?;
     let col_utf16 = utf16_col(raw_line, col_byte);
     let end_utf16 = utf16_col(raw_line, col_byte + token.len());
     Some(Location::new(
-        path.clone(),
+        path.to_path_buf(),
         Range::new(
             Position::new(line_idx, col_utf16),
             Position::new(line_idx, end_utf16),
@@ -1550,8 +1551,8 @@ fn span_for_token(path: &PathBuf, line_idx: u32, raw_line: &str, token: &str) ->
     ))
 }
 
-fn fallback_span(path: &PathBuf, line_idx: u32) -> Location {
-    Location::new(path.clone(), Range::point(Position::new(line_idx, 0)))
+fn fallback_span(path: &Path, line_idx: u32) -> Location {
+    Location::new(path.to_path_buf(), Range::point(Position::new(line_idx, 0)))
 }
 
 fn utf16_col(line: &str, byte_idx: usize) -> u32 {

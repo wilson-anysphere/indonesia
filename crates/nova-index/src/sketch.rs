@@ -22,6 +22,10 @@ impl TextRange {
         self.end.saturating_sub(self.start)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn shift(self, delta: usize) -> Self {
         Self {
             start: self.start.saturating_add(delta),
@@ -770,7 +774,7 @@ impl Index {
             .into_iter()
             .filter(|id| {
                 self.method_param_types(*id)
-                    .map_or(false, |tys| tys.len() == arity)
+                    .is_some_and(|tys| tys.len() == arity)
             })
             .collect()
     }
@@ -1915,10 +1919,7 @@ fn looks_like_decl_name(text: &str, ident_start: usize) -> bool {
     while i > 0 && bytes[i - 1].is_ascii_whitespace() {
         i -= 1;
     }
-    match bytes.get(i.wrapping_sub(1)) {
-        Some(b'=') | Some(b'.') => false,
-        _ => true,
-    }
+    !matches!(bytes.get(i.wrapping_sub(1)), Some(b'=') | Some(b'.'))
 }
 
 fn parse_fields_in_statement(
