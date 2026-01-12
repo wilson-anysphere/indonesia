@@ -819,6 +819,17 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     fn bsp_config_from_env(&self) -> crate::bsp::BspServerConfig {
         let mut config = self.bsp_config.clone();
 
+        // If the caller didn't explicitly provide a BSP config (we're still on the default),
+        // prefer standard BSP `.bsp/*.json` discovery. This enables "just works" setups for Bazel
+        // BSP implementations like `bazel-bsp` that generate connection files.
+        if config == crate::bsp::BspServerConfig::default() {
+            if let Some(discovered) =
+                crate::bsp_config::discover_bsp_server_config_from_dot_bsp(&self.root)
+            {
+                config = discovered;
+            }
+        }
+
         if let Ok(program) = std::env::var("NOVA_BSP_PROGRAM") {
             if !program.trim().is_empty() {
                 config.program = program;
@@ -1219,4 +1230,130 @@ fn is_bazel_build_definition_file(path: &Path) -> bool {
             | ".bazelversion"
     ) || name.starts_with(".bazelrc.")
         || name.ends_with(".bzl")
+}
+
+#[cfg(all(test, feature = "bsp"))]
+mod bsp_config_tests {
+    use super::*;
+    use crate::command::CommandOutput;
+    use std::{ffi::OsString, sync::Mutex};
+    use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Clone, Debug, Default)]
+    struct NoopRunner;
+
+    impl CommandRunner for NoopRunner {
+        fn run(&self, _cwd: &Path, _program: &str, _args: &[&str]) -> anyhow::Result<CommandOutput> {
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn dot_bsp_discovery_prefers_java_config() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+
+        // Deterministic ordering is by path, so `a.json` would win without the java preference.
+        std::fs::write(
+            bsp_dir.join("a.json"),
+            r#"{"argv":["scala-bsp"],"languages":["scala"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            bsp_dir.join("b.json"),
+            r#"{"argv":["java-bsp","--arg"],"languages":["java"]}"#,
+        )
+        .unwrap();
+
+        let config =
+            crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
+        assert_eq!(config.program, "java-bsp");
+        assert_eq!(config.args, vec!["--arg".to_string()]);
+    }
+
+    #[test]
+    fn dot_bsp_discovery_splits_argv_program_and_args() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+
+        std::fs::write(
+            bsp_dir.join("server.json"),
+            r#"{"argv":["bazel-bsp","--workspace","."],"languages":["java"]}"#,
+        )
+        .unwrap();
+
+        let config =
+            crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
+        assert_eq!(config.program, "bazel-bsp");
+        assert_eq!(
+            config.args,
+            vec!["--workspace".to_string(), ".".to_string()]
+        );
+    }
+
+    #[test]
+    fn env_overrides_win_over_dot_bsp_discovery() {
+        let _lock = ENV_LOCK.lock().unwrap();
+
+        let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
+        let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
+
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+        std::fs::write(
+            bsp_dir.join("server.json"),
+            r#"{"argv":["discovered-prog","--discovered"],"languages":["java"]}"#,
+        )
+        .unwrap();
+
+        let workspace = BazelWorkspace::new(root.path().to_path_buf(), NoopRunner).unwrap();
+
+        // `.bsp` discovery should be preferred over the default `bsp4bazel` config.
+        let config = workspace.bsp_config_from_env();
+        assert_eq!(config.program, "discovered-prog");
+        assert_eq!(config.args, vec!["--discovered".to_string()]);
+
+        // Env vars still win on top of discovery.
+        let _program_guard = EnvVarGuard::set("NOVA_BSP_PROGRAM", "env-prog");
+        let _args_guard = EnvVarGuard::set("NOVA_BSP_ARGS", r#"["--env"]"#);
+        let config = workspace.bsp_config_from_env();
+        assert_eq!(config.program, "env-prog");
+        assert_eq!(config.args, vec!["--env".to_string()]);
+    }
 }

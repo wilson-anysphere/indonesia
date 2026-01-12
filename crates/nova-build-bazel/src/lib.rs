@@ -19,6 +19,9 @@ mod workspace;
 #[cfg(any(test, feature = "bsp"))]
 pub mod bsp;
 
+#[cfg(feature = "bsp")]
+mod bsp_config;
+
 #[cfg(any(test, feature = "bsp"))]
 mod orchestrator;
 
