@@ -88,6 +88,15 @@ enum LifecycleState {
     Running,
 }
 
+struct LaunchedProcess {
+    pid: Option<u32>,
+    /// Cancellation token used to "detach" from the launched process (drop the child handle)
+    /// without treating it as a debuggee exit.
+    detach: CancellationToken,
+    /// Background task that waits for the child to exit and emits DAP events.
+    monitor: tokio::task::JoinHandle<()>,
+}
+
 #[derive(Debug)]
 struct SessionLifecycle {
     lifecycle: LifecycleState,
@@ -131,8 +140,9 @@ where
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
+    let exited_sent = Arc::new(AtomicBool::new(false));
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
-    let launched_process: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    let launched_process: Arc<Mutex<Option<LaunchedProcess>>> = Arc::new(Mutex::new(None));
     let session: Arc<Mutex<SessionLifecycle>> = Arc::new(Mutex::new(SessionLifecycle::default()));
     let pending_config: Arc<Mutex<PendingConfiguration>> =
         Arc::new(Mutex::new(PendingConfiguration::default()));
@@ -194,6 +204,7 @@ where
                     initialized_rx.clone(),
                     server_shutdown.clone(),
                     terminated_sent.clone(),
+                    exited_sent.clone(),
                 ));
 
                 if is_shutdown_request {
@@ -244,7 +255,7 @@ async fn handle_request(
     out_tx: mpsc::UnboundedSender<Value>,
     seq: Arc<AtomicI64>,
     debugger: Arc<Mutex<Option<Debugger>>>,
-    launched_process: Arc<Mutex<Option<Child>>>,
+    launched_process: Arc<Mutex<Option<LaunchedProcess>>>,
     session: Arc<Mutex<SessionLifecycle>>,
     pending_config: Arc<Mutex<PendingConfiguration>>,
     in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
@@ -252,6 +263,7 @@ async fn handle_request(
     initialized_rx: watch::Receiver<bool>,
     server_shutdown: CancellationToken,
     terminated_sent: Arc<AtomicBool>,
+    exited_sent: Arc<AtomicBool>,
 ) {
     let _request_metrics =
         RequestMetricsGuard::new(&request.command, nova_metrics::MetricsRegistry::global());
@@ -271,6 +283,7 @@ async fn handle_request(
         initialized_rx,
         &server_shutdown,
         &terminated_sent,
+        &exited_sent,
     )
     .await;
 
@@ -284,7 +297,7 @@ async fn handle_request_inner(
     out_tx: &mpsc::UnboundedSender<Value>,
     seq: &Arc<AtomicI64>,
     debugger: &Arc<Mutex<Option<Debugger>>>,
-    launched_process: &Arc<Mutex<Option<Child>>>,
+    launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
     session: &Arc<Mutex<SessionLifecycle>>,
     pending_config: &Arc<Mutex<PendingConfiguration>>,
     in_flight: &Arc<Mutex<HashMap<i64, CancellationToken>>>,
@@ -292,6 +305,7 @@ async fn handle_request_inner(
     initialized_rx: watch::Receiver<bool>,
     server_shutdown: &CancellationToken,
     terminated_sent: &Arc<AtomicBool>,
+    exited_sent: &Arc<AtomicBool>,
 ) {
     if requires_initialized(request.command.as_str()) {
         if !wait_initialized(cancel, initialized_rx.clone()).await {
@@ -611,6 +625,8 @@ async fn handle_request_inner(
                 return;
             };
 
+            let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
+
             let attach = match mode {
                 LaunchMode::Command => {
                     let Some(cwd) = args.cwd.as_deref() else {
@@ -699,7 +715,16 @@ async fn handle_request_inner(
 
                     {
                         let mut guard = launched_process.lock().await;
-                        *guard = Some(child);
+                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                            child,
+                            out_tx.clone(),
+                            seq.clone(),
+                            Arc::clone(exited_sent),
+                            Arc::clone(terminated_sent),
+                            server_shutdown.clone(),
+                        );
+                        launch_outcome_tx = Some(outcome_tx);
+                        *guard = Some(proc);
                     }
 
                     AttachArgs {
@@ -816,7 +841,16 @@ async fn handle_request_inner(
 
                     {
                         let mut guard = launched_process.lock().await;
-                        *guard = Some(child);
+                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                            child,
+                            out_tx.clone(),
+                            seq.clone(),
+                            Arc::clone(exited_sent),
+                            Arc::clone(terminated_sent),
+                            server_shutdown.clone(),
+                        );
+                        launch_outcome_tx = Some(outcome_tx);
+                        *guard = Some(proc);
                     }
 
                     AttachArgs {
@@ -830,6 +864,9 @@ async fn handle_request_inner(
             let attach_fut = Debugger::attach_with_retry(attach, attach_timeout);
             let dbg = tokio::select! {
                 _ = cancel.cancelled() => {
+                    if let Some(tx) = launch_outcome_tx.take() {
+                        let _ = tx.send(Some(false));
+                    }
                     terminate_existing_process(launched_process).await;
                     send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
                     return;
@@ -837,6 +874,9 @@ async fn handle_request_inner(
                 res = attach_fut => match res {
                     Ok(dbg) => dbg,
                     Err(err) => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
                         terminate_existing_process(launched_process).await;
                         send_response(out_tx, seq, request, false, None, Some(err.to_string()));
                         return;
@@ -879,6 +919,9 @@ async fn handle_request_inner(
                 let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                     Some(guard) => guard,
                     None => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
                         terminate_existing_process(launched_process).await;
                         disconnect_debugger(debugger).await;
                         {
@@ -898,6 +941,9 @@ async fn handle_request_inner(
                     }
                 };
                 let Some(dbg) = guard.as_mut() else {
+                    if let Some(tx) = launch_outcome_tx.take() {
+                        let _ = tx.send(Some(false));
+                    }
                     terminate_existing_process(launched_process).await;
                     disconnect_debugger(debugger).await;
                     {
@@ -922,6 +968,9 @@ async fn handle_request_inner(
                         sess.lifecycle = LifecycleState::Running;
                     }
                     Err(err) if is_cancelled_error(&err) => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
                         drop(guard);
                         terminate_existing_process(launched_process).await;
                         disconnect_debugger(debugger).await;
@@ -941,6 +990,9 @@ async fn handle_request_inner(
                         return;
                     }
                     Err(err) => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
                         let msg = err.to_string();
                         drop(guard);
                         terminate_existing_process(launched_process).await;
@@ -964,6 +1016,10 @@ async fn handle_request_inner(
                 );
             } else {
                 send_response(out_tx, seq, request, true, None, None);
+            }
+
+            if let Some(tx) = launch_outcome_tx.take() {
+                let _ = tx.send(Some(true));
             }
         }
         "attach" => {
@@ -2767,8 +2823,7 @@ async fn handle_request_inner(
             if terminate_debuggee {
                 terminate_existing_process(launched_process).await;
             } else {
-                // Drop the process handle without killing. The process will continue running.
-                let _ = launched_process.lock().await.take();
+                detach_existing_process(launched_process).await;
             }
 
             disconnect_debugger(debugger).await;
@@ -3394,48 +3449,140 @@ fn spawn_output_task<R>(
     });
 }
 
-async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Child>>>) {
-    let mut child = {
+fn spawn_launched_process_exit_task(
+    mut child: Child,
+    tx: mpsc::UnboundedSender<Value>,
+    seq: Arc<AtomicI64>,
+    exited_sent: Arc<AtomicBool>,
+    terminated_sent: Arc<AtomicBool>,
+    server_shutdown: CancellationToken,
+) -> (LaunchedProcess, watch::Sender<Option<bool>>) {
+    let pid = child.id();
+    let detach = CancellationToken::new();
+    let detach_task = detach.clone();
+
+    let (outcome_tx, mut outcome_rx) = watch::channel(None::<bool>);
+
+    let monitor = tokio::spawn(async move {
+        let status = tokio::select! {
+            _ = detach_task.cancelled() => return,
+            status = child.wait() => status,
+        };
+
+        let exit_code = match status {
+            Ok(status) => status.code().map(|code| code as i64).unwrap_or(-1),
+            Err(_) => return,
+        };
+
+        loop {
+            match *outcome_rx.borrow() {
+                Some(true) => break,
+                Some(false) => return,
+                None => {}
+            }
+
+            tokio::select! {
+                _ = detach_task.cancelled() => return,
+                changed = outcome_rx.changed() => {
+                    if changed.is_err() {
+                        // Sender dropped without ever marking the launch as successful.
+                        return;
+                    }
+                }
+            }
+        }
+
+        send_exited_once(&tx, &seq, &exited_sent, exit_code);
+        send_terminated_once(&tx, &seq, &terminated_sent);
+        server_shutdown.cancel();
+    });
+
+    (
+        LaunchedProcess {
+            pid,
+            detach,
+            monitor,
+        },
+        outcome_tx,
+    )
+}
+
+async fn detach_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
+    let proc = {
         let mut guard = launched_process.lock().await;
         guard.take()
     };
 
-    if let Some(child) = child.as_mut() {
-        let _ = terminate_child(child).await;
-    }
+    let Some(proc) = proc else { return };
+
+    proc.detach.cancel();
+    let _ = tokio::time::timeout(Duration::from_millis(250), proc.monitor).await;
 }
 
-async fn terminate_child(child: &mut Child) -> std::io::Result<()> {
-    if child.try_wait()?.is_some() {
-        return Ok(());
+async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
+    let proc = {
+        let mut guard = launched_process.lock().await;
+        guard.take()
+    };
+
+    let Some(proc) = proc else { return };
+
+    if let Some(pid) = proc.pid {
+        let _ = terminate_pid(pid).await;
     }
 
+    // Reap the process via the monitor task, but don't hang shutdown if it refuses to die.
+    let _ = tokio::time::timeout(Duration::from_secs(2), proc.monitor).await;
+}
+
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error();
+    !matches!(err.raw_os_error(), Some(libc::ESRCH))
+}
+
+async fn terminate_pid(pid: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        if let Some(pid) = child.id() {
-            // Best effort: send SIGTERM first so shutdown hooks can run.
-            let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-            if rc != 0 {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(err);
-                }
+        // Best effort: send SIGTERM first so shutdown hooks can run.
+        let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(err);
             }
         }
 
         let deadline = Instant::now() + Duration::from_millis(750);
         while Instant::now() < deadline {
-            if child.try_wait()?.is_some() {
+            if !process_exists(pid) {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+
+        let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(err);
+            }
+        }
     }
 
-    child.start_kill()?;
+    #[cfg(windows)]
+    {
+        // Best effort: `taskkill` is the most widely available mechanism without additional deps.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .await;
+    }
 
-    // Reap the process, but don't hang shutdown if it refuses to die.
-    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
     Ok(())
 }
 
@@ -3530,6 +3677,20 @@ impl Drop for RequestMetricsGuard<'_> {
             self.metrics.record_panic(self.command);
             self.metrics.record_error(self.command);
         }
+    }
+}
+
+fn send_exited_once(
+    tx: &mpsc::UnboundedSender<Value>,
+    seq: &Arc<AtomicI64>,
+    exited_sent: &Arc<AtomicBool>,
+    exit_code: i64,
+) {
+    if exited_sent
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        send_event(tx, seq, "exited", Some(json!({ "exitCode": exit_code })));
     }
 }
 
