@@ -439,6 +439,19 @@ framework-introspection endpoints. The canonical method list + JSON schemas are 
 [`protocol-extensions.md`](protocol-extensions.md); clients should treat JSON-RPC `-32601 Method not found`
 as capability gating (older servers) and degrade gracefully.
 
+The real VS Code UX in this repo is a tree view that:
+
+- groups items by “kind” (e.g., Web Endpoints, Micronaut Endpoints, Micronaut Beans)
+- lets you click an endpoint/bean to jump to the source file (best-effort)
+- exposes context menu actions (copy endpoint path, copy method+path, copy bean id/type, reveal in explorer)
+  keyed off `TreeItem.contextValue` (`novaFrameworkEndpoint` / `novaFrameworkBean`)
+
+Payload notes (see `protocol-extensions.md` for full schemas):
+
+- `nova/web/endpoints` returns `file` + **1-based** `line` (and `methods`), where `file` is often relative to `projectRoot`.
+- Micronaut responses include `span.start` / `span.end` as **byte offsets** into UTF-8 source; clients may optionally
+  translate that span into an editor selection.
+
 ```typescript
 // VS Code extension for Nova (example / sketch).
 //
