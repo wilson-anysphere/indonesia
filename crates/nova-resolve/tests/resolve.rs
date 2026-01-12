@@ -5,6 +5,7 @@ use std::sync::Arc;
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{FileId, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::hir;
+use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::{self, HirDatabase};
 use nova_jdk::JdkIndex;
 use nova_resolve::{
@@ -758,4 +759,92 @@ class C { Foo field; }
         res,
         Some(Resolution::Type(TypeResolution::Source(foo_item)))
     );
+}
+
+#[test]
+fn field_and_method_can_share_name_and_resolve_by_context() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+class C {
+  int foo;
+  void foo() {}
+  void m() { foo(); foo; }
+}
+"#,
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let class_id = match tree.items.first().copied().expect("class item") {
+        Item::Class(id) => id,
+        other => panic!("expected class item, got {other:?}"),
+    };
+
+    let mut foo_field = None;
+    let mut foo_method = None;
+    let mut m_method = None;
+    for member in &tree.class(class_id).members {
+        match *member {
+            Member::Field(id) => {
+                if tree.field(id).name == "foo" {
+                    foo_field = Some(id);
+                }
+            }
+            Member::Method(id) => match tree.method(id).name.as_str() {
+                "foo" => foo_method = Some(id),
+                "m" => m_method = Some(id),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    let foo_field = foo_field.expect("field foo");
+    let foo_method = foo_method.expect("method foo");
+    let m_method = m_method.expect("method m");
+
+    let scopes = build_scopes(&db, file);
+    let owner = BodyOwner::Method(m_method);
+    let body = queries::body(&db, m_method);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    let mut call_callee = None;
+    let mut name_expr = None;
+    for stmt in statements {
+        let hir::Stmt::Expr { expr, .. } = &body.stmts[*stmt] else {
+            continue;
+        };
+
+        match &body.exprs[*expr] {
+            hir::Expr::Call { callee, .. } => call_callee = Some(*callee),
+            hir::Expr::Name { name, .. } if name == "foo" => name_expr = Some(*expr),
+            _ => {}
+        }
+    }
+
+    let call_callee = call_callee.expect("foo() callee expr");
+    let name_expr = name_expr.expect("foo name expr");
+
+    let call_scope = *scopes
+        .expr_scopes
+        .get(&(owner, call_callee))
+        .expect("foo() callee scope");
+    let name_scope = *scopes
+        .expr_scopes
+        .get(&(owner, name_expr))
+        .expect("foo name scope");
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+
+    let method_res = resolver.resolve_method_name(&scopes.scopes, call_scope, &Name::from("foo"));
+    assert_eq!(method_res, Some(Resolution::Methods(vec![foo_method])));
+
+    let value_res = resolver.resolve_value_name(&scopes.scopes, name_scope, &Name::from("foo"));
+    assert_eq!(value_res, Some(Resolution::Field(foo_field)));
 }

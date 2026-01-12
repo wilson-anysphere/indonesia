@@ -189,14 +189,11 @@ impl<'a> ItemTreeScopeBuilder<'a> {
                 Member::Method(id) => {
                     let method = self.tree.method(id);
                     let name = Name::from(method.name.clone());
-                    match self.scopes[class_scope].values.get_mut(&name) {
-                        Some(Resolution::Methods(existing)) => existing.push(id),
-                        _ => {
-                            self.scopes[class_scope]
-                                .values
-                                .insert(name, Resolution::Methods(vec![id]));
-                        }
-                    }
+                    self.scopes[class_scope]
+                        .methods
+                        .entry(name)
+                        .or_default()
+                        .push(id);
                 }
                 Member::Constructor(_) => {}
                 Member::Initializer(_) => {}
@@ -300,6 +297,7 @@ impl<'a> ItemTreeScopeBuilder<'a> {
             parent,
             kind,
             values: HashMap::new(),
+            methods: HashMap::new(),
             types: HashMap::new(),
         });
         id

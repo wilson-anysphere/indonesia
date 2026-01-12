@@ -41,6 +41,7 @@ pub struct ScopeData {
     pub(crate) parent: Option<ScopeId>,
     pub(crate) kind: ScopeKind,
     pub(crate) values: HashMap<Name, Resolution>,
+    pub(crate) methods: HashMap<Name, Vec<MethodId>>,
     pub(crate) types: HashMap<Name, TypeResolution>,
 }
 
@@ -48,6 +49,11 @@ impl ScopeData {
     #[must_use]
     pub fn values(&self) -> &HashMap<Name, Resolution> {
         &self.values
+    }
+
+    #[must_use]
+    pub fn methods(&self) -> &HashMap<Name, Vec<MethodId>> {
+        &self.methods
     }
 
     #[must_use]
@@ -307,14 +313,11 @@ impl<'a> ScopeBuilder<'a> {
                 Member::Method(id) => {
                     let method = self.tree.method(*id);
                     let name = Name::from(method.name.clone());
-                    match self.scopes[class_scope].values.get_mut(&name) {
-                        Some(Resolution::Methods(existing)) => existing.push(*id),
-                        _ => {
-                            self.scopes[class_scope]
-                                .values
-                                .insert(name, Resolution::Methods(vec![*id]));
-                        }
-                    }
+                    self.scopes[class_scope]
+                        .methods
+                        .entry(name)
+                        .or_default()
+                        .push(*id);
                 }
                 Member::Constructor(_) => {}
                 Member::Initializer(_) => {}
@@ -761,6 +764,7 @@ impl<'a> ScopeBuilder<'a> {
             parent,
             kind,
             values: HashMap::new(),
+            methods: HashMap::new(),
             types: HashMap::new(),
         });
         id

@@ -601,6 +601,15 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolve a simple name against a given scope.
+    ///
+    /// Note: this performs a best-effort lookup across *non-method* namespaces:
+    /// - value namespace (locals/parameters/fields)
+    /// - type namespace (imports, same-package, `java.lang.*`, ...)
+    /// - static imports (as `Resolution::StaticMember`)
+    /// - package segments (for qualified name resolution)
+    ///
+    /// For unqualified method invocation lookup (`foo(...)`), use
+    /// [`Resolver::resolve_method_name`] instead.
     pub fn resolve_name(
         &self,
         scopes: &ScopeGraph,
@@ -698,6 +707,98 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 _ => {}
+            }
+
+            current = data.parent;
+        }
+        NameResolution::Unresolved
+    }
+
+    /// Resolve a simple name in the *value* namespace (locals/parameters/fields),
+    /// plus static imports.
+    ///
+    /// This is suitable for resolving `hir::Expr::Name` nodes that are not part
+    /// of a method invocation.
+    pub fn resolve_value_name(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> Option<Resolution> {
+        self.resolve_value_name_detailed(scopes, scope, name)
+            .into_option()
+    }
+
+    /// Like [`Resolver::resolve_value_name`], but reports ambiguity from static
+    /// imports.
+    pub fn resolve_value_name_detailed(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> NameResolution {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let data = scopes.scope(id);
+
+            if let Some(value) = data.values.get(name) {
+                return NameResolution::Resolved(value.clone());
+            }
+
+            if let ScopeKind::Import { imports, .. } = &data.kind {
+                match self.resolve_static_imports(imports, name) {
+                    NameResolution::Resolved(res) => return NameResolution::Resolved(res),
+                    NameResolution::Ambiguous(candidates) => {
+                        return NameResolution::Ambiguous(candidates)
+                    }
+                    NameResolution::Unresolved => {}
+                }
+            }
+
+            current = data.parent;
+        }
+        NameResolution::Unresolved
+    }
+
+    /// Resolve a simple name in the *method* namespace (unqualified method
+    /// invocation), plus static imports.
+    ///
+    /// This is suitable for resolving the callee identifier in expressions like
+    /// `foo(...)` (where the callee is not a field access / qualified expression).
+    pub fn resolve_method_name(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> Option<Resolution> {
+        self.resolve_method_name_detailed(scopes, scope, name)
+            .into_option()
+    }
+
+    /// Like [`Resolver::resolve_method_name`], but reports ambiguity from static
+    /// imports.
+    pub fn resolve_method_name_detailed(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> NameResolution {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let data = scopes.scope(id);
+
+            if let Some(methods) = data.methods.get(name) {
+                return NameResolution::Resolved(Resolution::Methods(methods.clone()));
+            }
+
+            if let ScopeKind::Import { imports, .. } = &data.kind {
+                match self.resolve_static_imports(imports, name) {
+                    NameResolution::Resolved(res) => return NameResolution::Resolved(res),
+                    NameResolution::Ambiguous(candidates) => {
+                        return NameResolution::Ambiguous(candidates)
+                    }
+                    NameResolution::Unresolved => {}
+                }
             }
 
             current = data.parent;
