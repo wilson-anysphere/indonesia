@@ -148,7 +148,7 @@ fn parse_annotation_text_owned(text: String, span: Span) -> Option<ParsedAnnotat
     })
 }
 
-fn extract_paren_contents<'a>(input: &'a str, open_paren_idx: usize) -> Option<&'a str> {
+fn extract_paren_contents(input: &str, open_paren_idx: usize) -> Option<&str> {
     // `input` starts at the annotation name and includes the opening paren.
     let start = open_paren_idx.checked_add(1)?;
     let mut depth: u32 = 1;
@@ -467,11 +467,12 @@ fn find_unescaped_quote(input: &str) -> Option<usize> {
 }
 
 fn find_assignment_key(haystack: &str, key: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
     let mut search_start = 0usize;
     while let Some(rel) = haystack[search_start..].find(key) {
         let idx = search_start + rel;
-        let before = haystack[..idx].as_bytes().last().copied();
-        let after = haystack[idx + key.len()..].as_bytes().first().copied();
+        let before = bytes[..idx].last().copied();
+        let after = bytes[idx + key.len()..].first().copied();
 
         let before_ok = before
             .map(|b| !is_ident_continue(b as char))

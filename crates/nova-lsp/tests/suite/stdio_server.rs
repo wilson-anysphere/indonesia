@@ -204,7 +204,9 @@ fn stdio_server_handles_safe_mode_status_request() {
             );
             assert_eq!(status.reason, None);
         }
-        SafeModeStatusResult::Bool(_) => panic!("expected safeModeStatus response object"),
+        SafeModeStatusResult::Bool(enabled) => {
+            panic!("expected safeModeStatus response object, got bool {enabled}")
+        }
     }
 
     // shutdown + exit

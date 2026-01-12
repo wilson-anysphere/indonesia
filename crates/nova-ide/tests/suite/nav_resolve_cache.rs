@@ -51,3 +51,4 @@ class B {
     goto_definition(&db, file_b, file_b_pos).expect("expected definition location");
     assert_eq!(nova_ide::__nav_resolve_workspace_index_build_count(&db), 2);
 }
+

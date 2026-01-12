@@ -538,7 +538,12 @@ fn run_command_spec_unix(
             }
         }
 
-        if terminate_started_at.is_none() {
+        if let Some(started) = terminate_started_at {
+            if !sigkill_sent && started.elapsed() >= opts.kill_grace {
+                sigkill_sent = true;
+                signal_process_group(child.id() as i32, libc::SIGKILL);
+            }
+        } else {
             if let Some(token) = opts.cancellation.as_ref() {
                 if token.is_cancelled() {
                     cancelled = true;
@@ -555,14 +560,6 @@ fn run_command_spec_unix(
                         signal_process_group(child.id() as i32, libc::SIGTERM);
                     }
                 }
-            }
-        } else if !sigkill_sent {
-            let Some(started) = terminate_started_at else {
-                unreachable!("terminate_started_at should be set while waiting for SIGKILL grace")
-            };
-            if started.elapsed() >= opts.kill_grace {
-                sigkill_sent = true;
-                signal_process_group(child.id() as i32, libc::SIGKILL);
             }
         }
 
