@@ -144,6 +144,53 @@ public interface TestMapper {
 }
 
 #[test]
+fn diagnostics_for_file_nested_target_path_does_not_trigger_unmapped_properties() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let src_dir = root.join("src/main/java/com/example");
+    write_file(
+        &src_dir.join("Source.java"),
+        r#"package com.example;
+
+public class Source {
+    private String a;
+}
+"#,
+    );
+    write_file(
+        &src_dir.join("Target.java"),
+        r#"package com.example;
+
+public class Target {
+    private Nested nested;
+}
+"#,
+    );
+
+    let mapper_file = src_dir.join("TestMapper.java");
+    let mapper_source = r#"package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface TestMapper {
+    @Mapping(target = "nested.value", source = "a")
+    Target map(Source source);
+}
+"#;
+    write_file(&mapper_file, mapper_source);
+
+    let diags = diagnostics_for_file(root, &mapper_file, mapper_source, true).unwrap();
+    assert!(
+        diags.iter()
+            .all(|d| d.code.as_ref() != "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"),
+        "did not expect MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES, got: {diags:?}"
+    );
+}
+
+#[test]
 fn diagnostics_for_file_reports_missing_dependency() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
