@@ -2041,11 +2041,19 @@ fn find_replace_all_occurrences_same_execution_context(
         return Vec::new();
     }
 
-    // Execution context owner: the nearest enclosing lambda (if any).
+    // Execution context owner: the nearest enclosing lambda (if any), plus the nearest class body.
+    //
+    // This prevents `replace_all=true` from replacing occurrences across lambda boundaries and
+    // across nested/anonymous class bodies. Replacing into those contexts can change evaluation
+    // timing and frequency, since the extracted local is computed at the insertion point.
     let insertion_lambda = insertion_stmt
         .syntax()
         .ancestors()
         .find_map(ast::LambdaExpression::cast);
+    let insertion_class_body = insertion_stmt
+        .syntax()
+        .ancestors()
+        .find_map(ast::ClassBody::cast);
 
     // Restrict to the closest enclosing block to avoid replacing occurrences in other methods.
     let search_root = insertion_stmt
@@ -2082,6 +2090,11 @@ fn find_replace_all_occurrences_same_execution_context(
             .ancestors()
             .find_map(ast::LambdaExpression::cast);
         if expr_lambda != insertion_lambda {
+            continue;
+        }
+
+        let expr_class_body = expr.syntax().ancestors().find_map(ast::ClassBody::cast);
+        if expr_class_body != insertion_class_body {
             continue;
         }
 

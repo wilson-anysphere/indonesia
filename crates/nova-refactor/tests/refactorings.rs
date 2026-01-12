@@ -311,6 +311,56 @@ fn extract_variable_replace_all_does_not_cross_lambda_boundary() {
 }
 
 #[test]
+fn extract_variable_replace_all_does_not_cross_anonymous_class_boundary() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    int x = 0;
+    int a = /*select*/1 / x/*end*/;
+    Runnable r = new Runnable() {
+      @Override public void run() {
+        System.out.println(1 / x);
+      }
+    };
+    int b = 1 / x;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "div".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int x = 0;
+    var div = 1 / x;
+    int a = div;
+    Runnable r = new Runnable() {
+      @Override public void run() {
+        System.out.println(1 / x);
+      }
+    };
+    int b = div;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_instanceof_pattern_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
