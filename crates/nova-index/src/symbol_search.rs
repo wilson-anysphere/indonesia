@@ -1,7 +1,7 @@
 use crate::indexes::{IndexSymbolKind, SymbolIndex, SymbolLocation};
 use nova_core::SymbolId;
 use nova_fuzzy::{
-    FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder,
+    FuzzyMatcher, MatchKind, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder,
 };
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use serde::{Deserialize, Serialize};
@@ -336,6 +336,18 @@ impl SymbolSearchIndex {
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
         if entry.qualified_name_differs {
+            // A prefix match on `name` always beats a fuzzy match on
+            // `qualified_name`, and if `qualified_name` is longer than `name`,
+            // it also can't beat an equivalent prefix match. This avoids a
+            // second scoring pass for the common prefix-query case.
+            if let Some(score) = best {
+                if score.kind == MatchKind::Prefix
+                    && entry.symbol.qualified_name.len() >= entry.symbol.name.len()
+                {
+                    return Some(score);
+                }
+            }
+
             let qual = matcher.score(&entry.symbol.qualified_name);
             if let (Some(a), Some(b)) = (best, qual) {
                 if b.rank_key() > a.rank_key() {
