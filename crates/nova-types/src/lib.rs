@@ -1543,6 +1543,7 @@ impl TypeStore {
                 super_class: Some(Type::class(object, vec![])),
                 interfaces: vec![Type::class(list, vec![Type::TypeVar(array_list_e)])],
                 fields: vec![],
+                // Minimal constructor surface for IDE type-checking / overload resolution tests.
                 constructors: vec![
                     ConstructorDef {
                         params: vec![],

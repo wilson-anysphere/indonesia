@@ -7208,6 +7208,21 @@ class D { void m(){ new C("x"); } }
 }
 
 #[test]
+fn jdk_constructor_call_mismatch_reports_diag() {
+    let src = r#"
+import java.util.*;
+class C { void m(){ new ArrayList(1, 2); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-constructor"),
+        "expected unresolved-constructor diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn source_default_constructor_is_available() {
     let src = r#"
 class C { }
