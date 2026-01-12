@@ -60,6 +60,14 @@ fn validate_build(config: &NovaConfig, out: &mut ValidationDiagnostics) {
             message: "must be >= 1 when build.enabled is true (0 is treated as 1)".to_string(),
         });
     }
+
+    if !config.build.maven.enabled && !config.build.gradle.enabled {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "build.enabled".to_string(),
+            message: "build.enabled=true but all build tools are disabled; enable build.maven.enabled and/or build.gradle.enabled"
+                .to_string(),
+        });
+    }
 }
 
 fn validate_generated_sources(config: &NovaConfig, out: &mut ValidationDiagnostics) {

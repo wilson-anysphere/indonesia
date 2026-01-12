@@ -1981,6 +1981,36 @@ timeout_ms = 0
     }
 
     #[test]
+    fn build_enabled_with_all_tools_disabled_warns() {
+        let text = r#"
+[build]
+enabled = true
+
+[build.maven]
+enabled = false
+
+[build.gradle]
+enabled = false
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        assert!(config.build.enabled);
+        assert!(!config.build.maven.enabled);
+        assert!(!config.build.gradle.enabled);
+
+        let diagnostics = config.validate();
+        assert!(diagnostics.errors.is_empty());
+        assert_eq!(
+            diagnostics.warnings,
+            vec![ConfigWarning::InvalidValue {
+                toml_path: "build.enabled".to_string(),
+                message: "build.enabled=true but all build tools are disabled; enable build.maven.enabled and/or build.gradle.enabled"
+                    .to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn toml_extensions_table_parses() {
         let text = r#"
 [extensions]
