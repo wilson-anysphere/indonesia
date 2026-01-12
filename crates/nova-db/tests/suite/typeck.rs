@@ -1149,6 +1149,41 @@ fn cross_file_signature_type_resolves_in_same_package() {
 }
 
 #[test]
+fn cross_file_signature_return_type_resolves_in_same_package() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    set_file(&mut db, project, a_file, "src/p/A.java", "package p; class A {}");
+    set_file(
+        &mut db,
+        project,
+        b_file,
+        "src/p/B.java",
+        "package p; class B { A m() { return null; } }",
+    );
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("`A`")),
+        "expected return type `A` to resolve via workspace def map, got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_generic_method_call_resolves_and_infers_return_type() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

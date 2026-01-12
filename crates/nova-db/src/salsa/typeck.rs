@@ -373,7 +373,7 @@ fn resolve_method_call_demand(
     // Build an env for this body (same setup as `typeck_body`, but without running `check_body`).
     let base_store = db.project_base_type_store(project);
     let mut store = (&*base_store).clone();
-    let provider = if let Some(env) = jpms_env.as_deref() {
+    let base_provider = if let Some(env) = jpms_env.as_deref() {
         nova_types::ChainTypeProvider::new(vec![
             &env.classpath as &dyn TypeProvider,
             &*jdk as &dyn TypeProvider,
@@ -387,6 +387,8 @@ fn resolve_method_call_demand(
             None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
         }
     };
+    let jdk_provider: &dyn TypeProvider = &*jdk;
+    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types in this file so `Type::Class` ids are stable within this query.
