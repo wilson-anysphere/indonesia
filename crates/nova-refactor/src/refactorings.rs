@@ -47,6 +47,8 @@ pub enum RefactorError {
     InvalidSelection,
     #[error("extract variable is not supported in this context: {reason}")]
     ExtractNotSupported { reason: &'static str },
+    #[error("expression has side effects and cannot be extracted safely")]
+    ExtractSideEffects,
     #[error("could not infer type for extracted expression")]
     TypeInferenceFailed,
     #[error("cannot use `var` for this initializer; use an explicit type")]
@@ -1048,13 +1050,8 @@ pub fn extract_variable(
 
     // Extracting a side-effectful expression into a new statement can change evaluation order or
     // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    //
-    // For explicit-typed extraction we allow side-effectful expressions as a best-effort fallback,
-    // since many common selections (`new Foo()`) would otherwise be rejected entirely.
-    if params.use_var && has_side_effects(expr.syntax()) {
-        return Err(RefactorError::ExtractNotSupported {
-            reason: "expression has side effects and cannot be extracted safely",
-        });
+    if has_side_effects(expr.syntax()) {
+        return Err(RefactorError::ExtractSideEffects);
     }
 
     let stmt = expr

@@ -336,18 +336,16 @@ fn extract_variable_preserves_no_final_newline() {
 #[test]
 fn extract_variable_replaces_whole_expression_statement() {
     let file = FileId::new("Test.java");
-    let src = r#"class Foo {}
-
-class Test {
+    let src = r#"class Test {
   void m() {
-    new Foo();
+    1 + 2;
   }
 }
 "#;
 
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
-    let expr_start = src.find("new Foo()").unwrap();
-    let expr_end = expr_start + "new Foo()".len();
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
 
     let edit = extract_variable(
         &db,
@@ -362,11 +360,9 @@ class Test {
     .unwrap();
 
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
-    let expected = r#"class Foo {}
-
-class Test {
+    let expected = r#"class Test {
   void m() {
-    Foo result = new Foo();
+    int result = 1 + 2;
   }
 }
 "#;
@@ -376,12 +372,10 @@ class Test {
 #[test]
 fn extract_variable_replaces_whole_expression_statement_preserving_inline_comments() {
     let file = FileId::new("Test.java");
-    let fixture = r#"class Foo {}
-
-class Test {
+    let fixture = r#"class Test {
   void m() {
     /*leading*/
-    /*select*/new Foo() /*middle*//*end*/;
+    /*select*/1 + 2 /*middle*//*end*/;
   }
 }
 "#;
@@ -402,12 +396,10 @@ class Test {
     .unwrap();
 
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
-    let expected = r#"class Foo {}
-
-class Test {
+    let expected = r#"class Test {
   void m() {
     /*leading*/
-    Foo result = new Foo() /*middle*/;
+    int result = 1 + 2 /*middle*/;
   }
 }
 "#;
@@ -1573,10 +1565,9 @@ fn extract_variable_prefers_typeck_type_when_use_var_false() {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
   void m() {
-    String x = /*start*/foo()/*end*/;
+    String s = "hi";
+    Object x = /*start*/s/*end*/;
   }
-
-  String foo() { return ""; }
 }
 "#;
     let (src, expr_range) = extract_range(fixture);
@@ -1597,11 +1588,10 @@ fn extract_variable_prefers_typeck_type_when_use_var_false() {
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
     let expected = r#"class C {
   void m() {
-    String y = foo();
-    String x = y;
+    String s = "hi";
+    String y = s;
+    Object x = y;
   }
-
-  String foo() { return ""; }
 }
 "#;
     assert_eq!(after, expected);
@@ -1610,12 +1600,12 @@ fn extract_variable_prefers_typeck_type_when_use_var_false() {
 #[test]
 fn extract_variable_prefers_typeck_when_it_adds_generics() {
     let file = FileId::new("Test.java");
-    let fixture = r#"import java.util.ArrayList;
-import java.util.List;
+    let fixture = r#"import java.util.List;
 
 class Test {
   void m() {
-    List<String> xs = /*select*/new ArrayList<>()/*end*/;
+    List<String> xs = null;
+    Object y = /*select*/xs/*end*/;
   }
 }
 "#;
@@ -1636,13 +1626,13 @@ class Test {
     .unwrap();
 
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
-    let expected = r#"import java.util.ArrayList;
-import java.util.List;
+    let expected = r#"import java.util.List;
 
 class Test {
   void m() {
-    ArrayList<String> tmp = new ArrayList<>();
-    List<String> xs = tmp;
+    List<String> xs = null;
+    List<String> tmp = xs;
+    Object y = tmp;
   }
 }
 "#;
@@ -1739,7 +1729,8 @@ fn extract_variable_explicit_types_are_inferred_for_common_expressions() {
 
 class Test {
   void m() {
-    Foo x = /*select*/new Foo()/*end*/;
+    Foo foo = null;
+    Foo x = /*select*/foo/*end*/;
   }
 }
 "#,
@@ -1747,7 +1738,8 @@ class Test {
 
 class Test {
   void m() {
-    Foo value = new Foo();
+    Foo foo = null;
+    Foo value = foo;
     Foo x = value;
   }
 }
@@ -3149,12 +3141,12 @@ fn extract_variable_rejects_method_call_expression() {
     .unwrap_err();
 
     assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "expression has side effects and cannot be extracted safely"
-        ),
-        "expected side-effect ExtractNotSupported error, got: {err:?}"
+        matches!(err, SemanticRefactorError::ExtractSideEffects),
+        "expected ExtractSideEffects error, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "expression has side effects and cannot be extracted safely"
     );
 }
 
@@ -3184,12 +3176,12 @@ fn extract_variable_rejects_new_expression() {
     .unwrap_err();
 
     assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "expression has side effects and cannot be extracted safely"
-        ),
-        "expected side-effect ExtractNotSupported error, got: {err:?}"
+        matches!(err, SemanticRefactorError::ExtractSideEffects),
+        "expected ExtractSideEffects error, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "expression has side effects and cannot be extracted safely"
     );
 }
 
@@ -4036,12 +4028,12 @@ fn extract_variable_allows_extraction_from_synchronized_lock_with_side_effects_i
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   void m() {
-    synchronized (/*select*/lock()/*end*/) {
+    Object lockObj = new Object();
+    synchronized (/*select*/lockObj/*end*/) {
       foo();
     }
   }
 
-  Object lock() { return new Object(); }
   void foo() {}
 }
 "#;
@@ -4054,7 +4046,7 @@ fn extract_variable_allows_extraction_from_synchronized_lock_with_side_effects_i
         ExtractVariableParams {
             file: file.clone(),
             expr_range,
-            name: "lockObj".into(),
+            name: "lockObj2".into(),
             use_var: false,
             replace_all: false,
         },
@@ -4064,13 +4056,13 @@ fn extract_variable_allows_extraction_from_synchronized_lock_with_side_effects_i
     let after = apply_text_edits(&src, &edit.text_edits).unwrap();
     let expected = r#"class Test {
   void m() {
-    Object lockObj = lock();
-    synchronized (lockObj) {
+    Object lockObj = new Object();
+    Object lockObj2 = lockObj;
+    synchronized (lockObj2) {
       foo();
     }
   }
 
-  Object lock() { return new Object(); }
   void foo() {}
 }
 "#;
