@@ -8623,6 +8623,25 @@ fn infer_receiver(
         );
     }
 
+    // `this.<member>` / `super.<member>` should resolve to the current class or its direct
+    // superclass. Without this, we fall through to the "treat as a type reference" branch below
+    // and end up with `Type::Named("this")` / `Type::Named("super")`.
+    if receiver == "this" {
+        let Some(class) = enclosing_class(analysis, offset) else {
+            return (Type::Unknown, CallKind::Instance);
+        };
+        let ty = parse_source_type_in_context(types, file_ctx, class.name.as_str());
+        return (ty, CallKind::Instance);
+    }
+    if receiver == "super" {
+        let Some(class) = enclosing_class(analysis, offset) else {
+            return (Type::Unknown, CallKind::Instance);
+        };
+        let super_name = class.extends.as_deref().unwrap_or("Object");
+        let ty = parse_source_type_in_context(types, file_ctx, super_name);
+        return (ty, CallKind::Instance);
+    }
+
     if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
         return (
             parse_source_type_in_context(types, file_ctx, &var.ty),
