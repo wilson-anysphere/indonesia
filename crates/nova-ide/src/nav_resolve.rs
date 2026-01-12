@@ -1090,6 +1090,18 @@ fn is_constructor_type_context(text: &str, ident_span: Span) -> bool {
             break;
         }
 
+        // Explicit type arguments can also appear between `new` and the type:
+        // `new <T> Foo()`.
+        if bytes.get(j - 1) == Some(&b'>') {
+            let close_angle_idx = j - 1;
+            let open_angle_idx = match matching_open_angle(bytes, close_angle_idx) {
+                Some(idx) => idx,
+                None => return false,
+            };
+            i = open_angle_idx;
+            continue;
+        }
+
         // Skip a parenthesized annotation argument list, if present (`@Ann(...)`).
         if bytes.get(j - 1) == Some(&b')') {
             let close_paren_idx = j - 1;
