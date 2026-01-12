@@ -624,6 +624,44 @@ class C {
 }
 
 #[test]
+fn extract_method_allows_lambda_with_return() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/Runnable r = () -> { return; };/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        extracted();
+    }
+
+    private void extracted() {
+        Runnable r = () -> { return; };
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_rejects_yield_statement() {
     let fixture = r#"
 class C {

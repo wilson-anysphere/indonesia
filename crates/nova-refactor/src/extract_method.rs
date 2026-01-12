@@ -890,12 +890,12 @@ fn find_statement_selection(
             continue;
         }
 
-        let start_idx = stmts.iter().position(|stmt| {
-            non_trivia_range(stmt.syntax()).is_some_and(|range| range.start == selection.start)
-        });
-        let end_idx = stmts.iter().position(|stmt| {
-            non_trivia_range(stmt.syntax()).is_some_and(|range| range.end == selection.end)
-        });
+        let start_idx = stmts
+            .iter()
+            .position(|stmt| non_trivia_range(stmt.syntax()).is_some_and(|range| range.start == selection.start));
+        let end_idx = stmts
+            .iter()
+            .position(|stmt| non_trivia_range(stmt.syntax()).is_some_and(|range| range.end == selection.end));
         let (Some(start_idx), Some(end_idx)) = (start_idx, end_idx) else {
             continue;
         };
@@ -1048,11 +1048,21 @@ fn collect_control_flow_hazards(
     hazards: &mut Vec<ControlFlowHazard>,
     issues: &mut Vec<ExtractMethodIssue>,
 ) {
-    for stmt in selection_statements {
-        let stmts = std::iter::once(stmt.clone())
-            .chain(stmt.syntax().descendants().filter_map(ast::Statement::cast));
-        for nested in stmts {
-            match nested {
+    fn walk(
+        node: &nova_syntax::SyntaxNode,
+        selection: TextRange,
+        hazards: &mut Vec<ControlFlowHazard>,
+        issues: &mut Vec<ExtractMethodIssue>,
+    ) {
+        // Returns/break/continue/etc inside lambdas return from / target the lambda body, not the
+        // enclosing method. Skip descending into lambda bodies so statements that *contain* a
+        // lambda (e.g. `Runnable r = () -> { return; };`) don't get rejected.
+        if ast::LambdaExpression::can_cast(node.kind()) {
+            return;
+        }
+
+        if let Some(stmt) = ast::Statement::cast(node.clone()) {
+            match stmt {
                 ast::Statement::ReturnStatement(_) => {
                     push_hazard(hazards, ControlFlowHazard::Return);
                     issues.push(ExtractMethodIssue::IllegalControlFlow {
@@ -1076,18 +1086,15 @@ fn collect_control_flow_hazards(
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Break,
                         });
-                        continue;
-                    }
-
-                    let Some(target) = nearest_break_target(brk.syntax()) else {
-                        issues.push(ExtractMethodIssue::IllegalControlFlow {
-                            hazard: ControlFlowHazard::Break,
-                        });
-                        continue;
-                    };
-                    let target_range = syntax_range(target.syntax());
-                    if !(selection.start <= target_range.start && target_range.end <= selection.end)
-                    {
+                    } else if let Some(target) = nearest_break_target(brk.syntax()) {
+                        let target_range = syntax_range(target.syntax());
+                        if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                        {
+                            issues.push(ExtractMethodIssue::IllegalControlFlow {
+                                hazard: ControlFlowHazard::Break,
+                            });
+                        }
+                    } else {
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Break,
                         });
@@ -1100,18 +1107,15 @@ fn collect_control_flow_hazards(
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Continue,
                         });
-                        continue;
-                    }
-
-                    let Some(target) = nearest_continue_target(cont.syntax()) else {
-                        issues.push(ExtractMethodIssue::IllegalControlFlow {
-                            hazard: ControlFlowHazard::Continue,
-                        });
-                        continue;
-                    };
-                    let target_range = syntax_range(target.syntax());
-                    if !(selection.start <= target_range.start && target_range.end <= selection.end)
-                    {
+                    } else if let Some(target) = nearest_continue_target(cont.syntax()) {
+                        let target_range = syntax_range(target.syntax());
+                        if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                        {
+                            issues.push(ExtractMethodIssue::IllegalControlFlow {
+                                hazard: ControlFlowHazard::Continue,
+                            });
+                        }
+                    } else {
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Continue,
                         });
@@ -1120,6 +1124,14 @@ fn collect_control_flow_hazards(
                 _ => {}
             }
         }
+
+        for child in node.children() {
+            walk(&child, selection, hazards, issues);
+        }
+    }
+
+    for stmt in selection_statements {
+        walk(stmt.syntax(), selection, hazards, issues);
     }
 }
 
