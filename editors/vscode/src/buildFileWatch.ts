@@ -26,9 +26,15 @@ const BUILD_FILE_GLOBS: readonly string[] = [
   '**/WORKSPACE',
   '**/WORKSPACE.bazel',
   '**/MODULE.bazel',
+  '**/MODULE.bazel.lock',
   '**/BUILD',
   '**/BUILD.bazel',
+  '**/*.bzl',
   '**/.bazelrc',
+  '**/.bazelrc.*',
+  '**/.bazelversion',
+  '**/bazelisk.rc',
+  '**/.bazelignore',
   // Nova workspace config (optional)
   '**/.nova/**/*.toml',
 ];
