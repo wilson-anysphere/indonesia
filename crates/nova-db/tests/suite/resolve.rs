@@ -475,6 +475,98 @@ class C {
 }
 
 #[test]
+fn static_single_import_of_member_type_resolves_and_produces_no_diagnostic() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+package p;
+import static java.util.Map.Entry;
+
+class C {
+    Entry field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        diags.is_empty(),
+        "expected no import diagnostics for static member-type import, got {diags:?}"
+    );
+
+    let scopes = db.scope_graph(file);
+    let resolved = db.resolve_name(file, scopes.file_scope, Name::from("Entry"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "java.util.Map$Entry"
+        ))))
+    );
+}
+
+#[test]
+fn static_star_import_of_member_type_resolves_and_produces_no_diagnostic() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+package p;
+import static java.util.Map.*;
+
+class C {
+    Entry field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        diags.is_empty(),
+        "expected no import diagnostics for static on-demand member-type import, got {diags:?}"
+    );
+
+    let scopes = db.scope_graph(file);
+    let resolved = db.resolve_name(file, scopes.file_scope, Name::from("Entry"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "java.util.Map$Entry"
+        ))))
+    );
+}
+
+#[test]
 fn body_only_edit_does_not_recompute_resolution() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
