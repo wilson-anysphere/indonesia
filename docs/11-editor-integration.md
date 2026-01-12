@@ -443,9 +443,12 @@ framework-introspection endpoints. The canonical method list + JSON schemas are 
 (older servers) and degrade gracefully (some Nova builds report unknown custom methods as `-32601` or `-32602` with an
 “unknown (stateless) method” message).
 
+When available, clients may also pre-gate features using the server-advertised capability list
+`initializeResult.capabilities.experimental.nova.requests` (see `protocol-extensions.md`).
+
 The real VS Code UX in this repo is an Explorer tree view (`novaFrameworks`, labeled “Nova Frameworks”) that:
 
-- shows a flat list of discovered **web endpoints** (via `nova/web/endpoints`)
+- shows a flat list of discovered **web endpoints** (via `nova/web/endpoints`, with `nova/quarkus/endpoints` as an alias)
 - lets you click an endpoint to jump to the source file (best-effort)
 - exposes context menu actions (copy endpoint path, copy method+path, reveal in explorer). These are keyed off
   `TreeItem.contextValue` (e.g., `novaFrameworkEndpoint` for endpoints; `novaFrameworkBean` is reserved for bean nodes).
