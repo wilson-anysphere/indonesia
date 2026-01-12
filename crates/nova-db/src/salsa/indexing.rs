@@ -136,46 +136,79 @@ fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Project
 
     cancel::check_cancelled(db);
 
-    let file_fingerprints = db.project_file_fingerprints(project);
     let shard_count = DEFAULT_SHARD_COUNT;
 
     let persistence = db.persistence();
     let cache_dir = persistence.cache_dir();
 
-    let snapshot = cache_dir.map(|cache_dir| {
-        ProjectSnapshot::from_parts(
+    let can_warm_start = persistence.mode().allows_read() && cache_dir.is_some();
+
+    let mut path_to_file = BTreeMap::<String, FileId>::new();
+
+    let fast_snapshot = if can_warm_start {
+        let cache_dir = cache_dir.as_ref().expect("cache_dir checked above");
+        let mut fingerprints = BTreeMap::new();
+
+        for &file in db.project_files(project).iter() {
+            if !db.file_exists(file) {
+                continue;
+            }
+
+            let rel = db.file_rel_path(file);
+            let path = rel.as_ref().clone();
+            path_to_file.insert(path.clone(), file);
+
+            let full_path = cache_dir.project_root().join(&path);
+            let fp = Fingerprint::from_file_metadata(full_path)
+                .unwrap_or_else(|_| db.file_fingerprint(file).as_ref().clone());
+            fingerprints.insert(path, fp);
+        }
+
+        Some(ProjectSnapshot::from_parts(
             cache_dir.project_root().to_path_buf(),
             cache_dir.project_hash().clone(),
-            file_fingerprints.as_ref().clone(),
-        )
-    });
-
-    let loaded = if persistence.mode().allows_read() {
-        match (cache_dir, snapshot.as_ref()) {
-            (Some(cache_dir), Some(snapshot)) => {
-                match nova_index::load_sharded_index_archives(cache_dir, snapshot, shard_count) {
-                    Ok(Some(loaded)) => {
-                        db.record_disk_cache_hit("project_indexes");
-                        Some(loaded)
-                    }
-                    Ok(None) => {
-                        db.record_disk_cache_miss("project_indexes");
-                        None
-                    }
-                    Err(_) => {
-                        db.record_disk_cache_miss("project_indexes");
-                        None
-                    }
-                }
+            fingerprints,
+        ))
+    } else {
+        for &file in db.project_files(project).iter() {
+            if !db.file_exists(file) {
+                continue;
             }
-            _ => None,
+
+            let rel = db.file_rel_path(file);
+            path_to_file.insert(rel.as_ref().clone(), file);
+        }
+        None
+    };
+
+    let loaded = if can_warm_start {
+        let cache_dir = cache_dir.as_ref().expect("cache_dir checked above");
+        let fast_snapshot = fast_snapshot.as_ref().expect("snapshot built above");
+
+        match nova_index::load_sharded_index_archives_from_fast_snapshot(
+            cache_dir,
+            fast_snapshot,
+            shard_count,
+        ) {
+            Ok(Some(loaded)) => {
+                db.record_disk_cache_hit("project_indexes");
+                Some(loaded)
+            }
+            Ok(None) => {
+                db.record_disk_cache_miss("project_indexes");
+                None
+            }
+            Err(_) => {
+                db.record_disk_cache_miss("project_indexes");
+                None
+            }
         }
     } else {
         None
     };
 
     let mut shards = vec![ProjectIndexes::default(); shard_count as usize];
-    let mut invalidated_files: Vec<String> = file_fingerprints.keys().cloned().collect();
+    let mut invalidated_files: Vec<String> = path_to_file.keys().cloned().collect();
 
     if let Some(loaded) = loaded {
         let mut loaded_shards = Vec::with_capacity(shard_count as usize);
@@ -229,31 +262,17 @@ fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Project
         }
     }
 
-    // Remove stale results for invalidated (new/modified/deleted) files before re-indexing.
-    for path in &invalidated_files {
-        let shard = shard_id_for_path(path, shard_count) as usize;
-        if let Some(indexes) = shards.get_mut(shard) {
-            indexes.invalidate_file(path);
-        }
-    }
-
-    // Warm-start: only (re)index files that are new/changed since the persisted metadata.
-    let mut path_to_file = BTreeMap::<String, FileId>::new();
-    for &file in db.project_files(project).iter() {
-        if !db.file_exists(file) {
-            continue;
-        }
-        let path = db.file_rel_path(file);
-        path_to_file.insert(path.as_ref().clone(), file);
-    }
-
+    // Reindex only invalidated files and update their target shards.
     for path in invalidated_files {
-        let Some(&file) = path_to_file.get(&path) else {
-            continue;
-        };
-        let delta = db.file_index_delta(file);
         let shard = shard_id_for_path(&path, shard_count) as usize;
-        shards[shard].merge_from((*delta).clone());
+        if let Some(indexes) = shards.get_mut(shard) {
+            indexes.invalidate_file(&path);
+
+            if let Some(&file) = path_to_file.get(&path) {
+                let delta = db.file_index_delta(file);
+                indexes.merge_from((*delta).clone());
+            }
+        }
     }
 
     // Persisted indexes carry an internal "generation" used for validation and

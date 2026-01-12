@@ -188,11 +188,11 @@ impl CacheMetadata {
 }
 fn compute_metadata_fingerprints(snapshot: &ProjectSnapshot) -> BTreeMap<String, Fingerprint> {
     let mut fingerprints = BTreeMap::new();
-    for path in snapshot.file_fingerprints().keys() {
+    for (path, content_fingerprint) in snapshot.file_fingerprints() {
         let full_path = snapshot.project_root().join(path);
-        if let Ok(fp) = Fingerprint::from_file_metadata(full_path) {
-            fingerprints.insert(path.clone(), fp);
-        }
+        let fingerprint = Fingerprint::from_file_metadata(full_path)
+            .unwrap_or_else(|_| content_fingerprint.clone());
+        fingerprints.insert(path.clone(), fingerprint);
     }
     fingerprints
 }
