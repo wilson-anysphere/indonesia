@@ -163,11 +163,11 @@ Two acceptable implementations:
 2. **A persistent interner outside Salsa**
     - A project-scoped interner stored as database state, updated only by the single writer thread.
     - Must preserve the same semantics as Salsa interning: same key ⇒ same id, never reused.
-   - **Implementation note (current repo):** Nova already uses this pattern for workspace *source*
-     types: `WorkspaceLoader` allocates stable ids and stores them in the input
-     `NovaInputs::project_class_ids` (see ADR 0012). Extending that registry to include
-     classpath/JDK types (or replacing it with a single `(ProjectId, binary_name)` interner) is a
-     plausible migration path toward a truly project-global type environment.
+    - **Implementation note (current repo):** Nova already uses this pattern for workspace *source*
+      types: `WorkspaceLoader` allocates stable ids and stores them in the input
+      `NovaInputs::project_class_ids` (see ADR 0012). Extending that registry to include
+      classpath/JDK types (or replacing it with a single canonical *class key* interner) is a
+      plausible migration path toward a truly project-global type environment.
 
 In this long-term model:
 
@@ -188,7 +188,8 @@ Summary:
 Pros:
 
 - Minimally invasive to current code (fits the existing `TypeStore` API).
-- Solves the immediate issue: “same binary name ⇒ same `ClassId` across bodies” (within a snapshot).
+- Solves the immediate issue: “same class key (often just the binary name) ⇒ same `ClassId` across
+  bodies” (within a snapshot).
 - Keeps type body loading on-demand.
 
 Cons / risks:
@@ -198,7 +199,7 @@ Cons / risks:
   invalidation. (This is acceptable as a short-term stopgap, but not ideal.)
 - Cloning a large store per body is likely too expensive without structural sharing.
 
-### B) True global interning keyed by `(ProjectId, binary_name)`
+### B) True global interning keyed by a canonical class key
 
 Summary:
 
@@ -223,7 +224,7 @@ Cons / risks:
 
 Positive:
 
-- Establishes a single, project-wide notion of “what class does this binary name refer to?”.
+- Establishes a single, project-wide notion of “what class does this name / class key refer to?”.
 - Enables cross-body caches keyed by `ClassId` (member lookup, subtype relations, method resolution).
 - Makes incremental semantic analysis feasible: edits should only invalidate affected queries, not
   everything downstream of “a new `TypeStore` was built”.
