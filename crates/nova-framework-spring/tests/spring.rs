@@ -208,6 +208,36 @@ fn autowired_method_param_injection_resolves() {
 }
 
 #[test]
+fn rest_controller_is_discovered_as_component() {
+    let foo = r#"
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Foo {}
+    "#;
+    let controller = r#"
+        import org.springframework.beans.factory.annotation.Autowired;
+        import org.springframework.web.bind.annotation.RestController;
+
+        @RestController
+        class Api {
+            @Autowired Foo foo;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[foo, controller]);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "unexpected diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    assert!(
+        analysis.model.beans.iter().any(|b| b.ty == "Api"),
+        "expected RestController to be discovered as a bean"
+    );
+}
+
+#[test]
 fn no_bean_diagnostic_triggers() {
     let bar = r#"
         import org.springframework.stereotype.Component;

@@ -520,6 +520,7 @@ fn parse_component_bean(
         "Service",
         "Repository",
         "Controller",
+        "RestController",
         "Configuration",
         "TestConfiguration",
         "SpringBootApplication",
