@@ -26,7 +26,9 @@ pub const SYNTAX_SCHEMA_VERSION: u32 = 2;
 /// wrong discriminants.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize_repr, Deserialize_repr,
+    rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
+#[archive(check_bytes)]
 #[repr(u16)]
 pub enum SyntaxKind {
     // --- Trivia ---

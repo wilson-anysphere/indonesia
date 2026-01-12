@@ -11,6 +11,7 @@ nova-core = { path = "../nova-core" }
 nova-types = { path = "../nova-types" }
 nova-memory = { path = "../nova-memory" }
 nova-vfs = { path = "../nova-vfs" }
+rkyv = { version = "0.7", features = ["validation"] }
 rowan = "0.15.17"
 text-size = "1.1.1"
 unicode-ident = "1"

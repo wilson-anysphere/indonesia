@@ -138,7 +138,22 @@ fn syntax_text_range(node: &SyntaxNode) -> TextRange {
 use serde::{Deserialize, Serialize};
 
 /// A half-open byte range within a source file (`start..end`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct TextRange {
     pub start: u32,
     pub end: u32,
@@ -197,7 +212,18 @@ impl TextEdit {
         self.replacement.len() as isize - self.range.len() as isize
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct GreenToken {
     pub kind: SyntaxKind,
     pub range: TextRange,
@@ -211,9 +237,20 @@ impl GreenToken {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub enum GreenChild {
-    Node(Box<GreenNode>),
+    Node(#[with(GreenNodeRkyvBox)] Box<GreenNode>),
     Token(GreenToken),
 }
 
@@ -228,7 +265,18 @@ impl GreenChild {
 }
 
 /// A green node is immutable and position-independent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct GreenNode {
     pub kind: SyntaxKind,
     pub text_len: u32,
@@ -246,13 +294,106 @@ impl GreenNode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(transparent)]
+struct ArchivedGreenNodeBox(rkyv::boxed::ArchivedBox<ArchivedGreenNode>);
+
+impl<C> rkyv::bytecheck::CheckBytes<C> for ArchivedGreenNodeBox
+where
+    C: rkyv::validation::ArchiveContext + ?Sized,
+    <C as rkyv::Fallible>::Error: std::error::Error,
+{
+    type Error =
+        <rkyv::boxed::ArchivedBox<ArchivedGreenNode> as rkyv::bytecheck::CheckBytes<C>>::Error;
+
+    unsafe fn check_bytes<'a>(
+        value: *const Self,
+        context: &mut C,
+    ) -> Result<&'a Self, Self::Error> {
+        <rkyv::boxed::ArchivedBox<ArchivedGreenNode> as rkyv::bytecheck::CheckBytes<C>>::check_bytes(
+            value.cast(),
+            context,
+        )?;
+        Ok(&*value)
+    }
+}
+
+/// Rkyv helper that archives `Box<GreenNode>` as an `ArchivedBox<ArchivedGreenNode>`.
+///
+/// This avoids a trait solver overflow when deriving `rkyv` traits for recursive green tree
+/// structures (`GreenChild` <-> `GreenNode`).
+struct GreenNodeRkyvBox;
+
+impl rkyv::with::ArchiveWith<Box<GreenNode>> for GreenNodeRkyvBox {
+    type Archived = ArchivedGreenNodeBox;
+    type Resolver = rkyv::boxed::BoxResolver<()>;
+
+    unsafe fn resolve_with(
+        field: &Box<GreenNode>,
+        pos: usize,
+        resolver: Self::Resolver,
+        out: *mut Self::Archived,
+    ) {
+        rkyv::boxed::ArchivedBox::resolve_from_ref(field.as_ref(), pos, resolver, out.cast());
+    }
+}
+
+impl<S> rkyv::with::SerializeWith<Box<GreenNode>, S> for GreenNodeRkyvBox
+where
+    S: rkyv::ser::ScratchSpace + rkyv::ser::Serializer + ?Sized,
+{
+    fn serialize_with(
+        field: &Box<GreenNode>,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        let pos = serializer.serialize_value(field.as_ref())?;
+        Ok(unsafe { rkyv::boxed::BoxResolver::from_raw_parts(pos, ()) })
+    }
+}
+
+impl<D> rkyv::with::DeserializeWith<ArchivedGreenNodeBox, Box<GreenNode>, D> for GreenNodeRkyvBox
+where
+    D: rkyv::Fallible + ?Sized,
+{
+    fn deserialize_with(
+        field: &ArchivedGreenNodeBox,
+        deserializer: &mut D,
+    ) -> Result<Box<GreenNode>, D::Error> {
+        Ok(Box::new(rkyv::Deserialize::<GreenNode, D>::deserialize(
+            field.0.as_ref(),
+            deserializer,
+        )?))
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct ParseError {
     pub message: String,
     pub range: TextRange,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct ParseResult {
     pub root: GreenNode,
     pub errors: Vec<ParseError>,

@@ -1,11 +1,11 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_expression, parse_java, parse_java_block_fragment,
+    lex, lex_with_errors, parse, parse_expression, parse_java, parse_java_block_fragment,
     parse_java_class_member_fragment, parse_java_expression, parse_java_expression_fragment,
     parse_java_statement_fragment, parse_java_with_options, reparse_java, AstNode, CompilationUnit,
-    ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective,
-    RequiresDirective, SyntaxKind, TextEdit, TextRange, UsesDirective,
+    ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ParseResult,
+    ProvidesDirective, RequiresDirective, SyntaxKind, TextEdit, TextRange, UsesDirective,
 };
 
 fn dump_tokens(input: &str) -> Vec<(SyntaxKind, String)> {
@@ -53,6 +53,24 @@ fn syntax_kind_helper_classification_smoke_test() {
     assert!(SyntaxKind::PlusEq.is_operator());
     assert!(SyntaxKind::LParen.is_separator());
     assert!(!SyntaxKind::Whitespace.is_keyword());
+}
+
+#[test]
+fn parse_result_rkyv_roundtrip_with_validation() {
+    use rkyv::Deserialize;
+
+    let result = parse("class A {}");
+    assert_eq!(result.errors, Vec::new());
+
+    let bytes = rkyv::to_bytes::<_, 256>(&result).expect("rkyv serialization should succeed");
+    let archived =
+        rkyv::check_archived_root::<ParseResult>(&bytes).expect("rkyv archive should validate");
+    let mut deserializer = rkyv::de::deserializers::SharedDeserializeMap::default();
+    let roundtripped: ParseResult = archived
+        .deserialize(&mut deserializer)
+        .expect("rkyv deserialization should succeed");
+
+    assert_eq!(roundtripped, result);
 }
 
 #[test]
