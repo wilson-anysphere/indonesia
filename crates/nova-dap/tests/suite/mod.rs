@@ -19,6 +19,7 @@ mod dap_java_launch;
 mod dap_launch;
 mod dap_launch_detach;
 mod dap_session;
+mod process_event;
 mod output_truncation;
 mod debugger_ux;
 mod enable_method_return_values;

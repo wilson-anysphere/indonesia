@@ -78,8 +78,7 @@ async fn dap_launch_emits_process_event() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task =
-        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -130,7 +129,10 @@ async fn dap_launch_emits_process_event() {
         .and_then(|v| v.as_object())
         .expect("process event missing body");
 
-    assert_eq!(body.get("startMethod").and_then(|v| v.as_str()), Some("launch"));
+    assert_eq!(
+        body.get("startMethod").and_then(|v| v.as_str()),
+        Some("launch")
+    );
     assert_eq!(
         body.get("isLocalProcess").and_then(|v| v.as_bool()),
         Some(true)
@@ -200,8 +202,7 @@ async fn dap_attach_emits_process_event() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task =
-        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
