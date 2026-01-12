@@ -147,6 +147,7 @@ fn trigrams_with_unicode_buf(text: &str, out: &mut Vec<Trigram>, buf: &mut Strin
     use unicode_normalization::UnicodeNormalization;
 
     buf.clear();
+    buf.reserve(text.len());
     buf.extend(text.nfkc().case_fold());
 
     // If normalization+casefolding produces pure ASCII (e.g. "Straße" → "strasse"),
@@ -156,6 +157,10 @@ fn trigrams_with_unicode_buf(text: &str, out: &mut Vec<Trigram>, buf: &mut Strin
         return;
     }
 
+    // Use the UTF-8 length as an upper bound for the number of Unicode scalar
+    // values. Reserving this avoids repeated growth reallocations when indexing
+    // strings containing non-ASCII characters.
+    out.reserve(buf.len().saturating_sub(2));
     trigrams_unicode_chars(buf.chars(), out);
 }
 
