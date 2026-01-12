@@ -13,7 +13,7 @@ fn write(path: &Path, contents: &str) {
 }
 
 #[test]
-fn maven_project_omits_missing_dependency_jars_from_classpath() {
+fn maven_project_synthesizes_missing_dependency_jars_on_classpath() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -56,23 +56,23 @@ fn maven_project_omits_missing_dependency_jars_from_classpath() {
     let config = load_project_with_options(root, &options).expect("load maven project");
 
     assert!(
-        !config
+        config
             .classpath
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "missing jar should not be added to classpath"
+        "expected missing jar path to be synthesized onto classpath"
     );
     assert!(
         !config
             .module_path
             .iter()
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-        "missing jar should not be added to module-path"
+        "missing jar should not be added to module-path for non-JPMS projects"
     );
 }
 
 #[test]
-fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
+fn maven_workspace_model_synthesizes_missing_dependency_jars_for_modules() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -117,11 +117,11 @@ fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
 
     for module in &model.modules {
         assert!(
-            !module
+            module
                 .classpath
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "missing jar should not be added to module classpath ({})",
+            "expected missing jar path to be synthesized onto module classpath ({})",
             module.id
         );
         assert!(
@@ -129,14 +129,14 @@ fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
                 .module_path
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
-            "missing jar should not be added to module module-path ({})",
+            "missing jar should not be added to module-path for non-JPMS modules ({})",
             module.id
         );
     }
 }
 
 #[test]
-fn maven_project_accepts_exploded_dependency_directory_as_jar() {
+fn maven_project_accepts_exploded_dependency_directory_as_classpath_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -180,8 +180,8 @@ fn maven_project_accepts_exploded_dependency_directory_as_jar() {
         config
             .classpath
             .iter()
-            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
-        "exploded jar directory should be added to classpath"
+            .any(|e| e.kind == ClasspathEntryKind::Directory && e.path == expected_jar_dir),
+        "expected exploded jar directory to be added to classpath as a Directory entry"
     );
     assert!(
         !config
@@ -193,7 +193,7 @@ fn maven_project_accepts_exploded_dependency_directory_as_jar() {
 }
 
 #[test]
-fn maven_workspace_model_accepts_exploded_dependency_directory_as_jar() {
+fn maven_workspace_model_accepts_exploded_dependency_directory_as_classpath_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -239,8 +239,8 @@ fn maven_workspace_model_accepts_exploded_dependency_directory_as_jar() {
             module
                 .classpath
                 .iter()
-                .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar_dir),
-            "exploded jar directory should be added to module classpath ({})",
+                .any(|e| e.kind == ClasspathEntryKind::Directory && e.path == expected_jar_dir),
+            "expected exploded jar directory to be added to module classpath as a Directory entry ({})",
             module.id
         );
         assert!(
