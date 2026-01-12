@@ -59,6 +59,9 @@ fn assert_all_newlines_are_crlf(text: &str) {
     }
 }
 
+const EXTRACT_VARIABLE_EVAL_ORDER_GUARD_REASON: &str =
+    "cannot extract because it may change evaluation order";
+
 #[test]
 fn rename_updates_all_occurrences_not_strings() {
     let file = FileId::new("Test.java");
@@ -1963,7 +1966,7 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
     let (src, expr_range) = extract_range(fixture);
     let db = TextDatabase::new([(file.clone(), src.clone())]);
 
-    let err = extract_variable(
+    let edit = extract_variable(
         &db,
         ExtractVariableParams {
             file: file.clone(),
@@ -1973,10 +1976,17 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
             replace_all: false,
         },
     )
-    .unwrap_err();
-    let SemanticRefactorError::TypeInferenceFailed = err else {
-        panic!("expected TypeInferenceFailed, got: {err:?}");
-    };
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("tmp = 1 + foo(\"x\");"),
+        "expected extraction of `1 + foo(\\\"x\\\")`: {after}"
+    );
+    assert!(
+        !after.contains("String tmp"),
+        "expected `tmp` to not be inferred as String: {after}"
+    );
 }
 
 #[test]
@@ -2016,6 +2026,155 @@ fn extract_variable_trims_whitespace_in_selection_range() {
 }
 "#;
     assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_rejects_when_other_side_effects_exist_outside_selection() {
+    let file = FileId::new("Test.java");
+    let (src, expr_range) = strip_selection_markers(
+        r#"class Test {
+  int foo() { return 1; }
+  int bar() { return 2; }
+  void m() {
+    int y = foo() + /*select*/bar()/*end*/;
+  }
+}
+"#,
+    );
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == EXTRACT_VARIABLE_EVAL_ORDER_GUARD_REASON
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_when_inc_dec_outside_selection() {
+    let file = FileId::new("Test.java");
+    let (src, expr_range) = strip_selection_markers(
+        r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int[] arr = new int[1];
+    int i = 0;
+    arr[i++] = /*select*/foo()/*end*/;
+  }
+}
+"#,
+    );
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == EXTRACT_VARIABLE_EVAL_ORDER_GUARD_REASON
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_when_only_side_effect_is_inside_selection() {
+    let file = FileId::new("Test.java");
+    let (src, expr_range) = strip_selection_markers(
+        r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int y = /*select*/foo()/*end*/ + 1;
+  }
+}
+"#,
+    );
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: false,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("int tmp = foo();"),
+        "expected extracted declaration: {after}"
+    );
+    assert!(
+        after.contains("int y = tmp + 1;"),
+        "expected replaced usage: {after}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_pure_arithmetic_extraction_in_binary_expression() {
+    let file = FileId::new("Test.java");
+    let (src, expr_range) = strip_selection_markers(
+        r#"class Test {
+  void m() {
+    int x = 0;
+    int y = x + /*select*/(1 + 2)/*end*/;
+  }
+}
+"#,
+    );
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("var sum = (1 + 2);"),
+        "expected extracted declaration: {after}"
+    );
+    assert!(
+        after.contains("int y = x + sum;"),
+        "expected replaced usage: {after}"
+    );
 }
 
 #[test]

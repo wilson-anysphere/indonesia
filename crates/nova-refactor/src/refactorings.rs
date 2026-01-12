@@ -1122,10 +1122,12 @@ pub fn extract_variable(
 
     // Extracting a side-effectful expression into a new statement can change evaluation order or
     // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    if has_side_effects(expr.syntax()) {
+    //
+    // For explicit-typed extraction we allow side-effectful expressions as a best-effort fallback,
+    // since many common selections (`new Foo()`) would otherwise be rejected entirely.
+    if params.use_var && has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractSideEffects);
     }
-
     let stmt = expr
         .syntax()
         .ancestors()
@@ -1570,7 +1572,6 @@ fn simple_name_from_name_expression(expr: &ast::NameExpression) -> Option<String
 
     name
 }
-
 pub struct InlineVariableParams {
     pub symbol: SymbolId,
     pub inline_all: bool,
@@ -5124,7 +5125,6 @@ fn has_order_sensitive_expr_outside_selection(
 fn ranges_disjoint(a: TextRange, b: TextRange) -> bool {
     a.end <= b.start || b.end <= a.start
 }
-
 fn contains_range(outer: TextRange, inner: TextRange) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
