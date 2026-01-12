@@ -9,6 +9,7 @@ pub mod text;
 
 pub mod fs;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -264,14 +265,6 @@ impl fmt::Debug for StaticMemberId {
 ///
 /// This is intentionally minimal for now, but avoids confusion with
 /// `nova_project::ProjectConfig` (the build graph + source roots).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JdkToolchain {
-    /// Java feature release associated with this toolchain (e.g. 8, 17, 21).
-    pub release: u16,
-    /// Root directory of the JDK installation to use for this release.
-    pub home: PathBuf,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct JdkConfig {
     /// Optional override for the JDK installation to use.
@@ -283,21 +276,15 @@ pub struct JdkConfig {
 
     /// Per-release JDK installation overrides.
     ///
-    /// When the requested API release matches a toolchain's `release`, Nova should prefer the
-    /// associated `home` over any other discovered installation.
-    pub toolchains: Vec<JdkToolchain>,
+    /// Keys are Java release numbers (e.g. 8, 11, 17). When multiple toolchains are configured
+    /// for the same release in a higher-level config, the last one wins.
+    pub toolchains: BTreeMap<u16, PathBuf>,
 }
 
 impl JdkConfig {
     /// Returns the configured toolchain home for `release` if one exists.
-    ///
-    /// If multiple toolchains share the same release, the **last** one wins.
     pub fn toolchain_home_for_release(&self, release: u16) -> Option<&PathBuf> {
-        self.toolchains
-            .iter()
-            .rev()
-            .find(|toolchain| toolchain.release == release)
-            .map(|toolchain| &toolchain.home)
+        self.toolchains.get(&release)
     }
 
     /// Returns the preferred JDK home for the requested API release.
@@ -320,51 +307,40 @@ mod jdk_config_tests {
 
     #[test]
     fn prefers_matching_toolchain_over_default_home() {
+        let default_jdk = PathBuf::from("/default-jdk");
+        let jdk_8 = PathBuf::from("/jdk-8");
+        let jdk_17 = PathBuf::from("/jdk-17");
+
         let cfg = JdkConfig {
-            home: Some(PathBuf::from("/default-jdk")),
+            home: Some(default_jdk.clone()),
             release: Some(17),
-            toolchains: vec![
-                JdkToolchain {
-                    release: 8,
-                    home: PathBuf::from("/jdk-8"),
-                },
-                JdkToolchain {
-                    release: 17,
-                    home: PathBuf::from("/jdk-17"),
-                },
-            ],
+            toolchains: [(8u16, jdk_8.clone()), (17u16, jdk_17.clone())]
+                .into_iter()
+                .collect(),
         };
 
-        assert_eq!(cfg.preferred_home(None), Some(&PathBuf::from("/jdk-17")));
-        assert_eq!(cfg.preferred_home(Some(8)), Some(&PathBuf::from("/jdk-8")));
-        assert_eq!(
-            cfg.preferred_home(Some(11)),
-            Some(&PathBuf::from("/default-jdk"))
-        );
+        assert_eq!(cfg.preferred_home(None), Some(&jdk_17));
+        assert_eq!(cfg.preferred_home(Some(8)), Some(&jdk_8));
+        assert_eq!(cfg.preferred_home(Some(11)), Some(&default_jdk));
     }
 
     #[test]
     fn last_toolchain_wins_for_duplicate_releases() {
+        let jdk_17_a = PathBuf::from("/jdk-17-a");
+        let jdk_17_b = PathBuf::from("/jdk-17-b");
+
+        let mut toolchains: BTreeMap<u16, PathBuf> = BTreeMap::new();
+        toolchains.insert(17, jdk_17_a);
+        toolchains.insert(17, jdk_17_b.clone());
+
         let cfg = JdkConfig {
             home: None,
             release: Some(17),
-            toolchains: vec![
-                JdkToolchain {
-                    release: 17,
-                    home: PathBuf::from("/jdk-17-a"),
-                },
-                JdkToolchain {
-                    release: 17,
-                    home: PathBuf::from("/jdk-17-b"),
-                },
-            ],
+            toolchains,
         };
 
-        assert_eq!(
-            cfg.toolchain_home_for_release(17),
-            Some(&PathBuf::from("/jdk-17-b"))
-        );
-        assert_eq!(cfg.preferred_home(None), Some(&PathBuf::from("/jdk-17-b")));
+        assert_eq!(cfg.toolchain_home_for_release(17), Some(&jdk_17_b));
+        assert_eq!(cfg.preferred_home(None), Some(&jdk_17_b));
     }
 }
 

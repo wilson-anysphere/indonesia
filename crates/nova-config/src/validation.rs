@@ -118,43 +118,31 @@ fn validate_jdk(
     }
 
     let base_dir = ctx.base_dir();
-    let mut seen_releases = std::collections::HashMap::<u16, String>::new();
+    let mut seen_releases = std::collections::HashMap::<u16, usize>::new();
 
-    for (release_key, home) in &config.jdk.toolchains {
-        let toml_path = format!("jdk.toolchains.{release_key}");
-        let release = match release_key.parse::<u16>() {
-            Ok(release) => release,
-            Err(_) => {
-                out.warnings.push(ConfigWarning::InvalidValue {
-                    toml_path,
-                    message: "release key must be numeric; entry will be ignored".to_string(),
-                });
-                continue;
-            }
-        };
-
-        if release == 0 {
+    for (idx, toolchain) in config.jdk.toolchains.iter().enumerate() {
+        if toolchain.release == 0 {
             out.errors.push(ConfigValidationError::InvalidValue {
-                toml_path,
+                toml_path: format!("jdk.toolchains[{idx}].release"),
                 message: "must be >= 1".to_string(),
             });
             continue;
         }
 
-        if let Some(prev) = seen_releases.insert(release, release_key.clone()) {
-            // Note: toolchains are deserialized into an insertion-ordered map, so later entries in
-            // the TOML file win.
+        if let Some(prev_idx) = seen_releases.insert(toolchain.release, idx) {
             out.warnings.push(ConfigWarning::InvalidValue {
-                toml_path: toml_path.clone(),
+                toml_path: format!("jdk.toolchains[{idx}].release"),
                 message: format!(
-                    "duplicate toolchain release {release} (overwriting key `{prev}`)"
+                    "duplicate toolchain release {} (overwriting entry at index {prev_idx})",
+                    toolchain.release
                 ),
             });
         }
 
+        let home = &toolchain.home;
         if home.as_os_str().is_empty() {
             out.errors.push(ConfigValidationError::InvalidValue {
-                toml_path,
+                toml_path: format!("jdk.toolchains[{idx}].home"),
                 message: "must be non-empty".to_string(),
             });
             continue;
@@ -170,12 +158,12 @@ fn validate_jdk(
 
         if !resolved.exists() {
             out.errors.push(ConfigValidationError::InvalidValue {
-                toml_path,
+                toml_path: format!("jdk.toolchains[{idx}].home"),
                 message: format!("path does not exist: {}", resolved.display()),
             });
         } else if !resolved.is_dir() {
             out.errors.push(ConfigValidationError::InvalidValue {
-                toml_path,
+                toml_path: format!("jdk.toolchains[{idx}].home"),
                 message: format!("path is not a directory: {}", resolved.display()),
             });
         }

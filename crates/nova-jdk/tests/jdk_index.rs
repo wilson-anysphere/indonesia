@@ -7,8 +7,7 @@ use std::time::Duration;
 use nova_classfile::ClassFile;
 use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
 use nova_jdk::{
-    internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkIndexBacking,
-    JdkInstallation,
+    internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkIndexBacking, JdkInstallation,
 };
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
@@ -545,10 +544,9 @@ fn discovery_prefers_toolchain_for_configured_release() -> Result<(), Box<dyn st
     let cfg = JdkConfig {
         home: Some(fake_jdk_root()),
         release: Some(17),
-        toolchains: vec![nova_core::JdkToolchain {
-            release: 17,
-            home: toolchain_root.to_path_buf(),
-        }],
+        toolchains: [(17u16, toolchain_root.to_path_buf())]
+            .into_iter()
+            .collect(),
     };
 
     let install = JdkInstallation::discover(Some(&cfg))?;
@@ -573,10 +571,7 @@ fn discovery_for_release_prefers_requested_toolchain() -> Result<(), Box<dyn std
     let cfg = JdkConfig {
         home: Some(fake_jdk_root()),
         release: None,
-        toolchains: vec![nova_core::JdkToolchain {
-            release: 8,
-            home: toolchain_root.to_path_buf(),
-        }],
+        toolchains: [(8u16, toolchain_root.to_path_buf())].into_iter().collect(),
     };
 
     let install = JdkInstallation::discover_for_release(Some(&cfg), Some(8))?;
@@ -593,10 +588,7 @@ fn jdk_index_discover_for_release_prefers_requested_toolchain(
     let cfg = JdkConfig {
         home: Some(fake_jdk_root()),
         release: None,
-        toolchains: vec![nova_core::JdkToolchain {
-            release: 8,
-            home: fake_jdk8_root(),
-        }],
+        toolchains: [(8u16, fake_jdk8_root())].into_iter().collect(),
     };
 
     let index = JdkIndex::discover_for_release(Some(&cfg), Some(8))?;
@@ -617,10 +609,7 @@ fn jdk_index_discover_sets_api_release_from_config() -> Result<(), Box<dyn std::
     let cfg = JdkConfig {
         home: Some(fake_jdk_root()),
         release: Some(8),
-        toolchains: vec![nova_core::JdkToolchain {
-            release: 8,
-            home: fake_jdk8_root(),
-        }],
+        toolchains: [(8u16, fake_jdk8_root())].into_iter().collect(),
     };
 
     let index = JdkIndex::discover(Some(&cfg))?;

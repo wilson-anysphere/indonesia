@@ -626,7 +626,7 @@ expression: schema
       "default": {
         "home": null,
         "release": null,
-        "toolchains": {}
+        "toolchains": []
       },
       "allOf": [
         {
@@ -1333,17 +1333,33 @@ expression: schema
           "minimum": 1.0
         },
         "toolchains": {
-          "description": "Per-release JDK installation overrides.\n\nThe TOML representation is a table mapping `release -> jdk_home`: ```toml [jdk] toolchains = { \"8\" = \"/opt/jdks/jdk8\", \"17\" = \"/opt/jdks/jdk-17\" } ```",
-          "default": {},
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          },
-          "propertyNames": {
-            "type": "string",
-            "pattern": "^(0*[1-9][0-9]*)$"
+          "description": "Optional per-`--release` toolchains.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/JdkToolchainConfig"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "JdkToolchainConfig": {
+      "type": "object",
+      "required": [
+        "home",
+        "release"
+      ],
+      "properties": {
+        "home": {
+          "description": "Root directory of the JDK installation to use for this release.",
+          "type": "string",
+          "minLength": 1
+        },
+        "release": {
+          "description": "Java feature release associated with this toolchain (e.g. 8, 17, 21).",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1.0
         }
       },
       "additionalProperties": false

@@ -447,19 +447,19 @@ fn json_schema_requires_positive_jdk_release() {
 }
 
 #[test]
-fn json_schema_requires_numeric_jdk_toolchain_keys_and_non_empty_values() {
+fn json_schema_requires_positive_jdk_toolchain_release_and_non_empty_home() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");
 
     assert_eq!(
         value
-            .pointer("/definitions/JdkConfig/properties/toolchains/propertyNames/pattern")
-            .and_then(|v| v.as_str()),
-        Some("^(0*[1-9][0-9]*)$")
+            .pointer("/definitions/JdkToolchainConfig/properties/release/minimum")
+            .and_then(|v| v.as_f64()),
+        Some(1.0)
     );
     assert_eq!(
         value
-            .pointer("/definitions/JdkConfig/properties/toolchains/additionalProperties/minLength")
+            .pointer("/definitions/JdkToolchainConfig/properties/home/minLength")
             .and_then(|v| v.as_u64()),
         Some(1)
     );

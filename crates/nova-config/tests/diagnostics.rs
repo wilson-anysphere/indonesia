@@ -937,26 +937,6 @@ home = "{}"
 }
 
 #[test]
-fn warns_when_jdk_toolchain_release_key_is_not_numeric() {
-    let text = r#"
-[jdk]
-toolchains = { "bogus" = "/tmp/jdk" }
-"#;
-
-    let (_config, diagnostics) =
-        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
-
-    assert!(diagnostics.errors.is_empty());
-    assert_eq!(
-        diagnostics.warnings,
-        vec![ConfigWarning::InvalidValue {
-            toml_path: "jdk.toolchains.bogus".to_string(),
-            message: "release key must be numeric; entry will be ignored".to_string(),
-        }]
-    );
-}
-
-#[test]
 fn warns_when_jdk_toolchain_release_is_duplicated() {
     let dir = tempdir().expect("tempdir");
     let first = dir.path().join("first");
@@ -967,7 +947,14 @@ fn warns_when_jdk_toolchain_release_is_duplicated() {
     let text = format!(
         r#"
 [jdk]
-toolchains = {{ "08" = "{}", "8" = "{}" }}
+
+[[jdk.toolchains]]
+release = 8
+home = "{}"
+
+[[jdk.toolchains]]
+release = 8
+home = "{}"
 "#,
         first.display(),
         second.display()
@@ -980,8 +967,8 @@ toolchains = {{ "08" = "{}", "8" = "{}" }}
     assert_eq!(
         diagnostics.warnings,
         vec![ConfigWarning::InvalidValue {
-            toml_path: "jdk.toolchains.8".to_string(),
-            message: "duplicate toolchain release 8 (overwriting key `08`)".to_string(),
+            toml_path: "jdk.toolchains[1].release".to_string(),
+            message: "duplicate toolchain release 8 (overwriting entry at index 0)".to_string(),
         }]
     );
 }
@@ -995,7 +982,10 @@ fn validates_jdk_toolchain_release_is_positive() {
     let text = format!(
         r#"
 [jdk]
-toolchains = {{ "0" = "{}" }}
+
+[[jdk.toolchains]]
+release = 0
+home = "{}"
 "#,
         toolchain_dir.display()
     );
@@ -1007,7 +997,7 @@ toolchains = {{ "0" = "{}" }}
     assert_eq!(
         diagnostics.errors,
         vec![ConfigValidationError::InvalidValue {
-            toml_path: "jdk.toolchains.0".to_string(),
+            toml_path: "jdk.toolchains[0].release".to_string(),
             message: "must be >= 1".to_string(),
         }]
     );
@@ -1020,7 +1010,10 @@ fn validates_jdk_toolchain_home_exists() {
     let text = format!(
         r#"
 [jdk]
-toolchains = {{ "17" = "{}" }}
+
+[[jdk.toolchains]]
+release = 17
+home = "{}"
 "#,
         missing.display()
     );
@@ -1031,7 +1024,7 @@ toolchains = {{ "17" = "{}" }}
     assert_eq!(
         diagnostics.errors,
         vec![ConfigValidationError::InvalidValue {
-            toml_path: "jdk.toolchains.17".to_string(),
+            toml_path: "jdk.toolchains[0].home".to_string(),
             message: format!("path does not exist: {}", missing.display()),
         }]
     );
@@ -1046,7 +1039,10 @@ fn validates_jdk_toolchain_home_is_directory() {
     let text = format!(
         r#"
 [jdk]
-toolchains = {{ "17" = "{}" }}
+
+[[jdk.toolchains]]
+release = 17
+home = "{}"
 "#,
         file_path.display()
     );
@@ -1057,7 +1053,7 @@ toolchains = {{ "17" = "{}" }}
     assert_eq!(
         diagnostics.errors,
         vec![ConfigValidationError::InvalidValue {
-            toml_path: "jdk.toolchains.17".to_string(),
+            toml_path: "jdk.toolchains[0].home".to_string(),
             message: format!("path is not a directory: {}", file_path.display()),
         }]
     );

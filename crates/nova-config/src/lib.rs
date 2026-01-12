@@ -1,4 +1,3 @@
-use indexmap::IndexMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -44,6 +43,17 @@ pub struct GeneratedSourcesConfig {
     pub override_roots: Option<Vec<PathBuf>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct JdkToolchainConfig {
+    /// Java feature release associated with this toolchain (e.g. 8, 17, 21).
+    pub release: u16,
+
+    /// Root directory of the JDK installation to use for this release.
+    #[schemars(with = "String")]
+    pub home: PathBuf,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[schemars(deny_unknown_fields)]
 pub struct JdkConfig {
@@ -60,16 +70,9 @@ pub struct JdkConfig {
     #[serde(default, alias = "target_release")]
     pub release: Option<u16>,
 
-    /// Per-release JDK installation overrides.
-    ///
-    /// The TOML representation is a table mapping `release -> jdk_home`:
-    /// ```toml
-    /// [jdk]
-    /// toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
-    /// ```
+    /// Optional per-`--release` toolchains.
     #[serde(default)]
-    #[schemars(with = "BTreeMap<String, String>")]
-    pub toolchains: IndexMap<String, PathBuf>,
+    pub toolchains: Vec<JdkToolchainConfig>,
 }
 
 fn default_generated_sources_enabled() -> bool {
@@ -1167,39 +1170,28 @@ impl NovaConfig {
     }
 
     pub fn jdk_config(&self) -> nova_core::JdkConfig {
-        // Toolchains are represented in TOML as a map whose keys are releases. Invalid keys are
-        // ignored with a warning instead of failing config parsing, since the rest of the config
-        // may still be usable.
-        //
-        // If multiple keys parse to the same numeric release (for example `"8"` and `"08"`), the
-        // last one processed wins (which is the last one specified in the TOML file).
-        let mut toolchains_by_release: BTreeMap<u16, PathBuf> = BTreeMap::new();
-        for (release_key, home) in &self.jdk.toolchains {
-            match release_key.parse::<u16>() {
-                Ok(0) => {
-                    tracing::warn!(
-                        target: "nova.config",
-                        key = %release_key,
-                        "ignoring JDK toolchain release key 0 (must be >= 1)"
-                    );
-                }
-                Ok(release) => {
-                    toolchains_by_release.insert(release, home.clone());
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        target: "nova.config",
-                        key = %release_key,
-                        "ignoring non-numeric JDK toolchain release key"
-                    );
-                }
+        let mut toolchains: BTreeMap<u16, PathBuf> = BTreeMap::new();
+        for toolchain in &self.jdk.toolchains {
+            if toolchain.release == 0 {
+                tracing::warn!(
+                    target: "nova.config",
+                    "ignoring JDK toolchain release 0 (must be >= 1)"
+                );
+                continue;
+            }
+
+            if toolchains
+                .insert(toolchain.release, toolchain.home.clone())
+                .is_some()
+            {
+                tracing::warn!(
+                    target: "nova.config",
+                    release = toolchain.release,
+                    "duplicate JDK toolchain configured for --release {}; last entry wins",
+                    toolchain.release
+                );
             }
         }
-
-        let toolchains = toolchains_by_release
-            .into_iter()
-            .map(|(release, home)| nova_core::JdkToolchain { release, home })
-            .collect();
 
         nova_core::JdkConfig {
             home: self.jdk.home.clone(),
@@ -1935,13 +1927,20 @@ target_release = 11
     }
 
     #[test]
-    fn toml_jdk_toolchains_table_parses_into_core_config() {
+    fn toml_jdk_toolchains_list_parses_into_core_config() {
         let config: NovaConfig = toml::from_str(
             r#"
 [jdk]
 home = "/opt/jdks/jdk-21"
 release = 17
-toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
+
+[[jdk.toolchains]]
+release = 8
+home = "/opt/jdks/jdk8"
+
+[[jdk.toolchains]]
+release = 17
+home = "/opt/jdks/jdk-17"
 "#,
         )
         .expect("config should parse");
@@ -1949,83 +1948,36 @@ toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
         let jdk = config.jdk_config();
         assert_eq!(jdk.home, Some(PathBuf::from("/opt/jdks/jdk-21")));
         assert_eq!(jdk.release, Some(17));
-        assert_eq!(
-            jdk.toolchains,
-            vec![
-                nova_core::JdkToolchain {
-                    release: 8,
-                    home: PathBuf::from("/opt/jdks/jdk8")
-                },
-                nova_core::JdkToolchain {
-                    release: 17,
-                    home: PathBuf::from("/opt/jdks/jdk-17")
-                },
-            ]
-        );
+        let expected: BTreeMap<u16, PathBuf> = [
+            (8u16, PathBuf::from("/opt/jdks/jdk8")),
+            (17u16, PathBuf::from("/opt/jdks/jdk-17")),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(jdk.toolchains, expected);
     }
 
     #[test]
-    fn toml_jdk_toolchains_table_accepts_bare_numeric_keys() {
+    fn toml_jdk_toolchains_duplicate_release_last_wins() {
         let config: NovaConfig = toml::from_str(
             r#"
 [jdk]
-toolchains = { 8 = "/opt/jdks/jdk8", 17 = "/opt/jdks/jdk-17" }
+
+[[jdk.toolchains]]
+release = 8
+home = "/opt/jdks/jdk8-a"
+
+[[jdk.toolchains]]
+release = 8
+home = "/opt/jdks/jdk8-b"
 "#,
         )
         .expect("config should parse");
 
-        assert_eq!(
-            config.jdk_config().toolchains,
-            vec![
-                nova_core::JdkToolchain {
-                    release: 8,
-                    home: PathBuf::from("/opt/jdks/jdk8")
-                },
-                nova_core::JdkToolchain {
-                    release: 17,
-                    home: PathBuf::from("/opt/jdks/jdk-17")
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn toml_jdk_toolchains_invalid_key_is_ignored() {
-        let config: NovaConfig = toml::from_str(
-            r#"
-[jdk]
-toolchains = { "bogus" = "/opt/jdks/bogus", "17" = "/opt/jdks/jdk-17" }
-"#,
-        )
-        .expect("config should parse");
-
-        let jdk = config.jdk_config();
-        assert_eq!(
-            jdk.toolchains,
-            vec![nova_core::JdkToolchain {
-                release: 17,
-                home: PathBuf::from("/opt/jdks/jdk-17")
-            }]
-        );
-    }
-
-    #[test]
-    fn toml_jdk_toolchains_duplicate_numeric_release_last_wins() {
-        let config: NovaConfig = toml::from_str(
-            r#"
-[jdk]
-toolchains = { "8" = "/opt/jdks/jdk8-a", "08" = "/opt/jdks/jdk8-b" }
-"#,
-        )
-        .expect("config should parse");
-
-        assert_eq!(
-            config.jdk_config().toolchains,
-            vec![nova_core::JdkToolchain {
-                release: 8,
-                home: PathBuf::from("/opt/jdks/jdk8-b"),
-            }]
-        );
+        let expected: BTreeMap<u16, PathBuf> = [(8u16, PathBuf::from("/opt/jdks/jdk8-b"))]
+            .into_iter()
+            .collect();
+        assert_eq!(config.jdk_config().toolchains, expected);
     }
 
     #[test]
@@ -2040,6 +1992,9 @@ query_cache_bytes = "512M"
         let overrides = config.memory_budget_overrides();
 
         assert_eq!(overrides.total, Some(nova_memory::GB));
-        assert_eq!(overrides.categories.query_cache, Some(512 * nova_memory::MB));
+        assert_eq!(
+            overrides.categories.query_cache,
+            Some(512 * nova_memory::MB)
+        );
     }
 }

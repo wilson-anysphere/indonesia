@@ -125,7 +125,7 @@ the `[jdk]` table in `nova.toml`:
 - `jdk.release` (`integer`, optional): default Java feature release used for `--release`-style API
   selection when callers (or build-tool integrations) don't specify one.
   - deprecated alias: `jdk.target_release`
-- `jdk.toolchains` (`table`, optional): per-release JDK roots. When a requested API release matches
+- `jdk.toolchains` (`array`, optional): per-release JDK roots. When a requested API release matches
   one of these entries, Nova prefers that toolchain over `jdk.home`.
 
 Example:
@@ -134,15 +134,21 @@ Example:
 [jdk]
 home = "/opt/jdks/jdk-21"
 release = 17
-toolchains = { "8" = "/opt/jdks/jdk8", "17" = "/opt/jdks/jdk-17" }
+
+[[jdk.toolchains]]
+release = 8
+home = "/opt/jdks/jdk8"
+
+[[jdk.toolchains]]
+release = 17
+home = "/opt/jdks/jdk-17"
 ```
 
 Notes:
 
-- `toolchains` keys should be numeric Java feature releases (e.g. `8`, `17`, `21`).
-- Releases must be >= 1; toolchain keys like `"0"` are rejected.
-- If multiple keys map to the same numeric release (for example `"8"` and `"08"`), the later entry
-  wins.
+- `toolchains[*].release` should be a numeric Java feature release (e.g. `8`, `17`, `21`) and must
+  be >= 1.
+- If multiple toolchains share the same `release`, the later entry wins.
 
 ### Environment variables
 
