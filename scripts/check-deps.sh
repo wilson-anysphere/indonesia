@@ -12,10 +12,19 @@ set -euo pipefail
 tmp="$(mktemp -t nova-crate-deps-metadata.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 
-# Run `cargo metadata` up-front (outside of `cargo run`) so `nova-devtools` doesn't have to spawn a
-# nested cargo process (which can deadlock on Cargo's global locks).
+# Run `cargo metadata` up-front so `nova-devtools` doesn't have to spawn a nested cargo process
+# (which can deadlock on Cargo's global locks under `cargo run`).
 #
 # Use `--locked` so CI + local runs agree on the resolved workspace graph.
 cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 
-cargo run --locked -p nova-devtools -- check-deps --config crate-layers.toml --metadata-path "$tmp"
+# Build once, then run the binary directly to avoid repeated `cargo run` overhead.
+cargo build -p nova-devtools --locked
+
+target_dir="${CARGO_TARGET_DIR:-target}"
+bin="${target_dir}/debug/nova-devtools"
+if [[ "${OS:-}" == "Windows_NT" ]]; then
+  bin="${bin}.exe"
+fi
+
+"${bin}" check-deps --config crate-layers.toml --metadata-path "$tmp"
