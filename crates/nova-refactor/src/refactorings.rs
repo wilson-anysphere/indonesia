@@ -14,7 +14,7 @@ use crate::semantic::{Conflict, RefactorDatabase, SemanticChange};
 pub enum RefactorError {
     #[error("refactoring has conflicts: {0:?}")]
     Conflicts(Vec<Conflict>),
-    #[error("rename is only supported for local variables and parameters (got {kind:?})")]
+    #[error("rename is not supported for this symbol (got {kind:?})")]
     RenameNotSupported { kind: Option<JavaSymbolKind> },
     #[error(transparent)]
     Materialize(#[from] MaterializeError),
@@ -48,16 +48,18 @@ pub fn rename(
     params: RenameParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
     let kind = db.symbol_kind(params.symbol);
-    if !matches!(
-        kind,
-        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
-    ) {
-        return Err(RefactorError::RenameNotSupported { kind });
-    }
-
-    let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
-    if !conflicts.is_empty() {
-        return Err(RefactorError::Conflicts(conflicts));
+    match kind {
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
+            let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
+            if !conflicts.is_empty() {
+                return Err(RefactorError::Conflicts(conflicts));
+            }
+        }
+        Some(JavaSymbolKind::Field | JavaSymbolKind::Method | JavaSymbolKind::Type) => {
+            // Best-effort: conflict checking is currently scope-based and tuned for local/parameter
+            // renames. Allow member/type renames without additional validation for now.
+        }
+        None => return Err(RefactorError::RenameNotSupported { kind }),
     }
 
     let changes = vec![SemanticChange::Rename {

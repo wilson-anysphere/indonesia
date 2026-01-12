@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use nova_core::Name;
+use nova_core::{Name, QualifiedName};
 use nova_db::salsa::{Database as SalsaDatabase, NovaHir};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
+use nova_hir::ids::{FieldId, ItemId, MethodId};
+use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::HirDatabase;
 use nova_resolve::{
-    BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult, ScopeKind,
+    BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
+    ScopeKind, TypeResolution, WorkspaceDefMap,
 };
 
 use crate::edit::{FileId, TextRange};
@@ -45,6 +48,9 @@ struct SymbolData {
 enum ResolutionKey {
     Local(LocalRef),
     Param(ParamRef),
+    Field(FieldId),
+    Method(MethodId),
+    Type(ItemId),
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +61,14 @@ struct SymbolCandidate {
     name_range: TextRange,
     scope: u32,
     kind: JavaSymbolKind,
+}
+
+#[derive(Debug, Clone)]
+struct MethodGroupInfo {
+    file: FileId,
+    representative: MethodId,
+    method_ids: Vec<MethodId>,
+    decl_ranges: Vec<TextRange>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -166,14 +180,43 @@ impl RefactorJavaDatabase {
             files: &texts_by_id,
         };
 
+        // Build a workspace-wide type index so name resolution can see types declared in other
+        // source files. This is required for `rename` to update cross-file references like
+        // `new Foo()` when `Foo` is defined elsewhere in the workspace.
+        let mut workspace_def_map = WorkspaceDefMap::default();
+        for (_file, file_id) in &file_ids {
+            let tree = snap.hir_item_tree(*file_id);
+            let def_map = DefMap::from_item_tree(*file_id, &tree);
+            workspace_def_map.extend_from_def_map(&def_map);
+        }
+
         let mut scope_interner = ScopeInterner::default();
         let mut scopes: HashMap<DbFileId, ScopeBuildResult> = HashMap::new();
         let mut candidates: Vec<SymbolCandidate> = Vec::new();
+        let mut method_groups: Vec<MethodGroupInfo> = Vec::new();
+        let mut type_constructor_refs: HashMap<ItemId, Vec<(FileId, TextRange)>> = HashMap::new();
 
         // Build per-file scope graphs + symbol definitions.
         for (file, file_id) in &file_ids {
             let scope_result = nova_resolve::build_scopes(&hir, *file_id);
             let tree = snap.hir_item_tree(*file_id);
+
+            // Type/field/method symbols live in item tree (file-level) scopes.
+            for item in &tree.items {
+                let item_id = item_to_item_id(*item);
+                collect_type_candidates(
+                    file,
+                    *file_id,
+                    tree.as_ref(),
+                    &scope_result,
+                    scope_result.file_scope,
+                    item_id,
+                    &mut scope_interner,
+                    &mut candidates,
+                    &mut method_groups,
+                    &mut type_constructor_refs,
+                );
+            }
 
             // Parameters live in method/constructor scopes.
             let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
@@ -226,14 +269,14 @@ impl RefactorJavaDatabase {
                 }
             }
 
-        // Locals live in block scopes. We intern each block scope exactly once (in allocation
-        // order) so global scope IDs are deterministic.
-        let mut body_cache: HashMap<BodyOwner, Arc<hir::Body>> = HashMap::new();
-        for &block_scope in scope_result.block_scopes.iter() {
-            let data = scope_result.scopes.scope(block_scope);
-            for res in data.values().values() {
-                let Resolution::Local(local_ref) = res else {
-                    continue;
+            // Locals live in block scopes. We intern each block scope exactly once (in allocation
+            // order) so global scope IDs are deterministic.
+            let mut body_cache: HashMap<BodyOwner, Arc<hir::Body>> = HashMap::new();
+            for &block_scope in scope_result.block_scopes.iter() {
+                let data = scope_result.scopes.scope(block_scope);
+                for res in data.values().values() {
+                    let Resolution::Local(local_ref) = res else {
+                        continue;
                     };
 
                     let body = body_cache
@@ -302,9 +345,46 @@ impl RefactorJavaDatabase {
             resolution_to_symbol.insert(candidate.key, symbol);
         }
 
-        // Collect reference spans by walking HIR name expressions and resolving them via the scope graph.
+        // Populate method-group mappings for overloads and attach additional declaration spans.
+        for group in &method_groups {
+            let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(group.representative))
+            else {
+                continue;
+            };
+
+            for &method_id in &group.method_ids {
+                resolution_to_symbol.insert(ResolutionKey::Method(method_id), symbol);
+            }
+
+            for &range in &group.decl_ranges {
+                references[symbol.as_usize()].push(Reference {
+                    file: group.file.clone(),
+                    range,
+                });
+                spans.push((group.file.clone(), range, symbol));
+            }
+        }
+
+        // Treat constructor declarations as references to their enclosing type so `rename` on a
+        // class updates `Foo()` -> `Bar()` as well.
+        for (ty, refs) in &type_constructor_refs {
+            let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Type(*ty)) else {
+                continue;
+            };
+            for (file, range) in refs {
+                references[symbol.as_usize()].push(Reference {
+                    file: file.clone(),
+                    range: *range,
+                });
+                spans.push((file.clone(), *range, symbol));
+            }
+        }
+
+        // Collect reference spans by walking HIR bodies and resolving them via the scope graph.
         let jdk = nova_jdk::JdkIndex::new();
-        let resolver = Resolver::new(&jdk);
+        let resolver = Resolver::new(&jdk)
+            .with_classpath(&workspace_def_map)
+            .with_workspace(&workspace_def_map);
 
         for (file, file_id) in &file_ids {
             let Some(scope_result) = scopes.get(file_id) else {
@@ -464,6 +544,176 @@ fn refactor_local_scope(
     local_scope
 }
 
+fn item_to_item_id(item: Item) -> ItemId {
+    match item {
+        Item::Class(id) => ItemId::Class(id),
+        Item::Interface(id) => ItemId::Interface(id),
+        Item::Enum(id) => ItemId::Enum(id),
+        Item::Record(id) => ItemId::Record(id),
+        Item::Annotation(id) => ItemId::Annotation(id),
+    }
+}
+
+fn item_name_and_range(tree: &nova_hir::item_tree::ItemTree, item: ItemId) -> (String, TextRange) {
+    match item {
+        ItemId::Class(id) => {
+            let data = tree.class(id);
+            (
+                data.name.clone(),
+                TextRange::new(data.name_range.start, data.name_range.end),
+            )
+        }
+        ItemId::Interface(id) => {
+            let data = tree.interface(id);
+            (
+                data.name.clone(),
+                TextRange::new(data.name_range.start, data.name_range.end),
+            )
+        }
+        ItemId::Enum(id) => {
+            let data = tree.enum_(id);
+            (
+                data.name.clone(),
+                TextRange::new(data.name_range.start, data.name_range.end),
+            )
+        }
+        ItemId::Record(id) => {
+            let data = tree.record(id);
+            (
+                data.name.clone(),
+                TextRange::new(data.name_range.start, data.name_range.end),
+            )
+        }
+        ItemId::Annotation(id) => {
+            let data = tree.annotation(id);
+            (
+                data.name.clone(),
+                TextRange::new(data.name_range.start, data.name_range.end),
+            )
+        }
+    }
+}
+
+fn item_members<'a>(tree: &'a nova_hir::item_tree::ItemTree, item: ItemId) -> &'a [Member] {
+    match item {
+        ItemId::Class(id) => &tree.class(id).members,
+        ItemId::Interface(id) => &tree.interface(id).members,
+        ItemId::Enum(id) => &tree.enum_(id).members,
+        ItemId::Record(id) => &tree.record(id).members,
+        ItemId::Annotation(id) => &tree.annotation(id).members,
+    }
+}
+
+fn collect_type_candidates(
+    file: &FileId,
+    db_file: DbFileId,
+    tree: &nova_hir::item_tree::ItemTree,
+    scope_result: &ScopeBuildResult,
+    decl_scope: nova_resolve::ScopeId,
+    item: ItemId,
+    scope_interner: &mut ScopeInterner,
+    candidates: &mut Vec<SymbolCandidate>,
+    method_groups: &mut Vec<MethodGroupInfo>,
+    type_constructor_refs: &mut HashMap<ItemId, Vec<(FileId, TextRange)>>,
+) {
+    // Type declaration.
+    let (name, name_range) = item_name_and_range(tree, item);
+    let scope = scope_interner.intern(db_file, decl_scope);
+    candidates.push(SymbolCandidate {
+        key: ResolutionKey::Type(item),
+        file: file.clone(),
+        name,
+        name_range,
+        scope,
+        kind: JavaSymbolKind::Type,
+    });
+
+    let Some(&class_scope) = scope_result.class_scopes.get(&item) else {
+        return;
+    };
+    let class_scope_interned = scope_interner.intern(db_file, class_scope);
+
+    // Member declarations.
+    let mut methods_by_name: HashMap<String, Vec<(MethodId, TextRange)>> = HashMap::new();
+
+    for member in item_members(tree, item) {
+        match member {
+            Member::Field(field_id) => {
+                let field = tree.field(*field_id);
+                candidates.push(SymbolCandidate {
+                    key: ResolutionKey::Field(*field_id),
+                    file: file.clone(),
+                    name: field.name.clone(),
+                    name_range: TextRange::new(field.name_range.start, field.name_range.end),
+                    scope: class_scope_interned,
+                    kind: JavaSymbolKind::Field,
+                });
+            }
+            Member::Method(method_id) => {
+                let method = tree.method(*method_id);
+                methods_by_name
+                    .entry(method.name.clone())
+                    .or_default()
+                    .push((
+                        *method_id,
+                        TextRange::new(method.name_range.start, method.name_range.end),
+                    ));
+            }
+            Member::Constructor(ctor_id) => {
+                let ctor = tree.constructor(*ctor_id);
+                type_constructor_refs
+                    .entry(item)
+                    .or_default()
+                    .push((
+                        file.clone(),
+                        TextRange::new(ctor.name_range.start, ctor.name_range.end),
+                    ));
+            }
+            Member::Type(child) => {
+                let child_id = item_to_item_id(*child);
+                collect_type_candidates(
+                    file,
+                    db_file,
+                    tree,
+                    scope_result,
+                    class_scope,
+                    child_id,
+                    scope_interner,
+                    candidates,
+                    method_groups,
+                    type_constructor_refs,
+                );
+            }
+            Member::Initializer(_) => {}
+        }
+    }
+
+    // Method groups (overloads) – one symbol per (containing type, method name).
+    for (name, mut methods) in methods_by_name {
+        methods.sort_by(|a, b| a.1.start.cmp(&b.1.start).then_with(|| a.1.end.cmp(&b.1.end)));
+
+        let Some(&(representative, rep_range)) = methods.first() else {
+            continue;
+        };
+
+        candidates.push(SymbolCandidate {
+            key: ResolutionKey::Method(representative),
+            file: file.clone(),
+            name: name.clone(),
+            name_range: rep_range,
+            scope: class_scope_interned,
+            kind: JavaSymbolKind::Method,
+        });
+
+        method_groups.push(MethodGroupInfo {
+            file: file.clone(),
+            representative,
+            method_ids: methods.iter().map(|(id, _)| *id).collect(),
+            decl_ranges: methods.iter().map(|(_, range)| *range).collect(),
+        });
+    }
+}
+
 impl RefactorDatabase for RefactorJavaDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str> {
         self.files.get(file).map(|text| text.as_ref())
@@ -485,38 +735,68 @@ impl RefactorDatabase for RefactorJavaDatabase {
         let (file, local_scope) = self.decode_scope(scope)?;
         let scope_result = self.scopes.get(&file)?;
         let data = scope_result.scopes.scope(local_scope);
-        let resolution = data.values().get(&Name::from(name))?;
-        match resolution {
-            Resolution::Local(local) => self
-                .resolution_to_symbol
-                .get(&ResolutionKey::Local(*local))
-                .copied(),
-            Resolution::Parameter(param) => self
-                .resolution_to_symbol
-                .get(&ResolutionKey::Param(*param))
-                .copied(),
-            _ => None,
+
+        let name = Name::from(name);
+
+        if let Some(resolution) = data.values().get(&name) {
+            let key = match resolution {
+                Resolution::Local(local) => ResolutionKey::Local(*local),
+                Resolution::Parameter(param) => ResolutionKey::Param(*param),
+                Resolution::Field(field) => ResolutionKey::Field(*field),
+                Resolution::Methods(methods) => ResolutionKey::Method(*methods.first()?),
+                _ => return None,
+            };
+            return self.resolution_to_symbol.get(&key).copied();
         }
+
+        if let Some(ty) = data.types().get(&name) {
+            if let TypeResolution::Source(item) = ty {
+                return self
+                    .resolution_to_symbol
+                    .get(&ResolutionKey::Type(*item))
+                    .copied();
+            }
+        }
+
+        None
     }
 
     fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId> {
         let (file, local_scope) = self.decode_scope(scope)?;
         let scope_result = self.scopes.get(&file)?;
 
+        let name = Name::from(name);
+
         let mut current = scope_result.scopes.scope(local_scope).parent();
         while let Some(scope_id) = current {
             let data = scope_result.scopes.scope(scope_id);
-            if let Some(resolution) = data.values().get(&Name::from(name)) {
+
+            if let Some(resolution) = data.values().get(&name) {
                 let key = match resolution {
                     Resolution::Local(local) => ResolutionKey::Local(*local),
                     Resolution::Parameter(param) => ResolutionKey::Param(*param),
+                    Resolution::Field(field) => ResolutionKey::Field(*field),
+                    Resolution::Methods(methods) => ResolutionKey::Method(*methods.first()?),
                     _ => {
                         current = data.parent();
                         continue;
                     }
                 };
+
                 if let Some(symbol) = self.resolution_to_symbol.get(&key).copied() {
                     return Some(symbol);
+                }
+            }
+
+            if let Some(ty) = data.types().get(&name) {
+                if let TypeResolution::Source(item) = ty {
+                    if let Some(symbol) = self
+                        .resolution_to_symbol
+                        .get(&ResolutionKey::Type(*item))
+                        .copied()
+                    {
+                        return Some(symbol);
+                    }
                 }
             }
 
@@ -545,23 +825,55 @@ fn record_body_references(
     spans: &mut Vec<(FileId, TextRange, SymbolId)>,
 ) {
     walk_hir_body(body, |expr_id| {
-        let hir::Expr::Name { name, range } = &body.exprs[expr_id] else {
-            return;
-        };
-
         let Some(&scope) = scope_result.expr_scopes.get(&(owner, expr_id)) else {
             return;
         };
 
-        let Some(resolved) =
-            resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))
-        else {
-            return;
-        };
+        let (range, key) = match &body.exprs[expr_id] {
+            hir::Expr::Name { name, range } => {
+                let Some(resolved) =
+                    resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))
+                else {
+                    return;
+                };
 
-        let key = match resolved {
-            Resolution::Local(local) => ResolutionKey::Local(local),
-            Resolution::Parameter(param) => ResolutionKey::Param(param),
+                let key = match resolved {
+                    Resolution::Local(local) => ResolutionKey::Local(local),
+                    Resolution::Parameter(param) => ResolutionKey::Param(param),
+                    Resolution::Field(field) => ResolutionKey::Field(field),
+                    Resolution::Methods(methods) => {
+                        let Some(&first) = methods.first() else {
+                            return;
+                        };
+                        ResolutionKey::Method(first)
+                    }
+                    Resolution::Type(TypeResolution::Source(item)) => ResolutionKey::Type(item),
+                    _ => return,
+                };
+                (TextRange::new(range.start, range.end), key)
+            }
+            hir::Expr::New {
+                class,
+                class_range,
+                ..
+            } => {
+                let Some(ty) = resolver.resolve_qualified_type_resolution_in_scope(
+                    &scope_result.scopes,
+                    scope,
+                    &QualifiedName::from_dotted(class.as_str()),
+                ) else {
+                    return;
+                };
+
+                let TypeResolution::Source(item) = ty else {
+                    return;
+                };
+
+                (
+                    TextRange::new(class_range.start, class_range.end),
+                    ResolutionKey::Type(item),
+                )
+            }
             _ => return,
         };
 
@@ -569,7 +881,6 @@ fn record_body_references(
             return;
         };
 
-        let range = TextRange::new(range.start, range.end);
         references[symbol.as_usize()].push(Reference {
             file: file.clone(),
             range,
