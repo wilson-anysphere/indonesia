@@ -118,7 +118,7 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
 
     support::write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 7, "method": "nova/semanticSearch/indexStatus", "params": null }),
+        &json!({ "jsonrpc": "2.0", "id": 7, "method": nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD, "params": null }),
     );
     let index_status_resp = support::read_response_with_id(&mut stdout, 7);
     assert_eq!(
