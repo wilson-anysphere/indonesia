@@ -2858,6 +2858,65 @@ class A {
 }
 
 #[test]
+fn completion_includes_collections_static_method_snippet_placeholders_with_auto_import() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Collections.si<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let singleton = items
+        .iter()
+        .find(|i| i.label == "singletonList")
+        .expect("expected Collections.singletonList completion item");
+
+    assert_eq!(
+        singleton.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected singletonList to insert a snippet; got {singleton:#?}"
+    );
+    let edit = match singleton.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "singletonList(${1:arg0})$0");
+}
+
+#[test]
+fn completion_includes_collections_zero_arg_method_without_snippet() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Collections.em<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let empty_list = items
+        .iter()
+        .find(|i| i.label == "emptyList")
+        .expect("expected Collections.emptyList completion item");
+
+    assert_eq!(
+        empty_list.insert_text_format, None,
+        "expected emptyList to be plain text (no snippet); got {empty_list:#?}"
+    );
+    let edit = match empty_list.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "emptyList()");
+}
+
+#[test]
 fn completion_ranks_math_static_members_for_prefix() {
     let (db, file, pos) = fixture(
         r#"

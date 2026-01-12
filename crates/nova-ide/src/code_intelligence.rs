@@ -8430,14 +8430,14 @@ fn member_completions(
     };
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         if call_kind == CallKind::Static {
-            return static_member_completions(text, receiver, prefix);
+            return static_member_completions(&types, text, receiver, prefix);
         }
         return Vec::new();
     }
 
     let mut items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
     if call_kind == CallKind::Static {
-        let mut baseline = static_member_completions(text, receiver, prefix);
+        let mut baseline = static_member_completions(&types, text, receiver, prefix);
         if items.is_empty() {
             return baseline;
         }
@@ -8672,7 +8672,12 @@ fn method_reference_completions(
     items
 }
 
-fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<CompletionItem> {
+fn static_member_completions(
+    types: &TypeStore,
+    text: &str,
+    receiver: &str,
+    prefix: &str,
+) -> Vec<CompletionItem> {
     let receiver = receiver.trim();
     if receiver.is_empty() {
         return Vec::new();
@@ -8703,11 +8708,36 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
         return Vec::new();
     };
 
-    let owner_source_name = binary_name_to_source_name(owner.as_str());
+    let owner_binary_name = owner.as_str();
+    let owner_source_name = binary_name_to_source_name(owner_binary_name);
     let members = TypeIndex::static_members(jdk.as_ref(), &owner);
     if members.is_empty() {
         return Vec::new();
     }
+
+    // Infer minimal method arities from the workspace completion type store when possible so
+    // "baseline" static-member completions (especially those that auto-import their receiver type)
+    // can also provide argument placeholders.
+    //
+    // This intentionally falls back to the `$0`-only snippet form when the type or method
+    // signature is not present in the store. `TypeIndex::static_members` returns a best-effort
+    // name list, so we must tolerate incomplete type info here.
+    let method_arity = |method_name: &str| -> Option<usize> {
+        let class_id = types.lookup_class(owner_binary_name)?;
+        let class_def = types.class(class_id)?;
+        class_def
+            .methods
+            .iter()
+            .filter(|m| m.is_static && m.name == method_name)
+            .map(|m| {
+                if m.is_varargs {
+                    m.params.len().saturating_sub(1)
+                } else {
+                    m.params.len()
+                }
+            })
+            .min()
+    };
 
     let additional_text_edits = if !receiver.contains('.') {
         let import_info = parse_java_imports(text);
@@ -8723,11 +8753,22 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
     for StaticMemberInfo { name, kind } in members {
         let label = name.as_str().to_string();
         let (item_kind, insert_text, insert_text_format) = match kind {
-            StaticMemberKind::Method => (
-                CompletionItemKind::METHOD,
-                Some(format!("{label}($0)")),
-                Some(InsertTextFormat::SNIPPET),
-            ),
+            StaticMemberKind::Method => match method_arity(&label) {
+                Some(arity) => {
+                    let (insert_text, insert_text_format) =
+                        call_insert_text_with_arity(&label, arity);
+                    (
+                        CompletionItemKind::METHOD,
+                        Some(insert_text),
+                        insert_text_format,
+                    )
+                }
+                None => (
+                    CompletionItemKind::METHOD,
+                    Some(format!("{label}($0)")),
+                    Some(InsertTextFormat::SNIPPET),
+                ),
+            },
             StaticMemberKind::Field => (CompletionItemKind::CONSTANT, Some(label.clone()), None),
         };
 
