@@ -890,6 +890,9 @@ impl MemoryEvictor for SalsaMemoEvictor {
 
         // Reuse the existing `Database::persist_project_indexes` helper by
         // constructing a temporary wrapper around the shared db/input state.
+        //
+        // NOTE: This is only used for best-effort persistence under memory pressure, so
+        // we initialize input memory trackers with fresh (unregistered) instances.
         let db = Database {
             inner: self.db.clone(),
             inputs: self.inputs.clone(),
