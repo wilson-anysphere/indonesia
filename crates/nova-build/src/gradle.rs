@@ -635,10 +635,9 @@ impl GradleBuild {
         &self,
         project_root: &Path,
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
-        let gradle = self.gradle_executable(project_root);
+        let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut args: Vec<String> = Vec::new();
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
         args.push("-q".into());
@@ -646,9 +645,9 @@ impl GradleBuild {
         args.push(init_script.to_string_lossy().to_string());
         args.push(NOVA_GRADLE_ALL_TASK.to_string());
 
-        let output = self.runner.run(project_root, &gradle, &args);
+        let output = self.runner.run(project_root, &program, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok((gradle, args, output?))
+        Ok((program, args, output?))
     }
 
     fn run_compile(
