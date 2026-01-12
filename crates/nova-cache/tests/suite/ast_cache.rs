@@ -4,6 +4,8 @@ use nova_syntax::parse;
 
 #[test]
 fn ast_cache_oversized_metadata_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let cache = AstArtifactCache::new(tmp.path());
 
@@ -35,6 +37,8 @@ fn ast_cache_oversized_metadata_is_cache_miss() {
 
 #[test]
 fn ast_cache_oversized_artifact_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let cache = AstArtifactCache::new(tmp.path());
 

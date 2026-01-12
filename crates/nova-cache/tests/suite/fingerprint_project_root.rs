@@ -41,6 +41,8 @@ fn write_origin_config(config_path: &Path, origin: &str) {
 
 #[test]
 fn project_hash_uses_git_origin_for_repo_root() {
+    let _guard = crate::test_lock();
+
     let _lock = ENV_LOCK.lock().unwrap();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
@@ -66,6 +68,8 @@ fn project_hash_uses_git_origin_for_repo_root() {
 
 #[test]
 fn project_hash_finds_git_origin_from_parent_directory() {
+    let _guard = crate::test_lock();
+
     let _lock = ENV_LOCK.lock().unwrap();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
@@ -90,6 +94,8 @@ fn project_hash_finds_git_origin_from_parent_directory() {
 
 #[test]
 fn project_hash_supports_worktree_gitdir_file() {
+    let _guard = crate::test_lock();
+
     let _lock = ENV_LOCK.lock().unwrap();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 
@@ -113,6 +119,8 @@ fn project_hash_supports_worktree_gitdir_file() {
 
 #[test]
 fn project_hash_supports_worktree_commondir() {
+    let _guard = crate::test_lock();
+
     let _lock = ENV_LOCK.lock().unwrap();
     let _env = ScopedEnvVar::unset("NOVA_PROJECT_ID");
 

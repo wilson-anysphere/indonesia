@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 #[test]
 fn metadata_roundtrip_prefers_binary() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let project_root = temp.path().join("project");
     std::fs::create_dir_all(&project_root).unwrap();
@@ -38,6 +40,8 @@ fn metadata_roundtrip_prefers_binary() {
 
 #[test]
 fn metadata_bin_corruption_falls_back_to_json() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let project_root = temp.path().join("project");
     std::fs::create_dir_all(&project_root).unwrap();

@@ -35,6 +35,8 @@ fn decode_metadata(bytes: &[u8]) -> AstCacheMetadata {
 
 #[test]
 fn concurrent_store_does_not_lose_metadata_entries() {
+    let _guard = crate::test_lock();
+
     let tmp = TempDir::new().unwrap();
     let cache = Arc::new(AstArtifactCache::new(tmp.path()));
 
@@ -87,6 +89,8 @@ fn concurrent_store_does_not_lose_metadata_entries() {
 
 #[test]
 fn concurrent_store_does_not_corrupt_metadata_and_corruption_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = TempDir::new().unwrap();
     let cache = Arc::new(AstArtifactCache::new(tmp.path()));
 

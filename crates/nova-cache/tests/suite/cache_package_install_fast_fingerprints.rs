@@ -1,6 +1,6 @@
 use nova_cache::{
-    install_cache_package, pack_cache_package, CacheConfig, CacheDir, CacheMetadata,
-    CachePackageInstallOutcome, ProjectSnapshot,
+    install_cache_package, CacheConfig, CacheDir, CacheMetadata, CachePackageInstallOutcome,
+    ProjectSnapshot,
 };
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,6 +13,8 @@ fn write_fake_cache(cache_dir: &CacheDir) {
 
 #[test]
 fn install_uses_indexes_only_when_file_metadata_mismatches() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let project_root = tmp.path().join("project");
     std::fs::create_dir_all(project_root.join("src")).unwrap();
@@ -40,7 +42,7 @@ fn install_uses_indexes_only_when_file_metadata_mismatches() {
     write_fake_cache(&cache_dir);
 
     let package_path = tmp.path().join("cache.tar.zst");
-    pack_cache_package(&cache_dir, &package_path).unwrap();
+    crate::pack_cache_package_low_mem(&cache_dir, &package_path).unwrap();
 
     // Simulate a fresh cache install into an empty cache directory.
     std::fs::remove_dir_all(cache_dir.root()).unwrap();
@@ -93,6 +95,8 @@ fn mkfifo(path: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 #[test]
 fn install_mismatch_does_not_read_file_contents() {
+    let _guard = crate::test_lock();
+
     use std::io::Write;
     use std::sync::mpsc;
 
@@ -121,7 +125,7 @@ fn install_mismatch_does_not_read_file_contents() {
     write_fake_cache(&cache_dir);
 
     let package_path = tmp.path().join("cache.tar.zst");
-    pack_cache_package(&cache_dir, &package_path).unwrap();
+    crate::pack_cache_package_low_mem(&cache_dir, &package_path).unwrap();
 
     std::fs::remove_dir_all(cache_dir.root()).unwrap();
     let cache_dir2 = CacheDir::new(

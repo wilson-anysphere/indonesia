@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 #[test]
 fn pack_cache_package_streams_large_index_files() -> Result<(), nova_cache::CacheError> {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir()?;
     let project_root = tmp.path().join("project");
     std::fs::create_dir_all(project_root.join("src"))?;

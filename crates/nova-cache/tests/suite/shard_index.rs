@@ -49,6 +49,8 @@ fn bincode_options() -> impl bincode::Options {
 
 #[test]
 fn shard_index_roundtrip_new_format() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
     let index = sample_index(shard_id);
@@ -70,6 +72,8 @@ fn shard_index_roundtrip_new_format() {
 
 #[test]
 fn shard_index_loads_legacy_raw_format() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
     let index = sample_index(shard_id);
@@ -85,6 +89,8 @@ fn shard_index_loads_legacy_raw_format() {
 
 #[test]
 fn shard_index_loads_legacy_persisted_wrapper() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
     let index = sample_index(shard_id);
@@ -132,6 +138,8 @@ impl Write for BufferGuard {
 
 #[test]
 fn shard_index_protocol_mismatch_is_cache_miss_and_logs() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
     let index = sample_index(shard_id);
@@ -168,6 +176,8 @@ fn shard_index_protocol_mismatch_is_cache_miss_and_logs() {
 
 #[test]
 fn shard_index_corruption_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
     let index = sample_index(shard_id);
@@ -183,6 +193,8 @@ fn shard_index_corruption_is_cache_miss() {
 
 #[test]
 fn shard_index_oversized_payload_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
     let index = sample_index(shard_id);
@@ -203,6 +215,8 @@ fn shard_index_oversized_payload_is_cache_miss() {
 #[cfg(unix)]
 #[test]
 fn shard_index_symlink_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     use std::os::unix::fs::symlink;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -225,6 +239,8 @@ fn shard_index_symlink_is_cache_miss() {
 
 #[test]
 fn shard_index_wrapper_with_too_many_symbols_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
 
@@ -249,6 +265,8 @@ fn shard_index_wrapper_with_too_many_symbols_is_cache_miss() {
 
 #[test]
 fn shard_index_raw_with_too_many_symbols_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let shard_id: ShardId = 7;
 

@@ -2,6 +2,8 @@ use nova_cache::{QueryDiskCache, QueryDiskCachePolicy};
 
 #[test]
 fn query_disk_cache_gc_does_not_delete_fresh_entries() {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir().unwrap();
     let cache = QueryDiskCache::new_with_policy(
         tmp.path(),

@@ -2,6 +2,8 @@ use nova_cache::Fingerprint;
 
 #[test]
 fn from_file_matches_from_bytes() -> Result<(), nova_cache::CacheError> {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("payload.bin");
 
@@ -22,6 +24,8 @@ fn from_file_matches_from_bytes() -> Result<(), nova_cache::CacheError> {
 
 #[test]
 fn from_file_matches_from_bytes_for_empty_file() -> Result<(), nova_cache::CacheError> {
+    let _guard = crate::test_lock();
+
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("empty.bin");
     std::fs::write(&path, &[] as &[u8])?;

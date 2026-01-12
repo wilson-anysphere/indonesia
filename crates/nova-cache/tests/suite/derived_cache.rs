@@ -22,6 +22,8 @@ struct Value {
 
 #[test]
 fn derived_artifact_cache_roundtrip_and_invalidation() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
     let query_schema_version = 1;
@@ -53,6 +55,8 @@ fn derived_artifact_cache_roundtrip_and_invalidation() {
 
 #[test]
 fn derived_artifact_cache_corruption_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
     let query_schema_version = 1;
@@ -90,6 +94,8 @@ fn derived_artifact_cache_corruption_is_cache_miss() {
 
 #[test]
 fn derived_artifact_cache_query_schema_version_is_part_of_key() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
 
@@ -114,6 +120,8 @@ fn derived_artifact_cache_query_schema_version_is_part_of_key() {
 
 #[test]
 fn derived_artifact_cache_persisted_query_schema_version_mismatch_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     use bincode::Options;
 
     let temp = tempfile::tempdir().unwrap();
@@ -153,6 +161,8 @@ fn derived_artifact_cache_persisted_query_schema_version_mismatch_is_cache_miss(
 
 #[test]
 fn derived_artifact_cache_oversized_payload_is_cache_miss() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
     let query_schema_version = 1;
@@ -205,6 +215,8 @@ struct PersistedDerivedValueOwned<T> {
 
 #[test]
 fn derived_artifact_cache_gc_respects_global_max_bytes() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
     let query_schema_version = 1;
@@ -247,6 +259,8 @@ fn derived_artifact_cache_gc_respects_global_max_bytes() {
 
 #[test]
 fn derived_artifact_cache_gc_respects_ttl() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
     let query_schema_version = 1;
@@ -325,6 +339,8 @@ fn derived_artifact_cache_gc_respects_ttl() {
 
 #[test]
 fn derived_artifact_cache_gc_survives_corrupt_index() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
     let query_schema_version = 1;

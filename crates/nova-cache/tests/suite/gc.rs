@@ -48,6 +48,8 @@ fn dir_size_bytes(path: &Path) -> u64 {
 
 #[test]
 fn enumerate_project_caches_skips_deps_and_reads_metadata() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache_root = temp.path().join("cache");
     std::fs::create_dir_all(cache_root.join("deps")).unwrap();
@@ -78,6 +80,8 @@ fn enumerate_project_caches_skips_deps_and_reads_metadata() {
 
 #[test]
 fn gc_deletes_oldest_until_within_budget() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache_root = temp.path().join("cache");
     std::fs::create_dir_all(cache_root.join("deps")).unwrap();
@@ -118,6 +122,8 @@ fn gc_deletes_oldest_until_within_budget() {
 
 #[test]
 fn gc_respects_keep_latest_n_even_if_budget_too_small() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache_root = temp.path().join("cache");
     std::fs::create_dir_all(&cache_root).unwrap();
@@ -155,6 +161,8 @@ fn gc_respects_keep_latest_n_even_if_budget_too_small() {
 
 #[test]
 fn gc_removes_stale_caches_first_when_max_age_is_set() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let cache_root = temp.path().join("cache");
     std::fs::create_dir_all(&cache_root).unwrap();
@@ -184,6 +192,8 @@ fn gc_removes_stale_caches_first_when_max_age_is_set() {
 #[cfg(unix)]
 #[test]
 fn gc_does_not_follow_symlinks_when_deleting() {
+    let _guard = crate::test_lock();
+
     use std::os::unix::fs::symlink;
 
     let temp = tempfile::tempdir().unwrap();
@@ -215,6 +225,8 @@ fn gc_does_not_follow_symlinks_when_deleting() {
 #[cfg(unix)]
 #[test]
 fn gc_removes_symlink_cache_dir_without_following_targets() {
+    let _guard = crate::test_lock();
+
     use std::os::unix::fs::symlink;
 
     let temp = tempfile::tempdir().unwrap();

@@ -2,6 +2,8 @@ use std::sync::{Arc, Barrier};
 
 #[test]
 fn atomic_write_is_safe_under_concurrent_writers() {
+    let _guard = crate::test_lock();
+
     let dir = tempfile::tempdir().unwrap();
     let dest = Arc::new(dir.path().join("concurrent.bin"));
 
@@ -54,6 +56,8 @@ fn atomic_write_is_safe_under_concurrent_writers() {
 #[cfg(windows)]
 #[test]
 fn atomic_write_overwrites_existing_file_on_windows() {
+    let _guard = crate::test_lock();
+
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("atomic.bin");
     std::fs::write(&path, b"before").unwrap();

@@ -117,6 +117,8 @@ struct Args {
 
 #[test]
 fn prunes_unreferenced_ast_artifacts() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
     let artifact_name = store_ast(&cache_dir, "src/Foo.java", "class Foo {}");
 
@@ -135,6 +137,8 @@ fn prunes_unreferenced_ast_artifacts() {
 
 #[test]
 fn prunes_referenced_ast_artifacts_older_than_max_age() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
     let artifact_name = store_ast(&cache_dir, "src/Foo.java", "class Foo {}");
     rewrite_ast_saved_at(&cache_dir, "src/Foo.java", 0);
@@ -161,6 +165,8 @@ fn prunes_referenced_ast_artifacts_older_than_max_age() {
 
 #[test]
 fn prunes_query_entries_older_than_max_age() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
     let cache = DerivedArtifactCache::new(cache_dir.queries_dir());
     let query_schema_version = 1;
@@ -214,6 +220,8 @@ fn prunes_query_entries_older_than_max_age() {
 
 #[test]
 fn dry_run_does_not_delete() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
     let artifact_name = store_ast(&cache_dir, "src/Foo.java", "class Foo {}");
 
@@ -239,6 +247,8 @@ fn dry_run_does_not_delete() {
 
 #[test]
 fn max_total_bytes_evicts_oldest_first() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
     let cache = DerivedArtifactCache::new(cache_dir.queries_dir());
     let query_schema_version = 1;
@@ -306,6 +316,8 @@ fn max_total_bytes_evicts_oldest_first() {
 
 #[test]
 fn corrupt_ast_metadata_is_best_effort() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
 
     let metadata_path = cache_dir.ast_dir().join("metadata.bin");
@@ -323,6 +335,8 @@ fn corrupt_ast_metadata_is_best_effort() {
 
 #[test]
 fn indexes_keep_idx_files() {
+    let _guard = crate::test_lock();
+
     let (_tmp, cache_dir) = new_cache_dir();
 
     let idx = cache_dir.indexes_dir().join("symbols.idx");
