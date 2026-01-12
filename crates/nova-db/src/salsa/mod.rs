@@ -30,6 +30,7 @@
 //! ```
 
 mod cancellation;
+mod diagnostics;
 mod flow;
 mod hir;
 mod ide;
@@ -47,6 +48,7 @@ pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use indexing::NovaIndexing;
 pub use inputs::NovaInputs;
+pub use diagnostics::NovaDiagnostics;
 pub use resolve::NovaResolve;
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
@@ -427,6 +429,7 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     hir::NovaHirStorage,
     resolve::NovaResolveStorage,
     typeck::NovaTypeckStorage,
+    diagnostics::NovaDiagnosticsStorage,
     ide::NovaIdeStorage,
     indexing::NovaIndexingStorage
 )]
@@ -1422,6 +1425,7 @@ pub trait NovaDatabase:
     + NovaHir
     + NovaResolve
     + NovaTypeck
+    + NovaDiagnostics
     + NovaIde
     + NovaIndexing
 {
@@ -1436,6 +1440,7 @@ impl<T> NovaDatabase for T where
         + NovaHir
         + NovaResolve
         + NovaTypeck
+        + NovaDiagnostics
         + NovaIndexing
 {
 }
