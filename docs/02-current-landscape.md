@@ -184,8 +184,10 @@ Nova will need to extend LSP for Java-specific needs:
 │  • nova/refactor/apply - apply refactoring with options         │
 │                                                                  │
 │  FRAMEWORK EXTENSIONS                                            │
-│  • nova/spring/beans - Spring bean information                  │
-│  • nova/spring/endpoints - REST endpoint discovery              │
+│  • nova/web/endpoints - HTTP endpoint discovery                 │
+│  • nova/quarkus/endpoints - HTTP endpoint discovery (alias)     │
+│  • nova/micronaut/endpoints - Micronaut endpoint discovery      │
+│  • nova/micronaut/beans - Micronaut bean information            │
 │                                                                  │
 │  DEBUGGING EXTENSIONS                                            │
 │  • nova/debug/configurations - debug launch configs             │
@@ -193,6 +195,9 @@ Nova will need to extend LSP for Java-specific needs:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+Note: the **source of truth** for custom `nova/*` method names and JSON schemas is
+[`docs/protocol-extensions.md`](protocol-extensions.md).
 
 ---
 
