@@ -877,32 +877,46 @@ async fn run(
     state: Arc<State>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
-    tokio::select! {
-        _ = shutdown.cancelled() => return Ok(()),
-        accept = listener.accept() => {
-            let (mut socket, _) = accept?;
+    loop {
+        let (mut socket, _) = tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            accept = listener.accept() => accept?,
+        };
 
-            // Handshake: debugger -> "JDWP-Handshake", server echoes back.
-            let mut hs = [0u8; HANDSHAKE.len()];
-            socket.read_exact(&mut hs).await?;
-            if hs != *HANDSHAKE {
-                return Ok(());
+        // Handshake: debugger -> "JDWP-Handshake", server echoes back.
+        let mut hs = [0u8; HANDSHAKE.len()];
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            res = socket.read_exact(&mut hs) => {
+                if res.is_err() {
+                    continue;
+                }
             }
-            socket.write_all(HANDSHAKE).await?;
+        }
+        if hs != *HANDSHAKE {
+            continue;
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            res = socket.write_all(HANDSHAKE) => {
+                if res.is_err() {
+                    continue;
+                }
+            }
+        }
 
-            let id_sizes = state.config.id_sizes;
-            let (mut reader, writer) = socket.into_split();
-            let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        let id_sizes = state.config.id_sizes;
+        let (mut reader, writer) = socket.into_split();
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
 
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => return Ok(()),
-                    res = read_packet(&mut reader) => {
-                        let Some(packet) = res? else {
-                            return Ok(());
-                        };
-                        handle_packet(&writer, &state, &id_sizes, packet, shutdown.clone()).await?;
-                    }
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => return Ok(()),
+                res = read_packet(&mut reader) => {
+                    let Some(packet) = res? else {
+                        break;
+                    };
+                    handle_packet(&writer, &state, &id_sizes, packet, shutdown.clone()).await?;
                 }
             }
         }

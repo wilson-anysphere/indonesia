@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -95,6 +95,14 @@ struct LaunchedProcess {
     /// Request that the launched process be terminated. We still emit `exited` when it actually
     /// exits (best-effort).
     kill: watch::Sender<bool>,
+    /// Whether the launch completed successfully.
+    ///
+    /// When set to `Some(true)`, the monitor task treats process exit as the end of the debug
+    /// session and emits `exited`/`terminated`.
+    ///
+    /// When set to `Some(false)`, the monitor task suppresses those events. This is used by the
+    /// DAP `restart` request to terminate the old debuggee without tearing down the DAP session.
+    outcome: watch::Sender<Option<bool>>,
     /// Background task that waits for the child to exit and emits DAP events.
     monitor: tokio::task::JoinHandle<()>,
 }
@@ -106,6 +114,8 @@ struct SessionLifecycle {
     awaiting_configuration_done_resume: bool,
     configuration_done_received: bool,
     project_root: Option<PathBuf>,
+    last_launch: Option<StoredLaunchConfig>,
+    debugger_id: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -123,6 +133,8 @@ impl Default for SessionLifecycle {
             awaiting_configuration_done_resume: false,
             configuration_done_received: false,
             project_root: None,
+            last_launch: None,
+            debugger_id: None,
         }
     }
 }
@@ -143,6 +155,8 @@ where
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let exited_sent = Arc::new(AtomicBool::new(false));
+    let next_debugger_id = Arc::new(AtomicU64::new(1));
+    let suppress_termination_debugger_id = Arc::new(AtomicU64::new(0));
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
     let launched_process: Arc<Mutex<Option<LaunchedProcess>>> = Arc::new(Mutex::new(None));
     let session: Arc<Mutex<SessionLifecycle>> = Arc::new(Mutex::new(SessionLifecycle::default()));
@@ -197,6 +211,8 @@ where
                     request_token,
                     out_tx.clone(),
                     seq.clone(),
+                    next_debugger_id.clone(),
+                    suppress_termination_debugger_id.clone(),
                     debugger.clone(),
                     launched_process.clone(),
                     session.clone(),
@@ -256,6 +272,8 @@ async fn handle_request(
     cancel: CancellationToken,
     out_tx: mpsc::UnboundedSender<Value>,
     seq: Arc<AtomicI64>,
+    next_debugger_id: Arc<AtomicU64>,
+    suppress_termination_debugger_id: Arc<AtomicU64>,
     debugger: Arc<Mutex<Option<Debugger>>>,
     launched_process: Arc<Mutex<Option<LaunchedProcess>>>,
     session: Arc<Mutex<SessionLifecycle>>,
@@ -276,6 +294,8 @@ async fn handle_request(
         &cancel,
         &out_tx,
         &seq,
+        &next_debugger_id,
+        &suppress_termination_debugger_id,
         &debugger,
         &launched_process,
         &session,
@@ -298,6 +318,8 @@ async fn handle_request_inner(
     cancel: &CancellationToken,
     out_tx: &mpsc::UnboundedSender<Value>,
     seq: &Arc<AtomicI64>,
+    next_debugger_id: &Arc<AtomicU64>,
+    suppress_termination_debugger_id: &Arc<AtomicU64>,
     debugger: &Arc<Mutex<Option<Debugger>>>,
     launched_process: &Arc<Mutex<Option<LaunchedProcess>>>,
     session: &Arc<Mutex<SessionLifecycle>>,
@@ -332,6 +354,8 @@ async fn handle_request_inner(
                 sess.awaiting_configuration_done_resume = false;
                 sess.configuration_done_received = false;
                 sess.project_root = None;
+                sess.last_launch = None;
+                sess.debugger_id = None;
             }
 
             {
@@ -345,7 +369,7 @@ async fn handle_request_inner(
                 "supportsPauseRequest": true,
                 "supportsCancelRequest": true,
                 "supportsTerminateRequest": true,
-                "supportsRestartRequest": false,
+                "supportsRestartRequest": true,
                 "supportsSetVariable": true,
                 "supportsStepInTargetsRequest": true,
                 "supportsStepBack": false,
@@ -536,7 +560,7 @@ async fn handle_request_inner(
             }
         }
         "launch" => {
-            let args: LaunchArguments = match serde_json::from_value(request.arguments.clone()) {
+            let mut args: LaunchArguments = match serde_json::from_value(request.arguments.clone()) {
                 Ok(args) => args,
                 Err(err) => {
                     send_response(
@@ -607,7 +631,9 @@ async fn handle_request_inner(
                 };
             let project_root = parse_project_root(&request.arguments);
 
-            let attach_timeout = Duration::from_millis(args.attach_timeout_ms.unwrap_or(30_000));
+            let attach_timeout_ms = args.attach_timeout_ms.unwrap_or(30_000);
+            args.attach_timeout_ms = Some(attach_timeout_ms);
+            let attach_timeout = Duration::from_millis(attach_timeout_ms);
 
             // Determine which launch mode we are in.
             let mode = if args.command.is_some() {
@@ -628,6 +654,23 @@ async fn handle_request_inner(
                 );
                 return;
             };
+
+            // Apply launch defaults so they can be reused by `restart`.
+            match mode {
+                LaunchMode::Command => {
+                    if args.host.is_none() {
+                        args.host = Some("127.0.0.1".to_string());
+                    }
+                    if args.port.is_none() {
+                        args.port = Some(5005);
+                    }
+                }
+                LaunchMode::Java => {
+                    if args.java.is_none() {
+                        args.java = Some("java".to_string());
+                    }
+                }
+            }
 
             let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
             let (attach_hosts, attach_port, attach_target_label) = match mode {
@@ -778,6 +821,8 @@ async fn handle_request_inner(
                             }
                         },
                     };
+                    // Persist the resolved port for restart so we can re-use it.
+                    args.port = Some(port);
                     let host: IpAddr = "127.0.0.1".parse().unwrap();
                     let attach_target_label = format!("{host}:{port}");
 
@@ -872,8 +917,22 @@ async fn handle_request_inner(
                 }
             };
 
-            let attach_fut =
-                attach_debugger_with_retry_hosts(attach_hosts, attach_port, source_roots, attach_timeout);
+            {
+                let mut sess = session.lock().await;
+                sess.last_launch = Some(StoredLaunchConfig {
+                    mode,
+                    args: args.clone(),
+                    source_roots: source_roots.clone(),
+                    project_root: project_root.clone(),
+                });
+            }
+
+            let attach_fut = attach_debugger_with_retry_hosts(
+                attach_hosts,
+                attach_port,
+                source_roots,
+                attach_timeout,
+            );
             let dbg = tokio::select! {
                 _ = cancel.cancelled() => {
                     if let Some(tx) = launch_outcome_tx.take() {
@@ -908,18 +967,22 @@ async fn handle_request_inner(
                 *guard = Some(dbg);
             }
 
+            let debugger_id = next_debugger_id.fetch_add(1, Ordering::Relaxed);
             spawn_event_task(
                 debugger.clone(),
                 out_tx.clone(),
                 seq.clone(),
                 terminated_sent.clone(),
                 server_shutdown.clone(),
+                debugger_id,
+                suppress_termination_debugger_id.clone(),
             );
 
             let resume_after_launch = {
                 let mut sess = session.lock().await;
                 sess.lifecycle = LifecycleState::LaunchedOrAttached;
                 sess.kind = Some(SessionKind::Launch);
+                sess.debugger_id = Some(debugger_id);
                 // DAP clients typically send `configurationDone` after breakpoint configuration.
                 // When `stopOnEntry` is enabled (or defaulted), keep the debuggee suspended until
                 // configuration is complete, then resume via JDWP `VirtualMachine.Resume`.
@@ -1185,18 +1248,22 @@ async fn handle_request_inner(
                 *guard = Some(dbg);
             }
 
+            let debugger_id = next_debugger_id.fetch_add(1, Ordering::Relaxed);
             spawn_event_task(
                 debugger.clone(),
                 out_tx.clone(),
                 seq.clone(),
                 terminated_sent.clone(),
                 server_shutdown.clone(),
+                debugger_id,
+                suppress_termination_debugger_id.clone(),
             );
 
             {
                 let mut sess = session.lock().await;
                 sess.lifecycle = LifecycleState::LaunchedOrAttached;
                 sess.kind = Some(SessionKind::Attach);
+                sess.debugger_id = Some(debugger_id);
                 sess.awaiting_configuration_done_resume = false;
                 sess.project_root = project_root;
             }
@@ -1204,6 +1271,543 @@ async fn handle_request_inner(
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
             send_response(out_tx, seq, request, true, None, None);
+        }
+        "restart" => {
+            let (launch_cfg, previous_debugger_id) = {
+                let sess = session.lock().await;
+                if sess.kind != Some(SessionKind::Launch) {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("restart is only supported for launch sessions".to_string()),
+                    );
+                    return;
+                }
+
+                let Some(launch_cfg) = sess.last_launch.clone() else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("restart requires a previous successful launch".to_string()),
+                    );
+                    return;
+                };
+
+                (launch_cfg, sess.debugger_id)
+            };
+
+            // Prevent the old JDWP event-forwarder task from treating this intentional disconnect
+            // as a full debug session termination.
+            if let Some(debugger_id) = previous_debugger_id {
+                suppress_termination_debugger_id.store(debugger_id, Ordering::Relaxed);
+            }
+
+            // Suppress `exited`/`terminated` events from the launched-process monitor for this
+            // adapter-initiated restart.
+            {
+                let guard = launched_process.lock().await;
+                if let Some(proc) = guard.as_ref() {
+                    let _ = proc.outcome.send(Some(false));
+                }
+            }
+
+            // `restart` semantics: terminate the current debuggee and disconnect the debugger.
+            terminate_existing_process(launched_process).await;
+            disconnect_debugger(debugger).await;
+            {
+                let mut sess = session.lock().await;
+                sess.debugger_id = None;
+            }
+
+            // Re-launch using stored launch configuration.
+            let mut args = launch_cfg.args.clone();
+            let mode = launch_cfg.mode;
+            let source_roots = launch_cfg.source_roots.clone();
+            let project_root = launch_cfg.project_root.clone();
+
+            // `restart` must not run concurrently with an existing debugger connection.
+            {
+                let guard = debugger.lock().await;
+                if guard.is_some() {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("already attached".to_string()),
+                    );
+                    return;
+                }
+            }
+
+            let attach_timeout_ms = args.attach_timeout_ms.unwrap_or(30_000);
+            args.attach_timeout_ms = Some(attach_timeout_ms);
+            let attach_timeout = Duration::from_millis(attach_timeout_ms);
+
+            // Apply defaults again defensively (the stored launch config should already have these).
+            match mode {
+                LaunchMode::Command => {
+                    if args.host.is_none() {
+                        args.host = Some("127.0.0.1".to_string());
+                    }
+                    if args.port.is_none() {
+                        args.port = Some(5005);
+                    }
+                }
+                LaunchMode::Java => {
+                    if args.java.is_none() {
+                        args.java = Some("java".to_string());
+                    }
+                }
+            }
+
+            let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
+            let (attach_hosts, attach_port, attach_target_label) = match mode {
+                LaunchMode::Command => {
+                    let Some(cwd) = args.cwd.as_deref() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("launch.cwd is required".to_string()),
+                        );
+                        return;
+                    };
+                    let Some(command) = args.command.as_deref() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("launch.command is required".to_string()),
+                        );
+                        return;
+                    };
+
+                    let port = args.port.unwrap_or(5005);
+                    let host = args.host.as_deref().unwrap_or("127.0.0.1");
+                    let host_label = host.to_string();
+                    let resolved_hosts = match resolve_host_candidates(host, port).await {
+                        Ok(hosts) if !hosts.is_empty() => hosts,
+                        Ok(_) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!(
+                                    "failed to resolve host {host_label:?}: no addresses found"
+                                )),
+                            );
+                            return;
+                        }
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("invalid host {host_label:?}: {err}")),
+                            );
+                            return;
+                        }
+                    };
+                    let attach_target_label = format!("{host_label}:{port}");
+
+                    let mut cmd = Command::new(command);
+                    cmd.args(&args.args);
+                    cmd.current_dir(cwd);
+                    cmd.stdin(Stdio::null());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+                    for (k, v) in &args.env {
+                        cmd.env(k, v);
+                    }
+
+                    let mut child = match cmd.spawn() {
+                        Ok(child) => child,
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("failed to spawn {command:?}: {err}")),
+                            );
+                            return;
+                        }
+                    };
+
+                    if let Some(stdout) = child.stdout.take() {
+                        spawn_output_task(
+                            stdout,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stdout",
+                            server_shutdown.clone(),
+                        );
+                    }
+                    if let Some(stderr) = child.stderr.take() {
+                        spawn_output_task(
+                            stderr,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stderr",
+                            server_shutdown.clone(),
+                        );
+                    }
+
+                    {
+                        let mut guard = launched_process.lock().await;
+                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                            child,
+                            out_tx.clone(),
+                            seq.clone(),
+                            Arc::clone(exited_sent),
+                            Arc::clone(terminated_sent),
+                            server_shutdown.clone(),
+                        );
+                        launch_outcome_tx = Some(outcome_tx);
+                        *guard = Some(proc);
+                    }
+
+                    (resolved_hosts, port, attach_target_label)
+                }
+                LaunchMode::Java => {
+                    let main_class = args.main_class.as_deref().unwrap_or_default();
+                    let Some(classpath) = args.classpath.clone() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("launch.classpath is required for Java launch".to_string()),
+                        );
+                        return;
+                    };
+
+                    let port = match args.port {
+                        Some(port) => port,
+                        None => match pick_free_port().await {
+                            Ok(port) => port,
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to select debug port: {err}")),
+                                );
+                                return;
+                            }
+                        },
+                    };
+                    args.port = Some(port);
+                    let host: IpAddr = "127.0.0.1".parse().unwrap();
+                    let attach_target_label = format!("{host}:{port}");
+
+                    let java = args.java.clone().unwrap_or_else(|| "java".to_string());
+
+                    let cp_joined = match join_classpath(&classpath) {
+                        Ok(cp) => cp,
+                        Err(err) => {
+                            send_response(out_tx, seq, request, false, None, Some(err));
+                            return;
+                        }
+                    };
+
+                    let suspend = if args.stop_on_entry { "y" } else { "n" };
+                    let debug_arg = format!(
+                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
+                    );
+
+                    let mut cmd = Command::new(java);
+                    cmd.stdin(Stdio::null());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+                    if let Some(cwd) = args.cwd.as_deref() {
+                        cmd.current_dir(cwd);
+                    }
+                    for (k, v) in &args.env {
+                        cmd.env(k, v);
+                    }
+                    cmd.args(&args.vm_args);
+                    cmd.arg(debug_arg);
+                    if let Some(module_name) = args.module_name.as_deref() {
+                        cmd.arg("--module-path");
+                        cmd.arg(cp_joined.clone());
+                        cmd.arg("-m");
+                        cmd.arg(format!("{module_name}/{main_class}"));
+                    } else {
+                        cmd.arg("-classpath");
+                        cmd.arg(cp_joined);
+                        cmd.arg(main_class);
+                    }
+                    cmd.args(&args.args);
+
+                    let mut child = match cmd.spawn() {
+                        Ok(child) => child,
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("failed to spawn java: {err}")),
+                            );
+                            return;
+                        }
+                    };
+
+                    if let Some(stdout) = child.stdout.take() {
+                        spawn_output_task(
+                            stdout,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stdout",
+                            server_shutdown.clone(),
+                        );
+                    }
+                    if let Some(stderr) = child.stderr.take() {
+                        spawn_output_task(
+                            stderr,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stderr",
+                            server_shutdown.clone(),
+                        );
+                    }
+
+                    {
+                        let mut guard = launched_process.lock().await;
+                        let (proc, outcome_tx) = spawn_launched_process_exit_task(
+                            child,
+                            out_tx.clone(),
+                            seq.clone(),
+                            Arc::clone(exited_sent),
+                            Arc::clone(terminated_sent),
+                            server_shutdown.clone(),
+                        );
+                        launch_outcome_tx = Some(outcome_tx);
+                        *guard = Some(proc);
+                    }
+
+                    (vec![host], port, attach_target_label)
+                }
+            };
+
+            // Update stored config to reflect any defaults we re-applied during restart.
+            {
+                let mut sess = session.lock().await;
+                sess.last_launch = Some(StoredLaunchConfig {
+                    mode,
+                    args: args.clone(),
+                    source_roots: source_roots.clone(),
+                    project_root: project_root.clone(),
+                });
+            }
+
+            let attach_fut = attach_debugger_with_retry_hosts(
+                attach_hosts,
+                attach_port,
+                source_roots,
+                attach_timeout,
+            );
+            let dbg = tokio::select! {
+                _ = cancel.cancelled() => {
+                    if let Some(tx) = launch_outcome_tx.take() {
+                        let _ = tx.send(Some(false));
+                    }
+                    terminate_existing_process(launched_process).await;
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+                res = attach_fut => match res {
+                    Ok(dbg) => dbg,
+                    Err(err) => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
+                        terminate_existing_process(launched_process).await;
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("failed to attach to {attach_target_label}: {err}")),
+                        );
+                        return;
+                    }
+                }
+            };
+
+            {
+                let mut guard = debugger.lock().await;
+                *guard = Some(dbg);
+            }
+
+            let debugger_id = next_debugger_id.fetch_add(1, Ordering::Relaxed);
+            spawn_event_task(
+                debugger.clone(),
+                out_tx.clone(),
+                seq.clone(),
+                terminated_sent.clone(),
+                server_shutdown.clone(),
+                debugger_id,
+                suppress_termination_debugger_id.clone(),
+            );
+
+            let resume_after_restart = {
+                let mut sess = session.lock().await;
+                sess.lifecycle = LifecycleState::LaunchedOrAttached;
+                sess.kind = Some(SessionKind::Launch);
+                sess.debugger_id = Some(debugger_id);
+                let needs_config_done_resume = args.stop_on_entry;
+                let resume_after_launch = needs_config_done_resume && sess.configuration_done_received;
+                sess.awaiting_configuration_done_resume =
+                    needs_config_done_resume && !sess.configuration_done_received;
+                sess.project_root = project_root;
+                resume_after_launch
+            };
+
+            apply_pending_configuration(cancel, debugger, pending_config).await;
+
+            if resume_after_restart {
+                let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                    Some(guard) => guard,
+                    None => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
+                        terminate_existing_process(launched_process).await;
+                        disconnect_debugger(debugger).await;
+                        {
+                            let mut sess = session.lock().await;
+                            sess.kind = None;
+                            sess.debugger_id = None;
+                            sess.awaiting_configuration_done_resume = false;
+                        }
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                };
+                let Some(dbg) = guard.as_mut() else {
+                    if let Some(tx) = launch_outcome_tx.take() {
+                        let _ = tx.send(Some(false));
+                    }
+                    terminate_existing_process(launched_process).await;
+                    disconnect_debugger(debugger).await;
+                    {
+                        let mut sess = session.lock().await;
+                        sess.kind = None;
+                        sess.debugger_id = None;
+                        sess.awaiting_configuration_done_resume = false;
+                    }
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("not attached".to_string()),
+                    );
+                    return;
+                };
+
+                match dbg.continue_(cancel, None).await {
+                    Ok(()) => {
+                        let mut sess = session.lock().await;
+                        sess.lifecycle = LifecycleState::Running;
+                    }
+                    Err(err) if is_cancelled_error(&err) => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
+                        drop(guard);
+                        terminate_existing_process(launched_process).await;
+                        disconnect_debugger(debugger).await;
+                        {
+                            let mut sess = session.lock().await;
+                            sess.kind = None;
+                            sess.debugger_id = None;
+                            sess.awaiting_configuration_done_resume = false;
+                        }
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                    Err(err) => {
+                        if let Some(tx) = launch_outcome_tx.take() {
+                            let _ = tx.send(Some(false));
+                        }
+                        let msg = err.to_string();
+                        drop(guard);
+                        terminate_existing_process(launched_process).await;
+                        disconnect_debugger(debugger).await;
+                        {
+                            let mut sess = session.lock().await;
+                            sess.kind = None;
+                            sess.debugger_id = None;
+                            sess.awaiting_configuration_done_resume = false;
+                        }
+                        send_response(out_tx, seq, request, false, None, Some(msg));
+                        return;
+                    }
+                }
+
+                send_response(out_tx, seq, request, true, None, None);
+                send_event(
+                    out_tx,
+                    seq,
+                    "continued",
+                    Some(json!({ "allThreadsContinued": true })),
+                );
+            } else {
+                send_response(out_tx, seq, request, true, None, None);
+                if !args.stop_on_entry {
+                    // The debuggee is expected to be running immediately after attach.
+                    send_event(
+                        out_tx,
+                        seq,
+                        "continued",
+                        Some(json!({ "allThreadsContinued": true })),
+                    );
+                }
+            }
+
+            if let Some(tx) = launch_outcome_tx.take() {
+                let _ = tx.send(Some(true));
+            }
         }
         "setFunctionBreakpoints" => {
             if cancel.is_cancelled() {
@@ -3560,6 +4164,14 @@ enum LaunchMode {
     Java,
 }
 
+#[derive(Debug, Clone)]
+struct StoredLaunchConfig {
+    mode: LaunchMode,
+    args: LaunchArguments,
+    source_roots: Vec<PathBuf>,
+    project_root: Option<PathBuf>,
+}
+
 fn join_classpath(classpath: &Classpath) -> std::result::Result<std::ffi::OsString, String> {
     let parts: Vec<std::ffi::OsString> = classpath
         .entries()
@@ -3768,6 +4380,7 @@ fn spawn_launched_process_exit_task(
         LaunchedProcess {
             detach,
             kill: kill_tx,
+            outcome: outcome_tx.clone(),
             monitor,
         },
         outcome_tx,
@@ -3927,6 +4540,8 @@ fn spawn_event_task(
     seq: Arc<AtomicI64>,
     terminated_sent: Arc<AtomicBool>,
     server_shutdown: CancellationToken,
+    debugger_id: u64,
+    suppress_termination_debugger_id: Arc<AtomicU64>,
 ) {
     tokio::spawn(async move {
         let mut events: Option<broadcast::Receiver<nova_jdwp::wire::JdwpEvent>> = None;
@@ -3967,6 +4582,13 @@ fn spawn_event_task(
             let event = tokio::select! {
                 _ = server_shutdown.cancelled() => return,
                 _ = jdwp_shutdown.cancelled() => {
+                    if suppress_termination_debugger_id
+                        .compare_exchange(debugger_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        return;
+                    }
+
                     send_terminated_once(&tx, &seq, &terminated_sent);
                     server_shutdown.cancel();
                     return;
@@ -3974,6 +4596,13 @@ fn spawn_event_task(
                 event = events.recv() => match event {
                     Ok(e) => e,
                     Err(broadcast::error::RecvError::Closed) => {
+                        if suppress_termination_debugger_id
+                            .compare_exchange(debugger_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+                            .is_ok()
+                        {
+                            return;
+                        }
+
                         send_terminated_once(&tx, &seq, &terminated_sent);
                         server_shutdown.cancel();
                         return;
@@ -4216,7 +4845,13 @@ fn spawn_event_task(
                         Some(json!({"reason": "exited", "threadId": thread as i64})),
                     );
                 }
-                nova_jdwp::wire::JdwpEvent::VmDeath => {
+                nova_jdwp::wire::JdwpEvent::VmDeath | nova_jdwp::wire::JdwpEvent::VmDisconnect => {
+                    if suppress_termination_debugger_id
+                        .compare_exchange(debugger_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        return;
+                    }
                     send_terminated_once(&tx, &seq, &terminated_sent);
                     server_shutdown.cancel();
                     return;
