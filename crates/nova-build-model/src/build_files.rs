@@ -311,8 +311,7 @@ fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<S
             let name = raw
                 .trim()
                 .trim_start_matches(':')
-                .replace(':', "/")
-                .replace('\\', "/");
+                .replace([':', '\\'], "/");
             let name = name.trim();
             if name.is_empty() {
                 continue;
