@@ -6,7 +6,7 @@ use nova_hir::queries::HirDatabase;
 use nova_jdk::JdkIndex;
 use nova_resolve::type_ref::resolve_type_ref_text;
 use nova_resolve::{build_scopes, Resolver};
-use nova_types::{Type, TypeEnv, TypeStore};
+use nova_types::{PrimitiveType, Type, TypeEnv, TypeStore};
 
 #[derive(Default)]
 struct TestDb {
@@ -221,7 +221,6 @@ class C {}
     let jdk = JdkIndex::new();
     let index = TestIndex::default();
     let scopes = build_scopes(&db, file);
-
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
@@ -283,5 +282,81 @@ fn type_use_annotations_before_varargs_are_ignored() {
     assert_eq!(
         result.ty,
         Type::Array(Box::new(Type::class(string_id, vec![])))
+    );
+}
+
+#[test]
+fn type_use_annotations_can_be_adjacent() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.*;
+class C {}
+"#,
+    );
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let list_id = env.lookup_class("java.util.List").expect("java.util.List");
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    let expected = Type::class(list_id, vec![Type::class(string_id, vec![])]);
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "List<@A@BString>",
+        None,
+    );
+    assert!(
+        !result.diagnostics.iter().any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.ty, expected);
+}
+
+#[test]
+fn type_use_annotations_on_primitive_arrays_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "int@B[]",
+        None,
+    );
+    assert!(
+        !result.diagnostics.iter().any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.ty,
+        Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))
     );
 }

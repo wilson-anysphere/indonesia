@@ -154,9 +154,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
     fn parse_single_type(&mut self) -> Type {
         self.skip_ws();
-        let start = self.pos;
         self.skip_annotations(AnnotationSkipContext::BeforeType);
         self.skip_ws();
+        let start = self.pos;
         if self.is_eof() {
             self.push_error("invalid-type-ref", "expected a type", start..start);
             return Type::Unknown;
