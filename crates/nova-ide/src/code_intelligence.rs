@@ -2054,10 +2054,11 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
 static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> =
     Lazy::new(|| {
         // Best-effort: honor workspace JDK overrides from `nova.toml` if the process is started
-        // inside a workspace (common for `nova-lsp`/`nova-cli` usage). If config loading fails (no
-        // config present, invalid config, etc.), fall back to environment-based discovery.
+        // inside a workspace (common for `nova-lsp`/`nova-cli` usage). If config loading fails
+        // (missing config, invalid config, etc.), fall back to environment-based discovery.
         let configured = std::env::current_dir().ok().and_then(|cwd| {
-            let (config, _path) = nova_config::load_for_workspace(&cwd).ok()?;
+            let workspace_root = nova_project::workspace_root(&cwd).unwrap_or(cwd);
+            let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
             let jdk_config = config.jdk_config();
             JdkIndex::discover(Some(&jdk_config)).ok().map(Arc::new)
         });
