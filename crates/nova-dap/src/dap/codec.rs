@@ -2,6 +2,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 
+/// Maximum allowed DAP message payload size (in bytes).
+///
+/// DAP clients are untrusted. Without an upper bound, a hostile client can send a
+/// huge `Content-Length` header and trigger an unbounded allocation before we
+/// attempt to read the body.
+const MAX_DAP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 /// Read a single DAP-framed JSON message from `reader`.
 ///
 /// DAP messages are framed using an HTTP-like header section:
@@ -61,6 +68,16 @@ pub fn read_raw_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Vec<u8>
         ));
     };
 
+    if content_length > MAX_DAP_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "DAP message Content-Length {} exceeds maximum allowed size {}",
+                content_length, MAX_DAP_MESSAGE_BYTES
+            ),
+        ));
+    }
+
     let mut buf = vec![0u8; content_length];
     reader.read_exact(&mut buf)?;
     Ok(Some(buf))
@@ -111,5 +128,16 @@ mod tests {
         let mut cursor = Cursor::new(framed.into_bytes());
         let decoded: serde_json::Value = read_json_message(&mut cursor).unwrap().unwrap();
         assert_eq!(decoded["command"], "threads");
+    }
+
+    #[test]
+    fn rejects_oversized_content_length_without_allocating_message_body() {
+        let framed = format!("Content-Length: {}\r\n\r\n", MAX_DAP_MESSAGE_BYTES + 1);
+        let mut cursor = Cursor::new(framed.into_bytes());
+        let err = read_raw_message(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err
+            .to_string()
+            .contains("exceeds maximum allowed size"));
     }
 }

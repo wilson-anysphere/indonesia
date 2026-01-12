@@ -1,0 +1,11 @@
+# Local-only lockfile (depends on local toolchain + platform).
+Cargo.lock
+
+# cargo output (also covered by repo-level **/target/).
+# We also ignore common custom target dir names used with `cargo fuzz --target-dir ...`.
+target*/
+
+# cargo-fuzz output.
+artifacts/
+coverage/
+**/*.cur_input
