@@ -162,6 +162,17 @@ test('package.json contributes Nova Frameworks view + refresh command', async ()
     }),
     'expected nova.frameworks.refresh to be present in view/title menu for novaFrameworks',
   );
+  assert.ok(
+    (viewTitle as unknown[]).some((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return false;
+      }
+      const command = (entry as { command?: unknown }).command;
+      const when = (entry as { when?: unknown }).when;
+      return command === 'nova.frameworks.search' && typeof when === 'string' && when.includes('view == novaFrameworks');
+    }),
+    'expected nova.frameworks.search to be present in view/title menu for novaFrameworks',
+  );
 
   const icon = refresh.icon;
   assert.ok(icon && typeof icon === 'object', 'expected refresh command to include light/dark icon paths');
