@@ -1567,7 +1567,7 @@ fn open_zip_archive(
             // For `.jmod` files with a `JM<version>` header, the zip offsets can also be relative
             // to the embedded zip payload (after the 4-byte header). When local header parsing
             // fails, retry with an offset reader.
-            if archive.len() == 0 || archive.by_index(0).is_ok() {
+            if archive.is_empty() || archive.by_index(0).is_ok() {
                 return Ok(archive);
             }
         }

@@ -19,7 +19,6 @@ pub struct BasicBlock {
 }
 
 impl BasicBlock {
-    #[must_use]
     pub fn successors(&self) -> impl Iterator<Item = BlockId> + '_ {
         self.terminator.successors()
     }
@@ -153,7 +152,6 @@ impl ControlFlowGraph {
         &self.preds[id.index()]
     }
 
-    #[must_use]
     pub fn successors(&self, id: BlockId) -> impl Iterator<Item = BlockId> + '_ {
         self.blocks[id.index()].successors()
     }

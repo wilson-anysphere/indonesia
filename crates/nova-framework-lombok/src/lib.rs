@@ -276,7 +276,7 @@ impl FrameworkAnalyzer for LombokAnalyzer {
             if want_getter {
                 let span = field
                     .annotation_span("Getter")
-                    .or_else(|| class_getter_span);
+                    .or(class_getter_span);
                 let member = Self::generate_getter(field, span);
                 if seen.insert(MemberKey::from(&member)) {
                     members.push(member);
@@ -288,7 +288,7 @@ impl FrameworkAnalyzer for LombokAnalyzer {
             if want_setter && !field.is_final {
                 let span = field
                     .annotation_span("Setter")
-                    .or_else(|| class_setter_span);
+                    .or(class_setter_span);
                 let member = Self::generate_setter(field, span);
                 if seen.insert(MemberKey::from(&member)) {
                     members.push(member);

@@ -67,11 +67,7 @@ pub fn analyze_with(
     //
     // NOTE: Reachability remains available because it only needs O(blocks) state.
     const MAX_DATAFLOW_STATE_CELLS: usize = 5_000_000;
-    let dataflow_state_cells = cfg
-        .blocks
-        .len()
-        .checked_mul(body.locals().len())
-        .unwrap_or(usize::MAX);
+    let dataflow_state_cells = cfg.blocks.len().saturating_mul(body.locals().len());
 
     if dataflow_state_cells <= MAX_DATAFLOW_STATE_CELLS {
         diagnostics.extend(definite_assignment_diagnostics(
@@ -496,9 +492,7 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     Some(init) => self.build_stmt(*init, entry),
                     None => Some(entry),
                 };
-                let Some(init_end) = init_fallthrough else {
-                    return None;
-                };
+                let init_end = init_fallthrough?;
 
                 let cond_bb = self.cfg.new_block();
                 let body_bb = self.cfg.new_block();
@@ -991,9 +985,9 @@ fn definite_assignment_states(
     in_states[cfg.entry.index()] = init.clone();
 
     let mut worklist = VecDeque::new();
-    for idx in 0..n_blocks {
+    for (idx, is_reachable) in reachable.iter().enumerate() {
         check_cancelled();
-        if reachable[idx] {
+        if *is_reachable {
             worklist.push_back(BlockId(idx));
         }
     }
@@ -1223,9 +1217,9 @@ fn null_states(
     let mut out_states = vec![vec![NullState::Unknown; n_locals]; n_blocks];
 
     let mut worklist = VecDeque::new();
-    for idx in 0..n_blocks {
+    for (idx, is_reachable) in reachable.iter().enumerate() {
         check_cancelled();
-        if reachable[idx] {
+        if *is_reachable {
             worklist.push_back(BlockId(idx));
         }
     }
@@ -1332,9 +1326,9 @@ fn edge_narrow_null(
 }
 
 fn merge_null_constraints(
-    mut lhs: Vec<(LocalId, NullState)>,
-    rhs: Vec<(LocalId, NullState)>,
-) -> Vec<(LocalId, NullState)> {
+    mut lhs: NullConstraints,
+    rhs: NullConstraints,
+) -> NullConstraints {
     for (local, value) in rhs {
         match lhs.iter_mut().find(|(existing, _)| *existing == local) {
             Some((_, existing_value)) => *existing_value = existing_value.join(value),
@@ -1344,10 +1338,12 @@ fn merge_null_constraints(
     lhs
 }
 
+type NullConstraints = Vec<(LocalId, NullState)>;
+
 fn null_constraints(
     body: &Body,
     expr: ExprId,
-) -> (Vec<(LocalId, NullState)>, Vec<(LocalId, NullState)>) {
+) -> (NullConstraints, NullConstraints) {
     let expr_data = body.expr(expr);
     match &expr_data.kind {
         ExprKind::Unary {
@@ -1626,10 +1622,8 @@ fn check_expr_null_deref(
                 }
                 let mut rhs_state = state.to_vec();
                 for (local, value) in on_true {
-                    if local.index() < rhs_state.len() {
-                        if value != NullState::Unknown {
-                            rhs_state[local.index()] = value;
-                        }
+                    if local.index() < rhs_state.len() && value != NullState::Unknown {
+                        rhs_state[local.index()] = value;
                     }
                 }
                 let _ = check_expr_null_deref(body, *rhs, &mut rhs_state, diags);
@@ -1661,10 +1655,8 @@ fn check_expr_null_deref(
                 }
                 let mut rhs_state = state.to_vec();
                 for (local, value) in on_false {
-                    if local.index() < rhs_state.len() {
-                        if value != NullState::Unknown {
-                            rhs_state[local.index()] = value;
-                        }
+                    if local.index() < rhs_state.len() && value != NullState::Unknown {
+                        rhs_state[local.index()] = value;
                     }
                 }
                 let _ = check_expr_null_deref(body, *rhs, &mut rhs_state, diags);

@@ -123,7 +123,7 @@ pub fn open_archive(jmod_path: &Path) -> Result<ZipArchive<OffsetReader<File>>, 
             // Some `.jmod` files store zip offsets relative to the embedded zip payload (after the
             // 4-byte `JM<version>` header). If local header parsing fails, retry with an offset
             // reader.
-            if archive.len() == 0 || archive.by_index(0).is_ok() {
+            if archive.is_empty() || archive.by_index(0).is_ok() {
                 return Ok(archive);
             }
         }
