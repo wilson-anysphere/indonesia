@@ -474,6 +474,29 @@ class C {
 }
 
 #[test]
+fn explicit_type_args_on_non_generic_method_emit_invalid_type_args() {
+    let src = r#"
+class C {
+    void f() {}
+    void m() {
+        this.<String>f();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-type-args"),
+        "expected invalid-type-args diagnostic, got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected call to still resolve best-effort, got {diags:?}"
+    );
+}
+
+#[test]
 fn constructor_type_args_do_not_become_method_type_args() {
     let src = r#"
 class Foo {

@@ -8897,6 +8897,25 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             explicit_type_args_errorish = false;
         }
 
+        let maybe_emit_non_generic_explicit_type_args_diag =
+            |this: &mut Self, method: &ResolvedMethod| {
+                // Java requires explicit method type arguments to apply to a generic method.
+                //
+                // Nova resolves the call best-effort (so IDE features like go-to-definition keep
+                // working), but still surfaces a diagnostic when the selected method is not
+                // generic.
+                if !resolved_explicit_type_args.is_empty() && method.inferred_type_args.is_empty() {
+                    this.diagnostics.push(Diagnostic::error(
+                        "invalid-type-args",
+                        format!(
+                            "method `{}` is not generic and cannot be parameterized with explicit type arguments",
+                            method.name
+                        ),
+                        explicit_type_args_span.or(Some(this.body.exprs[expr].range())),
+                    ));
+                }
+            };
+
         match &self.body.exprs[callee] {
             HirExpr::This { .. } => self.infer_explicit_constructor_invocation(
                 loader,
@@ -8941,6 +8960,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let mut ctx = TyContext::new(env_ro);
                 match nova_types::resolve_method_call(&mut ctx, &call) {
                     MethodResolution::Found(method) => {
+                        maybe_emit_non_generic_explicit_type_args_diag(self, &method);
                         self.emit_method_warnings(
                             &method,
                             self.body.exprs[expr].range(),
@@ -9053,6 +9073,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let mut ctx = TyContext::new(env_ro);
                     match nova_types::resolve_method_call(&mut ctx, &call) {
                         MethodResolution::Found(method) => {
+                            maybe_emit_non_generic_explicit_type_args_diag(self, &method);
                             // An unqualified call like `foo()` is not a static-access-via-instance
                             // scenario even in an instance method (unlike `obj.foo()`).
                             self.emit_method_warnings(
@@ -9164,6 +9185,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
+                                maybe_emit_non_generic_explicit_type_args_diag(self, &method);
                                 self.emit_method_warnings(
                                     &method,
                                     self.body.exprs[expr].range(),
@@ -9252,6 +9274,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
+                                maybe_emit_non_generic_explicit_type_args_diag(self, &method);
                                 self.emit_method_warnings(
                                     &method,
                                     self.body.exprs[expr].range(),
@@ -9336,6 +9359,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
+                                maybe_emit_non_generic_explicit_type_args_diag(self, &method);
                                 self.emit_method_warnings(
                                     &method,
                                     self.body.exprs[expr].range(),
@@ -11895,7 +11919,6 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Expr { range, .. }
         | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
-        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -12151,11 +12174,6 @@ fn find_enclosing_target_typed_expr_in_expr(
                     target_range,
                     best,
                 );
-            }
-        }
-        HirExpr::ArrayInitializer { items, .. } => {
-            for item in items {
-                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
             }
         }
         HirExpr::Unary { expr, .. } => {
