@@ -778,6 +778,44 @@ fn constructor_reference_allows_parameterized_reference_type() {
 }
 
 #[test]
+fn enum_constant_class_body_is_accessible() {
+    let src = r#"
+        enum Foo {
+          A {
+            int x;
+          },
+          B;
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let enum_decl = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::EnumDeclaration(it) => Some(it),
+            _ => None,
+        })
+        .expect("expected an enum declaration");
+
+    let constant = enum_decl
+        .body()
+        .unwrap()
+        .constants()
+        .find(|c| c.class_body().is_some())
+        .expect("expected an enum constant with a class body");
+
+    let body = constant.class_body().unwrap();
+    assert!(
+        body.members()
+            .any(|m| matches!(m, ClassMember::FieldDeclaration(_))),
+        "expected a field declaration inside the enum constant class body"
+    );
+}
+
+#[test]
 fn annotation_element_value_pairs() {
     let src = r#"
         @Anno(x = 1)

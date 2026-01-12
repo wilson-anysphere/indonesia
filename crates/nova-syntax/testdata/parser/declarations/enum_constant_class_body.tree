@@ -1,0 +1,37 @@
+CompilationUnit
+  EnumDeclaration
+    Modifiers
+    EnumKw "enum"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    EnumBody
+      LBrace "{"
+      Whitespace "\n  "
+      EnumConstant
+        Identifier "A"
+        Whitespace " "
+        ClassBody
+          LBrace "{"
+          Whitespace "\n    "
+          FieldDeclaration
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "x"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Comma ","
+      Whitespace "\n  "
+      EnumConstant
+        Identifier "B"
+      Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

@@ -684,6 +684,10 @@ impl EnumConstant {
         support::child::<ArgumentList>(&self.syntax)
     }
 
+    pub fn class_body(&self) -> Option<ClassBody> {
+        support::child::<ClassBody>(&self.syntax)
+    }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

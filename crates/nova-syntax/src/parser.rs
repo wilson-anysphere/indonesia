@@ -1185,6 +1185,10 @@ impl<'a> Parser<'a> {
                 if self.at(SyntaxKind::LParen) {
                     self.parse_argument_list();
                 }
+                // Optional class body for enum constant: `A { ... }`.
+                if self.at(SyntaxKind::LBrace) {
+                    self.parse_class_body(SyntaxKind::ClassBody);
+                }
                 self.builder.finish_node();
                 if self.at(SyntaxKind::Comma) {
                     self.bump();
