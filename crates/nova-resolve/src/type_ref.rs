@@ -747,7 +747,6 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // Greedily consume a qualified identifier, but don't accidentally swallow
         // varargs `...` (only accept `.` when followed by another identifier).
         let greedy_end = self.scan_greedy_qualified_ident_end();
-        let mut name_end = greedy_end;
 
         // Greedy path: consume the full qualified name + optional arg list.
         self.pos = greedy_end;
@@ -760,7 +759,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         if ctx == AnnotationSkipContext::BeforeSuffix {
             // Array/varargs suffixes provide a delimiter, so we don't need to do
             // any heuristic splitting.
-            self.resolve_annotation_name(name_start..name_end);
+            self.resolve_annotation_name(name_start..greedy_end);
             return;
         }
 
@@ -772,7 +771,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // `@B[]` without a base type/segment. If the next token is another `@`, run the splitting
         // heuristic even if the greedy parse looks plausible.
         if self.annotation_follow_is_ok(ctx) && self.peek_char() != Some('@') {
-            self.resolve_annotation_name(name_start..name_end);
+            self.resolve_annotation_name(name_start..greedy_end);
             return;
         }
 
@@ -781,7 +780,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // `AString` as a single identifier, leaving nothing (or only `<...>` /
         // `[]`) for the actual type. Try to split the identifier so the
         // remainder parses as a type/segment.
-        name_end = self.find_best_annotation_name_end(name_start, greedy_end, ctx);
+        let name_end = self.find_best_annotation_name_end(name_start, greedy_end, ctx);
         self.pos = name_end;
         self.skip_ws();
         if self.peek_char() == Some('(') {

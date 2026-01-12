@@ -29,8 +29,7 @@ fn set_file(
 ) {
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
-    db.set_file_exists(file, true);
-    db.set_file_text(file, text.to_string());
+    db.set_file_text(file, text);
 }
 
 fn find_method_named(tree: &nova_hir::item_tree::ItemTree, name: &str) -> nova_hir::ids::MethodId {

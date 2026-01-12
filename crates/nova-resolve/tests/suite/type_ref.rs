@@ -908,15 +908,6 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         text,
         Some(base_span),
     );
-    let diag = result
-        .diagnostics
-        .iter()
-        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for type-use annotation type");
-    let span = diag
-        .span
-        .expect("unresolved-type diagnostic should have a span");
-    assert_eq!(&text[span.start..span.end], "Missing");
     assert!(
         !result
             .diagnostics
@@ -925,6 +916,15 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         "unexpected diagnostics: {:?}",
         result.diagnostics
     );
+    let missing = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for Missing");
+    let span = missing
+        .span
+        .expect("unresolved-type diagnostic should have a span");
+    assert_eq!(&text[span.start..span.end], "Missing");
 
     // The type should parse/resolve as if the annotation were not present.
     let plain = resolve_type_ref_text(
@@ -951,15 +951,6 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         stripped,
         Some(base_span),
     );
-    let diag = result
-        .diagnostics
-        .iter()
-        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for type-use annotation type (stripped)");
-    let span = diag
-        .span
-        .expect("unresolved-type diagnostic should have a span");
-    assert_eq!(&stripped[span.start..span.end], "Missing");
     assert!(
         !result
             .diagnostics
@@ -968,6 +959,15 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         "unexpected diagnostics: {:?}",
         result.diagnostics
     );
+    let missing = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for Missing");
+    let span = missing
+        .span
+        .expect("unresolved-type diagnostic should have a span");
+    assert_eq!(&stripped[span.start..span.end], "Missing");
     assert_eq!(result.ty, plain.ty);
 }
 

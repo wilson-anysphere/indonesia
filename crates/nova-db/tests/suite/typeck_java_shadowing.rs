@@ -289,10 +289,10 @@ fn typeck_does_not_load_java_types_from_workspace_stubs() {
     // "rescue" the unresolved name by loading it from workspace stubs.
     let foo_src = r#"
 package java.fake;
-class Foo {
-  void bar() {}
-}
-"#;
+    class Foo {
+      void bar() {}
+    }
+    "#;
     let foo_file = FileId::from_raw(1);
     set_file(
         &mut db,
