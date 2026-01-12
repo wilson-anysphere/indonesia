@@ -581,6 +581,26 @@ test('extension does not manually forward workspace file operations (vscode-lang
             );
           }
         }
+
+        // Pre-bound sendNotification helpers, e.g.
+        //   const sendRename = client.sendNotification.bind(client, 'workspace/didRenameFiles');
+        // should also be treated as manual forwarding.
+        const callee = unwrapExpression(node.expression);
+        if (
+          getCalledMethodName(callee, env) === 'bind' &&
+          (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
+        ) {
+          if (isSendNotificationReference(callee.expression, env, aliases)) {
+            const boundMethodExpr = node.arguments[1];
+            if (boundMethodExpr) {
+              const method = resolveNotificationMethod(boundMethodExpr, env, allAliases);
+              if (method && bannedNotificationMethods.has(method)) {
+                const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+                violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} bind ${method}`);
+              }
+            }
+          }
+        }
       }
 
       let nextEnv = env;
