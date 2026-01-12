@@ -1,3 +1,13 @@
+//! Integration utilities for bridging external class stubs into Nova's core type system.
+//!
+//! `nova-types` intentionally keeps its dependencies minimal (it defines the core `Type` model and
+//! type-checking algorithms). Anything that depends on parsing Java classfiles/signatures lives in a
+//! higher layer.
+//!
+//! This crate owns the canonical implementation for loading external `nova_types::TypeProvider`
+//! stubs into a `nova_types::TypeStore`: [`ExternalTypeLoader`]. Keeping a single loader
+//! implementation ensures Salsa typechecking and unit tests exercise the same code path and avoids
+//! competing `ClassId` allocation behavior.
 #![forbid(unsafe_code)]
 
 use std::collections::HashSet;
