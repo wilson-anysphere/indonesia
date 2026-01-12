@@ -533,26 +533,30 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
 
             // Gradle project structure is extremely flexible:
             // - "script plugins" (`apply from: "deps.gradle"`) are often used to share config
-            // - version catalogs (`libs.versions.toml`) can change dependency resolution + plugins
+            // - version catalogs (`*.versions.toml`) can change dependency resolution + plugins
             // - additional version catalogs can be configured via settings (e.g. `gradle/deps.versions.toml`)
             // - wrapper changes affect which Gradle distribution is executed
             //
             // Treat these as "build files" so `reload_project()` re-loads configuration when they
             // change.
-            let is_gradle_version_catalog = name.ends_with(".versions.toml")
-                && path
-                    .parent()
-                    .and_then(|parent| parent.file_name())
-                    .is_some_and(|dir| dir == "gradle");
+            let in_ignored_dir = path.components().any(|c| {
+                c.as_os_str() == std::ffi::OsStr::new(".git")
+                    || c.as_os_str() == std::ffi::OsStr::new(".gradle")
+                    || c.as_os_str() == std::ffi::OsStr::new("build")
+                    || c.as_os_str() == std::ffi::OsStr::new("target")
+                    || c.as_os_str() == std::ffi::OsStr::new(".nova")
+                    || c.as_os_str() == std::ffi::OsStr::new(".idea")
+            });
+            let is_gradle_version_catalog = !in_ignored_dir && name.ends_with(".versions.toml");
+            let is_gradle_script_plugin = !in_ignored_dir
+                && (name.ends_with(".gradle") || name.ends_with(".gradle.kts"));
             name == "gradle.properties"
-                || name == "libs.versions.toml"
                 || is_gradle_version_catalog
                 || name == "gradlew"
                 || name == "gradlew.bat"
                 || name.starts_with("build.gradle")
                 || name.starts_with("settings.gradle")
-                || name.ends_with(".gradle")
-                || name.ends_with(".gradle.kts")
+                || is_gradle_script_plugin
                 || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
                 || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar"))
         }

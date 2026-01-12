@@ -28,8 +28,11 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradlew.bat",
         "gradle/wrapper/gradle-wrapper.properties",
         "gradle/wrapper/gradle-wrapper.jar",
+        // Version catalogs can live outside the conventional `gradle/` directory.
+        "libs.versions.toml",
+        "deps.versions.toml",
         "gradle/libs.versions.toml",
-        "gradle/foo.versions.toml",
+        "gradle/deps.versions.toml",
         "gradle/conventions.gradle",
         "gradle/conventions.gradle.kts",
         ".nova/queries/gradle.json",
@@ -55,9 +58,8 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradle-wrapper.jar",
         "gradle/gradle-wrapper.jar",
         "wrapper/gradle-wrapper.jar",
-        // Version catalogs must live directly under `gradle/`.
-        "foo.versions.toml",
-        "catalogs/foo.versions.toml",
+        // Version catalogs under ignored dirs should not be treated as build files.
+        ".gradle/deps.versions.toml",
         // Sanity check: non-build file.
         "gradle/conventions.txt",
     ];
