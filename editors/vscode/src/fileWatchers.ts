@@ -19,6 +19,12 @@ const WATCHED_FILE_GLOB_PATTERNS = [
   '**/.mvn/jvm.config',
 
   // Gradle build configuration (Groovy + Kotlin DSL) / wrapper.
+  // Explicit top-level markers (required for basic Gradle project detection).
+  '**/build.gradle',
+  '**/build.gradle.kts',
+  '**/settings.gradle',
+  '**/settings.gradle.kts',
+  // Script plugins / shared Gradle configuration can live anywhere.
   '**/*.gradle',
   '**/*.gradle.kts',
   '**/gradle.properties',
