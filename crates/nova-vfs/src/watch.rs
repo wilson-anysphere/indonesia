@@ -164,6 +164,20 @@ pub trait FileWatcher: Send {
     /// Stop watching `path`.
     fn unwatch_path(&mut self, path: &Path) -> io::Result<()>;
 
+    /// Convenience wrapper for watching a directory root recursively.
+    ///
+    /// This is equivalent to `watch_path(root, WatchMode::Recursive)`.
+    fn watch_root(&mut self, root: &Path) -> io::Result<()> {
+        self.watch_path(root, WatchMode::Recursive)
+    }
+
+    /// Convenience wrapper for unwatching a directory root.
+    ///
+    /// This is equivalent to `unwatch_path(root)`.
+    fn unwatch_root(&mut self, root: &Path) -> io::Result<()> {
+        self.unwatch_path(root)
+    }
+
     /// Returns the receiver used to consume watcher events.
     fn receiver(&self) -> &channel::Receiver<WatchMessage>;
 
