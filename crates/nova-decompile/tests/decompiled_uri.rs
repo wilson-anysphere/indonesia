@@ -30,6 +30,18 @@ fn canonical_decompiled_uri_is_content_addressed() {
         uri,
         format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{expected_hash}/com.example.Foo.java")
     );
+
+    let parsed_vfs_path = nova_vfs::VfsPath::uri(uri.clone());
+    assert_eq!(
+        parsed_vfs_path,
+        nova_vfs::VfsPath::decompiled(expected_hash.to_string(), "com.example.Foo")
+    );
+    assert_eq!(parsed_vfs_path.to_uri().as_deref(), Some(uri.as_str()));
+    let (parsed_hash, parsed_binary_name) = parsed_vfs_path
+        .as_decompiled()
+        .expect("parsed vfs path should be decompiled");
+    assert_eq!(parsed_hash, expected_hash.as_str());
+    assert_eq!(parsed_binary_name, "com.example.Foo");
 }
 
 #[test]

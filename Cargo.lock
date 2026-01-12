@@ -3610,6 +3610,7 @@ dependencies = [
  "nova-cache",
  "nova-classfile",
  "nova-core",
+ "nova-vfs",
  "serde",
  "tempfile",
  "thiserror 1.0.69",
