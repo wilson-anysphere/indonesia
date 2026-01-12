@@ -26,9 +26,77 @@ impl JavaVersion {
             return None;
         }
 
-        // Maven sometimes uses "1.8" for Java 8.
-        let normalized = text.strip_prefix("1.").unwrap_or(text);
-        normalized.parse::<u16>().ok().map(JavaVersion)
+        // Build tools tend to use several representations of language levels:
+        // - `17`
+        // - `1.8` (legacy Java 8+ style)
+        // - `17.0.2`, `1.8.0_202` (full runtime version strings)
+        // - `JavaVersion.VERSION_17` / `VERSION_1_8` (Gradle enum-like strings)
+        //
+        // We treat these as "major version" and parse the first number component.
+        let normalized = text
+            .strip_prefix("JavaVersion.VERSION_")
+            .or_else(|| text.strip_prefix("VERSION_"))
+            .unwrap_or(text);
+
+        // Maven sometimes uses "1.8" for Java 8 (and the same prefix appears in full
+        // runtime versions like "1.8.0_202").
+        let normalized = normalized
+            .strip_prefix("1.")
+            .or_else(|| normalized.strip_prefix("1_"))
+            .unwrap_or(normalized);
+
+        let end = normalized
+            .as_bytes()
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .unwrap_or(normalized.len());
+        if end == 0 {
+            return None;
+        }
+
+        normalized[..end].parse::<u16>().ok().map(JavaVersion)
+    }
+}
+
+#[cfg(test)]
+mod java_version_tests {
+    use super::JavaVersion;
+
+    #[test]
+    fn parse_accepts_major_versions() {
+        assert_eq!(JavaVersion::parse("17"), Some(JavaVersion(17)));
+        assert_eq!(JavaVersion::parse(" 21 "), Some(JavaVersion(21)));
+    }
+
+    #[test]
+    fn parse_accepts_patch_versions() {
+        assert_eq!(JavaVersion::parse("17.0.2"), Some(JavaVersion(17)));
+        assert_eq!(JavaVersion::parse("17-ea"), Some(JavaVersion(17)));
+    }
+
+    #[test]
+    fn parse_accepts_legacy_java8_versions() {
+        assert_eq!(JavaVersion::parse("1.8"), Some(JavaVersion(8)));
+        assert_eq!(JavaVersion::parse("1.8.0_202"), Some(JavaVersion(8)));
+        assert_eq!(JavaVersion::parse("8u402"), Some(JavaVersion(8)));
+    }
+
+    #[test]
+    fn parse_accepts_gradle_enum_strings() {
+        assert_eq!(
+            JavaVersion::parse("JavaVersion.VERSION_17"),
+            Some(JavaVersion(17))
+        );
+        assert_eq!(JavaVersion::parse("VERSION_1_8"), Some(JavaVersion(8)));
+    }
+
+    #[test]
+    fn parse_rejects_non_versions() {
+        assert_eq!(JavaVersion::parse(""), None);
+        assert_eq!(JavaVersion::parse("   "), None);
+        assert_eq!(JavaVersion::parse("foo"), None);
+        assert_eq!(JavaVersion::parse("VERSION_"), None);
+        assert_eq!(JavaVersion::parse("JavaVersion.VERSION_"), None);
     }
 }
 
