@@ -1975,6 +1975,26 @@ class C {
 }
 
 #[test]
+fn object_get_class_method_is_available() {
+    let src = r#"
+class C {
+    void m() {
+        Class<?> c = this.getClass();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| { d.code.as_ref() != "unresolved-method" || !d.message.contains("getClass") }),
+        "expected `getClass` to resolve via java.lang.Object, got {diags:?}"
+    );
+}
+
+#[test]
 fn static_method_called_via_instance_emits_warning() {
     let src = r#"
 class C {

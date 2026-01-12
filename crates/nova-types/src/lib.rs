@@ -1636,6 +1636,17 @@ impl TypeStore {
                 methods: vec![],
             },
         );
+        if let Some(object_def) = store.class_mut(object) {
+            object_def.methods.push(MethodDef {
+                name: "getClass".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::class(class, vec![Type::Wildcard(WildcardBound::Unbounded)]),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            });
+        }
 
         store.well_known = Some(WellKnownTypes {
             object,
