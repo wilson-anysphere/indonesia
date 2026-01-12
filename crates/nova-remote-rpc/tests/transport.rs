@@ -121,6 +121,64 @@ async fn handshake_rejects_zero_max_frame_len() {
 }
 
 #[tokio::test]
+async fn handshake_rejects_zero_max_packet_len() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task =
+        tokio::spawn(async move { RpcConnection::handshake_as_router(router_io, None).await });
+
+    let mut worker_hello = hello(None);
+    worker_hello.capabilities.max_packet_len = 0;
+
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(worker_hello)).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    match frame {
+        WireFrame::Reject(reject) => assert_eq!(reject.code, RejectCode::InvalidRequest),
+        other => panic!("expected reject frame, got {other:?}"),
+    }
+
+    let router_res = router_task.await.unwrap();
+    assert!(router_res.is_err());
+}
+
+#[tokio::test]
+async fn handshake_rejects_when_no_common_compression_algorithm() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task =
+        tokio::spawn(async move { RpcConnection::handshake_as_router(router_io, None).await });
+
+    let mut worker_hello = hello(None);
+    // A misbehaving worker might advertise only `unknown` (or omit `"none"` entirely). The router
+    // should reject the handshake because there is no mutually supported compression algorithm.
+    worker_hello.capabilities.supported_compression = vec![CompressionAlgo::Unknown];
+
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(worker_hello)).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    match frame {
+        WireFrame::Reject(reject) => {
+            assert_eq!(reject.code, RejectCode::InvalidRequest);
+            assert!(
+                reject.message.contains("no common compression algorithm"),
+                "unexpected reject message: {:?}",
+                reject.message
+            );
+        }
+        other => panic!("expected reject frame, got {other:?}"),
+    }
+
+    let router_res = router_task.await.unwrap();
+    let err = match router_res {
+        Ok(_) => panic!("expected handshake to fail"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, RpcTransportError::HandshakeFailed { .. }),
+        "unexpected router error: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn handshake_replies_with_legacy_error_for_v2_worker_hello() {
     use nova_remote_proto::legacy_v2::RpcMessage as LegacyMessage;
 
