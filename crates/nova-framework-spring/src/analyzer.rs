@@ -5,8 +5,11 @@ use std::sync::{Arc, Mutex};
 
 use nova_config_metadata::MetadataIndex;
 use nova_core::{FileId, ProjectId};
-use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, NavigationTarget, Symbol};
-use nova_types::{CompletionItem, Diagnostic, Span};
+use nova_framework::{
+    BeanDefinition, CompletionContext, Database, FrameworkAnalyzer, FrameworkData, NavigationTarget,
+    SpringData, Symbol,
+};
+use nova_types::{CompletionItem, Diagnostic, Span, Type};
 
 use crate::{
     analyze_java_sources, completion_span_for_properties_file, completion_span_for_value_placeholder,
@@ -173,6 +176,52 @@ impl FrameworkAnalyzer for SpringAnalyzer {
         // Stable marker classes.
         db.has_class_on_classpath(project, "org.springframework.context.ApplicationContext")
             || db.has_class_on_classpath(project, "org.springframework.beans.factory.annotation.Autowired")
+    }
+
+    fn analyze_file(&self, db: &dyn Database, file: FileId) -> Option<FrameworkData> {
+        let Some(text) = db.file_text(file) else {
+            return None;
+        };
+        let path = db.file_path(file);
+
+        let is_java = match path {
+            Some(path) => is_java_file(path),
+            None => looks_like_java_source(text),
+        };
+        if !is_java {
+            return None;
+        }
+
+        let project = db.project_of_file(file);
+
+        // Prefer cached project-wide analysis, but fall back to best-effort local analysis.
+        let (analysis, source_idx) = if db.all_files(project).is_empty() {
+            (Arc::new(analyze_java_sources(&[text])), 0usize)
+        } else {
+            let workspace = self.cached_workspace(db, project)?;
+            let analysis = workspace.analysis.as_ref()?.clone();
+            let source_idx = *workspace.file_id_to_source.get(&file)?;
+            (analysis, source_idx)
+        };
+
+        let mut beans: Vec<BeanDefinition> = analysis
+            .model
+            .beans
+            .iter()
+            .filter(|bean| bean.location.source == source_idx)
+            .map(|bean| BeanDefinition {
+                name: bean.name.clone(),
+                ty: Type::Named(bean.ty.clone()),
+            })
+            .collect();
+        beans.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| format!("{:?}", a.ty).cmp(&format!("{:?}", b.ty))));
+        beans.dedup_by(|a, b| a.name == b.name && a.ty == b.ty);
+
+        if beans.is_empty() {
+            None
+        } else {
+            Some(FrameworkData::Spring(SpringData { beans }))
+        }
     }
 
     fn diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic> {

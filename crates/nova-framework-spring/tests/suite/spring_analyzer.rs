@@ -6,6 +6,7 @@ use nova_core::FileId;
 use nova_types::ClassId;
 
 use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
+use nova_framework::FrameworkData;
 use nova_framework_spring::{completion_span_for_value_placeholder, SpringAnalyzer, SPRING_NO_BEAN};
 
 /// Database wrapper used to verify analyzer fallbacks when the database does not
@@ -259,5 +260,38 @@ fn qualifier_completions_fallback_to_current_file_when_all_files_is_unavailable(
     assert!(
         items.iter().any(|i| i.label == "foo"),
         "expected qualifier completion for bean name 'foo'; got {items:?}"
+    );
+}
+
+#[test]
+fn analyze_file_returns_spring_framework_data_for_component_beans() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "org.springframework", "spring-context");
+
+    let java = r#"
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Foo {}
+    "#;
+    let file = db.add_file_with_path_and_text(project, "src/Foo.java", java);
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let data = registry.framework_data(&db, file);
+    let spring = data
+        .iter()
+        .find_map(|d| match d {
+            FrameworkData::Spring(s) => Some(s),
+            _ => None,
+        })
+        .expect("expected FrameworkData::Spring");
+
+    assert!(
+        spring.beans.iter().any(|b| b.name == "foo"),
+        "expected bean named 'foo'; got {:?}",
+        spring.beans
     );
 }
