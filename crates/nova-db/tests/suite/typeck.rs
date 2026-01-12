@@ -2847,6 +2847,69 @@ class C {
 }
 
 #[test]
+fn primitive_class_literal_infers_var_type_as_java_lang_class_wildcard() {
+    let src = r#"
+class C {
+    void m() {
+        var c = int.class;
+        c.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("c.toString")
+        .expect("snippet should contain c.toString");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<?>");
+}
+
+#[test]
+fn array_class_literal_infers_var_type_with_array_arg() {
+    let src = r#"
+class C {
+    void m() {
+        var c = String[].class;
+        c.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("c.toString")
+        .expect("snippet should contain c.toString");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String[]>");
+}
+
+#[test]
+fn primitive_array_class_literal_infers_var_type_with_array_arg() {
+    let src = r#"
+class C {
+    void m() {
+        var c = int[].class;
+        c.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("c.toString")
+        .expect("snippet should contain c.toString");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<int[]>");
+}
+
+#[test]
 fn type_at_offset_finds_explicit_constructor_invocation() {
     let src = r#"
 class C {

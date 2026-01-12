@@ -6014,7 +6014,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                 }
             }
-            HirExpr::ClassLiteral { ty, .. } => {
+            HirExpr::ClassLiteral { ty, range } => {
                 let inner = self.infer_expr(loader, *ty);
                 if !inner.is_type_ref {
                     ExprInfo {
@@ -6022,22 +6022,39 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         is_type_ref: false,
                     }
                 } else {
+                    // Best-effort: recover array suffixes from the source range.
+                    //
+                    // The parser preserves `[]` tokens inside the `NameExpression` used as the
+                    // receiver for class literals (e.g. `String[].class`, `int[][].class`), but the
+                    // lightweight AST/HIR currently drops those suffixes. Instead of returning
+                    // `Class<String>` for `String[].class`, we count trailing `[]` pairs and apply
+                    // them to the inferred base type.
+                    let mut referenced = inner.ty.clone();
+                    if !referenced.is_errorish() {
+                        let dims_in_source = self.class_literal_array_dims(*range);
+                        let (_, existing_dims) = peel_array_dims(&referenced);
+                        let extra_dims = dims_in_source.saturating_sub(existing_dims);
+                        for _ in 0..extra_dims {
+                            referenced = Type::Array(Box::new(referenced));
+                        }
+                    }
+
+                    // Java class literals have type `Class<T>` but `T` must be a *reference type*.
+                    // Use an unbounded wildcard for primitives / `void` (`int.class` -> `Class<?>`).
+                    let mut arg = referenced.clone();
+                    if !arg.is_reference() {
+                        arg = Type::Wildcard(WildcardBound::Unbounded);
+                    }
+
                     match loader
                         .store
                         .lookup_class("java.lang.Class")
                         .or_else(|| loader.ensure_class("java.lang.Class"))
                     {
-                        Some(class_id) => {
-                            let arg = if inner.ty.is_reference() {
-                                inner.ty
-                            } else {
-                                Type::Wildcard(WildcardBound::Unbounded)
-                            };
-                            ExprInfo {
-                                ty: Type::class(class_id, vec![arg]),
-                                is_type_ref: false,
-                            }
-                        }
+                        Some(class_id) => ExprInfo {
+                            ty: Type::class(class_id, vec![arg]),
+                            is_type_ref: false,
+                        },
                         None => ExprInfo {
                             ty: Type::Unknown,
                             is_type_ref: false,
@@ -7547,6 +7564,64 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 return ExprInfo {
                     ty: Type::Primitive(PrimitiveType::Boolean),
                     is_type_ref: false,
+                }
+            }
+            // Primitive type keywords can appear in expression position only in a narrow set of
+            // contexts (notably class literals / array constructor references, e.g. `int.class`,
+            // `int[]::new`). The parser lowers these as `Name` expressions for resilience; treat
+            // them as *type references* to avoid spurious `unresolved-name` diagnostics.
+            "boolean" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Boolean),
+                    is_type_ref: true,
+                }
+            }
+            "byte" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Byte),
+                    is_type_ref: true,
+                }
+            }
+            "short" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Short),
+                    is_type_ref: true,
+                }
+            }
+            "char" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Char),
+                    is_type_ref: true,
+                }
+            }
+            "int" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Int),
+                    is_type_ref: true,
+                }
+            }
+            "long" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Long),
+                    is_type_ref: true,
+                }
+            }
+            "float" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Float),
+                    is_type_ref: true,
+                }
+            }
+            "double" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Double),
+                    is_type_ref: true,
+                }
+            }
+            "void" => {
+                return ExprInfo {
+                    ty: Type::Void,
+                    is_type_ref: true,
                 }
             }
             _ => {}
@@ -9579,6 +9654,57 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
+    fn class_literal_array_dims(&self, range: Span) -> usize {
+        let file = def_file(self.owner);
+        let file_text = self.db.file_content(file);
+        let file_text: &str = file_text.as_ref();
+        let len = file_text.len();
+        let start = range.start.min(len);
+        let end = range.end.min(len);
+        if start >= end {
+            return 0;
+        }
+        let Some(slice) = file_text.get(start..end) else {
+            return 0;
+        };
+
+        // Tokenize the `T[].class` slice and count trailing `[]` pairs before `.class`.
+        let tokens = nova_syntax::lex(slice);
+        let mut kinds: Vec<SyntaxKind> = tokens
+            .iter()
+            .filter_map(|t| {
+                let kind = t.kind;
+                if kind.is_trivia() || kind == SyntaxKind::Eof {
+                    None
+                } else {
+                    Some(kind)
+                }
+            })
+            .collect();
+
+        // Remove the trailing `. class` tokens.
+        if kinds.len() < 2 {
+            return 0;
+        }
+        let last = kinds.len() - 1;
+        if kinds[last] != SyntaxKind::ClassKw || kinds[last - 1] != SyntaxKind::Dot {
+            return 0;
+        }
+        kinds.truncate(last - 1);
+
+        let mut dims = 0usize;
+        while kinds.len() >= 2 {
+            let last = kinds.len() - 1;
+            if kinds[last] != SyntaxKind::RBracket || kinds[last - 1] != SyntaxKind::LBracket {
+                break;
+            }
+            dims += 1;
+            kinds.truncate(last - 1);
+        }
+
+        dims
+    }
+
     fn resolve_source_type(
         &mut self,
         loader: &mut ExternalTypeLoader<'_>,
@@ -9607,6 +9733,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         cancel::checkpoint_cancelled_every(self.db, self.steps, 256);
         self.steps = self.steps.wrapping_add(1);
     }
+}
+
+fn peel_array_dims(mut ty: &Type) -> (&Type, usize) {
+    let mut dims = 0usize;
+    while let Type::Array(inner) = ty {
+        dims += 1;
+        ty = inner.as_ref();
+    }
+    (ty, dims)
 }
 
 fn primitive_like(env: &dyn TypeEnv, ty: &Type) -> Option<PrimitiveType> {
