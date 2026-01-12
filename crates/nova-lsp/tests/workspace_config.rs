@@ -1,4 +1,5 @@
 use nova_lsp::extensions::{apt, build};
+use nova_scheduler::CancellationToken;
 use std::fs;
 use std::path::Path;
 
@@ -28,9 +29,12 @@ fn lsp_endpoints_respect_workspace_generated_sources_config() {
 
     let root_str = root.to_string_lossy().to_string();
 
-    let generated_sources = apt::handle_generated_sources(serde_json::json!({
-        "projectRoot": root_str.clone(),
-    }))
+    let generated_sources = apt::handle_generated_sources(
+        serde_json::json!({
+            "projectRoot": root_str.clone(),
+        }),
+        CancellationToken::new(),
+    )
     .unwrap();
     assert_eq!(
         generated_sources.get("enabled").and_then(|v| v.as_bool()),
