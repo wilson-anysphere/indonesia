@@ -335,12 +335,51 @@ pub fn inline_variable(
         .collect();
 
     if remove_decl {
+        // Delete the declaration statement. Be careful not to delete tokens that precede the
+        // statement on the same line (e.g. `case 1: int a = ...;`).
         let stmt_range = decl.statement_range;
-        let decl_start = line_start(text, stmt_range.start);
-        let decl_end = statement_end_including_trailing_newline(text, stmt_range.end);
+        let stmt_start = stmt_range.start;
+        let stmt_end = stmt_range.end;
+        let line_start = line_start(text, stmt_start);
+
+        let decl_range = if text[line_start..stmt_start]
+            .chars()
+            .all(|c| c.is_whitespace())
+        {
+            // Statement begins at line start (only indentation precedes it). Delete indentation and
+            // one trailing newline when present.
+            let end = statement_end_including_trailing_newline(text, stmt_end);
+            TextRange::new(line_start, end)
+        } else {
+            // Statement begins mid-line. Delete only the statement token range, but avoid leaving
+            // awkward whitespace behind.
+            let mut end = stmt_end;
+
+            // If a newline immediately follows the statement, consume it too (preserve CRLF as a
+            // unit).
+            let tail = text.get(end..).unwrap_or_default();
+            if tail.starts_with("\r\n") {
+                end += 2;
+            } else if tail.starts_with('\n') || tail.starts_with('\r') {
+                end += 1;
+            } else if matches!(text.as_bytes().get(end), Some(b' ')) {
+                // If there is a single space after the statement and another token follows on the
+                // same line, delete that one space (e.g. `; System.out...`).
+                let after_space = end + 1;
+                if after_space < text.len() {
+                    let next = text.as_bytes()[after_space];
+                    if next != b'\n' && next != b'\r' && next != b' ' && next != b'\t' {
+                        end = after_space;
+                    }
+                }
+            }
+
+            TextRange::new(stmt_start, end)
+        };
+
         edits.push(TextEdit::delete(
             def.file.clone(),
-            TextRange::new(decl_start, decl_end),
+            decl_range,
         ));
     }
 

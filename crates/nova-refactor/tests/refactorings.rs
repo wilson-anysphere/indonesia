@@ -757,6 +757,87 @@ fn inline_variable_all_usages_replaces_and_deletes_declaration() {
 }
 
 #[test]
+fn inline_variable_in_switch_one_line_case_label_does_not_delete_case() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m(int x) {
+    switch (x) {
+      case 1: int a = 1 + 2; System.out.println(a); break;
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    let expected = r#"class C {
+  void m(int x) {
+    switch (x) {
+      case 1: System.out.println((1 + 2)); break;
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cleanly() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        int a = 1 + 2;
+        System.out.println(a);
+        break;
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    let expected = r#"class C {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        System.out.println((1 + 2));
+        break;
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_single_usage_replaces_only_selected_use() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
