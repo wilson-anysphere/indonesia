@@ -44,6 +44,7 @@ mod micronaut_intel;
 mod nav_resolve_cache;
 mod nav_resolve_chains;
 mod nav_resolve_inheritance;
+mod nav_resolve_method_references;
 mod organize_imports_code_action;
 mod quarkus_intel;
 mod quick_fixes;

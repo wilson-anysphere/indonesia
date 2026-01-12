@@ -4007,6 +4007,47 @@ class Main {
 }
 
 #[test]
+fn find_references_includes_method_reference_usages() {
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+
+    let foo_text = r#"
+class Foo {
+  void ba<|>r() {}
+}
+"#;
+    let main_text = r#"
+class Main {
+  void m() {
+    Foo foo = new Foo();
+    Runnable r1 = foo::bar;
+    Runnable r2 = Foo::bar;
+  }
+}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(foo_path, foo_text, vec![(main_path, main_text)]);
+
+    let refs = find_references(&db, file, pos, false);
+
+    assert!(
+        !refs.iter().any(|loc| loc.uri.as_str().contains("Foo.java")),
+        "expected references to exclude declaration; got {refs:#?}"
+    );
+
+    let main_refs: Vec<_> = refs
+        .iter()
+        .filter(|loc| loc.uri.as_str().contains("Main.java"))
+        .collect();
+    assert_eq!(
+        main_refs.len(),
+        2,
+        "expected references to include both method references in Main.java; got {refs:#?}"
+    );
+}
+
+#[test]
 fn find_references_resolves_field_across_files() {
     let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");

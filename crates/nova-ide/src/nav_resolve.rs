@@ -188,6 +188,7 @@ pub(crate) struct Definition {
 enum OccurrenceKind {
     MemberCall { receiver: String },
     MemberField { receiver: String },
+    /// Java method/constructor reference (`recv::method`, `Type::new`).
     MethodRef { receiver: String },
     LocalCall,
     Ident,
@@ -832,7 +833,7 @@ impl Resolver {
             OccurrenceKind::MethodRef { receiver } => {
                 if ident == "new" {
                     // Constructor reference: `Type::new` best-effort resolves to the receiver type.
-                    let receiver_ty = receiver.rsplit('.').next().unwrap_or(&receiver);
+                    let receiver_ty = receiver.rsplit('.').next().unwrap_or(&receiver).trim();
                     let def = self.index.resolve_type_definition(receiver_ty)?;
                     return Some(ResolvedSymbol {
                         name: receiver_ty.to_string(),
@@ -841,9 +842,16 @@ impl Resolver {
                     });
                 }
 
-                let receiver_ty =
-                    self.index
-                        .resolve_receiver_type(parsed, ident_span.start, &receiver)?;
+                let receiver_ty = self
+                    .index
+                    .resolve_receiver_type(parsed, ident_span.start, &receiver)
+                    .or_else(|| {
+                        // Best-effort fallback for qualified type receivers like `p.Foo::bar`:
+                        // if the full receiver doesn't resolve (package segments), try the final
+                        // segment as a workspace type name.
+                        let last = receiver.rsplit('.').next()?.trim();
+                        self.index.type_info(last).is_some().then_some(last.to_string())
+                    })?;
                 let def = self.index.resolve_method_definition(&receiver_ty, &ident)?;
                 Some(ResolvedSymbol {
                     name: ident,
