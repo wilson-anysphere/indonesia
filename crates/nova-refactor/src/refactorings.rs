@@ -30,6 +30,8 @@ pub enum RefactorError {
     InlineNoUsageAtCursor,
     #[error("variable initializer has side effects and cannot be inlined safely")]
     InlineSideEffects,
+    #[error("inlining would change value: {reason}")]
+    InlineWouldChangeValue { reason: String },
     #[error("failed to parse Java source")]
     ParseError,
     #[error("selection does not resolve to a single expression")]
@@ -571,6 +573,15 @@ pub fn inline_variable(
         }
     }
 
+    ensure_inline_variable_value_stable(
+        db,
+        &parsed,
+        &def.file,
+        decl.statement_range.end,
+        &init_expr,
+        &targets,
+    )?;
+
     let remove_decl = params.inline_all || all_refs.len() == 1;
 
     if init_has_side_effects && !(remove_decl && targets.len() == 1) {
@@ -631,6 +642,94 @@ pub fn inline_variable(
     let mut edit = WorkspaceEdit::new(edits);
     edit.normalize()?;
     Ok(edit)
+}
+
+
+fn ensure_inline_variable_value_stable(
+    db: &dyn RefactorDatabase,
+    parsed: &nova_syntax::JavaParseResult,
+    file: &FileId,
+    decl_stmt_end: usize,
+    initializer: &ast::Expression,
+    targets: &[crate::semantic::Reference],
+) -> Result<(), RefactorError> {
+    let mut deps: Vec<(SymbolId, String)> = Vec::new();
+    let mut seen: HashSet<SymbolId> = HashSet::new();
+
+    // Collect locals/params referenced by the initializer.
+    for tok in initializer
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        if tok.kind() != SyntaxKind::Identifier {
+            continue;
+        }
+
+        let range = syntax_token_range(&tok);
+        let Some(sym) = db.symbol_at(file, range.start) else {
+            continue;
+        };
+
+        if !matches!(db.symbol_kind(sym), Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)) {
+            continue;
+        }
+
+        if seen.insert(sym) {
+            deps.push((sym, tok.text().to_string()));
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(());
+    }
+
+    for usage in targets {
+        let usage_start = usage.range.start;
+        if usage_start <= decl_stmt_end {
+            continue;
+        }
+
+        for (sym, name) in &deps {
+            if has_write_to_symbol_between(db, parsed, file, *sym, decl_stmt_end, usage_start)? {
+                return Err(RefactorError::InlineWouldChangeValue {
+                    reason: format!(
+                        "`{name}` is written between the variable declaration and the inlined usage"
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn has_write_to_symbol_between(
+    db: &dyn RefactorDatabase,
+    parsed: &nova_syntax::JavaParseResult,
+    file: &FileId,
+    symbol: SymbolId,
+    start: usize,
+    end: usize,
+) -> Result<bool, RefactorError> {
+    if start >= end {
+        return Ok(false);
+    }
+
+    for reference in db.find_references(symbol) {
+        if reference.file != *file {
+            continue;
+        }
+        if reference.range.start < start || reference.range.start >= end {
+            continue;
+        }
+
+        if reference_is_write(parsed, reference.range)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn inline_variable_has_writes(

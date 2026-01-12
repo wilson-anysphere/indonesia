@@ -2029,6 +2029,76 @@ fn inline_variable_all_usages_replaces_and_deletes_declaration() {
 }
 
 #[test]
+fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1;
+    int a = x;
+    x = 2;
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineWouldChangeValue { .. }),
+        "expected InlineWouldChangeValue, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_allowed_when_initializer_dependencies_are_not_written() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1;
+    int a = x;
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int x = 1;
+    System.out.println(x);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_wraps_cast_receiver() {
     let file = FileId::new("Test.java");
     let src = r#"class Foo { void m() {} }
