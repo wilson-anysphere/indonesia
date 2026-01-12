@@ -2661,7 +2661,6 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::MethodCallExpression
             | SyntaxKind::FieldAccessExpression
             | SyntaxKind::ArrayAccessExpression
-            | SyntaxKind::ArrayCreationExpression
             | SyntaxKind::ClassLiteralExpression
             | SyntaxKind::MethodReferenceExpression
             | SyntaxKind::ConstructorReferenceExpression
