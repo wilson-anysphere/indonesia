@@ -859,45 +859,11 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
     }
 
-    fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
-        // Type-use annotations can appear anywhere inside a type reference (`@A String`,
-        // `Outer.@A Inner`, `String @A []`, ...). Even though Nova's `Type` model does not
-        // represent type-use annotations yet, we still want best-effort diagnostics for the
-        // annotation *type names* when we can anchor them accurately.
+    fn resolve_annotation_name(&mut self, _name_range: Range<usize>) {
+        // Type-use annotation types (e.g. `List<@Missing String>`) are currently ignored.
         //
-        // Only emit diagnostics when we have a base span to anchor them. Many callers (and tests)
-        // parse detached `TypeRef.text` strings with `base_span = None` and expect annotations to
-        // be skipped without diagnostics in that mode.
-        //
-        // `nova-syntax` currently stores type refs as whitespace-stripped strings (`TypeRef.text`).
-        // When callers pass those strings with a file-relative `base_span`, the offsets no longer
-        // line up once the original source contains whitespace/comments. In that case, we skip
-        // resolving the annotation name here and let higher layers (e.g. `nova-db` signature
-        // diagnostics scanning the original source text) handle annotation diagnostics.
-        let Some(base_span) = self.base_span else {
-            return;
-        };
-        if name_range.is_empty() || base_span.len() != self.text.len() {
-            return;
-        }
-        let Some(text) = self.text.get(name_range.clone()) else {
-            return;
-        };
-        let text = text.trim();
-        if text.is_empty() {
-            return;
-        }
-
-        let segments: Vec<String> = text
-            .split('.')
-            .filter(|seg| !seg.is_empty())
-            .map(|seg| seg.to_string())
-            .collect();
-        if segments.is_empty() {
-            return;
-        }
-        let per_segment_args = vec![Vec::new(); segments.len()];
-        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
+        // Nova does not model type-use annotations in `nova_types::Type` yet, and treating
+        // annotation names as types causes noisy `unresolved-type` diagnostics in signatures.
     }
 
     fn find_best_annotation_name_end(

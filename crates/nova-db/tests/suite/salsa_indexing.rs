@@ -428,3 +428,81 @@ fn file_index_delta_is_accounted_in_salsa_memo_bytes() {
         "expected index delta to recompute after eviction"
     );
 }
+
+#[test]
+fn project_index_shards_are_accounted_in_salsa_memo_bytes() {
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+    let b = FileId::from_raw(2);
+
+    let db = SalsaDatabase::new();
+    db.set_project_files(project, Arc::new(vec![a, b]));
+    db.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db.set_file_text(a, "class A {}".to_string());
+    db.set_file_text(b, "class B { class C {} }".to_string());
+
+    // Precompute dependencies so the baseline excludes the project-level shard memo.
+    db.with_snapshot(|snap| {
+        let _ = snap.parse_java(a);
+        let _ = snap.parse_java(b);
+        let _ = snap.hir_item_tree(a);
+        let _ = snap.hir_item_tree(b);
+        let _ = snap.file_index_delta(a);
+        let _ = snap.file_index_delta(b);
+    });
+    let bytes_before = db.salsa_memo_bytes();
+
+    let shards = db.with_snapshot(|snap| snap.project_index_shards(project));
+    let shards_bytes = shards.iter().fold(0u64, |total, shard| {
+        total.saturating_add(shard.estimated_bytes())
+    });
+    assert!(
+        shards_bytes > 0,
+        "expected non-zero project_index_shards footprint"
+    );
+
+    let bytes_after = db.salsa_memo_bytes();
+    assert!(
+        bytes_after >= bytes_before.saturating_add(shards_bytes),
+        "expected memo bytes to include project_index_shards estimate (before={bytes_before}, after={bytes_after}, shards={shards_bytes})"
+    );
+
+    db.evict_salsa_memos(MemoryPressure::Critical);
+    assert_eq!(
+        db.salsa_memo_bytes(),
+        0,
+        "expected memo footprint to be cleared after eviction"
+    );
+}
+
+#[test]
+fn project_indexes_are_accounted_in_salsa_memo_bytes() {
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+    let b = FileId::from_raw(2);
+
+    let db = SalsaDatabase::new();
+    db.set_project_files(project, Arc::new(vec![a, b]));
+    db.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db.set_file_text(a, "class A {}".to_string());
+    db.set_file_text(b, "class B { class C {} }".to_string());
+
+    // Baseline: compute and account for shard indexes first.
+    let _ = db.with_snapshot(|snap| snap.project_index_shards(project));
+    let bytes_before = db.salsa_memo_bytes();
+
+    let indexes = db.with_snapshot(|snap| snap.project_indexes(project));
+    let indexes_bytes = indexes.estimated_bytes();
+    assert!(
+        indexes_bytes > 0,
+        "expected non-zero project_indexes footprint"
+    );
+
+    let bytes_after = db.salsa_memo_bytes();
+    assert!(
+        bytes_after >= bytes_before.saturating_add(indexes_bytes),
+        "expected memo bytes to include project_indexes estimate (before={bytes_before}, after={bytes_after}, indexes={indexes_bytes})"
+    );
+}
