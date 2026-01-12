@@ -341,6 +341,21 @@
           "group": "navigation@1"
         },
         {
+          "command": "nova.refreshProjectExplorer",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
+          "group": "navigation@0"
+        },
+        {
+          "command": "nova.showProjectModel",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nova.showProjectConfiguration",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
+          "group": "navigation@2"
+        },
+        {
           "command": "nova.reloadProject",
           "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
           "group": "inline"

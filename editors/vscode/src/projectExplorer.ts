@@ -160,20 +160,21 @@ export function registerNovaProjectExplorer(
   context.subscriptions.push(view);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_REFRESH, (workspace?: vscode.WorkspaceFolder) => {
+    vscode.commands.registerCommand(COMMAND_REFRESH, (arg?: unknown) => {
+      const workspace = getWorkspaceFolderFromCommandArg(arg);
       provider.refresh({ forceRefresh: true, workspace });
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_SHOW_MODEL, async () => {
-      await showProjectModel(projectModelCache);
+    vscode.commands.registerCommand(COMMAND_SHOW_MODEL, async (arg?: unknown) => {
+      await showProjectModel(projectModelCache, arg);
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_SHOW_CONFIG, async () => {
-      await showProjectConfiguration(projectModelCache);
+    vscode.commands.registerCommand(COMMAND_SHOW_CONFIG, async (arg?: unknown) => {
+      await showProjectConfiguration(projectModelCache, arg);
     }),
   );
 
@@ -279,18 +280,18 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         };
         if (!this.isProjectModelSupported()) {
           await this.triggerUnsupportedWelcome();
-          return [
-            {
-              type: 'message',
-              id: `${element.id}:unsupported`,
-              label: 'Project model not supported by this server.',
-              description: 'Update nova-lsp to a build that supports nova/projectModel.',
-              icon: new vscode.ThemeIcon('info'),
-              command: { title: 'Show Project Configuration', command: COMMAND_SHOW_CONFIG },
-            },
-            configurationNode,
-          ];
-        }
+         return [
+             {
+               type: 'message',
+               id: `${element.id}:unsupported`,
+               label: 'Project model not supported by this server.',
+               description: 'Update nova-lsp to a build that supports nova/projectModel.',
+               icon: new vscode.ThemeIcon('info'),
+              command: { title: 'Show Project Configuration', command: COMMAND_SHOW_CONFIG, arguments: [workspace] },
+             },
+             configurationNode,
+           ];
+         }
 
         const snapshot = this.cache.peekProjectModel(workspace);
         const model = snapshot.value;
@@ -1291,8 +1292,8 @@ async function revealPath(uri: vscode.Uri): Promise<void> {
   }
 }
 
-async function showProjectModel(cache: ProjectModelCache): Promise<void> {
-  const workspace = await pickWorkspaceFolder('Select workspace folder for project model');
+async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promise<void> {
+  const workspace = getWorkspaceFolderFromCommandArg(arg) ?? (await pickWorkspaceFolder('Select workspace folder for project model'));
   if (!workspace) {
     return;
   }
@@ -1314,8 +1315,9 @@ async function showProjectModel(cache: ProjectModelCache): Promise<void> {
   }
 }
 
-async function showProjectConfiguration(cache: ProjectModelCache): Promise<void> {
-  const workspace = await pickWorkspaceFolder('Select workspace folder for project configuration');
+async function showProjectConfiguration(cache: ProjectModelCache, arg?: unknown): Promise<void> {
+  const workspace =
+    getWorkspaceFolderFromCommandArg(arg) ?? (await pickWorkspaceFolder('Select workspace folder for project configuration'));
   if (!workspace) {
     return;
   }
@@ -1356,6 +1358,38 @@ async function pickWorkspaceFolder(placeHolder: string): Promise<vscode.Workspac
     { placeHolder },
   );
   return picked?.folder;
+}
+
+function getWorkspaceFolderFromCommandArg(arg: unknown): vscode.WorkspaceFolder | undefined {
+  const asFolder = asWorkspaceFolder(arg);
+  if (asFolder) {
+    return asFolder;
+  }
+
+  if (arg && typeof arg === 'object') {
+    const workspace = (arg as { workspace?: unknown }).workspace;
+    const asNested = asWorkspaceFolder(workspace);
+    if (asNested) {
+      return asNested;
+    }
+  }
+
+  return undefined;
+}
+
+function asWorkspaceFolder(value: unknown): vscode.WorkspaceFolder | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const uri = (value as { uri?: unknown }).uri;
+  if (!uri || typeof uri !== 'object') {
+    return undefined;
+  }
+  const fsPath = (uri as { fsPath?: unknown }).fsPath;
+  if (typeof fsPath !== 'string' || fsPath.trim().length === 0) {
+    return undefined;
+  }
+  return value as vscode.WorkspaceFolder;
 }
 
 async function openJsonDocument(name: string, payload: unknown): Promise<void> {
