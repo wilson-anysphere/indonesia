@@ -454,7 +454,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - `crates/nova-remote-proto/src/lib.rs` — shared hard limits + helpers
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is still experimental and not yet integrated into `nova-lsp` (editor-facing).
+  - Distributed mode is still experimental, but is now used by the shipped `nova-lsp` binary when launched with `--distributed` (local IPC router + spawned `nova-worker`).
   - v3 is the current router↔worker wire protocol; schema evolution is expected within minor versions.
 
 ### `nova-remote-rpc`
@@ -462,7 +462,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-remote-rpc/src/lib.rs` (`RpcConnection`, `RpcRole`, `RouterConfig`, `WorkerConfig`, `RpcError`, `RpcTransportError`, `RequestId`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is still not editor-facing (not yet integrated into `nova-lsp`).
+  - Distributed mode is still experimental; `nova-lsp` currently uses it behind `--distributed` primarily for `workspace/symbol` + best-effort file update propagation.
   - No application-level keepalive/heartbeat yet; idle connections rely on the transport/deployment.
 
 ### `nova-resolve`
@@ -477,7 +477,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-router/src/lib.rs` (`QueryRouter`, `DistributedRouterConfig`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode exists, but no end-to-end editor/LSP integration yet.
+  - Distributed mode is integrated into the shipped `nova-lsp` stdio server behind CLI flags (`--distributed`, `--distributed-worker-command`), but the editor-facing surface area is still intentionally narrow (see `docs/16-distributed-mode.md`).
 
 ### `nova-scheduler`
 - **Purpose:** concurrency helpers (scheduler pools, cancellation tokens, watchdog timeouts, debouncers).

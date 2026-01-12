@@ -1,3 +1,4 @@
+// Part of the consolidated `nova-db` integration test harness (`tests/harness.rs`).
 use std::sync::Arc;
 
 use nova_core::{TextEdit, TextRange, TextSize};
