@@ -2666,7 +2666,12 @@ pub fn lub(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
 fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
     // Preserve exact equality (including unresolved `Named` types).
     if a == b {
-        return a.clone();
+        // Still normalize intersections so we maintain the invariant that synthesized results are
+        // flattened/deduped/sorted.
+        return match a {
+            Type::Intersection(_) => make_intersection(env, vec![a.clone()]),
+            _ => a.clone(),
+        };
     }
 
     let a_sub_b = is_subtype(env, a, b);
@@ -2674,8 +2679,14 @@ fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
 
     match (a_sub_b, b_sub_a) {
         // Standard fast paths.
-        (true, false) => a.clone(),
-        (false, true) => b.clone(),
+        (true, false) => match a {
+            Type::Intersection(_) => make_intersection(env, vec![a.clone()]),
+            _ => a.clone(),
+        },
+        (false, true) => match b {
+            Type::Intersection(_) => make_intersection(env, vec![b.clone()]),
+            _ => b.clone(),
+        },
 
         // Error recovery (or other non-antisymmetric cases in our best-effort subtyping):
         // if the types are mutually compatible, pick a deterministic representative.

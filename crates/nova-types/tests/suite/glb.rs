@@ -516,3 +516,58 @@ fn infer_upper_bound_intersection_keeps_class_bound_first_with_named_interface()
         vec![Type::Intersection(vec![z, serializable])]
     );
 }
+
+#[test]
+fn infer_upper_bound_normalizes_existing_intersection_bound() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+
+    let cloneable = Type::class(env.well_known().cloneable, vec![]);
+    let serializable = Type::class(env.well_known().serializable, vec![]);
+
+    // Intentionally non-normalized intersection order.
+    let raw_intersection = Type::Intersection(vec![cloneable.clone(), serializable.clone()]);
+
+    // Include `Object` so the GLB reduction hits the `a <: b` fast-path and returns the
+    // existing (potentially un-normalized) intersection operand.
+    let t = env.add_type_param("T", vec![raw_intersection, Type::class(object, vec![])]);
+
+    let test = env.add_class(ClassDef {
+        name: "com.example.GlbDeterminismExistingIntersection".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "m".to_string(),
+            type_params: vec![t],
+            params: vec![],
+            return_type: Type::Void,
+            is_static: true,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    let call = MethodCall {
+        receiver: Type::class(test, vec![]),
+        call_kind: CallKind::Static,
+        name: "m",
+        args: vec![],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
+        panic!("expected method resolution success for m");
+    };
+
+    // Normalized: sorted by `type_sort_key`.
+    assert_eq!(
+        res.inferred_type_args,
+        vec![Type::Intersection(vec![serializable, cloneable])]
+    );
+}
