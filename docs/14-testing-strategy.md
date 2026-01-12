@@ -565,6 +565,10 @@ local-only clones under `test-projects/`:
 Run them with `./scripts/run-real-project-tests.sh` (see [`test-projects/README.md`](../test-projects/README.md))
 or the “Real-project validation” section of [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
+Tip: real-project tests are `#[ignore]` and are typically run with `cargo test ... -- --ignored` to avoid
+running the rest of the suite (see [`14-testing-infrastructure.md`](14-testing-infrastructure.md) for the
+difference between `--ignored` and `--include-ignored`).
+
 ```rust
 #[cfg(test)]
 mod real_project_tests {
