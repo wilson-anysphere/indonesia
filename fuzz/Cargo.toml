@@ -121,5 +121,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_reparse_java_sequence"
+path = "fuzz_targets/fuzz_reparse_java_sequence.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

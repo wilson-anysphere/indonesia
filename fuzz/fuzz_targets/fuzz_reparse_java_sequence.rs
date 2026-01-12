@@ -1,0 +1,211 @@
+#![no_main]
+
+use std::sync::mpsc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use libfuzzer_sys::fuzz_target;
+
+use nova_syntax::{TextEdit, TextRange};
+
+mod utils;
+
+const TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_EDITS: usize = 8;
+const MAX_REPLACEMENT_BYTES: usize = 64;
+/// Reserve up to this many bytes from the end of the fuzzer input for encoding edit ops.
+///
+/// Keeping the ops small makes it more likely that `.java` seeds remain mostly intact while still
+/// allowing a handful of edits to be described.
+const MAX_OP_BYTES: usize = 256;
+
+struct Runner {
+    input_tx: mpsc::SyncSender<Vec<u8>>,
+    output_rx: Mutex<mpsc::Receiver<()>>,
+}
+
+fn runner() -> &'static Runner {
+    static RUNNER: OnceLock<Runner> = OnceLock::new();
+    RUNNER.get_or_init(|| {
+        let (input_tx, input_rx) = mpsc::sync_channel::<Vec<u8>>(0);
+        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
+
+        std::thread::spawn(move || {
+            for input in input_rx {
+                run_case(&input);
+                let _ = output_tx.send(());
+            }
+        });
+
+        Runner {
+            input_tx,
+            output_rx: Mutex::new(output_rx),
+        }
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ByteCursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ByteCursor<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    fn take_u8(&mut self) -> Option<u8> {
+        if self.pos >= self.data.len() {
+            return None;
+        }
+        let b = self.data[self.pos];
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn take_u16_le(&mut self) -> Option<u16> {
+        let lo = self.take_u8()?;
+        let hi = self.take_u8()?;
+        Some(u16::from_le_bytes([lo, hi]))
+    }
+
+    fn take_bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.remaining() < len {
+            return None;
+        }
+        let start = self.pos;
+        self.pos += len;
+        Some(&self.data[start..start + len])
+    }
+}
+
+fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn truncate_str_to_boundary(s: &str, max_len: usize) -> &str {
+    let mut end = max_len.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn apply_edit(text: &str, edit: &TextEdit) -> String {
+    let start = edit.range.start as usize;
+    let end = edit.range.end as usize;
+
+    let mut out =
+        String::with_capacity(text.len().saturating_sub(end - start) + edit.replacement.len());
+    out.push_str(&text[..start]);
+    out.push_str(&edit.replacement);
+    out.push_str(&text[end..]);
+    out
+}
+
+fn decode_edit(cursor: &mut ByteCursor<'_>, text: &str) -> Option<TextEdit> {
+    let start_raw = cursor.take_u16_le()? as usize;
+    let delete_raw = cursor.take_u16_le()? as usize;
+    let replacement_len_raw = cursor.take_u8()? as usize;
+
+    // Bound replacement bytes to keep per-input work small.
+    let replacement_len = replacement_len_raw % (MAX_REPLACEMENT_BYTES + 1);
+    let replacement_bytes = cursor.take_bytes(replacement_len)?;
+    let mut replacement = String::from_utf8_lossy(replacement_bytes).into_owned();
+
+    let text_len = text.len();
+    let start = if text_len == 0 {
+        0
+    } else {
+        clamp_to_char_boundary(text, start_raw % (text_len + 1))
+    };
+
+    let max_delete = text_len.saturating_sub(start);
+    let end = clamp_to_char_boundary(text, start + (delete_raw % (max_delete + 1)));
+
+    // Enforce the global document size cap by truncating the replacement if needed.
+    //
+    // We truncate the *replacement* (not the whole result) so that the `TextEdit` remains
+    // consistent with the produced `new_text`.
+    let deleted_len = end.saturating_sub(start);
+    let base_len = text_len.saturating_sub(deleted_len);
+    let allowed_insert_len = utils::MAX_INPUT_SIZE.saturating_sub(base_len);
+    if replacement.len() > allowed_insert_len {
+        replacement = truncate_str_to_boundary(&replacement, allowed_insert_len).to_owned();
+    }
+
+    Some(TextEdit::new(TextRange::new(start, end), replacement))
+}
+
+fn run_case(data: &[u8]) {
+    let cap = data.len().min(utils::MAX_INPUT_SIZE);
+    let data = &data[..cap];
+
+    if data.is_empty() {
+        return;
+    }
+
+    // Split the input into an initial UTF-8 buffer and a small "edit op" stream.
+    let op_len = (data[0] as usize % (MAX_OP_BYTES + 1)).min(data.len());
+    let split = data.len().saturating_sub(op_len);
+    let (text_bytes, op_bytes) = data.split_at(split);
+
+    let Some(text0) = utils::truncate_utf8(text_bytes) else {
+        return;
+    };
+
+    let mut text = text0.to_owned();
+    let mut parse = nova_syntax::parse_java(&text);
+
+    let mut cursor = ByteCursor::new(op_bytes);
+    for _ in 0..MAX_EDITS {
+        let Some(edit) = decode_edit(&mut cursor, &text) else {
+            break;
+        };
+
+        let new_text = apply_edit(&text, &edit);
+        debug_assert!(new_text.len() <= utils::MAX_INPUT_SIZE);
+
+        let full = nova_syntax::parse_java(&new_text);
+        let incr = nova_syntax::reparse_java(&parse, &text, edit, &new_text);
+        assert_eq!(incr, full);
+
+        text = new_text;
+        parse = incr;
+    }
+}
+
+fuzz_target!(|data: &[u8]| {
+    let cap = data.len().min(utils::MAX_INPUT_SIZE);
+
+    let runner = runner();
+    runner
+        .input_tx
+        .send(data[..cap].to_vec())
+        .expect("fuzz_reparse_java_sequence worker thread exited");
+
+    match runner
+        .output_rx
+        .lock()
+        .expect("fuzz_reparse_java_sequence worker receiver poisoned")
+        .recv_timeout(TIMEOUT)
+    {
+        Ok(()) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("fuzz_reparse_java_sequence fuzz target timed out")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("fuzz_reparse_java_sequence worker thread panicked")
+        }
+    }
+});
