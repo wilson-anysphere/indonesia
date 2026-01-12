@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -7,9 +9,6 @@ use crate::{
     SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
     WorkspaceProjectModel,
 };
-
-#[cfg(feature = "bazel")]
-use std::path::PathBuf;
 
 #[cfg(feature = "bazel")]
 use crate::{JavaVersion, ModuleConfig, WorkspaceModel};
@@ -64,32 +63,7 @@ pub(crate) fn load_bazel_workspace_model(
         }
     }
 
-    let mut source_roots = Vec::new();
-
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let name = entry.file_name().to_string_lossy();
-        if name != "BUILD" && name != "BUILD.bazel" {
-            continue;
-        }
-
-        let Some(dir) = entry.path().parent() else {
-            continue;
-        };
-
-        source_roots.push(SourceRoot {
-            kind: classify_bazel_source_root(dir),
-            origin: SourceRootOrigin::Source,
-            path: dir.to_path_buf(),
-        });
-    }
+    let mut source_roots = discover_bazel_source_roots_heuristic(root);
 
     if source_roots.is_empty() {
         source_roots.push(SourceRoot {
@@ -161,28 +135,95 @@ pub(crate) fn load_bazel_workspace_model(
     ))
 }
 
-fn load_bazel_project_heuristic(
-    root: &Path,
-    options: &LoadOptions,
-) -> Result<ProjectConfig, ProjectError> {
-    let mut source_roots = Vec::new();
+const BAZEL_ALWAYS_IGNORED_DIRS: [&str; 7] = [
+    ".git", ".hg", ".svn", ".idea", ".vscode", ".nova", "target",
+];
 
-    // Naive Bazel heuristic:
-    // - treat each package directory that contains a BUILD/BUILD.bazel file as a source root
-    // - classify "test-ish" directories as test roots
-    //
-    // This is the default to avoid invoking Bazel unexpectedly.
-    for entry in walkdir::WalkDir::new(root)
+fn bazel_ignored_path_prefixes(workspace_root: &Path) -> BTreeSet<PathBuf> {
+    let mut ignored = BTreeSet::new();
+    ignored.extend(BAZEL_ALWAYS_IGNORED_DIRS.iter().map(PathBuf::from));
+
+    let bazelignore_path = workspace_root.join(".bazelignore");
+    let Ok(contents) = std::fs::read_to_string(&bazelignore_path) else {
+        return ignored;
+    };
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // `.bazelignore` entries are workspace-root-relative. We normalize the path to something we
+        // can match using `Path::starts_with`.
+        let line = line.trim_start_matches("./");
+        let line = line.trim_start_matches('/');
+        let line = line.trim_start_matches('\\');
+
+        let mut normalized = PathBuf::new();
+        for component in Path::new(line).components() {
+            match component {
+                Component::CurDir => {}
+                Component::Normal(part) => normalized.push(part),
+                // Ignore entries that escape the workspace root (or are absolute).
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                    normalized = PathBuf::new();
+                    break;
+                }
+            }
+        }
+
+        if !normalized.as_os_str().is_empty() {
+            ignored.insert(normalized);
+        }
+    }
+
+    ignored
+}
+
+fn bazel_walkdir_filter_entry(
+    workspace_root: &Path,
+    ignored_prefixes: &BTreeSet<PathBuf>,
+    entry: &walkdir::DirEntry,
+) -> bool {
+    if entry.depth() == 0 {
+        return true;
+    }
+
+    // Fast path: prune common junk directories even when nested (e.g. `.git` submodules, nested
+    // `target/` dirs, etc).
+    if entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| BAZEL_ALWAYS_IGNORED_DIRS.contains(&name))
+    {
+        return false;
+    }
+
+    let Ok(rel) = entry.path().strip_prefix(workspace_root) else {
+        return true;
+    };
+
+    !ignored_prefixes.iter().any(|prefix| rel.starts_with(prefix))
+}
+
+fn discover_bazel_source_roots_heuristic(workspace_root: &Path) -> Vec<SourceRoot> {
+    let ignored_prefixes = bazel_ignored_path_prefixes(workspace_root);
+
+    let mut source_roots = Vec::new();
+    for entry in walkdir::WalkDir::new(workspace_root)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|entry| bazel_walkdir_filter_entry(workspace_root, &ignored_prefixes, entry))
         .filter_map(Result::ok)
     {
         if !entry.file_type().is_file() {
             continue;
         }
 
-        let name = entry.file_name().to_string_lossy();
-        if name != "BUILD" && name != "BUILD.bazel" {
+        let name = entry.file_name();
+        if name != OsStr::new("BUILD") && name != OsStr::new("BUILD.bazel") {
             continue;
         }
 
@@ -196,6 +237,20 @@ fn load_bazel_project_heuristic(
             path: dir.to_path_buf(),
         });
     }
+
+    source_roots
+}
+
+fn load_bazel_project_heuristic(
+    root: &Path,
+    options: &LoadOptions,
+) -> Result<ProjectConfig, ProjectError> {
+    // Naive Bazel heuristic:
+    // - treat each package directory that contains a BUILD/BUILD.bazel file as a source root
+    // - classify "test-ish" directories as test roots
+    //
+    // This is the default to avoid invoking Bazel unexpectedly.
+    let mut source_roots = discover_bazel_source_roots_heuristic(root);
 
     if source_roots.is_empty() {
         // Fallback: treat the workspace root as a source root so the rest of Nova can still
