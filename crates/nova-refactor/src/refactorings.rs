@@ -185,6 +185,8 @@ pub fn extract_variable(
         .find_map(ast::Statement::cast)
         .ok_or(RefactorError::InvalidSelection)?;
 
+    reject_unsafe_extract_variable_context(&expr, &stmt)?;
+
     // Be conservative: extracting from loop conditions changes evaluation frequency.
     match stmt {
         ast::Statement::WhileStatement(_) => {
@@ -781,6 +783,157 @@ fn syntax_token_range(tok: &nova_syntax::SyntaxToken) -> TextRange {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
+}
+
+fn reject_unsafe_extract_variable_context(
+    expr: &ast::Expression,
+    enclosing_stmt: &ast::Statement,
+) -> Result<(), RefactorError> {
+    let expr_range = syntax_range(expr.syntax());
+    let enclosing_stmt_syntax = enclosing_stmt.syntax().clone();
+
+    for ancestor in expr.syntax().ancestors() {
+        if let Some(while_stmt) = ast::WhileStatement::cast(ancestor.clone()) {
+            if let Some(cond) = while_stmt.condition() {
+                if contains_range(syntax_range(cond.syntax()), expr_range) {
+                    return Err(RefactorError::ExtractNotSupported {
+                        reason: "cannot extract from while condition",
+                    });
+                }
+            }
+        }
+
+        if let Some(do_while) = ast::DoWhileStatement::cast(ancestor.clone()) {
+            if let Some(cond) = do_while.condition() {
+                if contains_range(syntax_range(cond.syntax()), expr_range) {
+                    return Err(RefactorError::ExtractNotSupported {
+                        reason: "cannot extract from do-while condition",
+                    });
+                }
+            }
+        }
+
+        if let Some(for_stmt) = ast::ForStatement::cast(ancestor.clone()) {
+            if let Some(header) = for_stmt.header() {
+                if for_header_has_unsafe_eval_context(&header, expr_range) {
+                    return Err(RefactorError::ExtractNotSupported {
+                        reason: "cannot extract from for-loop condition or update",
+                    });
+                }
+            }
+        }
+
+        if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
+            if let Some(op) = binary_short_circuit_operator_kind(&binary) {
+                if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
+                    if let Some(rhs) = binary.rhs() {
+                        if contains_range(syntax_range(rhs.syntax()), expr_range) {
+                            return Err(RefactorError::ExtractNotSupported {
+                                reason: "cannot extract from right-hand side of `&&` / `||`",
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
+            let cond_range = syntax_range(cond_expr.syntax());
+            // Allow extracting the whole conditional expression.
+            if cond_range != expr_range {
+                if let Some(then_branch) = cond_expr.then_branch() {
+                    if contains_range(syntax_range(then_branch.syntax()), expr_range) {
+                        return Err(RefactorError::ExtractNotSupported {
+                            reason: "cannot extract from conditional (`?:`) branch",
+                        });
+                    }
+                }
+                if let Some(else_branch) = cond_expr.else_branch() {
+                    if contains_range(syntax_range(else_branch.syntax()), expr_range) {
+                        return Err(RefactorError::ExtractNotSupported {
+                            reason: "cannot extract from conditional (`?:`) branch",
+                        });
+                    }
+                }
+            }
+        }
+
+        if ancestor == enclosing_stmt_syntax {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn contains_range(outer: TextRange, inner: TextRange) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+fn for_header_has_unsafe_eval_context(header: &ast::ForHeader, expr_range: TextRange) -> bool {
+    let mut semicolons = Vec::new();
+    let mut r_paren = None;
+
+    for el in header.syntax().children_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        match tok.kind() {
+            SyntaxKind::Semicolon => semicolons.push(tok),
+            SyntaxKind::RParen => r_paren = Some(tok),
+            _ => {}
+        }
+    }
+
+    // Classic for loops always have two semicolons in the header.
+    if semicolons.len() < 2 {
+        return false;
+    }
+    let Some(r_paren) = r_paren else {
+        return false;
+    };
+
+    let first_semi = syntax_token_range(&semicolons[0]);
+    let second_semi = syntax_token_range(&semicolons[1]);
+    let r_paren = syntax_token_range(&r_paren);
+
+    let condition_segment = TextRange::new(first_semi.end, second_semi.start);
+    let update_segment = TextRange::new(second_semi.end, r_paren.start);
+
+    contains_range(condition_segment, expr_range) || contains_range(update_segment, expr_range)
+}
+
+fn binary_short_circuit_operator_kind(binary: &ast::BinaryExpression) -> Option<SyntaxKind> {
+    let lhs = binary.lhs()?;
+    let rhs = binary.rhs()?;
+
+    let lhs = lhs.syntax().clone();
+    let rhs = rhs.syntax().clone();
+    let mut seen_lhs = false;
+    for el in binary.syntax().children_with_tokens() {
+        match el {
+            nova_syntax::SyntaxElement::Node(node) => {
+                if node == lhs {
+                    seen_lhs = true;
+                    continue;
+                }
+                if node == rhs {
+                    break;
+                }
+            }
+            nova_syntax::SyntaxElement::Token(tok) => {
+                if !seen_lhs {
+                    continue;
+                }
+                if tok.kind().is_trivia() {
+                    continue;
+                }
+                return Some(tok.kind());
+            }
+        }
+    }
+
+    None
 }
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {

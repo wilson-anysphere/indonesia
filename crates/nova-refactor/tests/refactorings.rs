@@ -412,6 +412,122 @@ fn extract_variable_rejects_while_condition_extraction() {
 }
 
 #[test]
+fn extract_variable_rejects_for_condition_or_update_extraction() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(int n, int step) {
+    for (int i = 0; i < n; i += step) {
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    // Condition selection (`n` in `i < n`).
+    let cond_start = src.find("i < n").unwrap() + "i < ".len();
+    let cond_end = cond_start + "n".len();
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(cond_start, cond_end),
+            name: "limit".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+
+    // Update selection (`step` in `i += step`).
+    let update_start = src.find("i += step").unwrap() + "i += ".len();
+    let update_end = update_start + "step".len();
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(update_start, update_end),
+            name: "s".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_short_circuit_rhs_extraction() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  static class Box { int value; }
+
+  void m(Box b) {
+    if (b != null && b.value > 0) {
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    // RHS field access: `b.value` in `b.value > 0`.
+    let expr_start = src.find("b.value > 0").unwrap();
+    let expr_end = expr_start + "b.value".len();
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "v".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_ternary_branch_extraction() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  static class Box { int value; }
+
+  int m(boolean cond, Box b) {
+    return cond ? b.value : 0;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    // Then-branch field access: `b.value`.
+    let expr_start = src.find("b.value :").unwrap();
+    let expr_end = expr_start + "b.value".len();
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "v".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_method_call_expression() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
