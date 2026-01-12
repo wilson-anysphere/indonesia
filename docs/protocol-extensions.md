@@ -1074,8 +1074,9 @@ No params are required; clients should send `{}` or omit params.
 
 Field semantics:
 
-- `currentRunId` (number): the id of the most recent indexing run. `0` means no indexing run has been
-  started in this session.
+- `currentRunId` (number): the id of the most recent indexing run. `0` means no workspace indexing
+  run has been started (for example: semantic search disabled, missing workspace root, AI runtime
+  not available, or the server is in safe-mode).
 - `completedRunId` (number): the id of the most recently completed indexing run.
 - `done` (boolean): `true` when `currentRunId != 0` and `currentRunId == completedRunId`.
 - `indexedFiles` (number): number of files indexed so far in the current run.
@@ -1084,13 +1085,15 @@ Field semantics:
 Notes:
 
 - Workspace semantic-search indexing is best-effort and is only started when semantic search is
-  enabled in the Nova config (e.g. `ai.enabled=true`, `ai.features.semantic_search=true`), a valid
-  workspace root is known, the AI runtime is available, and the server is not in safe-mode.
+  enabled in the Nova config (e.g. `ai.enabled=true`, `ai.features.semantic_search=true`), the
+  server has a valid workspace root (`initialize.rootUri`), the AI runtime is available, and the
+  server is not in safe-mode.
 
 #### Safe-mode
 
-This request is allowed while the server is in safe-mode, but the server will not start background
-semantic-search indexing runs while in safe-mode (so `currentRunId` may remain `0`).
+This request is allowed while the server is in safe-mode (it is explicitly exempted from the
+safe-mode guard), but the server will not start background semantic-search indexing runs while in
+safe-mode (so `currentRunId` may remain `0`).
 
 ---
 
