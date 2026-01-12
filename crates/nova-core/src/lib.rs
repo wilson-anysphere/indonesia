@@ -310,7 +310,7 @@ impl JdkConfig {
         requested_release
             .or(self.release)
             .and_then(|release| self.toolchain_home_for_release(release))
-            .or_else(|| self.home.as_ref())
+            .or(self.home.as_ref())
     }
 }
 

@@ -225,6 +225,25 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(cached.clone());
         }
 
+        #[cfg(feature = "bsp")]
+        {
+            // `buildTarget/inverseSources` does not support restricting the universe to a
+            // run-target closure; only use it for the full-workspace owning-target query.
+            if run_target.is_none() {
+                let prefer_bsp = std::env::var("NOVA_BAZEL_USE_BSP")
+                    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                    .unwrap_or(true);
+
+                if prefer_bsp {
+                    if let Some(owners) = self.java_owning_targets_for_file_via_bsp(file) {
+                        self.java_owning_targets_cache
+                            .insert(cache_key, owners.clone());
+                        return Ok(owners);
+                    }
+                }
+            }
+        }
+
         let mut owners = BTreeSet::<String>::new();
 
         if let Some(run_target) = run_target {
@@ -445,7 +464,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 // First try a purely lexical prefix check against the canonical workspace root.
                 // This supports non-existent files (e.g. new files) as long as the path is
                 // workspace-local.
-                if let Ok(rel) = abs_file.strip_prefix(&root_canon) {
+                if let Ok(rel) = abs_file.strip_prefix(root_canon) {
                     rel.to_path_buf()
                 } else {
                     // Fall back to canonicalizing the file if it exists (this can resolve
@@ -454,7 +473,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         format!("failed to canonicalize file path {}", abs_file.display())
                     })?;
                     file_canon
-                        .strip_prefix(&root_canon)
+                        .strip_prefix(root_canon)
                         .map(|rel| rel.to_path_buf())
                         .with_context(|| {
                             format!(
@@ -557,6 +576,74 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 let fallback_expr = format!("rdeps({package_universe}, {node}, 1)");
                 self.query_label_kind(&fallback_expr)
                     .with_context(|| format!("same_pkg_direct_rdeps query failed: {err}"))
+            }
+        }
+    }
+
+    #[cfg(feature = "bsp")]
+    fn java_owning_targets_for_file_via_bsp(&mut self, file: &Path) -> Option<Vec<String>> {
+        let result: Result<Option<Vec<String>>> = (|| {
+            let Some(workspace) = self.bsp_workspace_mut()? else {
+                return Ok(None);
+            };
+
+            let inverse_sources = match workspace.inverse_sources(file) {
+                Ok(targets) => targets,
+                Err(err)
+                    if err
+                        .chain()
+                        .any(|cause| cause.downcast_ref::<crate::bsp::BspRpcError>().is_some()) =>
+                {
+                    // Optional request. If the server returns a JSON-RPC error (method not found,
+                    // invalid params, etc) treat it as "unsupported" and fall back to query-based
+                    // resolution without killing the BSP connection.
+                    return Ok(None);
+                }
+                Err(err) => return Err(err),
+            };
+
+            if inverse_sources.is_empty() {
+                return Ok(Some(Vec::new()));
+            }
+
+            let targets = workspace.build_targets()?;
+            let mut owners = BTreeSet::<String>::new();
+
+            for id in inverse_sources {
+                let Some(target) = targets.iter().find(|t| t.id.uri == id.uri) else {
+                    if id.uri.starts_with("//") {
+                        owners.insert(id.uri);
+                    }
+                    continue;
+                };
+
+                if !target.language_ids.iter().any(|lang| lang == "java") {
+                    continue;
+                }
+
+                if let Some(display) = &target.display_name {
+                    if display.starts_with("//") {
+                        owners.insert(display.clone());
+                        continue;
+                    }
+                }
+
+                if target.id.uri.starts_with("//") {
+                    owners.insert(target.id.uri.clone());
+                }
+            }
+
+            Ok(Some(owners.into_iter().collect()))
+        })();
+
+        match result {
+            Ok(owners) => owners,
+            Err(_) => {
+                // If the BSP server misbehaves (dies mid-request, protocol error, etc) mark it as
+                // failed and fall back to `bazel query` for the remainder of this workspace
+                // instance.
+                self.bsp = BspConnection::Failed;
+                None
             }
         }
     }

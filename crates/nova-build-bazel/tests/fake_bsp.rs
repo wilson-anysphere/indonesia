@@ -2,11 +2,12 @@
 
 use anyhow::{anyhow, Context, Result};
 use nova_build_bazel::bsp::{
-    BuildTarget, CompileParams, InitializeBuildResult, JavacOptionsItem, JavacOptionsParams,
-    PublishDiagnosticsParams, WorkspaceBuildTargetsResult,
+    BuildTarget, BuildTargetIdentifier, CompileParams, InitializeBuildResult, InverseSourcesParams,
+    JavacOptionsItem, JavacOptionsParams, PublishDiagnosticsParams, WorkspaceBuildTargetsResult,
 };
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
     sync::{Arc, Condvar, Mutex},
@@ -134,6 +135,7 @@ fn duplex() -> (Endpoint, Endpoint) {
 pub struct FakeBspServerConfig {
     pub initialize: InitializeBuildResult,
     pub targets: Vec<BuildTarget>,
+    pub inverse_sources: BTreeMap<String, Vec<BuildTargetIdentifier>>,
     pub javac_options: Vec<JavacOptionsItem>,
     pub compile_status_code: i32,
     pub diagnostics: Vec<PublishDiagnosticsParams>,
@@ -146,11 +148,18 @@ pub struct FakeBspServerConfig {
 #[derive(Debug)]
 pub struct FakeBspServer {
     handle: JoinHandle<()>,
+    #[allow(dead_code)]
+    requests: Arc<Mutex<Vec<Value>>>,
 }
 
 impl FakeBspServer {
     pub fn join(self) {
-        let _ = self.handle.join();
+        self.handle.join().unwrap();
+    }
+
+    #[allow(dead_code)]
+    pub fn requests(&self) -> Vec<Value> {
+        self.requests.lock().unwrap().clone()
     }
 }
 
@@ -158,12 +167,15 @@ pub fn spawn_fake_bsp_server(
     config: FakeBspServerConfig,
 ) -> Result<(nova_build_bazel::BspClient, FakeBspServer)> {
     let (client, server) = duplex();
+    let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let requests_for_thread = Arc::clone(&requests);
 
     let handle = thread::spawn(move || {
         let mut reader = BufReader::new(server.read);
         let mut writer = server.write;
 
         while let Ok(Some(msg)) = read_message(&mut reader) {
+            requests_for_thread.lock().unwrap().push(msg.clone());
             let method = msg.get("method").and_then(Value::as_str);
             let id = msg.get("id").and_then(Value::as_i64);
 
@@ -194,6 +206,27 @@ pub fn spawn_fake_bsp_server(
                         targets: config.targets.clone(),
                     })
                     .unwrap();
+                    let _ = write_message(
+                        &mut writer,
+                        &serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}),
+                    );
+                }
+                (Some("buildTarget/inverseSources"), Some(id)) => {
+                    let params: InverseSourcesParams = msg
+                        .get("params")
+                        .cloned()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or(InverseSourcesParams {
+                            text_document: nova_build_bazel::bsp::TextDocumentIdentifier {
+                                uri: String::new(),
+                            },
+                        });
+                    let targets = config
+                        .inverse_sources
+                        .get(&params.text_document.uri)
+                        .cloned()
+                        .unwrap_or_default();
+                    let result = serde_json::json!({ "targets": targets });
                     let _ = write_message(
                         &mut writer,
                         &serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}),
@@ -259,7 +292,7 @@ pub fn spawn_fake_bsp_server(
     });
 
     let client = nova_build_bazel::BspClient::from_streams(client.read, client.write);
-    Ok((client, FakeBspServer { handle }))
+    Ok((client, FakeBspServer { handle, requests }))
 }
 
 fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>> {

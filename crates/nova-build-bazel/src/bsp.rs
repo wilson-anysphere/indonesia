@@ -25,6 +25,33 @@ use std::{
     time::Duration,
 };
 
+/// JSON-RPC error payload returned by BSP servers.
+///
+/// This is intentionally `pub(crate)` so the Bazel workspace integration can detect when a server
+/// does not implement optional methods (e.g. `buildTarget/inverseSources`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BspRpcError {
+    pub code: i64,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl std::fmt::Display for BspRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.data {
+            Some(data) => write!(
+                f,
+                "BSP JSON-RPC error {}: {} (data: {})",
+                self.code, self.message, data
+            ),
+            None => write!(f, "BSP JSON-RPC error {}: {}", self.code, self.message),
+        }
+    }
+}
+
+impl std::error::Error for BspRpcError {}
+
 /// Configuration required to launch a Bazel BSP server.
 ///
 /// This is intentionally minimal; callers are expected to configure discovery
@@ -384,6 +411,13 @@ impl BspClient {
         self.request("workspace/buildTargets", Value::Null)
     }
 
+    pub fn inverse_sources(
+        &mut self,
+        params: InverseSourcesParams,
+    ) -> Result<InverseSourcesResult> {
+        self.request("buildTarget/inverseSources", params)
+    }
+
     pub fn javac_options(&mut self, params: JavacOptionsParams) -> Result<JavacOptionsResult> {
         self.request("buildTarget/javacOptions", params)
     }
@@ -464,6 +498,10 @@ impl BspClient {
             }
 
             if let Some(error) = incoming.get("error") {
+                let error = error.clone();
+                if let Ok(parsed) = serde_json::from_value::<BspRpcError>(error.clone()) {
+                    return Err(anyhow::Error::new(parsed));
+                }
                 return Err(anyhow!("BSP error response: {error}"));
             }
 
@@ -708,6 +746,25 @@ impl BspWorkspace {
             .collect())
     }
 
+    /// Query which build targets "own" a source file.
+    ///
+    /// BSP calls this request `buildTarget/inverseSources`. It is a cheap way to discover
+    /// compilation targets for a file without running an expensive Bazel query.
+    pub fn inverse_sources(&mut self, file: &Path) -> Result<Vec<BuildTargetIdentifier>> {
+        let abs = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.root.join(file)
+        };
+        let abs = AbsPathBuf::new(abs).context("inverseSources expects an absolute path")?;
+        let uri =
+            nova_core::path_to_file_uri(&abs).context("failed to convert file path to file URI")?;
+        let result = self.client.inverse_sources(InverseSourcesParams {
+            text_document: TextDocumentIdentifier { uri },
+        })?;
+        Ok(result.targets)
+    }
+
     pub fn javac_options_for_label(&mut self, label: &str) -> Result<Option<JavaCompileInfo>> {
         let Some(id) = self.resolve_build_target(label)? else {
             return Ok(None);
@@ -890,6 +947,18 @@ pub struct JavacOptionsItem {
     pub classpath: Vec<String>,
     pub class_directory: String,
     pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InverseSourcesParams {
+    pub text_document: TextDocumentIdentifier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InverseSourcesResult {
+    pub targets: Vec<BuildTargetIdentifier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
