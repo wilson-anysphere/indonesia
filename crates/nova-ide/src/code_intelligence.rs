@@ -409,6 +409,71 @@ fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
 // Diagnostics
 // -----------------------------------------------------------------------------
 
+/// Core (non-framework) diagnostics for a single file.
+///
+/// Framework diagnostics (Spring/JPA/Micronaut/Quarkus/Dagger) are provided via the unified
+/// `nova-ext` framework providers and `crate::framework_cache::framework_diagnostics`.
+pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+    // Avoid emitting Java-centric token diagnostics for application config files; those are handled
+    // by the framework layer.
+    if let Some(path) = db.file_path(file) {
+        if is_spring_properties_file(path) || is_spring_yaml_file(path) {
+            return Vec::new();
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+
+    let text = db.file_content(file);
+
+    // 1) Syntax errors.
+    //
+    // `nova_syntax::parse` is a lightweight token-level parser that reports
+    // unterminated literals/comments. For richer "unexpected token" errors we
+    // also run the full Java grammar parser (`parse_java`) when the file is a
+    // Java source file.
+    let parse = nova_syntax::parse(text);
+    diagnostics.extend(parse.errors.into_iter().map(|e| {
+        Diagnostic::error(
+            "SYNTAX",
+            e.message,
+            Some(Span::new(e.range.start as usize, e.range.end as usize)),
+        )
+    }));
+
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        let parse = nova_syntax::parse_java(text);
+        diagnostics.extend(parse.errors.into_iter().map(|e| {
+            Diagnostic::error(
+                "SYNTAX",
+                e.message,
+                Some(Span::new(e.range.start as usize, e.range.end as usize)),
+            )
+        }));
+    }
+
+    // 2) Unresolved references (best-effort).
+    let analysis = analyze(text);
+    for call in &analysis.calls {
+        if call.receiver.is_some() {
+            continue;
+        }
+        if analysis.methods.iter().any(|m| m.name == call.name) {
+            continue;
+        }
+        diagnostics.push(Diagnostic::error(
+            "UNRESOLVED_REFERENCE",
+            format!("Cannot resolve symbol '{}'", call.name),
+            Some(call.name_span),
+        ));
+    }
+
+    diagnostics
+}
+
 /// Aggregate all diagnostics for a single file.
 pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -692,6 +757,47 @@ pub(crate) const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
         "<R, A> R collect(Collector<? super T, A, R> collector)",
     ),
 ];
+
+/// Core (non-framework) completions for a Java source file.
+///
+/// Framework completions are provided via the unified `nova-ext` framework providers and
+/// `crate::framework_cache::framework_completions`.
+pub(crate) fn core_completions(
+    db: &dyn Database,
+    file: FileId,
+    position: Position,
+) -> Vec<CompletionItem> {
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) != Some("java"))
+    {
+        return Vec::new();
+    }
+
+    let text = db.file_content(file);
+    let Some(offset) = position_to_offset(text, position) else {
+        return Vec::new();
+    };
+    let (prefix_start, prefix) = identifier_prefix(text, offset);
+
+    let before = skip_whitespace_backwards(text, prefix_start);
+    if before > 0 && text.as_bytes()[before - 1] == b'.' {
+        let receiver = receiver_before_dot(text, before - 1);
+        return decorate_completions(
+            text,
+            prefix_start,
+            offset,
+            member_completions(db, file, &receiver, &prefix),
+        );
+    }
+
+    decorate_completions(
+        text,
+        prefix_start,
+        offset,
+        general_completions(db, file, &prefix),
+    )
+}
 
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);

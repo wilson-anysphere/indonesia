@@ -25,7 +25,8 @@ pub struct NovaLspIdeState {
 
 impl NovaLspIdeState {
     pub fn new(db: Arc<DynDb>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
-        let mut ide_extensions = IdeExtensions::new(Arc::clone(&db), config, project);
+        let mut ide_extensions =
+            IdeExtensions::<DynDb>::with_default_registry(Arc::clone(&db), config, project);
         register_default_providers(&mut ide_extensions);
         Self { db, ide_extensions }
     }

@@ -29,6 +29,8 @@ use once_cell::sync::Lazy;
 
 use nova_config_metadata::MetadataIndex;
 use nova_db::{Database, FileId};
+use nova_scheduler::CancellationToken;
+use nova_types::{CompletionItem, Diagnostic};
 
 const MAX_CACHED_ROOTS: usize = 32;
 
@@ -47,7 +49,24 @@ pub fn project_root_for_path(path: &Path) -> PathBuf {
         path.parent().unwrap_or(path)
     };
 
-    nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
+    if let Some(root) = nova_project::workspace_root(start) {
+        return root;
+    }
+
+    // Best-effort fallback for in-memory DB fixtures: if the path has a `src/` segment, treat its
+    // parent as the project root. This matches the heuristics used by early framework analyzers and
+    // keeps tests that use virtual paths predictable.
+    if !path.exists() {
+        for ancestor in start.ancestors() {
+            if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
+                if let Some(parent) = ancestor.parent() {
+                    return parent.to_path_buf();
+                }
+            }
+        }
+    }
+
+    start.to_path_buf()
 }
 
 /// Convenience helper for `FileId`-based queries.
@@ -94,10 +113,221 @@ pub fn spring_metadata_index(root: &Path) -> Arc<MetadataIndex> {
     WORKSPACE_CACHE.spring_metadata_index(root)
 }
 
+/// Returns framework diagnostics (Spring/JPA/Micronaut/Quarkus/Dagger) for `file`.
+///
+/// This is the unified entrypoint used by the `nova-ext` framework providers.
+/// Callers should pass the request cancellation token so heavy workspace scanning cooperates with
+/// Nova's timeouts.
+#[must_use]
+pub fn framework_diagnostics(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let text = db.file_content(file);
+
+    // Spring configuration diagnostics (`application*.properties|yml|yaml`).
+    if let Some(path) = db.file_path(file) {
+        if is_application_properties(path) || is_application_yaml(path) {
+            let root = project_root_for_path(path);
+            let workspace = WORKSPACE_CACHE.spring_workspace(db, &root, cancel);
+            if !workspace.is_spring {
+                return Vec::new();
+            }
+            return nova_framework_spring::diagnostics_for_config_file(
+                path,
+                text,
+                workspace.index.metadata(),
+            );
+        }
+    }
+
+    if !is_java_file(db, file) {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+
+    // JPA / JPQL diagnostics (best-effort, workspace-scoped).
+    let maybe_jpa_file = text.contains("jakarta.persistence.")
+        || text.contains("javax.persistence.")
+        || text.contains("@Entity")
+        || text.contains("@Query")
+        || text.contains("@NamedQuery");
+    if maybe_jpa_file {
+        if let Some(project) = crate::jpa_intel::project_for_file_with_cancel(db, file, cancel) {
+            if let Some(analysis) = project.analysis.as_ref() {
+                if let Some(source) = project.source_index_for_file(file) {
+                    diagnostics.extend(
+                        analysis
+                            .diagnostics
+                            .iter()
+                            .filter(|d| d.source == source)
+                            .map(|d| d.diagnostic.clone()),
+                    );
+                }
+            }
+        }
+    }
+
+    // Spring DI diagnostics (missing / ambiguous beans, circular deps).
+    diagnostics.extend(crate::spring_di::diagnostics_for_file_with_cancel(db, file, cancel));
+
+    // Dagger/Hilt diagnostics (workspace-scoped).
+    diagnostics.extend(crate::dagger_intel::diagnostics_for_file_with_cancel(db, file, cancel));
+
+    // Quarkus CDI diagnostics (workspace-scoped).
+    diagnostics.extend(quarkus_diagnostics_for_file(db, file, text, cancel));
+
+    // Micronaut diagnostics (DI + validation).
+    diagnostics.extend(micronaut_diagnostics_for_file(db, file, cancel));
+
+    diagnostics
+}
+
+/// Returns framework completion items for `(file, offset)` (Spring/JPA/Micronaut/Quarkus).
+#[must_use]
+pub fn framework_completions(
+    db: &dyn Database,
+    file: FileId,
+    offset: usize,
+    cancel: &CancellationToken,
+) -> Vec<CompletionItem> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let text = db.file_content(file);
+
+    // Spring configuration file completions.
+    if let Some(path) = db.file_path(file) {
+        if is_application_properties(path) {
+            let root = project_root_for_path(path);
+            let workspace = WORKSPACE_CACHE.spring_workspace(db, &root, cancel);
+            if !workspace.is_spring {
+                return Vec::new();
+            }
+            return nova_framework_spring::completions_for_properties_file(
+                path,
+                text,
+                offset,
+                workspace.index.as_ref(),
+            );
+        }
+
+        if is_application_yaml(path) {
+            let root = project_root_for_path(path);
+            let workspace = WORKSPACE_CACHE.spring_workspace(db, &root, cancel);
+            if !workspace.is_spring {
+                return Vec::new();
+            }
+            return nova_framework_spring::completions_for_yaml_file(
+                path,
+                text,
+                offset,
+                workspace.index.as_ref(),
+            );
+        }
+    }
+
+    if !is_java_file(db, file) {
+        return Vec::new();
+    }
+
+    // Spring DI completions (`@Qualifier`, `@Profile`) inside Java source.
+    if let Some(ctx) = crate::spring_di::annotation_string_context(text, offset) {
+        match ctx {
+            crate::spring_di::AnnotationStringContext::Qualifier => {
+                let items =
+                    crate::spring_di::qualifier_completion_items_with_cancel(db, file, cancel);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+            crate::spring_di::AnnotationStringContext::Profile => {
+                let items = crate::spring_di::profile_completion_items_with_cancel(db, file, cancel);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+    }
+
+    // Spring / Micronaut `@Value("${...}")` completions.
+    if cursor_inside_value_placeholder(text, offset) {
+        if spring_value_completion_applicable(db, file, text, cancel) {
+            if let Some(path) = db.file_path(file) {
+                let root = project_root_for_path(path);
+                let workspace = WORKSPACE_CACHE.spring_workspace(db, &root, cancel);
+                if workspace.is_spring {
+                    let items = nova_framework_spring::completions_for_value_placeholder(
+                        text,
+                        offset,
+                        workspace.index.as_ref(),
+                    );
+                    if !items.is_empty() {
+                        return items;
+                    }
+                }
+            }
+        }
+
+        // Micronaut `@Value("${...}")` completions as a fallback.
+        if let Some(analysis) = crate::micronaut_intel::analysis_for_file_with_cancel(db, file, cancel)
+        {
+            let items = nova_framework_micronaut::completions_for_value_placeholder(
+                text,
+                offset,
+                &analysis.config_keys,
+            );
+            if !items.is_empty() {
+                return items;
+            }
+        }
+    }
+
+    // Quarkus `@ConfigProperty(name="...")` completions.
+    if let Some(prefix) = quarkus_config_property_prefix(text, offset) {
+        if let Some(path) = db.file_path(file) {
+            let root = project_root_for_path(path);
+            if WORKSPACE_CACHE
+                .quarkus_analysis(db, &root, cancel, Some(&[text]))
+                .is_some()
+            {
+                let items = quarkus_config_completions(db, &root, &prefix, cancel);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+    }
+
+    // JPQL completions inside JPA `@Query(...)` / `@NamedQuery(query=...)` strings.
+    if let Some((query, query_cursor)) = crate::jpa_intel::jpql_query_at_cursor(text, offset) {
+        if let Some(project) = crate::jpa_intel::project_for_file_with_cancel(db, file, cancel) {
+            if let Some(analysis) = project.analysis.as_ref() {
+                let items =
+                    nova_framework_jpa::jpql_completions(&query, query_cursor, &analysis.model);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 #[derive(Debug)]
 pub struct FrameworkWorkspaceCache {
     project_configs: Mutex<LruCache<PathBuf, CachedProjectConfig>>,
     spring_metadata: Mutex<LruCache<PathBuf, CachedMetadataIndex>>,
+    spring_workspace: Mutex<LruCache<PathBuf, CachedSpringWorkspace>>,
+    quarkus: Mutex<LruCache<PathBuf, CachedQuarkusWorkspace>>,
 }
 
 #[derive(Clone, Debug)]
@@ -112,12 +342,35 @@ struct CachedMetadataIndex {
     value: Arc<MetadataIndex>,
 }
 
+#[derive(Clone, Debug)]
+struct CachedSpringWorkspace {
+    fingerprint: u64,
+    is_spring: bool,
+    index: Arc<nova_framework_spring::SpringWorkspaceIndex>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedQuarkusWorkspace {
+    fingerprint: u64,
+    file_ids: Vec<FileId>,
+    file_id_to_source: HashMap<FileId, usize>,
+    analysis: Option<Arc<nova_framework_quarkus::AnalysisResultWithSpans>>,
+}
+
+#[derive(Clone, Debug)]
+struct SpringWorkspace {
+    is_spring: bool,
+    index: Arc<nova_framework_spring::SpringWorkspaceIndex>,
+}
+
 impl FrameworkWorkspaceCache {
     #[must_use]
     pub fn new() -> Self {
         Self {
             project_configs: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
             spring_metadata: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
+            spring_workspace: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
+            quarkus: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
         }
     }
 
@@ -210,6 +463,261 @@ impl FrameworkWorkspaceCache {
 
         value
     }
+
+    fn spring_workspace(
+        &self,
+        db: &dyn Database,
+        root: &Path,
+        cancel: &CancellationToken,
+    ) -> SpringWorkspace {
+        let raw_root = root.to_path_buf();
+        let canonical_root = normalize_root_for_cache(root);
+        let has_alt_root = canonical_root != raw_root;
+
+        let build_fingerprint = build_marker_fingerprint(&canonical_root);
+
+        let mut files: Vec<(PathBuf, FileId, SpringWorkspaceFileKind)> = Vec::new();
+        let mut marker_says_spring = false;
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        build_fingerprint.hash(&mut hasher);
+
+        for file_id in db.all_file_ids() {
+            if cancel.is_cancelled() {
+                if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root) {
+                    return SpringWorkspace {
+                        is_spring: existing.is_spring,
+                        index: existing.index,
+                    };
+                }
+                return SpringWorkspace {
+                    is_spring: false,
+                    index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
+                        Arc::new(MetadataIndex::new()),
+                    )),
+                };
+            }
+
+            let Some(path) = db.file_path(file_id) else {
+                continue;
+            };
+            if !(path.starts_with(&raw_root) || (has_alt_root && path.starts_with(&canonical_root))) {
+                continue;
+            }
+
+            let kind = if path.extension().and_then(|e| e.to_str()) == Some("java") {
+                SpringWorkspaceFileKind::Java
+            } else if is_application_properties(path) || is_application_yaml(path) {
+                SpringWorkspaceFileKind::Config
+            } else {
+                continue;
+            };
+
+            let text = db.file_content(file_id);
+            if matches!(kind, SpringWorkspaceFileKind::Java) && looks_like_spring_source(text) {
+                marker_says_spring = true;
+            }
+
+            path.hash(&mut hasher);
+            text.len().hash(&mut hasher);
+            (text.as_ptr() as usize).hash(&mut hasher);
+
+            files.push((path.to_path_buf(), file_id, kind));
+        }
+
+        files.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+        let fingerprint = hasher.finish();
+
+        let config_says_spring = self
+            .project_config(&canonical_root)
+            .is_some_and(|cfg| nova_framework_spring::is_spring_applicable(cfg.as_ref()));
+        let is_spring = config_says_spring || marker_says_spring;
+
+        // Fast path: cache hit.
+        {
+            let mut cache = lock_unpoison(&self.spring_workspace);
+            if let Some(entry) = cache.get_cloned(&canonical_root) {
+                if entry.fingerprint == fingerprint {
+                    return SpringWorkspace {
+                        is_spring: entry.is_spring,
+                        index: entry.index,
+                    };
+                }
+            }
+        }
+
+        if cancel.is_cancelled() {
+            if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root) {
+                return SpringWorkspace {
+                    is_spring: existing.is_spring,
+                    index: existing.index,
+                };
+            }
+            return SpringWorkspace {
+                is_spring: false,
+                index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
+                    Arc::new(MetadataIndex::new()),
+                )),
+            };
+        }
+
+        if !is_spring {
+            let index = Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
+                Arc::new(MetadataIndex::new()),
+            ));
+            let entry = CachedSpringWorkspace {
+                fingerprint,
+                is_spring,
+                index: Arc::clone(&index),
+            };
+            lock_unpoison(&self.spring_workspace).insert(canonical_root, entry);
+            return SpringWorkspace { is_spring, index };
+        }
+
+        let metadata = self.spring_metadata_index(&canonical_root);
+        let mut index = nova_framework_spring::SpringWorkspaceIndex::new(metadata.clone());
+
+        for (path, file_id, kind) in files {
+            if cancel.is_cancelled() {
+                if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&canonical_root) {
+                    return SpringWorkspace {
+                        is_spring: existing.is_spring,
+                        index: existing.index,
+                    };
+                }
+                return SpringWorkspace {
+                    is_spring: false,
+                    index: Arc::new(nova_framework_spring::SpringWorkspaceIndex::new(
+                        Arc::new(MetadataIndex::new()),
+                    )),
+                };
+            }
+
+            let text = db.file_content(file_id);
+            match kind {
+                SpringWorkspaceFileKind::Java => index.add_java_file(path, text),
+                SpringWorkspaceFileKind::Config => index.add_config_file(path, text),
+            }
+        }
+
+        let index = Arc::new(index);
+        let entry = CachedSpringWorkspace {
+            fingerprint,
+            is_spring,
+            index: Arc::clone(&index),
+        };
+        lock_unpoison(&self.spring_workspace).insert(canonical_root, entry);
+        SpringWorkspace { is_spring, index }
+    }
+
+    fn quarkus_analysis(
+        &self,
+        db: &dyn Database,
+        root: &Path,
+        cancel: &CancellationToken,
+        applicability_sources: Option<&[&str]>,
+    ) -> Option<CachedQuarkusWorkspace> {
+        let raw_root = root.to_path_buf();
+        let canonical_root = normalize_root_for_cache(root);
+        let has_alt_root = canonical_root != raw_root;
+
+        let build_fingerprint = build_marker_fingerprint(&canonical_root);
+
+        // Collect java files under the root (fallback to all Java files if the root contains none).
+        let mut under_root = Vec::<(PathBuf, FileId)>::new();
+        let mut all = Vec::<(PathBuf, FileId)>::new();
+
+        for file_id in db.all_file_ids() {
+            if cancel.is_cancelled() {
+                return lock_unpoison(&self.quarkus).get_cloned(&canonical_root);
+            }
+
+            let Some(path) = db.file_path(file_id) else {
+                continue;
+            };
+            if path.extension().and_then(|e| e.to_str()) != Some("java") {
+                continue;
+            }
+            let tuple = (path.to_path_buf(), file_id);
+            if path.starts_with(&raw_root) || (has_alt_root && path.starts_with(&canonical_root)) {
+                under_root.push(tuple);
+            } else {
+                all.push(tuple);
+            }
+        }
+
+        let mut files = if under_root.is_empty() { all } else { under_root };
+        if files.is_empty() {
+            return None;
+        }
+        files.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        // Fingerprint sources (cheap pointer/len hashing).
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        build_fingerprint.hash(&mut hasher);
+        for (path, file_id) in &files {
+            if cancel.is_cancelled() {
+                return lock_unpoison(&self.quarkus).get_cloned(&canonical_root);
+            }
+            path.hash(&mut hasher);
+            let text = db.file_content(*file_id);
+            text.len().hash(&mut hasher);
+            (text.as_ptr() as usize).hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+
+        // Cache hit.
+        {
+            let mut cache = lock_unpoison(&self.quarkus);
+            if let Some(entry) = cache.get_cloned(&canonical_root) {
+                if entry.fingerprint == fingerprint {
+                    return Some(entry);
+                }
+            }
+        }
+
+        // If cancelled, fall back to a stale entry.
+        if cancel.is_cancelled() {
+            return lock_unpoison(&self.quarkus).get_cloned(&canonical_root);
+        }
+
+        // Determine applicability. If the caller passed a small subset of sources, use that for the
+        // check to avoid extra work.
+        let mut source_refs = Vec::<&str>::new();
+        if let Some(sources) = applicability_sources {
+            source_refs.extend_from_slice(sources);
+        } else {
+            source_refs.extend(files.iter().map(|(_, id)| db.file_content(*id)));
+        }
+
+        let applicable = is_quarkus_project_with_root(db, &canonical_root, &source_refs);
+        let analysis = applicable.then(|| {
+            let sources: Vec<&str> = files.iter().map(|(_, id)| db.file_content(*id)).collect();
+            Arc::new(nova_framework_quarkus::analyze_java_sources_with_spans(&sources))
+        });
+
+        let file_ids: Vec<FileId> = files.iter().map(|(_, id)| *id).collect();
+        let file_id_to_source: HashMap<FileId, usize> = file_ids
+            .iter()
+            .enumerate()
+            .map(|(idx, id)| (*id, idx))
+            .collect();
+
+        let entry = CachedQuarkusWorkspace {
+            fingerprint,
+            file_ids,
+            file_id_to_source,
+            analysis,
+        };
+        lock_unpoison(&self.quarkus).insert(canonical_root, entry.clone());
+        Some(entry)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpringWorkspaceFileKind {
+    Java,
+    Config,
 }
 
 #[derive(Debug)]
@@ -263,6 +771,10 @@ where
 
 fn canonicalize_root(root: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(root).ok()
+}
+
+fn normalize_root_for_cache(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
 fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -352,4 +864,339 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
         .unwrap_or_else(|_| std::time::Duration::from_secs(0));
     duration.as_secs().hash(hasher);
     duration.subsec_nanos().hash(hasher);
+}
+
+fn is_java_file(db: &dyn Database, file: FileId) -> bool {
+    db.file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+}
+
+pub(crate) fn is_application_properties(path: &Path) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    name.starts_with("application")
+        && path.extension().and_then(|e| e.to_str()) == Some("properties")
+}
+
+pub(crate) fn is_application_yaml(path: &Path) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if !name.starts_with("application") {
+        return false;
+    }
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("yml" | "yaml")
+    )
+}
+
+fn looks_like_spring_source(text: &str) -> bool {
+    text.contains("import org.springframework") || text.contains("@org.springframework")
+}
+
+fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
+    // Best-effort detection for `@Value("${...}")` contexts (Spring or Micronaut).
+    // This is used purely as a guard to avoid running framework analysis for
+    // completions when the cursor isn't inside a placeholder.
+    let prefix = java_source.get(..cursor).unwrap_or(java_source);
+    let Some(value_start) = prefix.rfind("@Value") else {
+        return false;
+    };
+
+    let after_value = &java_source[value_start..];
+    let Some(open_quote_rel) = after_value.find('"') else {
+        return false;
+    };
+    let content_start = value_start + open_quote_rel + 1;
+    let Some(after_open_quote) = java_source.get(content_start..) else {
+        return false;
+    };
+    let Some(close_quote_rel) = after_open_quote.find('"') else {
+        return false;
+    };
+    let content_end = content_start + close_quote_rel;
+
+    if cursor < content_start || cursor > content_end {
+        return false;
+    }
+
+    let content = &java_source[content_start..content_end];
+    let rel_cursor = cursor - content_start;
+    let Some(open_rel) = content[..rel_cursor].rfind("${") else {
+        return false;
+    };
+    let key_start_rel = open_rel + 2;
+    if rel_cursor < key_start_rel {
+        return false;
+    }
+
+    let after_key = &content[key_start_rel..];
+    let key_end_rel = after_key
+        .find(|c| c == '}' || c == ':')
+        .unwrap_or(after_key.len())
+        + key_start_rel;
+
+    rel_cursor <= key_end_rel
+}
+
+fn spring_value_completion_applicable(
+    db: &dyn Database,
+    file: FileId,
+    java_source: &str,
+    cancel: &CancellationToken,
+) -> bool {
+    if cancel.is_cancelled() {
+        return false;
+    }
+
+    let Some(path) = db.file_path(file) else {
+        return looks_like_spring_source(java_source);
+    };
+
+    let root = project_root_for_path(path);
+    WORKSPACE_CACHE
+        .spring_workspace(db, &root, cancel)
+        .is_spring
+        || looks_like_spring_source(java_source)
+}
+
+fn quarkus_diagnostics_for_file(
+    db: &dyn Database,
+    file: FileId,
+    java_source: &str,
+    cancel: &CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let Some(path) = db.file_path(file) else {
+        return Vec::new();
+    };
+
+    let root = project_root_for_path(path);
+    let Some(workspace) = WORKSPACE_CACHE.quarkus_analysis(db, &root, cancel, Some(&[java_source]))
+    else {
+        return Vec::new();
+    };
+
+    let Some(analysis) = workspace.analysis.as_ref() else {
+        return Vec::new();
+    };
+    let Some(source_idx) = workspace.file_id_to_source.get(&file).copied() else {
+        return Vec::new();
+    };
+
+    analysis
+        .diagnostics
+        .iter()
+        .filter(|d| d.source == source_idx)
+        .map(|d| d.diagnostic.clone())
+        .collect()
+}
+
+fn micronaut_diagnostics_for_file(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let Some(path) = db.file_path(file) else {
+        return Vec::new();
+    };
+    if path.extension().and_then(|e| e.to_str()) != Some("java") {
+        return Vec::new();
+    }
+
+    let Some(analysis) = crate::micronaut_intel::analysis_for_file_with_cancel(db, file, cancel)
+    else {
+        return Vec::new();
+    };
+
+    let path = path.to_string_lossy();
+    analysis
+        .file_diagnostics
+        .iter()
+        .filter(|d| d.file == path.as_ref())
+        .map(|d| d.diagnostic.clone())
+        .collect()
+}
+
+fn quarkus_config_completions(
+    db: &dyn Database,
+    root: &Path,
+    prefix: &str,
+    cancel: &CancellationToken,
+) -> Vec<CompletionItem> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let Some(workspace) = WORKSPACE_CACHE.quarkus_analysis(db, root, cancel, None) else {
+        return Vec::new();
+    };
+    let Some(analysis) = workspace.analysis.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut props = std::collections::BTreeSet::<String>::new();
+    props.extend(analysis.config_properties.iter().cloned());
+
+    for file_id in db.all_file_ids() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if !path.starts_with(root) {
+            continue;
+        }
+        if !is_application_properties(path) {
+            continue;
+        }
+
+        let text = db.file_content(file_id);
+        for raw_line in text.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let key = line.split('=').next().unwrap_or(line).trim();
+            if !key.is_empty() {
+                props.insert(key.to_string());
+            }
+        }
+    }
+
+    props
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .map(CompletionItem::new)
+        .collect()
+}
+
+fn is_quarkus_project_with_root(_db: &dyn Database, root: &Path, java_sources: &[&str]) -> bool {
+    if let Some(config) = project_config(root) {
+        let dep_strings: Vec<String> = config
+            .dependencies
+            .iter()
+            .map(|d| format!("{}:{}", d.group_id, d.artifact_id))
+            .collect();
+        let dep_refs: Vec<&str> = dep_strings.iter().map(String::as_str).collect();
+
+        let classpath: Vec<&Path> = config
+            .classpath
+            .iter()
+            .map(|e| e.path.as_path())
+            .chain(config.module_path.iter().map(|e| e.path.as_path()))
+            .collect();
+
+        return nova_framework_quarkus::is_quarkus_applicable_with_classpath(
+            &dep_refs,
+            classpath.as_slice(),
+            java_sources,
+        );
+    }
+
+    nova_framework_quarkus::is_quarkus_applicable(&[], java_sources)
+}
+
+fn quarkus_config_property_prefix(text: &str, offset: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    if offset > bytes.len() {
+        return None;
+    }
+
+    // Find the opening quote for the string literal containing the cursor.
+    let mut start_quote = None;
+    let mut i = offset;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'"' && !is_escaped_quote(bytes, i) {
+            start_quote = Some(i);
+            break;
+        }
+    }
+    let start_quote = start_quote?;
+
+    // Find the closing quote.
+    let mut end_quote = None;
+    let mut j = start_quote + 1;
+    while j < bytes.len() {
+        if bytes[j] == b'"' && !is_escaped_quote(bytes, j) {
+            end_quote = Some(j);
+            break;
+        }
+        j += 1;
+    }
+    let end_quote = end_quote?;
+
+    if !(start_quote < offset && offset <= end_quote) {
+        return None;
+    }
+
+    // Ensure we're completing the `name = "..."` argument.
+    let mut k = start_quote;
+    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+        k -= 1;
+    }
+    if k == 0 || bytes[k - 1] != b'=' {
+        return None;
+    }
+    k -= 1;
+    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+        k -= 1;
+    }
+    let mut ident_start = k;
+    while ident_start > 0 && is_ident_continue(bytes[ident_start - 1] as char) {
+        ident_start -= 1;
+    }
+    let ident = text.get(ident_start..k)?;
+    if ident != "name" {
+        return None;
+    }
+
+    // Ensure the nearest preceding annotation is `@ConfigProperty`.
+    let before_ident = &text[..ident_start];
+    let at_idx = before_ident.rfind('@')?;
+    let after_at = &before_ident[at_idx + 1..];
+
+    let mut ann_end = 0usize;
+    for (idx, ch) in after_at.char_indices() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            ann_end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if ann_end == 0 {
+        return None;
+    }
+    let ann = &after_at[..ann_end];
+    let simple = ann.rsplit('.').next().unwrap_or(ann);
+    if simple != "ConfigProperty" {
+        return None;
+    }
+
+    Some(text[start_quote + 1..offset].to_string())
+}
+
+fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut i = idx;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'\\' {
+            backslashes += 1;
+        } else {
+            break;
+        }
+    }
+    backslashes % 2 == 1
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }

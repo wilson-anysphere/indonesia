@@ -7,6 +7,7 @@ use once_cell::sync::Lazy;
 
 use nova_core::{LineIndex, Position as CorePosition, Range as CoreRange};
 use nova_db::{Database, FileId};
+use nova_scheduler::CancellationToken;
 use nova_framework_dagger::{analyze_java_files, DaggerAnalysis, JavaSourceFile, NavigationKind};
 use nova_types::{Diagnostic, Severity, Span};
 
@@ -46,6 +47,18 @@ static DAGGER_ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<CachedDaggerProjec
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+    let cancel = CancellationToken::new();
+    diagnostics_for_file_with_cancel(db, file, &cancel)
+}
+
+pub(crate) fn diagnostics_for_file_with_cancel(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     let Some(file_path) = db.file_path(file) else {
         return Vec::new();
     };
@@ -53,7 +66,7 @@ pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagn
         return Vec::new();
     }
 
-    let Some(project) = project_analysis(db, file_path) else {
+    let Some(project) = project_analysis_with_cancel(db, file_path, cancel) else {
         return Vec::new();
     };
 
@@ -176,19 +189,30 @@ pub(crate) fn find_references(
 }
 
 fn project_analysis(db: &dyn Database, file_path: &Path) -> Option<Arc<CachedDaggerProject>> {
+    let cancel = CancellationToken::new();
+    project_analysis_with_cancel(db, file_path, &cancel)
+}
+
+fn project_analysis_with_cancel(
+    db: &dyn Database,
+    file_path: &Path,
+    cancel: &CancellationToken,
+) -> Option<Arc<CachedDaggerProject>> {
     let root_raw = framework_cache::project_root_for_path(file_path);
     let root = normalize_root(&root_raw);
 
     let has_dagger_dep = project_has_dagger_dependency(&root);
-    let (files, fingerprint) = collect_java_sources(db, &root_raw, &root);
-    if files.is_empty() {
+    let (file_ids, fingerprint, looks_like_dagger) =
+        collect_java_file_ids(db, &root_raw, &root, cancel)?;
+    if file_ids.is_empty() {
         return None;
     }
 
-    if !has_dagger_dep && !sources_look_like_dagger(&files) {
+    if !has_dagger_dep && !looks_like_dagger {
         return None;
     }
 
+    // Cache hit.
     if let Some(existing) = DAGGER_ANALYSIS_CACHE
         .lock()
         .expect("dagger analysis cache mutex poisoned")
@@ -198,6 +222,30 @@ fn project_analysis(db: &dyn Database, file_path: &Path) -> Option<Arc<CachedDag
         if existing.fingerprint == fingerprint {
             return Some(existing);
         }
+        if cancel.is_cancelled() {
+            return Some(existing);
+        }
+    } else if cancel.is_cancelled() {
+        return None;
+    }
+
+    if cancel.is_cancelled() {
+        return None;
+    }
+
+    let mut files: Vec<JavaSourceFile> = Vec::with_capacity(file_ids.len());
+    for (path, file_id) in file_ids {
+        if cancel.is_cancelled() {
+            return DAGGER_ANALYSIS_CACHE
+                .lock()
+                .expect("dagger analysis cache mutex poisoned")
+                .get(&root)
+                .cloned();
+        }
+        files.push(JavaSourceFile {
+            path,
+            text: db.file_content(file_id).to_string(),
+        });
     }
 
     let analysis = analyze_java_files(&files);
@@ -217,55 +265,58 @@ fn project_has_dagger_dependency(root: &Path) -> bool {
     })
 }
 
-fn sources_look_like_dagger(files: &[JavaSourceFile]) -> bool {
-    const MARKERS: [&str; 4] = ["@Component", "@Module", "@Provides", "@Inject"];
-    files
-        .iter()
-        .any(|file| MARKERS.iter().any(|needle| file.text.contains(needle)))
-}
-
-fn collect_java_sources(
+fn collect_java_file_ids(
     db: &dyn Database,
     root: &Path,
     canonical_root: &Path,
-) -> (Vec<JavaSourceFile>, u64) {
+    cancel: &CancellationToken,
+) -> Option<(Vec<(PathBuf, FileId)>, u64, bool)> {
+    const MARKERS: [&str; 4] = ["@Component", "@Module", "@Provides", "@Inject"];
+
     let mut all = Vec::new();
     let mut under_root = Vec::new();
+    let mut looks_like_dagger = false;
 
     let has_alt_root = canonical_root != root;
     for file_id in db.all_file_ids() {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let Some(path) = db.file_path(file_id) else {
             continue;
         };
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             continue;
         }
-        let file = JavaSourceFile {
-            path: path.to_path_buf(),
-            text: db.file_content(file_id).to_string(),
-        };
 
+        let text = db.file_content(file_id);
+        if !looks_like_dagger && MARKERS.iter().any(|needle| text.contains(needle)) {
+            looks_like_dagger = true;
+        }
+
+        let tuple = (path.to_path_buf(), file_id);
         if path.starts_with(root) || (has_alt_root && path.starts_with(canonical_root)) {
-            under_root.push(file);
+            under_root.push(tuple);
         } else {
-            all.push(file);
+            all.push(tuple);
         }
     }
 
-    let mut files = if under_root.is_empty() {
-        all
-    } else {
-        under_root
-    };
-    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut files = if under_root.is_empty() { all } else { under_root };
+    files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for file in &files {
-        file.path.hash(&mut hasher);
-        file.text.hash(&mut hasher);
+    for (path, file_id) in &files {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        path.hash(&mut hasher);
+        let text = db.file_content(*file_id);
+        text.len().hash(&mut hasher);
+        (text.as_ptr() as usize).hash(&mut hasher);
     }
 
-    (files, hasher.finish())
+    Some((files, hasher.finish(), looks_like_dagger))
 }
 
 fn dagger_code(source: Option<&str>) -> &'static str {

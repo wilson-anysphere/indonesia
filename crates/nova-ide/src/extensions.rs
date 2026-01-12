@@ -1,8 +1,8 @@
 use nova_config::NovaConfig;
 use nova_ext::{
     CodeAction, CodeActionParams, CompletionItem, CompletionParams, Diagnostic, DiagnosticParams,
-    ExtensionContext, ExtensionRegistry, InlayHint, InlayHintParams, NavigationParams,
-    NavigationTarget, ProjectId, Span, Symbol,
+    CompletionProvider, DiagnosticProvider, ExtensionContext, ExtensionRegistry, InlayHint,
+    InlayHintParams, NavigationParams, NavigationTarget, ProjectId, Span, Symbol,
 };
 use nova_scheduler::CancellationToken;
 use std::collections::HashSet;
@@ -23,10 +23,6 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
             project,
             registry: ExtensionRegistry::default(),
         }
-    }
-
-    pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
-        Self::new(db, config, project)
     }
 
     pub fn db(&self) -> &Arc<DB> {
@@ -112,13 +108,41 @@ impl<DB> IdeExtensions<DB>
 where
     DB: Send + Sync + 'static + nova_db::Database,
 {
+    pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
+        let mut this = Self::new(db, config, project);
+        let registry = this.registry_mut();
+        let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
+        let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
+        this
+    }
+}
+
+impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
+    pub fn with_default_registry(
+        db: Arc<dyn nova_db::Database + Send + Sync>,
+        config: Arc<NovaConfig>,
+        project: ProjectId,
+    ) -> Self {
+        let mut this = Self::new(db, config, project);
+        let registry = this.registry_mut();
+        let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
+        let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
+        this
+    }
+}
+
+impl<DB> IdeExtensions<DB>
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
     /// Combine Nova's built-in diagnostics with registered extension diagnostics.
     pub fn all_diagnostics(
         &self,
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
-        let mut diagnostics = crate::code_intelligence::file_diagnostics(self.db.as_ref(), file);
+        let mut diagnostics =
+            crate::code_intelligence::core_file_diagnostics(self.db.as_ref(), file);
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
     }
@@ -130,8 +154,11 @@ where
         file: nova_ext::FileId,
         position: lsp_types::Position,
     ) -> Vec<lsp_types::CompletionItem> {
-        let mut completions =
-            crate::code_intelligence::completions(self.db.as_ref(), file, position);
+        let mut completions = crate::code_intelligence::core_completions(
+            self.db.as_ref(),
+            file,
+            position,
+        );
         let text = self.db.file_content(file);
         let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
@@ -271,7 +298,7 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
-        let mut diagnostics = crate::code_intelligence::file_diagnostics(self.db.as_ref(), file);
+        let mut diagnostics = crate::code_intelligence::core_file_diagnostics(self.db.as_ref(), file);
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
     }
@@ -284,7 +311,7 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         position: lsp_types::Position,
     ) -> Vec<lsp_types::CompletionItem> {
         let mut completions =
-            crate::code_intelligence::completions(self.db.as_ref(), file, position);
+            crate::code_intelligence::core_completions(self.db.as_ref(), file, position);
         let text = self.db.file_content(file);
         let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
@@ -414,6 +441,77 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         }
 
         hints
+    }
+}
+
+struct FrameworkDiagnosticProvider;
+
+impl<DB> DiagnosticProvider<DB> for FrameworkDiagnosticProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
+    fn id(&self) -> &str {
+        "nova.framework.diagnostics"
+    }
+
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
+        crate::framework_cache::framework_diagnostics(ctx.db.as_ref(), params.file, &ctx.cancel)
+    }
+}
+
+impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkDiagnosticProvider {
+    fn id(&self) -> &str {
+        "nova.framework.diagnostics"
+    }
+
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
+        crate::framework_cache::framework_diagnostics(ctx.db.as_ref(), params.file, &ctx.cancel)
+    }
+}
+
+struct FrameworkCompletionProvider;
+
+impl<DB> CompletionProvider<DB> for FrameworkCompletionProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database,
+{
+    fn id(&self) -> &str {
+        "nova.framework.completions"
+    }
+
+    fn provide_completions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
+        crate::framework_cache::framework_completions(ctx.db.as_ref(), params.file, params.offset, &ctx.cancel)
+    }
+}
+
+impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkCompletionProvider {
+    fn id(&self) -> &str {
+        "nova.framework.completions"
+    }
+
+    fn provide_completions(
+        &self,
+        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
+        crate::framework_cache::framework_completions(
+            ctx.db.as_ref(),
+            params.file,
+            params.offset,
+            &ctx.cancel,
+        )
     }
 }
 

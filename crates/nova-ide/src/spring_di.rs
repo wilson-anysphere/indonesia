@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
 use nova_db::{Database, FileId};
+use nova_scheduler::CancellationToken;
 use nova_framework_spring::AnalysisResult;
 use nova_types::{CompletionItem, Diagnostic, Span};
 
@@ -124,6 +125,20 @@ impl<V> SpringWorkspaceCache<V> {
             }
         }
     }
+
+    fn get_entry(&self, root: &PathBuf) -> Option<CacheEntry<V>> {
+        let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
+        entries.get_cloned(root)
+    }
+
+    pub(crate) fn get_any(&self, root: &PathBuf) -> Option<Arc<V>> {
+        self.get_entry(root).map(|entry| entry.value)
+    }
+
+    fn insert_entry(&self, root: PathBuf, fingerprint: u64, value: Arc<V>) {
+        let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
+        entries.insert(root, CacheEntry { fingerprint, value });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +177,18 @@ static SPRING_DI_CACHE: Lazy<SpringWorkspaceCache<SpringDiWorkspaceEntry>> =
     Lazy::new(SpringWorkspaceCache::default);
 
 pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+    let cancel = CancellationToken::new();
+    diagnostics_for_file_with_cancel(db, file, &cancel)
+}
+
+pub(crate) fn diagnostics_for_file_with_cancel(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     let Some(path) = db.file_path(file) else {
         return Vec::new();
     };
@@ -175,7 +202,7 @@ pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagn
         return Vec::new();
     }
 
-    let Some(entry) = workspace_entry(db, file) else {
+    let Some(entry) = workspace_entry_with_cancel(db, file, cancel) else {
         return Vec::new();
     };
     let Some(analysis) = entry.analysis.as_ref() else {
@@ -194,7 +221,20 @@ pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagn
 }
 
 pub(crate) fn qualifier_completion_items(db: &dyn Database, file: FileId) -> Vec<CompletionItem> {
-    let Some(entry) = workspace_entry(db, file) else {
+    let cancel = CancellationToken::new();
+    qualifier_completion_items_with_cancel(db, file, &cancel)
+}
+
+pub(crate) fn qualifier_completion_items_with_cancel(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Vec<CompletionItem> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let Some(entry) = workspace_entry_with_cancel(db, file, cancel) else {
         return Vec::new();
     };
     let Some(analysis) = entry.analysis.as_ref() else {
@@ -204,7 +244,20 @@ pub(crate) fn qualifier_completion_items(db: &dyn Database, file: FileId) -> Vec
 }
 
 pub(crate) fn profile_completion_items(db: &dyn Database, file: FileId) -> Vec<CompletionItem> {
-    let Some(entry) = workspace_entry(db, file) else {
+    let cancel = CancellationToken::new();
+    profile_completion_items_with_cancel(db, file, &cancel)
+}
+
+pub(crate) fn profile_completion_items_with_cancel(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Vec<CompletionItem> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let Some(entry) = workspace_entry_with_cancel(db, file, cancel) else {
         return Vec::new();
     };
 
@@ -215,7 +268,7 @@ pub(crate) fn profile_completion_items(db: &dyn Database, file: FileId) -> Vec<C
     };
 
     let mut items = nova_framework_spring::profile_completions();
-    items.extend(discovered_profile_completions(db, &entry.root));
+    items.extend(discovered_profile_completions(db, &entry.root, cancel));
     items.extend(
         analysis
             .model
@@ -410,18 +463,54 @@ pub(crate) fn annotation_string_context(
 }
 
 fn workspace_entry(db: &dyn Database, file: FileId) -> Option<Arc<SpringDiWorkspaceEntry>> {
+    let cancel = CancellationToken::new();
+    workspace_entry_with_cancel(db, file, &cancel)
+}
+
+fn workspace_entry_with_cancel(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Option<Arc<SpringDiWorkspaceEntry>> {
     let path = db.file_path(file)?;
     let root = discover_project_root(path);
-
-    let java_sources = collect_java_sources(db, &root);
-    let fingerprint = sources_fingerprint(db, &java_sources);
     let root_key = root.clone();
 
-    Some(
-        SPRING_DI_CACHE.get_or_update_with(root_key, fingerprint, || {
-            build_workspace_entry(db, root, java_sources)
-        }),
-    )
+    if cancel.is_cancelled() {
+        return SPRING_DI_CACHE.get_any(&root_key);
+    }
+
+    let java_sources = match collect_java_sources(db, &root, cancel) {
+        Some(sources) => sources,
+        None => return SPRING_DI_CACHE.get_any(&root_key),
+    };
+    let fingerprint = match sources_fingerprint(db, &java_sources, cancel) {
+        Some(fingerprint) => fingerprint,
+        None => return SPRING_DI_CACHE.get_any(&root_key),
+    };
+
+    let cached = SPRING_DI_CACHE.get_entry(&root_key);
+    if let Some(entry) = cached.clone() {
+        if entry.fingerprint == fingerprint {
+            return Some(entry.value);
+        }
+        if cancel.is_cancelled() {
+            return Some(entry.value);
+        }
+    }
+
+    if cancel.is_cancelled() {
+        return cached.map(|e| e.value);
+    }
+
+    let built = build_workspace_entry(db, root, java_sources, cancel);
+    if cancel.is_cancelled() {
+        return cached.map(|e| e.value);
+    }
+
+    let value = Arc::new(built);
+    SPRING_DI_CACHE.insert_entry(root_key, fingerprint, Arc::clone(&value));
+    Some(value)
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +523,7 @@ fn build_workspace_entry(
     db: &dyn Database,
     root: PathBuf,
     java_sources: Vec<JavaSource>,
+    cancel: &CancellationToken,
 ) -> SpringDiWorkspaceEntry {
     let java_paths: Vec<PathBuf> = java_sources.iter().map(|s| s.path.clone()).collect();
     let sources: Vec<&str> = java_sources
@@ -448,7 +538,7 @@ fn build_workspace_entry(
     let is_spring = config_says_spring || marker_says_spring;
 
     let analysis = if is_spring {
-        Some(nova_framework_spring::analyze_java_sources(&sources))
+        (!cancel.is_cancelled()).then(|| nova_framework_spring::analyze_java_sources(&sources))
     } else {
         None
     };
@@ -460,9 +550,16 @@ fn build_workspace_entry(
     }
 }
 
-fn collect_java_sources(db: &dyn Database, root: &Path) -> Vec<JavaSource> {
+fn collect_java_sources(
+    db: &dyn Database,
+    root: &Path,
+    cancel: &CancellationToken,
+) -> Option<Vec<JavaSource>> {
     let mut out = Vec::new();
     for file_id in db.all_file_ids() {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let Some(path) = db.file_path(file_id) else {
             continue;
         };
@@ -478,12 +575,19 @@ fn collect_java_sources(db: &dyn Database, root: &Path) -> Vec<JavaSource> {
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
-    out
+    Some(out)
 }
 
-fn sources_fingerprint(db: &dyn Database, sources: &[JavaSource]) -> u64 {
+fn sources_fingerprint(
+    db: &dyn Database,
+    sources: &[JavaSource],
+    cancel: &CancellationToken,
+) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for src in sources {
+        if cancel.is_cancelled() {
+            return None;
+        }
         src.path.hash(&mut hasher);
         // Avoid hashing full file contents on every request: we only need a
         // stable-ish signal that a file changed. `InMemoryFileStore` replaces
@@ -493,7 +597,7 @@ fn sources_fingerprint(db: &dyn Database, sources: &[JavaSource]) -> u64 {
         text.len().hash(&mut hasher);
         (text.as_ptr() as usize).hash(&mut hasher);
     }
-    hasher.finish()
+    Some(hasher.finish())
 }
 
 fn looks_like_spring_source(text: &str) -> bool {
@@ -503,10 +607,17 @@ fn looks_like_spring_source(text: &str) -> bool {
     text.contains("import org.springframework") || text.contains("@org.springframework")
 }
 
-fn discovered_profile_completions(db: &dyn Database, root: &Path) -> Vec<CompletionItem> {
+fn discovered_profile_completions(
+    db: &dyn Database,
+    root: &Path,
+    cancel: &CancellationToken,
+) -> Vec<CompletionItem> {
     let mut out = BTreeSet::<String>::new();
 
     for file_id in db.all_file_ids() {
+        if cancel.is_cancelled() {
+            break;
+        }
         let Some(path) = db.file_path(file_id) else {
             continue;
         };

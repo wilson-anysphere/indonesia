@@ -3888,8 +3888,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
- "tree-sitter",
- "tree-sitter-java",
  "zip 2.4.2",
 ]
 

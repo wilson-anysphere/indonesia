@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
 use nova_db::{Database, FileId};
+use nova_scheduler::CancellationToken;
 use nova_framework_micronaut::{is_micronaut_applicable, is_micronaut_applicable_with_classpath};
 use nova_framework_micronaut::{AnalysisResult, ConfigFile, JavaSource};
 use nova_project::ProjectConfig;
@@ -23,6 +24,18 @@ static ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedAnalysis>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<AnalysisResult>> {
+    let cancel = CancellationToken::new();
+    analysis_for_file_with_cancel(db, file, &cancel)
+}
+
+pub(crate) fn analysis_for_file_with_cancel(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Option<Arc<AnalysisResult>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let path = db.file_path(file)?;
     let root = project_root_for_path(path);
 
@@ -35,7 +48,16 @@ pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<A
     // Computing the full `JavaSource`/`ConfigFile` inputs requires cloning the
     // entire workspace's file text. Use a lightweight signature first so cache
     // hits avoid that work.
-    let base_signature = workspace_signature(db, &root);
+    let base_signature = match workspace_signature(db, &root, cancel) {
+        Some(sig) => sig,
+        None => {
+            return ANALYSIS_CACHE
+                .lock()
+                .expect("micronaut analysis cache poisoned")
+                .get(&root)
+                .and_then(|entry| entry.analysis.clone());
+        }
+    };
     let signature = combined_signature(base_signature, config_signature);
 
     // Fast path: cache hit.
@@ -48,7 +70,24 @@ pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<A
         }
     }
 
-    let (sources, config_files) = gather_workspace_inputs(db, &root);
+    if cancel.is_cancelled() {
+        return ANALYSIS_CACHE
+            .lock()
+            .expect("micronaut analysis cache poisoned")
+            .get(&root)
+            .and_then(|entry| entry.analysis.clone());
+    }
+
+    let (sources, config_files) = match gather_workspace_inputs(db, &root, cancel) {
+        Some(inputs) => inputs,
+        None => {
+            return ANALYSIS_CACHE
+                .lock()
+                .expect("micronaut analysis cache poisoned")
+                .get(&root)
+                .and_then(|entry| entry.analysis.clone());
+        }
+    };
     let applicable = is_applicable(&config, &sources);
     let analysis = if applicable {
         Some(Arc::new(
@@ -58,16 +97,18 @@ pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<A
         None
     };
 
-    let mut cache = ANALYSIS_CACHE
-        .lock()
-        .expect("micronaut analysis cache poisoned");
-    cache.insert(
-        root.clone(),
-        CachedAnalysis {
-            signature,
-            analysis: analysis.clone(),
-        },
-    );
+    if !cancel.is_cancelled() {
+        let mut cache = ANALYSIS_CACHE
+            .lock()
+            .expect("micronaut analysis cache poisoned");
+        cache.insert(
+            root.clone(),
+            CachedAnalysis {
+                signature,
+                analysis: analysis.clone(),
+            },
+        );
+    }
 
     analysis
 }
@@ -155,7 +196,7 @@ fn combined_signature(base: u64, config: u64) -> u64 {
     hasher.finish()
 }
 
-fn workspace_signature(db: &dyn Database, root: &Path) -> u64 {
+fn workspace_signature(db: &dyn Database, root: &Path, cancel: &CancellationToken) -> Option<u64> {
     let mut paths: Vec<(PathBuf, FileId)> = db
         .all_file_ids()
         .into_iter()
@@ -171,6 +212,9 @@ fn workspace_signature(db: &dyn Database, root: &Path) -> u64 {
 
     let mut hasher = DefaultHasher::new();
     for (path, id) in paths {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let is_java = path.extension().and_then(|e| e.to_str()) == Some("java");
         let config_kind = match path.file_name().and_then(|n| n.to_str()) {
             Some("application.properties") => Some("properties"),
@@ -188,10 +232,14 @@ fn workspace_signature(db: &dyn Database, root: &Path) -> u64 {
         (text.as_ptr() as usize).hash(&mut hasher);
     }
 
-    hasher.finish()
+    Some(hasher.finish())
 }
 
-fn gather_workspace_inputs(db: &dyn Database, root: &Path) -> (Vec<JavaSource>, Vec<ConfigFile>) {
+fn gather_workspace_inputs(
+    db: &dyn Database,
+    root: &Path,
+    cancel: &CancellationToken,
+) -> Option<(Vec<JavaSource>, Vec<ConfigFile>)> {
     let mut paths: Vec<(PathBuf, FileId)> = db
         .all_file_ids()
         .into_iter()
@@ -209,6 +257,9 @@ fn gather_workspace_inputs(db: &dyn Database, root: &Path) -> (Vec<JavaSource>, 
     let mut config_files = Vec::new();
 
     for (path, id) in paths {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let is_java = path.extension().and_then(|e| e.to_str()) == Some("java");
         let config_kind = match path.file_name().and_then(|n| n.to_str()) {
             Some("application.properties") => Some("properties"),
@@ -235,5 +286,5 @@ fn gather_workspace_inputs(db: &dyn Database, root: &Path) -> (Vec<JavaSource>, 
         }
     }
 
-    (sources, config_files)
+    Some((sources, config_files))
 }

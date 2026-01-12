@@ -5,7 +5,7 @@
 //! members (getters, setters, builders, ...).
 //!
 //! This module wires that analyzer into `nova-ide` member completions by:
-//! - building a best-effort workspace index of classes using tree-sitter-java
+//! - building a best-effort workspace index of classes using `nova-syntax`
 //! - feeding those classes into a `nova_framework::MemoryDatabase`
 //! - running `nova_resolve::complete_member_names` to include virtual members
 //! - caching the result per (guessed) project root to avoid reparsing on every
@@ -17,7 +17,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
-use tree_sitter::{Node, Parser};
 
 use nova_db::{Database as TextDatabase, FileId};
 use nova_framework::{
@@ -25,6 +24,8 @@ use nova_framework::{
 };
 use nova_framework_lombok::LombokAnalyzer;
 use nova_hir::framework::{Annotation, ClassData, ConstructorData, FieldData, MethodData};
+use nova_syntax::ast::{self as syntax_ast, AstNode};
+use nova_syntax::SyntaxKind;
 use nova_types::{ClassId, Parameter, PrimitiveType, Span, Type};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,63 +410,51 @@ fn extract_classes_from_source(source: &str) -> (Vec<ClassData>, bool) {
     // Cheap fallback for Lombok detection (import or fully-qualified reference).
     let mut saw_lombok = source.contains("lombok.");
 
-    let Ok(tree) = parse_java(source) else {
-        return (Vec::new(), saw_lombok);
-    };
-
     let mut classes = Vec::new();
-    let root = tree.root_node();
-    visit_nodes(root, &mut |node| {
-        if node.kind() == "class_declaration" {
-            if let Some(class) = parse_class_declaration(node, source, &mut saw_lombok) {
-                classes.push(class);
-            }
+    let parse = nova_syntax::parse_java(source);
+    for node in parse.syntax().descendants() {
+        let Some(class) = syntax_ast::ClassDeclaration::cast(node) else {
+            continue;
+        };
+        if let Some(class) = parse_class_declaration(class, source, &mut saw_lombok) {
+            classes.push(class);
         }
-    });
+    }
 
     (classes, saw_lombok)
 }
 
 fn parse_class_declaration(
-    node: Node<'_>,
+    node: syntax_ast::ClassDeclaration,
     source: &str,
     saw_lombok: &mut bool,
 ) -> Option<ClassData> {
-    let modifiers = modifier_node(node);
+    let modifiers = node.modifiers();
     let annotations = modifiers
-        .map(|m| collect_annotations(m, source))
+        .as_ref()
+        .map(|m| collect_annotations(m, saw_lombok))
         .unwrap_or_default();
-    if annotations.iter().any(|a| is_lombok_annotation(&a.name)) {
-        *saw_lombok = true;
-    }
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"))?;
-    let class_name = node_text(source, name_node).to_string();
+    let class_name = node.name_token()?.text().to_string();
 
-    let body = node
-        .child_by_field_name("body")
-        .or_else(|| find_named_child(node, "class_body"))?;
-
+    let body = node.body()?;
     let mut fields = Vec::new();
     let mut methods = Vec::new();
     let mut constructors = Vec::new();
 
-    let mut cursor = body.walk();
-    for child in body.named_children(&mut cursor) {
-        match child.kind() {
-            "field_declaration" => {
-                let mut parsed = parse_field_declaration(child, source, saw_lombok);
+    for member in body.members() {
+        match member {
+            syntax_ast::ClassMember::FieldDeclaration(field) => {
+                let mut parsed = parse_field_declaration(field, source, saw_lombok);
                 fields.append(&mut parsed);
             }
-            "method_declaration" => {
-                if let Some(method) = parse_method_declaration(child, source) {
+            syntax_ast::ClassMember::MethodDeclaration(method) => {
+                if let Some(method) = parse_method_declaration(method, source) {
                     methods.push(method);
                 }
             }
-            "constructor_declaration" => {
-                if let Some(ctor) = parse_constructor_declaration(child, source) {
+            syntax_ast::ClassMember::ConstructorDeclaration(ctor) => {
+                if let Some(ctor) = parse_constructor_declaration(ctor, source) {
                     constructors.push(ctor);
                 }
             }
@@ -482,39 +471,33 @@ fn parse_class_declaration(
     })
 }
 
-fn parse_field_declaration(node: Node<'_>, source: &str, saw_lombok: &mut bool) -> Vec<FieldData> {
-    let modifiers = modifier_node(node);
+fn parse_field_declaration(
+    node: syntax_ast::FieldDeclaration,
+    source: &str,
+    saw_lombok: &mut bool,
+) -> Vec<FieldData> {
+    let modifiers = node.modifiers();
     let annotations = modifiers
-        .map(|m| collect_annotations(m, source))
+        .as_ref()
+        .map(|m| collect_annotations(m, saw_lombok))
         .unwrap_or_default();
-    if annotations.iter().any(|a| is_lombok_annotation(&a.name)) {
-        *saw_lombok = true;
-    }
 
     let (is_static, is_final) = modifiers
-        .map(|m| modifier_flags(m, source))
+        .as_ref()
+        .map(modifier_flags)
         .unwrap_or((false, false));
 
-    let ty_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_field_type_node(node));
-    let ty = ty_node
-        .map(|n| parse_type(node_text(source, n)))
+    let ty = node
+        .ty()
+        .map(|n| parse_type(node_text(source, n.syntax())))
         .unwrap_or(Type::Unknown);
 
     let mut out = Vec::new();
-    let mut cursor = node.walk();
-    for declarator in node.named_children(&mut cursor) {
-        if declarator.kind() != "variable_declarator" {
-            continue;
-        }
-        let name_node = declarator
-            .child_by_field_name("name")
-            .or_else(|| find_named_child(declarator, "identifier"));
-        let Some(name_node) = name_node else {
+    for declarator in node.declarators() {
+        let Some(name_node) = declarator.name_token() else {
             continue;
         };
-        let name = node_text(source, name_node).to_string();
+        let name = name_node.text().to_string();
         out.push(FieldData {
             name,
             ty: ty.clone(),
@@ -526,29 +509,28 @@ fn parse_field_declaration(node: Node<'_>, source: &str, saw_lombok: &mut bool) 
     out
 }
 
-fn parse_method_declaration(node: Node<'_>, source: &str) -> Option<MethodData> {
-    let modifiers = modifier_node(node);
+fn parse_method_declaration(node: syntax_ast::MethodDeclaration, source: &str) -> Option<MethodData> {
+    let modifiers = node.modifiers();
     let is_static = modifiers
-        .map(|m| modifier_contains_keyword(m, source, "static"))
-        .unwrap_or(false);
+        .as_ref()
+        .is_some_and(|m| modifier_contains_keyword(m, SyntaxKind::StaticKw));
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"))?;
-    let name = node_text(source, name_node).to_string();
+    let name = node.name_token()?.text().to_string();
 
-    let return_type_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_method_return_type_node(node));
-    let return_type = return_type_node
-        .map(|n| parse_type(node_text(source, n)))
-        .unwrap_or(Type::Unknown);
+    let return_type = if node
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|tok| tok.kind() == SyntaxKind::VoidKw)
+    {
+        Type::Void
+    } else {
+        node.return_type()
+            .map(|n| parse_type(node_text(source, n.syntax())))
+            .unwrap_or(Type::Unknown)
+    };
 
-    let params = node
-        .child_by_field_name("parameters")
-        .or_else(|| find_named_child(node, "formal_parameters"))
-        .map(|n| parse_formal_parameters(n, source))
-        .unwrap_or_default();
+    let params = parse_formal_parameters(node.parameter_list(), source);
 
     Some(MethodData {
         name,
@@ -558,36 +540,31 @@ fn parse_method_declaration(node: Node<'_>, source: &str) -> Option<MethodData> 
     })
 }
 
-fn parse_constructor_declaration(node: Node<'_>, source: &str) -> Option<ConstructorData> {
-    let params = node
-        .child_by_field_name("parameters")
-        .or_else(|| find_named_child(node, "formal_parameters"))
-        .map(|n| parse_formal_parameters(n, source))
-        .unwrap_or_default();
-
+fn parse_constructor_declaration(
+    node: syntax_ast::ConstructorDeclaration,
+    source: &str,
+) -> Option<ConstructorData> {
+    let params = parse_formal_parameters(node.parameter_list(), source);
     Some(ConstructorData { params })
 }
 
-fn parse_formal_parameters(node: Node<'_>, source: &str) -> Vec<Parameter> {
+fn parse_formal_parameters(
+    node: Option<syntax_ast::ParameterList>,
+    source: &str,
+) -> Vec<Parameter> {
     let mut out = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if child.kind() != "formal_parameter" {
-            continue;
-        }
-        let name_node = child
-            .child_by_field_name("name")
-            .or_else(|| find_named_child(child, "identifier"));
-        let Some(name_node) = name_node else {
+    let Some(node) = node else {
+        return out;
+    };
+    for child in node.parameters() {
+        let Some(name_node) = child.name_token() else {
             continue;
         };
-        let name = node_text(source, name_node).to_string();
+        let name = name_node.text().to_string();
 
-        let ty_node = child
-            .child_by_field_name("type")
-            .or_else(|| infer_param_type_node(child));
-        let ty = ty_node
-            .map(|n| parse_type(node_text(source, n)))
+        let ty = child
+            .ty()
+            .map(|n| parse_type(node_text(source, n.syntax())))
             .unwrap_or(Type::Unknown);
 
         out.push(Parameter::new(name, ty));
@@ -595,81 +572,34 @@ fn parse_formal_parameters(node: Node<'_>, source: &str) -> Vec<Parameter> {
     out
 }
 
-fn parse_java(source: &str) -> Result<tree_sitter::Tree, String> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_java::language())
-        .map_err(|_| "tree-sitter-java language load failed".to_string())?;
-    parser
-        .parse(source, None)
-        .ok_or_else(|| "tree-sitter failed to produce a syntax tree".to_string())
+fn node_text<'a>(source: &'a str, node: &nova_syntax::SyntaxNode) -> &'a str {
+    let range = node.text_range();
+    let start: usize = u32::from(range.start()) as usize;
+    let end: usize = u32::from(range.end()) as usize;
+    source.get(start..end).unwrap_or("")
 }
 
-fn visit_nodes<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
-    f(node);
-    if node.child_count() == 0 {
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        visit_nodes(child, f);
-    }
-}
-
-fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
-    &source[node.byte_range()]
-}
-
-fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
-    let mut cursor = node.walk();
-    let result = node
-        .named_children(&mut cursor)
-        .find(|child| child.kind() == kind);
-    result
-}
-
-fn modifier_node(node: Node<'_>) -> Option<Node<'_>> {
-    node.child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"))
-}
-
-fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<Annotation> {
+fn collect_annotations(modifiers: &syntax_ast::Modifiers, saw_lombok: &mut bool) -> Vec<Annotation> {
     let mut out = Vec::new();
-    let mut cursor = modifiers.walk();
-    for child in modifiers.named_children(&mut cursor) {
-        if !child.kind().ends_with("annotation") {
+    for annotation in modifiers.annotations() {
+        let Some(name) = annotation.name().map(|name| name.text()) else {
+            continue;
+        };
+        let simple = name.rsplit('.').next().unwrap_or(name.as_str()).trim();
+        if simple.is_empty() {
             continue;
         }
-        if let Some(name) = parse_annotation_name(node_text(source, child)) {
-            let range = child.byte_range();
-            out.push(Annotation::new_with_span(
-                name,
-                Span::new(range.start, range.end),
-            ));
+
+        if is_lombok_annotation(simple) {
+            *saw_lombok = true;
         }
+
+        let range = annotation.syntax().text_range();
+        let start: usize = u32::from(range.start()) as usize;
+        let end: usize = u32::from(range.end()) as usize;
+        out.push(Annotation::new_with_span(simple.to_string(), Span::new(start, end)));
     }
     out
-}
-
-fn parse_annotation_name(text: &str) -> Option<String> {
-    let text = text.trim();
-    if !text.starts_with('@') {
-        return None;
-    }
-    let rest = &text[1..];
-    let name_part = rest.split_once('(').map(|(n, _)| n).unwrap_or(rest);
-    let name_part = name_part.trim();
-    let simple = name_part
-        .rsplit('.')
-        .next()
-        .unwrap_or(name_part)
-        .trim()
-        .to_string();
-    if simple.is_empty() {
-        None
-    } else {
-        Some(simple)
-    }
 }
 
 fn is_lombok_annotation(name: &str) -> bool {
@@ -691,17 +621,15 @@ fn is_lombok_annotation(name: &str) -> bool {
     )
 }
 
-fn modifier_flags(modifiers: Node<'_>, source: &str) -> (bool, bool) {
+fn modifier_flags(modifiers: &syntax_ast::Modifiers) -> (bool, bool) {
     (
-        modifier_contains_keyword(modifiers, source, "static"),
-        modifier_contains_keyword(modifiers, source, "final"),
+        modifier_contains_keyword(modifiers, SyntaxKind::StaticKw),
+        modifier_contains_keyword(modifiers, SyntaxKind::FinalKw),
     )
 }
 
-fn modifier_contains_keyword(modifiers: Node<'_>, source: &str, keyword: &str) -> bool {
-    node_text(source, modifiers)
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'))
-        .any(|tok| tok == keyword)
+fn modifier_contains_keyword(modifiers: &syntax_ast::Modifiers, kind: SyntaxKind) -> bool {
+    modifiers.keywords().any(|tok| tok.kind() == kind)
 }
 
 fn parse_type(raw: &str) -> Type {
@@ -710,7 +638,7 @@ fn parse_type(raw: &str) -> Type {
         return Type::Unknown;
     }
 
-    // Drop whitespace (tree-sitter type nodes may include spaces in generics).
+    // Drop whitespace (type nodes may include spaces in generics).
     raw.retain(|ch| !ch.is_ascii_whitespace());
 
     // Count array dimensions.
@@ -753,45 +681,6 @@ fn strip_generic_args(raw: &str) -> String {
         }
     }
     out
-}
-
-fn infer_field_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
-    // Field declarations are roughly: [modifiers] <type> <declarator> ...
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            k if k == "modifiers" || k.ends_with("annotation") => continue,
-            "variable_declarator" => break,
-            _ => return Some(child),
-        }
-    }
-    None
-}
-
-fn infer_param_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
-    // formal_parameter: [modifiers] <type> <name>
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            k if k == "modifiers" || k.ends_with("annotation") => continue,
-            "identifier" => break,
-            _ => return Some(child),
-        }
-    }
-    None
-}
-
-fn infer_method_return_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
-    // method_declaration: [modifiers] <type> <name> ...
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            k if k == "modifiers" || k.ends_with("annotation") => continue,
-            "identifier" => break,
-            _ => return Some(child),
-        }
-    }
-    None
 }
 
 fn simplify_type_name(raw: &str) -> String {

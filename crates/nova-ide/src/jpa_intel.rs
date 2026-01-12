@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
 use nova_db::{Database as FileDatabase, FileId};
+use nova_scheduler::CancellationToken;
 use nova_framework_jpa::{
     analyze_java_sources, extract_jpql_strings, is_jpa_applicable,
     is_jpa_applicable_with_classpath, tokenize_jpql, AnalysisResult, EntityModel, Span, Token,
@@ -107,6 +108,18 @@ pub(crate) fn project_for_file(
     db: &dyn FileDatabase,
     file: FileId,
 ) -> Option<Arc<CachedJpaProject>> {
+    let cancel = CancellationToken::new();
+    project_for_file_with_cancel(db, file, &cancel)
+}
+
+pub(crate) fn project_for_file_with_cancel(
+    db: &dyn FileDatabase,
+    file: FileId,
+    cancel: &CancellationToken,
+) -> Option<Arc<CachedJpaProject>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let file_path = db.file_path(file)?.to_path_buf();
 
     // Prefer a build-marker-discovered project root and `nova-project`-derived
@@ -121,12 +134,36 @@ pub(crate) fn project_for_file(
         .or_else(|| fallback_root(db))
         .unwrap_or(root_candidate);
 
-    let java_files = collect_java_files(db, &root);
+    let java_files = match collect_java_files(db, &root, cancel) {
+        Some(files) => files,
+        None => {
+            let root_key = config
+                .as_ref()
+                .map(|cfg| cfg.workspace_root.clone())
+                .unwrap_or_else(|| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+            return JPA_ANALYSIS_CACHE
+                .lock()
+                .expect("jpa cache mutex poisoned")
+                .get_cloned(&root_key);
+        }
+    };
     if java_files.is_empty() {
         return None;
     }
 
-    let fingerprint = fingerprint_sources(db, &java_files);
+    let fingerprint = match fingerprint_sources(db, &java_files, cancel) {
+        Some(fingerprint) => fingerprint,
+        None => {
+            let root_key = config
+                .as_ref()
+                .map(|cfg| cfg.workspace_root.clone())
+                .unwrap_or_else(|| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+            return JPA_ANALYSIS_CACHE
+                .lock()
+                .expect("jpa cache mutex poisoned")
+                .get_cloned(&root_key);
+        }
+    };
 
     let root_key = config
         .as_ref()
@@ -142,6 +179,13 @@ pub(crate) fn project_for_file(
         return Some(hit);
     }
 
+    if cancel.is_cancelled() {
+        return JPA_ANALYSIS_CACHE
+            .lock()
+            .expect("jpa cache mutex poisoned")
+            .get_cloned(&root_key);
+    }
+
     let sources: Vec<&str> = java_files
         .iter()
         .map(|(_, id)| db.file_content(*id))
@@ -152,7 +196,11 @@ pub(crate) fn project_for_file(
         None => is_jpa_applicable(&[], &sources),
     };
 
-    let analysis = applicable.then(|| Arc::new(analyze_java_sources(&sources)));
+    let analysis = if applicable && !cancel.is_cancelled() {
+        Some(Arc::new(analyze_java_sources(&sources)))
+    } else {
+        None
+    };
 
     let (files, file_ids): (Vec<PathBuf>, Vec<FileId>) = java_files.into_iter().unzip();
     let file_to_source = files
@@ -215,9 +263,16 @@ pub(crate) fn resolve_definition_in_jpql(
     None
 }
 
-fn collect_java_files(db: &dyn FileDatabase, root: &Path) -> Vec<(PathBuf, FileId)> {
+fn collect_java_files(
+    db: &dyn FileDatabase,
+    root: &Path,
+    cancel: &CancellationToken,
+) -> Option<Vec<(PathBuf, FileId)>> {
     let mut out = Vec::new();
     for file_id in db.all_file_ids() {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let Some(path) = db.file_path(file_id) else {
             continue;
         };
@@ -230,12 +285,19 @@ fn collect_java_files(db: &dyn FileDatabase, root: &Path) -> Vec<(PathBuf, FileI
         out.push((path.to_path_buf(), file_id));
     }
     out.sort_by(|(a, _), (b, _)| a.cmp(b));
-    out
+    Some(out)
 }
 
-fn fingerprint_sources(db: &dyn FileDatabase, files: &[(PathBuf, FileId)]) -> u64 {
+fn fingerprint_sources(
+    db: &dyn FileDatabase,
+    files: &[(PathBuf, FileId)],
+    cancel: &CancellationToken,
+) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for (path, file_id) in files {
+        if cancel.is_cancelled() {
+            return None;
+        }
         path.hash(&mut hasher);
         let text = db.file_content(*file_id);
         // NOTE: We intentionally avoid hashing the full file contents here: JPQL
@@ -252,7 +314,7 @@ fn fingerprint_sources(db: &dyn FileDatabase, files: &[(PathBuf, FileId)]) -> u6
         text.len().hash(&mut hasher);
         (text.as_ptr() as usize).hash(&mut hasher);
     }
-    hasher.finish()
+    Some(hasher.finish())
 }
 
 fn fallback_root(db: &dyn FileDatabase) -> Option<PathBuf> {
