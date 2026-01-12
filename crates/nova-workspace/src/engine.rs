@@ -1958,7 +1958,7 @@ impl WorkspaceEngine {
         degraded: DegradedSettings,
     ) -> Vec<NovaDiagnostic> {
         if degraded.skip_expensive_diagnostics {
-            return self.syntax_diagnostics_only(file);
+            return self.syntax_diagnostics_only(file, file_id);
         }
 
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
@@ -1967,17 +1967,25 @@ impl WorkspaceEngine {
         })
     }
 
-    fn syntax_diagnostics_only(&self, file: &VfsPath) -> Vec<NovaDiagnostic> {
+    fn syntax_diagnostics_only(&self, file: &VfsPath, file_id: FileId) -> Vec<NovaDiagnostic> {
         if !is_java_vfs_path(file) {
             return Vec::new();
         }
-        let Ok(text) = self.vfs.read_to_string(file) else {
+        // Avoid duplicating the file contents (and any disk I/O) by reusing the
+        // Salsa input text, which already includes open-document overlays.
+        let Some(text) = self.query_db.with_snapshot(|snap| {
+            if snap.file_exists(file_id) {
+                Some(snap.file_content(file_id))
+            } else {
+                None
+            }
+        }) else {
             return Vec::new();
         };
 
         let mut diagnostics = Vec::new();
 
-        let parse = nova_syntax::parse(&text);
+        let parse = nova_syntax::parse(text.as_str());
         diagnostics.extend(parse.errors.into_iter().map(|e| {
             NovaDiagnostic::error(
                 "SYNTAX",
@@ -1986,7 +1994,7 @@ impl WorkspaceEngine {
             )
         }));
 
-        let java_parse = nova_syntax::parse_java(&text);
+        let java_parse = nova_syntax::parse_java(text.as_str());
         diagnostics.extend(java_parse.errors.into_iter().map(|e| {
             NovaDiagnostic::error(
                 "SYNTAX",
@@ -3817,13 +3825,9 @@ mod tests {
 
     #[test]
     fn external_config_path_adds_non_recursive_watch_for_parent_directory() {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env mutex poisoned");
-
-        let old = std::env::var_os(nova_config::NOVA_CONFIG_ENV_VAR);
+        // This test mutates `NOVA_CONFIG_PATH`, so it must be serialized with other env-mutation
+        // tests.
+        let _lock = env_lock();
 
         let workspace_dir = tempfile::tempdir().unwrap();
         let workspace_root = workspace_dir.path().canonicalize().unwrap();
@@ -3833,7 +3837,7 @@ mod tests {
         fs::write(&config_path, b"[generated_sources]\nenabled = true\n").unwrap();
         let config_path = config_path.canonicalize().unwrap();
 
-        std::env::set_var(nova_config::NOVA_CONFIG_ENV_VAR, &config_path);
+        let _config_guard = EnvVarGuard::set(nova_config::NOVA_CONFIG_ENV_VAR, &config_path);
 
         let mut watch_config = WatchConfig::new(workspace_root.clone());
         watch_config.nova_config_path = nova_config::discover_config_path(&workspace_root);
@@ -3848,11 +3852,6 @@ mod tests {
             roots.contains(&(config_path.clone(), WatchMode::NonRecursive)),
             "expected roots {roots:?} to include non-recursive watch for config path"
         );
-
-        match old {
-            Some(value) => std::env::set_var(nova_config::NOVA_CONFIG_ENV_VAR, value),
-            None => std::env::remove_var(nova_config::NOVA_CONFIG_ENV_VAR),
-        }
     }
 
     #[test]
