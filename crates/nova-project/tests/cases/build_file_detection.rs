@@ -28,6 +28,7 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradlew.bat",
         "gradle/wrapper/gradle-wrapper.properties",
         "gradle/libs.versions.toml",
+        "gradle/deps.versions.toml",
         "gradle/conventions.gradle",
         "gradle/conventions.gradle.kts",
     ];
@@ -48,6 +49,8 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradle-wrapper.properties",
         "gradle/gradle-wrapper.properties",
         "wrapper/gradle-wrapper.properties",
+        // Additional version catalogs should live under `gradle/`.
+        "deps.versions.toml",
         // Sanity check: non-build file.
         "gradle/conventions.txt",
     ];

@@ -517,12 +517,19 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             // Gradle project structure is extremely flexible:
             // - "script plugins" (`apply from: "deps.gradle"`) are often used to share config
             // - version catalogs (`libs.versions.toml`) can change dependency resolution + plugins
+            // - additional version catalogs can be configured via settings (e.g. `gradle/deps.versions.toml`)
             // - wrapper changes affect which Gradle distribution is executed
             //
             // Treat these as "build files" so `reload_project()` re-loads configuration when they
             // change.
+            let is_gradle_version_catalog = name.ends_with(".versions.toml")
+                && path
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .is_some_and(|dir| dir == "gradle");
             name == "gradle.properties"
                 || name == "libs.versions.toml"
+                || is_gradle_version_catalog
                 || name == "gradlew"
                 || name == "gradlew.bat"
                 || name.starts_with("build.gradle")
