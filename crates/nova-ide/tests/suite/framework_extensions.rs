@@ -364,7 +364,7 @@ fn dagger_diagnostics_are_surfaced_via_ide_extensions() {
         .expect("Foo.java fixture path");
     let foo_file = db.file_id(foo_path).expect("Foo.java file id");
 
-    let db: std::sync::Arc<dyn nova_db::Database + Send + Sync> = std::sync::Arc::new(db);
+    let db = std::sync::Arc::new(db);
     let ide = ide_with_default_registry(std::sync::Arc::clone(&db));
 
     let diags = ide.all_diagnostics(CancellationToken::new(), foo_file);

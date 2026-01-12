@@ -75,6 +75,15 @@ impl SourceTypeProvider {
             store.intern_class_id(name);
         }
 
+        // `extends` / `implements` clauses can reference types from other files. The completion
+        // environment is built by processing files in path order, which isn't guaranteed to visit
+        // supertypes before subtypes. Pre-intern ids for referenced supertypes/interfaces so
+        // `parse_type_ref` can resolve them as `Type::Class(...)` and subtyping traversals can walk
+        // through the placeholder graph.
+        for item in &tree.items {
+            preintern_inheritance_refs(&tree, store, &ctx, item);
+        }
+
         let object = Type::class(store.well_known().object, vec![]);
         let defs = {
             let store_ro: &TypeStore = &*store;
@@ -151,6 +160,51 @@ fn collect_class_names(
     for member in members {
         if let Member::Type(nested) = member {
             collect_class_names(tree, ctx, nested, Some(&binary_name), out);
+        }
+    }
+}
+
+fn preintern_inheritance_refs(tree: &ItemTree, store: &mut TypeStore, ctx: &ResolveCtx, item: &Item) {
+    let (extends, implements, members) = match *item {
+        Item::Class(id) => {
+            let data = tree.class(id);
+            (
+                data.extends.as_slice(),
+                data.implements.as_slice(),
+                data.members.as_slice(),
+            )
+        }
+        Item::Interface(id) => {
+            let data = tree.interface(id);
+            (data.extends.as_slice(), &[][..], data.members.as_slice())
+        }
+        Item::Enum(id) => {
+            let data = tree.enum_(id);
+            (&[][..], data.implements.as_slice(), data.members.as_slice())
+        }
+        Item::Record(id) => {
+            let data = tree.record(id);
+            (&[][..], data.implements.as_slice(), data.members.as_slice())
+        }
+        Item::Annotation(id) => {
+            let data = tree.annotation(id);
+            (&[][..], &[][..], data.members.as_slice())
+        }
+    };
+
+    for ty in extends.iter().chain(implements) {
+        let resolved = {
+            let store_ro: &TypeStore = &*store;
+            parse_type_ref(ctx, store_ro, ty)
+        };
+        if let Type::Named(name) = resolved {
+            store.intern_class_id(&name);
+        }
+    }
+
+    for member in members {
+        if let Member::Type(nested) = member {
+            preintern_inheritance_refs(tree, store, ctx, nested);
         }
     }
 }
@@ -660,7 +714,10 @@ impl ResolveCtx {
 
     fn resolve_simple_name(&self, store: &TypeStore, name: &str) -> Type {
         if let Some(path) = self.single_type_imports.get(name) {
-            return self.resolve_type_name(store, path);
+            // `import p.Foo;` paths are always fully-qualified (package) names. We should not
+            // attempt to treat the first segment as an in-scope type, since that can rewrite an
+            // unknown `p.Foo` import into a nested binary name like `current.p$Foo`.
+            return self.resolve_imported_name(store, path);
         }
 
         if let Some(pkg) = &self.package {
@@ -733,6 +790,43 @@ impl ResolveCtx {
                 }
 
                 return Type::Named(candidate);
+            }
+        }
+
+        Type::Named(name.to_string())
+    }
+
+    fn resolve_imported_name(&self, store: &TypeStore, name: &str) -> Type {
+        if let Some(id) = store.lookup_class(name) {
+            return Type::class(id, vec![]);
+        }
+
+        let segments: Vec<&str> = name.split('.').collect();
+        if segments.len() >= 2 {
+            // Import paths like `java.util.Map.Entry` use source syntax (`.`), but the binary name
+            // for nested types is `$`-separated. Try converting suffixes to `$` and see if we can
+            // find a known class id, but do not fall back to resolving the first segment in-scope
+            // (imports are already fully-qualified).
+            for outer_idx in 0..segments.len() {
+                let (pkg, rest) = segments.split_at(outer_idx);
+                let Some((outer, nested)) = rest.split_first() else {
+                    continue;
+                };
+
+                let mut candidate = String::new();
+                if !pkg.is_empty() {
+                    candidate.push_str(&pkg.join("."));
+                    candidate.push('.');
+                }
+                candidate.push_str(outer);
+                for seg in nested {
+                    candidate.push('$');
+                    candidate.push_str(seg);
+                }
+
+                if let Some(id) = store.lookup_class(&candidate) {
+                    return Type::class(id, vec![]);
+                }
             }
         }
 

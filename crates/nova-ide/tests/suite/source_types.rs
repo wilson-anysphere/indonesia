@@ -236,3 +236,63 @@ class B extends A {}
         other => panic!("unexpected super_class type: {other:?}"),
     }
 }
+
+#[test]
+fn source_types_resolve_supertypes_even_when_defined_in_later_files() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    // Define the subtype first; the supertype is added in a later `update_file` call.
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/B.java"),
+        r#"
+package p;
+class B extends A {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/A.java"),
+        r#"
+package p;
+class A { int x; }
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("p.B".to_string()),
+        &Type::Named("p.A".to_string())
+    ));
+}
+
+#[test]
+fn source_types_resolve_imported_interfaces_even_when_defined_in_later_files() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    source.update_file(
+        &mut store,
+        PathBuf::from("/a/Impl.java"),
+        r#"
+package a;
+import z.I;
+class Impl implements I {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/z/I.java"),
+        r#"
+package z;
+public interface I {}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("a.Impl".to_string()),
+        &Type::Named("z.I".to_string())
+    ));
+}

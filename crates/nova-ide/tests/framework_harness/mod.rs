@@ -2,24 +2,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nova_config::NovaConfig;
-use nova_db::{Database, InMemoryFileStore};
+use nova_db::InMemoryFileStore;
 use nova_ext::ProjectId;
 use nova_ide::extensions::IdeExtensions;
 
 pub const CARET: &str = "<|>";
 
 pub struct Fixture {
-    pub db: Arc<dyn Database + Send + Sync>,
-    pub ide: IdeExtensions<dyn Database + Send + Sync>,
+    pub db: Arc<InMemoryFileStore>,
+    pub ide: IdeExtensions<InMemoryFileStore>,
     pub file: nova_db::FileId,
     pub position: lsp_types::Position,
     pub text: String,
 }
 
 pub fn ide_with_default_registry(
-    db: Arc<dyn Database + Send + Sync>,
-) -> IdeExtensions<dyn Database + Send + Sync> {
-    IdeExtensions::<dyn Database + Send + Sync>::with_default_registry(
+    db: Arc<InMemoryFileStore>,
+) -> IdeExtensions<InMemoryFileStore> {
+    IdeExtensions::with_default_registry(
         db,
         Arc::new(NovaConfig::default()),
         ProjectId::new(0),
@@ -72,7 +72,7 @@ pub fn fixture_multi(
         db.set_file_text(id, text);
     }
 
-    let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
+    let db = Arc::new(db);
     let ide = ide_with_default_registry(Arc::clone(&db));
 
     Fixture {
