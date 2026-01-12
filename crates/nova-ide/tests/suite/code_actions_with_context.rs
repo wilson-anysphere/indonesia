@@ -443,3 +443,56 @@ fn code_actions_with_context_includes_return_mismatch_quickfix_for_cursor_at_spa
     let cast_fix = cast_fix.expect("expected Cast to String quickfix at cursor boundary");
     assert_eq!(first_edit_new_text(cast_fix), "(String) (o)");
 }
+
+#[test]
+fn code_actions_with_context_does_not_duplicate_unused_import_quickfix() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = "import java.util.List;\nclass A {}\n";
+    db.set_file_text(file, source.to_string());
+
+    let diag_start = 0;
+    let diag_end = source
+        .find('\n')
+        .expect("import line should end with newline");
+    let range = Range::new(
+        offset_to_position(source, diag_start),
+        offset_to_position(source, diag_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("unused-import".to_string())),
+        message: "unused import".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    // The LSP can request code actions for a cursor selection (start == end). Ensure we don't
+    // produce *duplicate* unused-import quick fixes when both diagnostic-driven and context-driven
+    // logic runs.
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(diag_start, diag_start)),
+        &[diag],
+    );
+
+    let count = actions
+        .iter()
+        .filter(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) => {
+                action.title == "Remove unused import"
+            }
+            lsp_types::CodeActionOrCommand::Command(_) => false,
+        })
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "expected exactly one `Remove unused import` quick fix; got {actions:?}"
+    );
+}

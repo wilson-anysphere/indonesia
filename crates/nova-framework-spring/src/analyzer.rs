@@ -179,6 +179,11 @@ impl FrameworkAnalyzer for SpringAnalyzer {
             ("org.springframework.boot", "spring-boot-autoconfigure"),
             ("org.springframework.boot", "spring-boot-starter"),
             ("org.springframework.boot", "spring-boot-starter-web"),
+            // Common starters that imply Spring even when classpath indexing is unavailable.
+            ("org.springframework.boot", "spring-boot-starter-data-jpa"),
+            ("org.springframework.boot", "spring-boot-starter-test"),
+            ("org.springframework.boot", "spring-boot-starter-security"),
+            ("org.springframework.boot", "spring-boot-starter-actuator"),
         ];
         if COMMON_COORDS
             .iter()

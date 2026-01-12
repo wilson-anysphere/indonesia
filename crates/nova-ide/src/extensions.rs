@@ -1278,24 +1278,7 @@ where
                 source,
                 selection.start,
             ));
-            // Quick fixes driven by diagnostics should prefer the diagnostics passed by the LSP
-            // client (`CodeActionContext.diagnostics`) so we don't need to recompute diagnostics
-            // for the whole file.
-            actions.extend(return_mismatch_quick_fixes_from_context(
-                &cancel,
-                source,
-                &uri,
-                span,
-                context_diagnostics,
-            ));
             actions.extend(type_mismatch_quick_fixes_from_context(
-                &cancel,
-                source,
-                &uri,
-                span,
-                context_diagnostics,
-            ));
-            actions.extend(unused_import_quick_fixes_from_context(
                 &cancel,
                 source,
                 &uri,
@@ -1840,7 +1823,6 @@ fn unused_import_quick_fixes_from_context(
 
     actions
 }
-
 struct FrameworkDiagnosticProvider;
 
 fn has_build_metadata(db: &dyn nova_db::Database, file: nova_ext::FileId) -> bool {
