@@ -56,37 +56,58 @@ function getCalledMethodName(expr: ts.Expression, env: Map<string, string>): str
   return undefined;
 }
 
+function expressionToPropertyPathKey(expr: ts.Expression, env: Map<string, string>): string | undefined {
+  const unwrapped = unwrapExpression(expr);
+
+  if (ts.isIdentifier(unwrapped)) {
+    return unwrapped.text;
+  }
+
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    const base = expressionToPropertyPathKey(unwrapped.expression, env);
+    if (!base) {
+      return undefined;
+    }
+    return `${base}.${unwrapped.name.text}`;
+  }
+
+  if (ts.isElementAccessExpression(unwrapped)) {
+    const base = expressionToPropertyPathKey(unwrapped.expression, env);
+    if (!base) {
+      return undefined;
+    }
+    const key = unwrapped.argumentExpression ? evalConstString(unwrapped.argumentExpression, env) : undefined;
+    if (typeof key !== 'string' || key.length === 0) {
+      return undefined;
+    }
+    return `${base}.${key}`;
+  }
+
+  return undefined;
+}
+
 function evalConstString(expr: ts.Expression, env: Map<string, string>): string | undefined {
-  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
-    return expr.text;
+  const unwrapped = unwrapExpression(expr);
+
+  if (ts.isStringLiteral(unwrapped) || ts.isNoSubstitutionTemplateLiteral(unwrapped)) {
+    return unwrapped.text;
   }
 
-  if (ts.isPropertyAccessExpression(expr)) {
-    const base = expr.expression;
-    if (ts.isIdentifier(base)) {
-      const value = env.get(`${base.text}.${expr.name.text}`);
-      if (typeof value === 'string') {
-        return value;
-      }
+  if (ts.isIdentifier(unwrapped)) {
+    return env.get(unwrapped.text);
+  }
+
+  const pathKey = expressionToPropertyPathKey(unwrapped, env);
+  if (pathKey) {
+    const value = env.get(pathKey);
+    if (typeof value === 'string') {
+      return value;
     }
   }
 
-  if (ts.isElementAccessExpression(expr)) {
-    const base = expr.expression;
-    if (ts.isIdentifier(base)) {
-      const key = expr.argumentExpression ? evalConstString(expr.argumentExpression, env) : undefined;
-      if (typeof key === 'string') {
-        const value = env.get(`${base.text}.${key}`);
-        if (typeof value === 'string') {
-          return value;
-        }
-      }
-    }
-  }
-
-  if (ts.isTemplateExpression(expr)) {
-    let text = expr.head.text;
-    for (const span of expr.templateSpans) {
+  if (ts.isTemplateExpression(unwrapped)) {
+    let text = unwrapped.head.text;
+    for (const span of unwrapped.templateSpans) {
       const value = evalConstString(span.expression, env);
       if (typeof value === 'undefined') {
         return undefined;
@@ -96,25 +117,13 @@ function evalConstString(expr: ts.Expression, env: Map<string, string>): string 
     return text;
   }
 
-  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = evalConstString(expr.left, env);
-    const right = evalConstString(expr.right, env);
+  if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = evalConstString(unwrapped.left, env);
+    const right = evalConstString(unwrapped.right, env);
     if (typeof left === 'undefined' || typeof right === 'undefined') {
       return undefined;
     }
     return left + right;
-  }
-
-  if (ts.isParenthesizedExpression(expr)) {
-    return evalConstString(expr.expression, env);
-  }
-
-  if (ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr)) {
-    return evalConstString(expr.expression, env);
-  }
-
-  if (ts.isIdentifier(expr)) {
-    return env.get(expr.text);
   }
 
   return undefined;
@@ -500,6 +509,47 @@ function buildConstStringEnvFromVariableStatements(
 ): Map<string, string> {
   const declarations: Array<{ name: string; initializer: ts.Expression }> = [];
 
+  const addObjectLiteralDeclarations = (prefix: string, objectLiteral: ts.ObjectLiteralExpression) => {
+    for (const element of objectLiteral.properties) {
+      if (ts.isSpreadAssignment(element)) {
+        continue;
+      }
+
+      let propertyNameText: string | undefined;
+      if (ts.isPropertyAssignment(element)) {
+        const name = element.name;
+        if (ts.isIdentifier(name)) {
+          propertyNameText = name.text;
+        } else if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) {
+          propertyNameText = name.text;
+        } else if (ts.isComputedPropertyName(name)) {
+          propertyNameText = evalConstString(name.expression, baseEnv);
+        }
+        if (!propertyNameText) {
+          continue;
+        }
+
+        const fullName = `${prefix}.${propertyNameText}`;
+        declarations.push({ name: fullName, initializer: element.initializer });
+
+        const nestedInitializer = unwrapExpression(element.initializer);
+        if (ts.isObjectLiteralExpression(nestedInitializer)) {
+          addObjectLiteralDeclarations(fullName, nestedInitializer);
+        }
+        continue;
+      }
+
+      if (ts.isShorthandPropertyAssignment(element)) {
+        propertyNameText = element.name.text;
+        const fullName = `${prefix}.${propertyNameText}`;
+        declarations.push({ name: fullName, initializer: element.name });
+        continue;
+      }
+
+      // Ignore methods/accessors; they can't be constant strings for our purposes.
+    }
+  };
+
   for (const statement of statements) {
     if (!ts.isVariableStatement(statement)) {
       continue;
@@ -518,49 +568,7 @@ function buildConstStringEnvFromVariableStatements(
 
         const unwrappedInitializer = unwrapExpression(decl.initializer);
         if (ts.isObjectLiteralExpression(unwrappedInitializer)) {
-          for (const element of unwrappedInitializer.properties) {
-            if (ts.isSpreadAssignment(element)) {
-              continue;
-            }
-
-            let propertyNameText: string | undefined;
-            if (ts.isPropertyAssignment(element)) {
-              const name = element.name;
-              if (ts.isIdentifier(name)) {
-                propertyNameText = name.text;
-              } else if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) {
-                propertyNameText = name.text;
-              } else if (ts.isComputedPropertyName(name)) {
-                propertyNameText = evalConstString(name.expression, baseEnv);
-              }
-              if (!propertyNameText) {
-                continue;
-              }
-              declarations.push({
-                name: `${decl.name.text}.${propertyNameText}`,
-                initializer: element.initializer,
-              });
-              continue;
-            }
-
-            if (ts.isShorthandPropertyAssignment(element)) {
-              propertyNameText = element.name.text;
-              declarations.push({
-                name: `${decl.name.text}.${propertyNameText}`,
-                initializer: element.name,
-              });
-              continue;
-            }
-
-            if (ts.isMethodDeclaration(element)) {
-              // Ignore methods; they can't be constant strings for our purposes.
-              continue;
-            }
-
-            if (ts.isGetAccessorDeclaration(element) || ts.isSetAccessorDeclaration(element)) {
-              continue;
-            }
-          }
+          addObjectLiteralDeclarations(decl.name.text, unwrappedInitializer);
         }
         continue;
       }
@@ -920,6 +928,20 @@ test('noManualFileOperationsForwarding scan resolves const object property value
   const source = `
     const METHODS = { rename: 'workspace/didRenameFiles' } as const;
     client.sendNotification(METHODS.rename, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan resolves nested const object property values (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    const METHODS = { nested: { rename: 'workspace/didRenameFiles' } } as const;
+    client.sendNotification(METHODS.nested.rename, { files: [] });
   `;
 
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
