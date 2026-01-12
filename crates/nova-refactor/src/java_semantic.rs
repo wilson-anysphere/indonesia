@@ -5065,6 +5065,16 @@ fn collect_switch_contexts(
                     walk_stmt(body, *finally, owner, scope_result, resolver, item_trees, out);
                 }
             }
+            hir::Stmt::Assert {
+                condition,
+                message,
+                ..
+            } => {
+                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                if let Some(expr) = message {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Stmt::Throw { expr, .. } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
             }
