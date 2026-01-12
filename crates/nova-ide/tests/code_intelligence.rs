@@ -887,3 +887,58 @@ class A {
         "expected statement after for(;true;) to be unreachable; got {diags:#?}"
     );
 }
+
+#[test]
+fn diagnostics_do_not_warn_null_deref_after_and_and_null_check() {
+    let text = r#"
+class A {
+  void m(String s, boolean cond) {
+    if (s != null && cond) {
+      s.length();
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "s.length();";
+    let start = text.find(needle).expect("expected s.length in fixture");
+    let end = start + needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_NULL_DEREF"
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
+        "expected no null-dereference diagnostic after null check; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_warn_null_deref_after_or_or_null_check() {
+    let text = r#"
+class A {
+  void m(String s, boolean cond) {
+    if (s == null || cond) {
+      return;
+    }
+    s.length();
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "s.length();";
+    let start = text.find(needle).expect("expected s.length in fixture");
+    let end = start + needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_NULL_DEREF"
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
+        "expected no null-dereference diagnostic after null check; got {diags:#?}"
+    );
+}

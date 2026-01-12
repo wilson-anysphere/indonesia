@@ -1284,46 +1284,77 @@ fn edge_narrow_null(
     };
     let Some(branch) = branch else { return state };
 
-    let Some((local, on_true, on_false)) = null_test(body, *condition) else {
-        return state;
-    };
-
-    let value = if branch { on_true } else { on_false };
-    if local.index() < state.len() {
-        state[local.index()] = value;
+    let (on_true, on_false) = null_constraints(body, *condition);
+    let constraints = if branch { on_true } else { on_false };
+    for (local, value) in constraints {
+        if value == NullState::Unknown {
+            continue;
+        }
+        if local.index() < state.len() {
+            state[local.index()] = value;
+        }
     }
 
     state
 }
 
-fn null_test(body: &Body, expr: ExprId) -> Option<(LocalId, NullState, NullState)> {
+fn merge_null_constraints(
+    mut lhs: Vec<(LocalId, NullState)>,
+    rhs: Vec<(LocalId, NullState)>,
+) -> Vec<(LocalId, NullState)> {
+    for (local, value) in rhs {
+        match lhs.iter_mut().find(|(existing, _)| *existing == local) {
+            Some((_, existing_value)) => *existing_value = existing_value.join(value),
+            None => lhs.push((local, value)),
+        }
+    }
+    lhs
+}
+
+fn null_constraints(body: &Body, expr: ExprId) -> (Vec<(LocalId, NullState)>, Vec<(LocalId, NullState)>) {
     let expr_data = body.expr(expr);
     match &expr_data.kind {
         ExprKind::Unary {
             op: UnaryOp::Not,
             expr,
         } => {
-            let (local, on_true, on_false) = null_test(body, *expr)?;
-            Some((local, on_false, on_true))
+            let (on_true, on_false) = null_constraints(body, *expr);
+            (on_false, on_true)
         }
 
-        ExprKind::Binary { op, lhs, rhs } if matches!(op, BinaryOp::EqEq | BinaryOp::NotEq) => {
-            let (local, is_eq) = match (&body.expr(*lhs).kind, &body.expr(*rhs).kind, op) {
-                (ExprKind::Local(local), ExprKind::Null, BinaryOp::EqEq)
-                | (ExprKind::Null, ExprKind::Local(local), BinaryOp::EqEq) => (*local, true),
-                (ExprKind::Local(local), ExprKind::Null, BinaryOp::NotEq)
-                | (ExprKind::Null, ExprKind::Local(local), BinaryOp::NotEq) => (*local, false),
-                _ => return None,
-            };
+        ExprKind::Binary { op, lhs, rhs } => match op {
+            BinaryOp::EqEq | BinaryOp::NotEq => {
+                let (local, is_eq) = match (&body.expr(*lhs).kind, &body.expr(*rhs).kind, op) {
+                    (ExprKind::Local(local), ExprKind::Null, BinaryOp::EqEq)
+                    | (ExprKind::Null, ExprKind::Local(local), BinaryOp::EqEq) => (*local, true),
+                    (ExprKind::Local(local), ExprKind::Null, BinaryOp::NotEq)
+                    | (ExprKind::Null, ExprKind::Local(local), BinaryOp::NotEq) => (*local, false),
+                    _ => return (Vec::new(), Vec::new()),
+                };
 
-            if is_eq {
-                Some((local, NullState::Null, NullState::NonNull))
-            } else {
-                Some((local, NullState::NonNull, NullState::Null))
+                if is_eq {
+                    (vec![(local, NullState::Null)], vec![(local, NullState::NonNull)])
+                } else {
+                    (vec![(local, NullState::NonNull)], vec![(local, NullState::Null)])
+                }
             }
-        }
+            BinaryOp::AndAnd => {
+                // For `A && B`, the "true" edge implies that both sides evaluated to true.
+                // We can conservatively narrow based on both `A` and `B`.
+                let (lhs_true, _) = null_constraints(body, *lhs);
+                let (rhs_true, _) = null_constraints(body, *rhs);
+                (merge_null_constraints(lhs_true, rhs_true), Vec::new())
+            }
+            BinaryOp::OrOr => {
+                // For `A || B`, the "false" edge implies that both sides evaluated to false.
+                // We can conservatively narrow based on both `A` and `B`.
+                let (_, lhs_false) = null_constraints(body, *lhs);
+                let (_, rhs_false) = null_constraints(body, *rhs);
+                (Vec::new(), merge_null_constraints(lhs_false, rhs_false))
+            }
+        },
 
-        _ => None,
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
