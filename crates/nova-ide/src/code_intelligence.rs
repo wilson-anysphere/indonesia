@@ -968,6 +968,7 @@ pub(crate) fn core_completions(
                 &prefix,
                 offset,
             ));
+            deduplicate_completion_items(&mut items);
             // Re-rank once postfix templates are present so they compete fairly with member items.
             let ranking_ctx = CompletionRankingContext::default();
             rank_completions(&prefix, &mut items, &ranking_ctx);
@@ -1178,6 +1179,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 &prefix,
                 offset,
             ));
+            deduplicate_completion_items(&mut items);
             // Re-rank once postfix templates are present so they compete fairly with member items.
             let ranking_ctx = CompletionRankingContext::default();
             rank_completions(&prefix, &mut items, &ranking_ctx);
@@ -1637,6 +1639,7 @@ fn member_completions(
         }
     }
 
+    deduplicate_completion_items(&mut items);
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items
@@ -1756,6 +1759,7 @@ fn general_completions(
         expected_type,
         last_used_offsets,
     };
+    deduplicate_completion_items(&mut items);
     rank_completions(prefix, &mut items, &ctx);
     items
 }
@@ -1779,6 +1783,91 @@ fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
         Some(CompletionItemKind::KEYWORD) => 10,
         _ => 0,
     }
+}
+
+fn compare_completion_items_for_dedup(a: &CompletionItem, b: &CompletionItem) -> std::cmp::Ordering {
+    let a_has_detail = a.detail.as_ref().is_some_and(|d| !d.is_empty());
+    let b_has_detail = b.detail.as_ref().is_some_and(|d| !d.is_empty());
+
+    let a_is_snippet = matches!(a.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    let b_is_snippet = matches!(b.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let a_has_additional_edits = a
+        .additional_text_edits
+        .as_ref()
+        .is_some_and(|edits| !edits.is_empty());
+    let b_has_additional_edits = b
+        .additional_text_edits
+        .as_ref()
+        .is_some_and(|edits| !edits.is_empty());
+
+    let a_score = (a_has_detail as u8) + (a_is_snippet as u8) + (a_has_additional_edits as u8);
+    let b_score = (b_has_detail as u8) + (b_is_snippet as u8) + (b_has_additional_edits as u8);
+
+    a_score
+        .cmp(&b_score)
+        .then_with(|| a_has_detail.cmp(&b_has_detail))
+        .then_with(|| a_is_snippet.cmp(&b_is_snippet))
+        .then_with(|| a_has_additional_edits.cmp(&b_has_additional_edits))
+        // Prefer longer `detail` strings (usually richer signatures) when present.
+        .then_with(|| {
+            a.detail
+                .as_deref()
+                .unwrap_or("")
+                .len()
+                .cmp(&b.detail.as_deref().unwrap_or("").len())
+        })
+        .then_with(|| {
+            a.additional_text_edits
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0)
+                .cmp(&b.additional_text_edits.as_ref().map(Vec::len).unwrap_or(0))
+        })
+        // Deterministic tie-breaking for "equally rich" duplicates.
+        .then_with(|| a.detail.as_deref().unwrap_or("").cmp(b.detail.as_deref().unwrap_or("")))
+        .then_with(|| {
+            a.insert_text
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.insert_text.as_deref().unwrap_or(""))
+        })
+        .then_with(|| {
+            a.sort_text
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.sort_text.as_deref().unwrap_or(""))
+        })
+        .then_with(|| {
+            a.filter_text
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.filter_text.as_deref().unwrap_or(""))
+        })
+        .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+}
+
+fn deduplicate_completion_items(items: &mut Vec<CompletionItem>) {
+    // `lsp_types::CompletionItemKind` doesn't implement `Hash`, so we can't use it directly as a
+    // `HashMap` key. Completion lists are small enough that a linear scan is fine here.
+    let mut deduped: Vec<CompletionItem> = Vec::new();
+
+    for item in items.drain(..) {
+        if let Some(existing_idx) = deduped
+            .iter()
+            .position(|it| it.label == item.label && it.kind == item.kind)
+        {
+            if compare_completion_items_for_dedup(&item, &deduped[existing_idx])
+                == std::cmp::Ordering::Greater
+            {
+                deduped[existing_idx] = item;
+            }
+        } else {
+            deduped.push(item);
+        }
+    }
+
+    *items = deduped;
 }
 
 fn scope_bonus(kind: Option<CompletionItemKind>) -> i32 {
@@ -1814,6 +1903,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         i32,
         Option<usize>,
         i32,
+        String,
     )> = items
         .drain(..)
         .filter_map(|item| {
@@ -1836,13 +1926,16 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             let recency = ctx.last_used_offsets.get(&item.label).copied();
             let weight = kind_weight(item.kind);
 
-            Some((item, score, expected_bonus, scope, recency, weight))
+            // Used as a deterministic tie-breaker when scores/weights/labels tie.
+            let kind_key = format!("{:?}", item.kind);
+
+            Some((item, score, expected_bonus, scope, recency, weight, kind_key))
         })
         .collect();
 
     scored.sort_by(
-        |(a_item, a_score, a_expected, a_scope, a_recency, a_weight),
-         (b_item, b_score, b_expected, b_scope, b_recency, b_weight)| {
+        |(a_item, a_score, a_expected, a_scope, a_recency, a_weight, a_kind),
+         (b_item, b_score, b_expected, b_scope, b_recency, b_weight, b_kind)| {
             b_score
                 .rank_key()
                 .cmp(&a_score.rank_key())
@@ -1852,10 +1945,11 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 .then_with(|| b_weight.cmp(a_weight))
                 .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
                 .then_with(|| a_item.label.cmp(&b_item.label))
+                .then_with(|| a_kind.cmp(b_kind))
         },
     );
 
-    items.extend(scored.into_iter().map(|(item, _, _, _, _, _)| item));
+    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _)| item));
 }
 
 fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {

@@ -93,6 +93,52 @@ class A {
 }
 
 #[test]
+fn completion_deduplicates_items_by_label_and_kind() {
+    // `Stream` member completions come from two sources:
+    // - hardcoded `STREAM_MEMBER_METHODS`
+    // - workspace type extraction via the Lombok completion provider
+    //
+    // When both provide the same label/kind, the final list should contain only
+    // one item.
+    let (db, file, pos) = fixture(
+        r#"
+class Stream {
+  Stream filter() { return this; }
+  Stream map() { return this; }
+  Stream collect() { return this; }
+}
+
+class A {
+  void m() {
+    Stream s = new Stream();
+    s.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+
+    let filter_methods: Vec<_> = items
+        .iter()
+        .filter(|i| i.label == "filter" && i.kind == Some(lsp_types::CompletionItemKind::METHOD))
+        .collect();
+
+    assert_eq!(
+        filter_methods.len(),
+        1,
+        "expected exactly one `filter` method completion; got {filter_methods:#?}"
+    );
+
+    // The dedup policy should keep the richer completion item (which includes
+    // signature detail).
+    assert!(
+        filter_methods[0].detail.is_some(),
+        "expected `filter` completion to keep the item with `detail`; got {filter_methods:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_if_snippet_template() {
     let (db, file, pos) = fixture(
         r#"
