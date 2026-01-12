@@ -1634,6 +1634,23 @@ mod tests {
     }
 
     #[test]
+    fn search_symbol_serde_accepts_camel_case_metadata_fields() {
+        // Some clients serialize `qualifiedName` / `containerName` / `astId` in camelCase.
+        // Ensure we continue to accept these shapes.
+        let json = r#"{"name":"Foo","qualifiedName":"pkg.Foo","kind":"class","containerName":"pkg","location":{"file":"A.java","line":1,"column":2},"astId":42}"#;
+        let sym: Symbol = serde_json::from_str(json).expect("deserialize camelCase symbol shape");
+
+        assert_eq!(sym.name, "Foo");
+        assert_eq!(sym.qualified_name, "pkg.Foo");
+        assert_eq!(sym.kind, IndexSymbolKind::Class);
+        assert_eq!(sym.container_name.as_deref(), Some("pkg"));
+        assert_eq!(sym.location.file, "A.java");
+        assert_eq!(sym.location.line, 1);
+        assert_eq!(sym.location.column, 2);
+        assert_eq!(sym.ast_id, 42);
+    }
+
+    #[test]
     fn workspace_symbol_searcher_rebuilds_when_definition_count_changes() {
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
         let searcher = WorkspaceSymbolSearcher::new(&memory);
