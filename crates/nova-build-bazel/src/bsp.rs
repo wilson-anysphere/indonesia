@@ -1217,12 +1217,7 @@ pub fn target_compile_info_via_bsp(
 mod tests {
     use super::*;
     #[cfg(feature = "bsp")]
-    use std::sync::Mutex;
-    #[cfg(feature = "bsp")]
     use tempfile::tempdir;
-
-    #[cfg(feature = "bsp")]
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(feature = "bsp")]
     struct EnvVarGuard {
@@ -1443,7 +1438,7 @@ mod tests {
     #[cfg(feature = "bsp")]
     #[test]
     fn bazel_bsp_config_discover_applies_env_overrides() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
 
         let root = tempdir().unwrap();
         let bsp_dir = root.path().join(".bsp");
