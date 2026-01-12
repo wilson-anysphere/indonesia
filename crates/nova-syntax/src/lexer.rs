@@ -211,7 +211,9 @@ impl<'a> Lexer<'a> {
                 // Lex a normal Java token, but track `{`/`}` so we know when the interpolation
                 // closes and we should return to template lexing.
                 let kind = self.next_kind_java_token();
-                self.update_template_interpolation_depth(kind);
+                if self.update_template_interpolation_depth(kind) {
+                    return SyntaxKind::StringTemplateExprEnd;
+                }
                 return kind;
             }
             None => {}
@@ -220,9 +222,14 @@ impl<'a> Lexer<'a> {
         self.next_kind_java_token()
     }
 
-    fn update_template_interpolation_depth(&mut self, kind: SyntaxKind) {
+    /// Updates brace depth for the active string-template interpolation.
+    ///
+    /// Returns `true` if `kind` closed the interpolation (meaning the caller should treat the
+    /// closing `}` as a [`SyntaxKind::StringTemplateExprEnd`] token instead of a normal
+    /// [`SyntaxKind::RBrace`]).
+    fn update_template_interpolation_depth(&mut self, kind: SyntaxKind) -> bool {
         if !matches!(kind, SyntaxKind::LBrace | SyntaxKind::RBrace) {
-            return;
+            return false;
         }
 
         // The interpolation mode we need to update is the topmost one on the stack. It is
@@ -234,21 +241,24 @@ impl<'a> Lexer<'a> {
             .iter_mut()
             .enumerate()
             .rev()
-            .find(|(_, m)| matches!(m, LexMode::TemplateInterpolation { .. }))
+             .find(|(_, m)| matches!(m, LexMode::TemplateInterpolation { .. }))
         else {
-            return;
+            return false;
         };
 
         match kind {
             SyntaxKind::LBrace => {
                 *brace_depth = brace_depth.saturating_add(1);
+                false
             }
             SyntaxKind::RBrace => {
                 *brace_depth = brace_depth.saturating_sub(1);
                 if *brace_depth == 0 {
                     // This `}` closes the interpolation.
                     self.mode_stack.remove(idx);
+                    return true;
                 }
+                false
             }
             _ => unreachable!("guard ensures we only see braces"),
         }

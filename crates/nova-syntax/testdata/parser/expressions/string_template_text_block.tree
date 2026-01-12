@@ -50,7 +50,7 @@ CompilationUnit
                       StringTemplateExprStart "\\{"
                       NameExpression
                         Identifier "name"
-                      RBrace "}"
+                      StringTemplateExprEnd "}"
                     StringTemplateText "!\n"
                     StringTemplateEnd "\"\"\""
             Semicolon ";"

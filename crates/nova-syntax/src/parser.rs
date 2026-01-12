@@ -211,6 +211,7 @@ const TYPE_ARGUMENT_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::RParen,
     SyntaxKind::RBracket,
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::Semicolon,
     SyntaxKind::Eof,
 ]);
@@ -225,6 +226,7 @@ const TYPE_PARAMETER_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::RParen,
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::Eof,
 ]);
 
@@ -234,6 +236,7 @@ const EXPR_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::RParen,
     SyntaxKind::RBracket,
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::Colon,
     SyntaxKind::Arrow,
     SyntaxKind::Eof,
@@ -3380,7 +3383,7 @@ impl<'a> Parser<'a> {
                     self.bump(); // \{
                     self.parse_expression(0);
                     self.expect(
-                        SyntaxKind::RBrace,
+                        SyntaxKind::StringTemplateExprEnd,
                         "expected `}` to close template expression",
                     );
                     self.builder.finish_node(); // StringTemplateInterpolation

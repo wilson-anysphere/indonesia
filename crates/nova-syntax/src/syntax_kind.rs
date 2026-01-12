@@ -451,6 +451,7 @@ pub enum SyntaxKind {
     StringTemplateEnd,
     StringTemplate,
     StringTemplateInterpolation,
+    StringTemplateExprEnd,
     __Last,
 }
 

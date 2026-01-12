@@ -267,12 +267,9 @@ fn is_ambiguous_token_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::StringTemplateStart
             | SyntaxKind::StringTemplateText
             | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateExprEnd
             | SyntaxKind::StringTemplateEnd
             | SyntaxKind::CharLiteral
-            | SyntaxKind::StringTemplateStart
-            | SyntaxKind::StringTemplateText
-            | SyntaxKind::StringTemplateExprStart
-            | SyntaxKind::StringTemplateEnd
             | SyntaxKind::LineComment
             | SyntaxKind::BlockComment
             | SyntaxKind::DocComment

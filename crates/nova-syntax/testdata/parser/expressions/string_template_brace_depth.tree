@@ -61,7 +61,7 @@ CompilationUnit
                               Semicolon ";"
                             Whitespace " "
                             RBrace "}"
-                      RBrace "}"
+                      StringTemplateExprEnd "}"
                     StringTemplateText " done"
                     StringTemplateEnd "\""
             Semicolon ";"

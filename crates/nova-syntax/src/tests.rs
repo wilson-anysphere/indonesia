@@ -508,7 +508,7 @@ fn lexer_string_templates_lex_interpolations_without_escape_errors() {
             (SyntaxKind::StringTemplateText, "hello ".into()),
             (SyntaxKind::StringTemplateExprStart, r"\{".into()),
             (SyntaxKind::Identifier, "name".into()),
-            (SyntaxKind::RBrace, "}".into()),
+            (SyntaxKind::StringTemplateExprEnd, "}".into()),
             (SyntaxKind::StringTemplateEnd, "\"".into()),
             (SyntaxKind::Eof, "".into()),
         ]
@@ -901,6 +901,22 @@ fn cache_parse_treats_string_templates_as_opaque_string_literal_tokens() {
             .iter()
             .map(|t| (t.kind, t.text(input).to_string()))
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn lexer_emits_string_template_expr_end_token() {
+    let input = r#"class Foo { String s = STR."hi \{name}"; }"#;
+    let tokens = dump_non_trivia(input);
+
+    let start = tokens
+        .iter()
+        .position(|(kind, _)| *kind == SyntaxKind::StringTemplateExprStart)
+        .expect("expected StringTemplateExprStart token");
+    assert_eq!(tokens[start + 1], (SyntaxKind::Identifier, "name".into()));
+    assert_eq!(
+        tokens[start + 2],
+        (SyntaxKind::StringTemplateExprEnd, "}".into())
     );
 }
 
@@ -3302,7 +3318,7 @@ fn syntax_kind_schema_fingerprint() -> u64 {
 
 // NOTE: If this fails, update the constant and *consider* bumping
 // `SYNTAX_SCHEMA_VERSION` in `syntax_kind.rs`.
-const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0xd216_728a_d381_aec2;
+const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x2d73_37b5_b821_e289;
 
 #[test]
 fn syntax_kind_schema_fingerprint_guardrail() {
