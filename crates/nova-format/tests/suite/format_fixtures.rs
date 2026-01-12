@@ -290,6 +290,33 @@ fn on_type_formatting_is_noop_inside_text_block_templates() {
 }
 
 #[test]
+fn on_type_formatting_is_noop_inside_text_blocks() {
+    let input =
+        "class Foo {\n    void m() {\n        String t = \"\"\"\n            hello }\n            \"\"\";\n    }\n}\n";
+    let tree = parse(input);
+    let idx = LineIndex::new(input);
+
+    let brace_offset = input.find("hello }").unwrap() + "hello ".len();
+    let position = idx.position(input, TextSize::from((brace_offset + 1) as u32));
+    let edits =
+        edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default()).unwrap();
+    assert!(edits.is_empty());
+}
+
+#[test]
+fn on_type_formatting_is_noop_inside_string_templates() {
+    let input = "class Foo {\n    void m() {\n        String t = STR.\"hello }\";\n    }\n}\n";
+    let tree = parse(input);
+    let idx = LineIndex::new(input);
+
+    let brace_offset = input.find("hello }").unwrap() + "hello ".len();
+    let position = idx.position(input, TextSize::from((brace_offset + 1) as u32));
+    let edits =
+        edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default()).unwrap();
+    assert!(edits.is_empty());
+}
+
+#[test]
 #[ignore]
 fn formats_large_file_regression() {
     let mut src = String::from("class Large {\n");

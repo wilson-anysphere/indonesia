@@ -490,6 +490,17 @@ fn is_inside_non_code_token(tree: &SyntaxTree, offset: TextSize) -> bool {
                 kind,
                 SyntaxKind::StringLiteral
                     | SyntaxKind::CharLiteral
+                    | SyntaxKind::TextBlock
+                    // String templates can be lexed into multiple tokens (`StringTemplateText`,
+                    // `StringTemplateExprStart`, etc.) by the full Java lexer/parser. The cache
+                    // layer currently coalesces templates into a single `StringLiteral`, but keep
+                    // this guard future-proof so on-type formatting never rewrites template
+                    // payloads.
+                    | SyntaxKind::StringTemplateStart
+                    | SyntaxKind::StringTemplateText
+                    | SyntaxKind::StringTemplateExprStart
+                    | SyntaxKind::StringTemplateExprEnd
+                    | SyntaxKind::StringTemplateEnd
                     | SyntaxKind::LineComment
                     | SyntaxKind::BlockComment
                     | SyntaxKind::DocComment
