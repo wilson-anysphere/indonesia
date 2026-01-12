@@ -984,6 +984,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             inputs.insert(self.root.join(rel));
         }
 
+        // Include imported `.bazelrc` files (best-effort) so that workspace configuration changes
+        // invalidate cached compile info.
+        for imported in bazelrc_imported_files(&self.root) {
+            inputs.insert(imported);
+        }
+
         // Best-effort: include the target package's BUILD file even if query evaluation fails.
         if let Some(build_file) = build_file_for_label(&self.root, target)? {
             inputs.insert(build_file);
@@ -1257,6 +1263,124 @@ fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
     paths.sort();
     paths.dedup();
     paths
+}
+
+fn bazelrc_imported_files(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut rc_files = Vec::<PathBuf>::new();
+    rc_files.push(workspace_root.join(".bazelrc"));
+
+    if let Ok(read_dir) = fs::read_dir(workspace_root) {
+        for entry in read_dir.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name.starts_with(".bazelrc.") {
+                rc_files.push(entry.path());
+            }
+        }
+    }
+
+    rc_files.sort();
+    rc_files.dedup();
+
+    // Walk the import graph so that transitive imports are also tracked.
+    let mut out = BTreeSet::<PathBuf>::new();
+    let mut visited = BTreeSet::<PathBuf>::new();
+    let mut queue: VecDeque<PathBuf> = rc_files.into_iter().collect();
+
+    while let Some(rc_path) = queue.pop_front() {
+        if !visited.insert(rc_path.clone()) {
+            continue;
+        }
+
+        // Best-effort: ignore missing/unreadable files and parse failures.
+        let bytes = match fs::read(&rc_path) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let contents = String::from_utf8_lossy(&bytes);
+
+        for line in contents.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let mut parts = trimmed.split_whitespace();
+            let Some(directive) = parts.next() else {
+                continue;
+            };
+
+            if directive != "import" && directive != "try-import" {
+                continue;
+            }
+
+            let Some(raw_path) = parts.next() else {
+                continue;
+            };
+
+            let Some(resolved) = resolve_bazelrc_import_path(workspace_root, raw_path) else {
+                continue;
+            };
+
+            if out.insert(resolved.clone()) {
+                queue.push_back(resolved);
+            }
+        }
+    }
+
+    out.into_iter().collect()
+}
+
+fn resolve_bazelrc_import_path(workspace_root: &Path, raw: &str) -> Option<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // Bazel allows quoting import paths; accept the simple common cases.
+    let raw = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(raw)
+        .trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let path = if let Some(rest) = raw.strip_prefix("%workspace%") {
+        let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+        if rest.is_empty() {
+            workspace_root.to_path_buf()
+        } else {
+            workspace_root.join(rest)
+        }
+    } else {
+        let candidate = PathBuf::from(raw);
+        if candidate.is_absolute() || looks_like_windows_absolute_path(raw) {
+            candidate
+        } else {
+            workspace_root.join(candidate)
+        }
+    };
+
+    Some(normalize_absolute_path_lexically(&path))
+}
+
+fn looks_like_windows_absolute_path(raw: &str) -> bool {
+    // When running on non-Windows, `Path::is_absolute` doesn't recognize Windows drive prefixes.
+    // Detect them lexically so we don't incorrectly treat `C:\foo` as workspace-relative.
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 3
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+        && bytes[0].is_ascii_alphabetic()
+    {
+        return true;
+    }
+
+    // UNC paths.
+    raw.starts_with("\\\\")
 }
 
 fn workspace_path_from_label(label: &str) -> Option<PathBuf> {
