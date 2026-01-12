@@ -9011,11 +9011,15 @@ fn type_name_completions(
         };
 
         candidates.push(Candidate {
-            item: CompletionItem {
+            item: {
+                let mut item = CompletionItem {
                 label: ty.name.clone(),
                 kind: Some(ty.kind),
                 detail: Some(fqn),
                 ..Default::default()
+                };
+                mark_workspace_completion_item(&mut item);
+                item
             },
             class_kind,
         });
@@ -9048,6 +9052,7 @@ fn type_name_completions(
             detail: Some(fqn.clone()),
             ..Default::default()
         };
+        mark_workspace_completion_item(&mut item);
         item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &fqn)]);
         candidates.push(Candidate { item, class_kind });
     }
