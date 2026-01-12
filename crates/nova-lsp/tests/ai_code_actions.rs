@@ -542,6 +542,122 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
 }
 
 #[test]
+fn stdio_server_completion_ranking_misconfiguration_falls_back_to_baseline_completions() {
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+local_only = false
+
+[ai.provider]
+kind = "open_ai"
+
+[ai.features]
+completion_ranking = true
+"#,
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let uri = "file:///Test.java";
+    let text = "class Test { void run() { String s = \"hi\"; s. } }";
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let offset = text.find("s.").expect("cursor");
+    let pos = TextPos::new(text)
+        .lsp_position(offset + 2)
+        .expect("position");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": pos
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+
+    assert!(
+        resp.get("error").is_none(),
+        "expected completion response to succeed, got: {resp:#?}"
+    );
+
+    let items = resp
+        .get("result")
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .expect("completion list");
+    assert!(!items.is_empty(), "expected completion items");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
     let mock_server = MockServer::start();
     // The code action request itself should not invoke the provider, but we need

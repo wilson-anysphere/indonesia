@@ -2927,15 +2927,16 @@ fn handle_completion(
 
     #[cfg(feature = "ai")]
     let mut items = if state.ai_config.enabled && state.ai_config.features.completion_ranking {
-        let runtime = state.runtime.as_ref().ok_or_else(|| {
-            "AI completion ranking is enabled but the Tokio runtime is unavailable".to_string()
-        })?;
-        runtime.block_on(nova_ide::completions_with_ai(
-            &db,
-            file,
-            position,
-            &state.ai_config,
-        ))
+        if let Some(runtime) = state.runtime.as_ref() {
+            runtime.block_on(nova_ide::completions_with_ai(
+                &db,
+                file,
+                position,
+                &state.ai_config,
+            ))
+        } else {
+            nova_lsp::completion(&db, file, position)
+        }
     } else {
         nova_lsp::completion(&db, file, position)
     };
