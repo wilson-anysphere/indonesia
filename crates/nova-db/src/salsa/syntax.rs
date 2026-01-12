@@ -142,7 +142,9 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
 
     if let Some(store) = db.java_parse_store() {
         if let Some(cached) = store.get_if_text_matches(file, &text) {
-            db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
+            // Avoid double-counting: the parse allocation is tracked by the
+            // open-document store under `MemoryCategory::SyntaxTrees`.
+            db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, 0);
             db.record_query_stat("parse_java", start.elapsed());
             return cached;
         }
@@ -171,10 +173,18 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     db.java_parse_cache()
         .insert(file, text.clone(), result.clone());
 
+    let mut pinned_in_store = false;
     if let Some(store) = db.java_parse_store() {
         store.insert(file, Arc::clone(&text), Arc::clone(&result));
+        // If the document is open, the result is now pinned in the store.
+        pinned_in_store = store.get_if_text_matches(file, &text).is_some();
     }
-    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
+    if pinned_in_store {
+        // Avoid double-counting with `JavaParseStore`.
+        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, 0);
+    } else {
+        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
+    }
     db.record_query_stat("parse_java", start.elapsed());
     result
 }

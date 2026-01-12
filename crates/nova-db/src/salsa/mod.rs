@@ -239,6 +239,13 @@ pub enum TrackedSalsaMemo {
     /// record `0` bytes here to avoid double-counting; the bytes are instead
     /// accounted under [`MemoryCategory::SyntaxTrees`].
     Parse,
+    /// Full-fidelity Rowan Java parse results for [`NovaSyntax::parse_java`].
+    ///
+    /// When a parse result is pinned in [`nova_syntax::JavaParseStore`] (e.g. for
+    /// an open document), the `Arc<JavaParseResult>` allocation is shared between
+    /// Salsa memo tables and the store. In that case we record `0` bytes here to
+    /// avoid double-counting; the bytes are instead accounted under
+    /// [`MemoryCategory::SyntaxTrees`].
     ParseJava,
     /// Token-based structural summary for [`NovaSemantic::item_tree`].
     ///
@@ -1650,6 +1657,41 @@ impl Database {
             .unwrap_or(0);
         self.memo_footprint
             .record(file, TrackedSalsaMemo::ItemTree, bytes);
+    }
+
+    /// Remove any pinned `parse_java` result for `file` from the shared
+    /// [`nova_syntax::JavaParseStore`] (if configured) and restore the query-cache
+    /// entry in the Salsa memo footprint.
+    pub fn unpin_java_parse_tree(&self, file: FileId) {
+        let store = self.inner.lock().java_parse_store.clone();
+        if let Some(store) = store.as_ref() {
+            store.remove(file);
+        }
+
+        // Only restore memo accounting if we have previously recorded a
+        // `parse_java` memo for this file and suppressed it to `0` while pinned.
+        let should_restore = self
+            .memo_footprint
+            .lock_inner()
+            .by_file
+            .get(&file)
+            .and_then(|bytes| bytes.parse_java)
+            .is_some_and(|bytes| bytes == 0);
+        if !should_restore {
+            return;
+        }
+
+        // Best-effort: restore the parse_java memo approximation based on the most
+        // recent input text snapshot.
+        let bytes = self
+            .inputs
+            .lock()
+            .file_content
+            .get(&file)
+            .map(|text| text.len() as u64)
+            .unwrap_or(0);
+        self.memo_footprint
+            .record(file, TrackedSalsaMemo::ParseJava, bytes);
     }
 
     pub fn new_with_persistence(
@@ -3934,6 +3976,102 @@ class Foo {
             report.usage.query_cache < text_len / 2,
             "expected query cache usage to not include the pinned parse allocation (query_cache={}, text_len={text_len})",
             report.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn open_doc_parse_java_is_not_double_counted_between_query_cache_and_syntax_trees() {
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = JavaParseStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_java_parse_store(Some(store));
+
+        let file = FileId::from_raw(44);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let report = manager.report();
+        assert!(
+            report.usage.syntax_trees > 0,
+            "expected java parse store to report usage for open document"
+        );
+
+        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        assert!(
+            syntax_and_cache <= text_len.saturating_mul(3) / 2,
+            "expected (query_cache+syntax_trees) to be ~text_len once (<= 1.5x), got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
+            syntax_and_cache,
+            report.usage.query_cache,
+            report.usage.syntax_trees
+        );
+        assert!(
+            report.usage.query_cache < text_len / 2,
+            "expected query cache usage to not include the pinned parse_java allocation (query_cache={}, text_len={text_len})",
+            report.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn unpin_java_parse_tree_restores_salsa_memo_bytes() {
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = JavaParseStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_java_parse_store(Some(store));
+
+        let file = FileId::from_raw(45);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let pinned_report = manager.report();
+        assert!(
+            pinned_report.usage.syntax_trees > 0,
+            "expected java parse store to report usage for pinned file"
+        );
+        assert!(
+            pinned_report.usage.query_cache < text_len / 2,
+            "expected parse_java memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned_report.usage.query_cache
+        );
+
+        open_docs.close(file);
+        db.unpin_java_parse_tree(file);
+
+        let after_unpin_report = manager.report();
+        assert!(
+            after_unpin_report.usage.query_cache >= text_len / 2,
+            "expected parse_java memo bytes to be restored after unpin (query_cache={}, text_len={text_len})",
+            after_unpin_report.usage.query_cache
+        );
+        assert!(
+            after_unpin_report.usage.syntax_trees < text_len / 4,
+            "expected parse_java store bytes to be released after unpin (syntax_trees={}, text_len={text_len})",
+            after_unpin_report.usage.syntax_trees
         );
     }
 
