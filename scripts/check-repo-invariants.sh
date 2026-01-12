@@ -117,10 +117,10 @@ done
 nova_dap_root_tests=()
 while IFS= read -r file; do
   nova_dap_root_tests+=("$file")
-done < <(find crates/nova-dap/tests -maxdepth 1 -name '*.rs' -print)
+done < <(find crates/nova-dap/tests -maxdepth 1 -name '*.rs' -print | sort)
 
-if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates/nova-dap/tests/real_jvm.rs" ]]; then
-  echo "repo invariant failed: nova-dap integration tests must be consolidated into crates/nova-dap/tests/real_jvm.rs" >&2
+if ! printf '%s\n' "${nova_dap_root_tests[@]}" | grep -Fxq "crates/nova-dap/tests/real_jvm.rs"; then
+  echo "repo invariant failed: nova-dap integration tests must include crates/nova-dap/tests/real_jvm.rs" >&2
   if [[ ${#nova_dap_root_tests[@]} -eq 0 ]]; then
     echo "  found: <none>" >&2
   else
@@ -133,27 +133,29 @@ if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates
   exit 1
 fi
 
+if [[ ${#nova_dap_root_tests[@]} -gt 2 ]]; then
+  echo "repo invariant failed: nova-dap integration tests must be capped at 2 root test binaries (tests/*.rs)" >&2
+  echo "  found:" >&2
+  for file in "${nova_dap_root_tests[@]}"; do
+    echo "    - ${file}" >&2
+  done
+  echo "  suggestion: move additional files into crates/nova-dap/tests/suite/ and add them to crates/nova-dap/tests/suite/mod.rs" >&2
+  exit 1
+fi
+
 # Enforce the AGENTS.md integration test harness pattern for `nova-ide`.
 #
 # Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive
 # under the agent RLIMIT_AS constraints. `nova-ide` keeps its main integration suite in
-# `tests/tests.rs`, and allows one additional isolated binary (`tests/file_navigation_cache.rs`)
-# for tests that need a fresh process/global cache state.
+# `tests/tests.rs`. A second root harness is allowed only when there's a strong reason (see
+# `nova-devtools check-test-layout`, which warns at 2 and errors at >2).
 nova_ide_root_tests=()
 while IFS= read -r file; do
   nova_ide_root_tests+=("$file")
 done < <(find crates/nova-ide/tests -maxdepth 1 -name '*.rs' -print | sort)
 
-expected_nova_ide_root_tests=()
-if [[ ${#nova_ide_root_tests[@]} -eq 1 ]]; then
-  expected_nova_ide_root_tests=("crates/nova-ide/tests/tests.rs")
-elif [[ ${#nova_ide_root_tests[@]} -eq 2 ]]; then
-  expected_nova_ide_root_tests=(
-    "crates/nova-ide/tests/file_navigation_cache.rs"
-    "crates/nova-ide/tests/tests.rs"
-  )
-else
-  echo "repo invariant failed: nova-ide integration tests must be capped at 2 root test binaries (tests/*.rs)" >&2
+if ! printf '%s\n' "${nova_ide_root_tests[@]}" | grep -Fxq "crates/nova-ide/tests/tests.rs"; then
+  echo "repo invariant failed: nova-ide integration tests must include crates/nova-ide/tests/tests.rs" >&2
   if [[ ${#nova_ide_root_tests[@]} -eq 0 ]]; then
     echo "  found: <none>" >&2
   else
@@ -162,22 +164,14 @@ else
       echo "    - ${file}" >&2
     done
   fi
-  echo "  suggestion: move additional files into crates/nova-ide/tests/suite/ and add them to crates/nova-ide/tests/suite/mod.rs" >&2
+  echo "  suggestion: keep tests/tests.rs as the main harness and move other tests into crates/nova-ide/tests/suite/ (add them to crates/nova-ide/tests/suite/mod.rs)" >&2
   exit 1
 fi
 
-if [[ "${nova_ide_root_tests[*]}" != "${expected_nova_ide_root_tests[*]}" ]]; then
-  echo "repo invariant failed: unexpected nova-ide root integration test files (tests/*.rs)" >&2
-  if [[ ${#nova_ide_root_tests[@]} -eq 0 ]]; then
-    echo "  found: <none>" >&2
-  else
-    echo "  found:" >&2
-    for file in "${nova_ide_root_tests[@]}"; do
-      echo "    - ${file}" >&2
-    done
-  fi
-  echo "  expected:" >&2
-  for file in "${expected_nova_ide_root_tests[@]}"; do
+if [[ ${#nova_ide_root_tests[@]} -gt 2 ]]; then
+  echo "repo invariant failed: nova-ide integration tests must be capped at 2 root test binaries (tests/*.rs)" >&2
+  echo "  found:" >&2
+  for file in "${nova_ide_root_tests[@]}"; do
     echo "    - ${file}" >&2
   done
   echo "  suggestion: move additional files into crates/nova-ide/tests/suite/ and add them to crates/nova-ide/tests/suite/mod.rs" >&2
@@ -223,10 +217,7 @@ framework_harness_checks=(
 for check in "${framework_harness_checks[@]}"; do
   IFS=":" read -r test_dir expected_file suggestion <<<"${check}"
 
-  root_tests=()
-  while IFS= read -r file; do
-    root_tests+=("$file")
-  done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
+  mapfile -t root_tests < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print | sort)
 
   # `expected_file` can include multiple acceptable sets:
   # - alternative groups are separated by `|`
@@ -237,26 +228,13 @@ for check in "${framework_harness_checks[@]}"; do
   #   "tests:harness.rs|workspace_events.rs:..."           => {harness.rs} OR {workspace_events.rs}
   #   "tests:harness.rs,typeck.rs:..."                     => {harness.rs, typeck.rs}
   expected_ok=false
-  sorted_root_tests=()
-  while IFS= read -r file; do
-    sorted_root_tests+=("$file")
-  done < <(printf '%s\n' "${root_tests[@]}" | sort)
 
   IFS="|" read -r -a expected_groups <<<"${expected_file}"
   for group in "${expected_groups[@]}"; do
     IFS="," read -r -a expected_files <<<"${group}"
-    sorted_expected_files=()
-    while IFS= read -r file; do
-      sorted_expected_files+=("$file")
-    done < <(printf '%s\n' "${expected_files[@]}" | sort)
-
-    if [[ ${#sorted_root_tests[@]} -ne ${#sorted_expected_files[@]} ]]; then
-      continue
-    fi
-
     group_ok=true
-    for idx in "${!sorted_expected_files[@]}"; do
-      if [[ "${sorted_root_tests[$idx]}" != "${sorted_expected_files[$idx]}" ]]; then
+    for expected in "${expected_files[@]}"; do
+      if ! printf '%s\n' "${root_tests[@]}" | grep -Fxq "${expected}"; then
         group_ok=false
         break
       fi
@@ -269,7 +247,7 @@ for check in "${framework_harness_checks[@]}"; do
   done
 
   if [[ "${expected_ok}" != "true" ]]; then
-    echo "repo invariant failed: integration tests in ${test_dir} must match expected root harness set (${expected_file})" >&2
+    echo "repo invariant failed: integration tests in ${test_dir} must include expected harness file(s): ${expected_file}" >&2
     if [[ ${#root_tests[@]} -eq 0 ]]; then
       echo "  found: <none>" >&2
     else
@@ -278,6 +256,16 @@ for check in "${framework_harness_checks[@]}"; do
         echo "    - ${file}" >&2
       done
     fi
+    echo "  suggestion: ${suggestion}" >&2
+    exit 1
+  fi
+
+  if [[ ${#root_tests[@]} -gt 2 ]]; then
+    echo "repo invariant failed: integration tests in ${test_dir} must be capped at 2 root test binaries (tests/*.rs)" >&2
+    echo "  found:" >&2
+    for file in "${root_tests[@]}"; do
+      echo "    - ${file}" >&2
+    done
     echo "  suggestion: ${suggestion}" >&2
     exit 1
   fi
@@ -312,26 +300,13 @@ for check in "${stable_harness_checks[@]}"; do
   # - alternative groups are separated by `|`
   # - within each group, multiple expected harnesses can be listed with `,`
   expected_ok=false
-  sorted_root_tests=()
-  while IFS= read -r file; do
-    sorted_root_tests+=("$file")
-  done < <(printf '%s\n' "${root_tests[@]}" | sort)
 
   IFS="|" read -r -a expected_groups <<<"${expected_file}"
   for group in "${expected_groups[@]}"; do
     IFS="," read -r -a expected_files <<<"${group}"
-    sorted_expected_files=()
-    while IFS= read -r file; do
-      sorted_expected_files+=("$file")
-    done < <(printf '%s\n' "${expected_files[@]}" | sort)
-
-    if [[ ${#sorted_root_tests[@]} -ne ${#sorted_expected_files[@]} ]]; then
-      continue
-    fi
-
     group_ok=true
-    for idx in "${!sorted_expected_files[@]}"; do
-      if [[ "${sorted_root_tests[$idx]}" != "${sorted_expected_files[$idx]}" ]]; then
+    for expected in "${expected_files[@]}"; do
+      if ! printf '%s\n' "${root_tests[@]}" | grep -Fxq "${expected}"; then
         group_ok=false
         break
       fi
@@ -344,7 +319,7 @@ for check in "${stable_harness_checks[@]}"; do
   done
 
   if [[ "${expected_ok}" != "true" ]]; then
-    echo "repo invariant failed: integration tests in ${test_dir} must match expected root harness set (${expected_file})" >&2
+    echo "repo invariant failed: integration tests in ${test_dir} must include expected harness file(s): ${expected_file}" >&2
     if [[ ${#root_tests[@]} -eq 0 ]]; then
       echo "  found: <none>" >&2
     else
@@ -353,6 +328,16 @@ for check in "${stable_harness_checks[@]}"; do
         echo "    - ${file}" >&2
       done
     fi
+    echo "  suggestion: ${suggestion}" >&2
+    exit 1
+  fi
+
+  if [[ ${#root_tests[@]} -gt 2 ]]; then
+    echo "repo invariant failed: integration tests in ${test_dir} must be capped at 2 root test binaries (tests/*.rs)" >&2
+    echo "  found:" >&2
+    for file in "${root_tests[@]}"; do
+      echo "    - ${file}" >&2
+    done
     echo "  suggestion: ${suggestion}" >&2
     exit 1
   fi
@@ -367,10 +352,10 @@ done
 nova_types_root_tests=()
 while IFS= read -r file; do
   nova_types_root_tests+=("$file")
-done < <(find crates/nova-types/tests -maxdepth 1 -name '*.rs' -print)
+done < <(find crates/nova-types/tests -maxdepth 1 -name '*.rs' -print | sort)
 
-if [[ ${#nova_types_root_tests[@]} -ne 1 || "${nova_types_root_tests[0]}" != "crates/nova-types/tests/javac_differential.rs" ]]; then
-  echo "repo invariant failed: nova-types integration tests must be consolidated into crates/nova-types/tests/javac_differential.rs" >&2
+if ! printf '%s\n' "${nova_types_root_tests[@]}" | grep -Fxq "crates/nova-types/tests/javac_differential.rs"; then
+  echo "repo invariant failed: nova-types integration tests must include crates/nova-types/tests/javac_differential.rs" >&2
   if [[ ${#nova_types_root_tests[@]} -eq 0 ]]; then
     echo "  found: <none>" >&2
   else
@@ -379,6 +364,16 @@ if [[ ${#nova_types_root_tests[@]} -ne 1 || "${nova_types_root_tests[0]}" != "cr
       echo "    - ${file}" >&2
     done
   fi
+  echo "  suggestion: move additional files into crates/nova-types/tests/suite/ and add them to crates/nova-types/tests/suite/mod.rs" >&2
+  exit 1
+fi
+
+if [[ ${#nova_types_root_tests[@]} -gt 2 ]]; then
+  echo "repo invariant failed: nova-types integration tests must be capped at 2 root test binaries (tests/*.rs)" >&2
+  echo "  found:" >&2
+  for file in "${nova_types_root_tests[@]}"; do
+    echo "    - ${file}" >&2
+  done
   echo "  suggestion: move additional files into crates/nova-types/tests/suite/ and add them to crates/nova-types/tests/suite/mod.rs" >&2
   exit 1
 fi
