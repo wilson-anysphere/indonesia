@@ -1177,6 +1177,7 @@ where
             ));
 
             actions.extend(unused_import_quick_fixes_from_context(
+                &cancel,
                 source,
                 &uri,
                 span,
@@ -1450,6 +1451,7 @@ fn type_mismatch_quick_fixes_from_context(
 }
 
 fn unused_import_quick_fixes_from_context(
+    cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
     selection: Span,
@@ -1478,10 +1480,17 @@ fn unused_import_quick_fixes_from_context(
         }
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     let mut actions = Vec::new();
 
     let source_index = TextIndex::new(source);
     for diagnostic in context_diagnostics {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         let Some(lsp_types::NumberOrString::String(code)) = diagnostic.code.as_ref() else {
             continue;
         };
