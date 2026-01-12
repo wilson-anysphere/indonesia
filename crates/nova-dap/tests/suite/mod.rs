@@ -8,6 +8,7 @@ mod config_stdio;
 mod configuration_done_before_launch;
 mod configuration_done_resumes_command_launch;
 mod dap_conformance;
+mod dap_exited_event;
 mod dap_java_launch;
 mod dap_launch;
 mod dap_session;
