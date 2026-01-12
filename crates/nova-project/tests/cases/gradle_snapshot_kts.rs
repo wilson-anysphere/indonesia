@@ -1,106 +1,16 @@
-use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use nova_build_model::{collect_gradle_build_files, BuildFileFingerprint};
 use nova_project::{
     load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
     LoadOptions, OutputDirKind, SourceRootKind, SourceRootOrigin,
 };
 
 fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
-    let files = collect_gradle_build_files(workspace_root);
-    let mut hasher = Sha256::new();
-    for path in files {
-        let rel = path.strip_prefix(workspace_root).unwrap_or(&path);
-        hasher.update(rel.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        let bytes = std::fs::read(&path).expect("read build file");
-        hasher.update(&bytes);
-        hasher.update([0]);
-    }
-    hex::encode(hasher.finalize())
-}
-
-fn collect_gradle_build_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    collect_gradle_build_files_rec(root, root, &mut out);
-    out.sort_by(|a, b| {
-        let ra = a.strip_prefix(root).unwrap_or(a);
-        let rb = b.strip_prefix(root).unwrap_or(b);
-        ra.cmp(rb)
-    });
-    out.dedup();
-    out
-}
-
-fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if path.is_dir() {
-            if file_name == "node_modules" {
-                continue;
-            }
-            if dir == root && file_name.starts_with("bazel-") {
-                continue;
-            }
-            if file_name == ".git"
-                || file_name == ".gradle"
-                || file_name == "build"
-                || file_name == "target"
-                || file_name == ".nova"
-                || file_name == ".idea"
-            {
-                continue;
-            }
-            collect_gradle_build_files_rec(root, &path, out);
-            continue;
-        }
-
-        let name = file_name.as_ref();
-        if name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
-            out.push(path);
-            continue;
-        }
-
-        if name.ends_with(".gradle") || name.ends_with(".gradle.kts") {
-            out.push(path);
-            continue;
-        }
-
-        if name.ends_with(".versions.toml")
-            && path
-                .parent()
-                .and_then(|p| p.file_name())
-                .is_some_and(|p| p == std::ffi::OsStr::new("gradle"))
-        {
-            out.push(path);
-            continue;
-        }
-        match name {
-            "gradle.properties" => out.push(path),
-            "gradlew" | "gradlew.bat" => {
-                if path == root.join(name) {
-                    out.push(path);
-                }
-            }
-            "gradle-wrapper.properties" => {
-                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
-                    out.push(path);
-                }
-            }
-            "gradle-wrapper.jar" => {
-                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")) {
-                    out.push(path);
-                }
-            }
-            _ => {}
-        }
-    }
+    let files = collect_gradle_build_files(workspace_root).expect("collect build files");
+    BuildFileFingerprint::from_files(workspace_root, files)
+        .expect("compute fingerprint")
+        .digest
 }
 
 #[test]
@@ -230,4 +140,3 @@ fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_
         "workspace model classpath should include snapshot jar"
     );
 }
-
