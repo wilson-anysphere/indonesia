@@ -214,7 +214,7 @@ stable_harness_checks=(
   "crates/nova-cli/tests:crates/nova-cli/tests/real_projects.rs:move additional files into crates/nova-cli/tests/suite/ and add them to crates/nova-cli/tests/suite/mod.rs"
   # `nova-testing` docs instruct updating fixtures by running the schema harness by name.
   "crates/nova-testing/tests:crates/nova-testing/tests/schema_json.rs:move additional files into crates/nova-testing/tests/suite/ and add them to crates/nova-testing/tests/suite/mod.rs"
-  "crates/nova-workspace/tests:crates/nova-workspace/tests/harness.rs:move additional files into crates/nova-workspace/tests/suite/ and add them to crates/nova-workspace/tests/suite/mod.rs"
+  "crates/nova-workspace/tests:crates/nova-workspace/tests/workspace_events.rs:move additional files into crates/nova-workspace/tests/suite/ and add them to crates/nova-workspace/tests/suite/mod.rs"
   "crates/nova-resolve/tests:crates/nova-resolve/tests/resolve.rs:move additional files into crates/nova-resolve/tests/suite/ and add them to crates/nova-resolve/tests/suite/mod.rs"
 )
 
