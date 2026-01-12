@@ -3563,6 +3563,7 @@ dependencies = [
  "libc",
  "nova-bugreport",
  "nova-build",
+ "nova-classfile",
  "nova-config",
  "nova-core",
  "nova-db",

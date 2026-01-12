@@ -39,6 +39,9 @@ pub mod eval_context;
 /// Async/Tokio DAP codec helpers (used by the wire-level JDWP adapter).
 pub mod dap_tokio;
 
+/// Shared `javac` helpers used by hot swap and expression evaluation.
+pub(crate) mod javac;
+
 /// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
 pub mod wire_debugger;
 pub mod wire_server;
