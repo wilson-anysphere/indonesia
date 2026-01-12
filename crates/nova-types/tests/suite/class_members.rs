@@ -5,7 +5,6 @@ use nova_types::{
     resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub,
     Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
 };
-use nova_types_bridge::ExternalTypeLoader;
 
 #[derive(Default)]
 struct StubProvider {

@@ -339,6 +339,9 @@ pub struct TypeDefStub {
 /// A source of types used by the semantic layers.
 ///
 /// Implementations can be backed by the JDK, a project index, third-party jars, etc.
+///
+/// To materialize these stubs into a [`TypeStore`], use the canonical loader in the
+/// `nova-types-bridge` crate (`ExternalTypeLoader`).
 pub trait TypeProvider {
     fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub>;
 
