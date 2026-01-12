@@ -2343,4 +2343,72 @@ mod tests {
             "expected snapshot fallback jar to be accepted when present on disk"
         );
     }
+
+    #[test]
+    fn snapshot_dependency_jar_prefers_timestamped_metadata_file_name() {
+        let repo = tempfile::tempdir().expect("tempdir");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0-SNAPSHOT".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        let version_dir = repo
+            .path()
+            .join("com")
+            .join("example")
+            .join("dep")
+            .join("1.0-SNAPSHOT");
+        std::fs::create_dir_all(&version_dir).expect("create version dir");
+
+        std::fs::write(
+            version_dir.join("maven-metadata-local.xml"),
+            r#"<metadata><versioning><snapshotVersions><snapshotVersion><extension>jar</extension><value>1.0-20260112.123456-1</value></snapshotVersion></snapshotVersions></versioning></metadata>"#,
+        )
+        .expect("write metadata");
+
+        let jar_path = version_dir.join("dep-1.0-20260112.123456-1.jar");
+        std::fs::write(&jar_path, "").expect("write jar");
+
+        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        assert_eq!(resolved, jar_path);
+    }
+
+    #[test]
+    fn snapshot_dependency_jar_respects_classifier_in_metadata() {
+        let repo = tempfile::tempdir().expect("tempdir");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0-SNAPSHOT".to_string()),
+            scope: None,
+            classifier: Some("sources".to_string()),
+            type_: None,
+        };
+
+        let version_dir = repo
+            .path()
+            .join("com")
+            .join("example")
+            .join("dep")
+            .join("1.0-SNAPSHOT");
+        std::fs::create_dir_all(&version_dir).expect("create version dir");
+
+        std::fs::write(
+            version_dir.join("maven-metadata-local.xml"),
+            r#"<metadata><versioning><snapshotVersions><snapshotVersion><extension>jar</extension><classifier>sources</classifier><value>1.0-20260112.123456-1</value></snapshotVersion></snapshotVersions></versioning></metadata>"#,
+        )
+        .expect("write metadata");
+
+        let jar_path = version_dir.join("dep-1.0-20260112.123456-1-sources.jar");
+        std::fs::write(&jar_path, "").expect("write jar");
+
+        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        assert_eq!(resolved, jar_path);
+    }
 }
