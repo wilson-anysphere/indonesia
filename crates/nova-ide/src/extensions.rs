@@ -893,6 +893,7 @@ where
                 &cancel,
                 file,
                 source,
+                &cancel,
                 &uri,
                 span,
             ));
@@ -1074,6 +1075,7 @@ fn type_mismatch_quick_fixes(
     cancel: &CancellationToken,
     file: nova_ext::FileId,
     source: &str,
+    cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     selection: Span,
 ) -> Vec<lsp_types::CodeActionOrCommand> {
