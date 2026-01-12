@@ -198,9 +198,18 @@ impl FrameworkAnalyzer for SpringAnalyzer {
         if is_java {
             let project = db.project_of_file(file);
             let Some(workspace) = self.cached_workspace(db, project) else {
-                // Graceful degradation: without project-wide enumeration we avoid emitting
-                // cross-file DI diagnostics.
-                return Vec::new();
+                // Best-effort fallback: analyze only the current file when the database
+                // can't enumerate project files.
+                //
+                // This can produce false positives (missing beans defined in other files),
+                // but it is still useful in environments where the framework DB surface is
+                // limited to the active editor buffer.
+                let analysis = analyze_java_sources(&[text]);
+                return analysis
+                    .diagnostics
+                    .into_iter()
+                    .map(|d| d.diagnostic)
+                    .collect();
             };
 
             let Some(analysis) = workspace.analysis.as_ref() else {
@@ -289,7 +298,15 @@ impl FrameworkAnalyzer for SpringAnalyzer {
             match ann {
                 AnnotationStringContext::Qualifier => {
                     let Some(workspace) = self.cached_workspace(db, ctx.project) else {
-                        return Vec::new();
+                        // Best-effort fallback: use only the current file's beans for completions.
+                        let analysis = analyze_java_sources(&[text]);
+                        let mut items = qualifier_completions(&analysis.model);
+                        if let Some(replace_span) = replace_span {
+                            for item in &mut items {
+                                item.replace_span = Some(replace_span);
+                            }
+                        }
+                        return items;
                     };
                     let Some(analysis) = workspace.analysis.as_ref() else {
                         return Vec::new();
