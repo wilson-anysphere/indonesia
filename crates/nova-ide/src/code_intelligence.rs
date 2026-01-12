@@ -3,9 +3,8 @@
 //! Nova's long-term architecture is query-driven and will use proper syntax trees
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
-
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -30,6 +29,7 @@ use serde_json::json;
 
 use crate::completion_cache;
 use crate::framework_cache;
+use crate::java_semantics::source_types::SourceTypeProvider;
 use crate::lombok_intel;
 use crate::micronaut_intel;
 use crate::nav_resolve;
@@ -1603,7 +1603,13 @@ pub(crate) fn core_completions(
 
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
         let receiver = receiver_before_dot(text, ctx.dot_offset);
-        let mut items = member_completions(db, file, &receiver, &prefix);
+        let mut items = if receiver.is_empty() {
+            infer_receiver_type_before_dot(db, file, ctx.dot_offset)
+                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
+                .unwrap_or_default()
+        } else {
+            member_completions(db, file, &receiver, &prefix)
+        };
         if let Some(receiver) = ctx.receiver {
             items.extend(postfix_completions(
                 text,
@@ -1852,7 +1858,13 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
         let receiver = receiver_before_dot(text, ctx.dot_offset);
-        let mut items = member_completions(db, file, &receiver, &prefix);
+        let mut items = if receiver.is_empty() {
+            infer_receiver_type_before_dot(db, file, ctx.dot_offset)
+                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
+                .unwrap_or_default()
+        } else {
+            member_completions(db, file, &receiver, &prefix)
+        };
         if let Some(receiver) = ctx.receiver {
             items.extend(postfix_completions(
                 text,
@@ -2434,27 +2446,45 @@ fn member_completions(
     let text = db.file_content(file);
     let analysis = analyze(text);
 
-    let receiver_type = if receiver.starts_with('"') {
-        Some("String")
-    } else {
-        analysis
-            .vars
-            .iter()
-            .find(|v| v.name == receiver)
-            .map(|v| v.ty.as_str())
-            .or_else(|| {
-                analysis
-                    .fields
-                    .iter()
-                    .find(|f| f.name == receiver)
-                    .map(|f| f.ty.as_str())
-            })
-    };
-
-    let Some(receiver_type) = receiver_type else {
+    let Some(receiver_type) = infer_receiver_type_name(&analysis, receiver) else {
         return Vec::new();
     };
+    member_completions_for_receiver_type(db, file, &receiver_type, prefix)
+}
 
+fn infer_receiver_type_name(analysis: &Analysis, receiver: &str) -> Option<String> {
+    if receiver.starts_with('"') {
+        return Some("String".to_string());
+    }
+
+    analysis
+        .vars
+        .iter()
+        .find(|v| v.name == receiver)
+        .map(|v| v.ty.clone())
+        .or_else(|| {
+            analysis
+                .methods
+                .iter()
+                .flat_map(|m| m.params.iter())
+                .find(|p| p.name == receiver)
+                .map(|p| p.ty.clone())
+        })
+        .or_else(|| {
+            analysis
+                .fields
+                .iter()
+                .find(|f| f.name == receiver)
+                .map(|f| f.ty.clone())
+        })
+}
+
+fn member_completions_for_receiver_type(
+    db: &dyn Database,
+    file: FileId,
+    receiver_type: &str,
+    prefix: &str,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     if receiver_type == "String" {
         for (name, detail) in STRING_MEMBER_METHODS {
@@ -2505,6 +2535,209 @@ fn member_completions(
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items
+}
+
+fn infer_receiver_type_before_dot(db: &dyn Database, file: FileId, dot_offset: usize) -> Option<String> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    // `receiver_before_dot` returns empty for expressions ending in `)` (call chains / parenthesized
+    // expressions). Try to infer the receiver type from the expression directly before the `.`.
+    let end = skip_whitespace_backwards(text, dot_offset);
+    let bytes = text.as_bytes();
+    if end == 0 || bytes.get(end - 1) != Some(&b')') {
+        return None;
+    }
+
+    // Fast path: if this is a method/constructor call, we should have captured it during analysis
+    // (even when the receiver is a complex expression like `new Foo()`).
+    if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
+        return infer_call_return_type(db, file, text, &analysis, call);
+    }
+
+    // Otherwise, treat as a parenthesized expression like `(foo).<cursor>`.
+    let open_paren = find_matching_open_paren(bytes, end - 1)?;
+    let inner = text.get(open_paren + 1..end - 1)?.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    infer_receiver_type_name(&analysis, inner)
+}
+
+fn find_matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = close_paren_idx + 1;
+    while i > 0 {
+        i -= 1;
+        match bytes.get(i)? {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn infer_call_return_type(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    analysis: &Analysis,
+    call: &CallExpr,
+) -> Option<String> {
+    let mut types = TypeStore::with_minimal_jdk();
+    let mut source_types = SourceTypeProvider::new();
+    let file_path = db
+        .file_path(file)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/completion.java"));
+    source_types.update_file(&mut types, file_path, text);
+
+    // `new Foo()` is tokenized as an `Ident` call (`Foo(` ... `)`), but for completion purposes we
+    // want the constructed type, not overload resolution.
+    if is_constructor_call(analysis, call) {
+        let ty = parse_source_type(&mut types, call.name.as_str());
+        return Some(nova_types::format_type(&types, &ty));
+    }
+
+    let (receiver_ty, call_kind) = infer_call_receiver(&mut types, analysis, text, call);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return fallback_receiver_type_for_call(call.name.as_str());
+    }
+
+    ensure_type_methods_loaded(&mut types, &receiver_ty);
+    let args = call
+        .arg_starts
+        .iter()
+        .map(|start| infer_expr_type_at(&mut types, analysis, *start))
+        .collect::<Vec<_>>();
+
+    let call = MethodCall {
+        receiver: receiver_ty,
+        call_kind,
+        name: call.name.as_str(),
+        args,
+        expected_return: None,
+        explicit_type_args: Vec::new(),
+    };
+
+    let mut ctx = TyContext::new(&types);
+    let resolved = match nova_types::resolve_method_call(&mut ctx, &call) {
+        MethodResolution::Found(method) => Some(method),
+        MethodResolution::Ambiguous(methods) => methods.candidates.into_iter().next(),
+        MethodResolution::NotFound(_) => None,
+    };
+
+    if let Some(method) = resolved {
+        return Some(nova_types::format_type(&ctx, &method.return_type));
+    }
+
+    fallback_receiver_type_for_call(call.name)
+}
+
+fn fallback_receiver_type_for_call(name: &str) -> Option<String> {
+    match name {
+        "stream" => Some("Stream".to_string()),
+        "toString" => Some("String".to_string()),
+        _ => None,
+    }
+}
+
+fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
+    let Some(idx) = analysis.tokens.iter().position(|t| t.span == call.name_span) else {
+        return false;
+    };
+    if idx == 0 {
+        return false;
+    }
+    analysis.tokens[idx - 1].kind == TokenKind::Ident && analysis.tokens[idx - 1].text == "new"
+}
+
+fn infer_call_receiver(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    text: &str,
+    call: &CallExpr,
+) -> (Type, CallKind) {
+    if let Some(receiver) = call.receiver.as_deref() {
+        return infer_receiver(types, analysis, receiver);
+    }
+
+    let Some(name_idx) = analysis.tokens.iter().position(|t| t.span == call.name_span) else {
+        return (Type::Unknown, CallKind::Instance);
+    };
+
+    // If this call is qualified (`<expr>.<name>(...)`), try to infer the receiver type from the
+    // expression before the dot.
+    if name_idx >= 1 && analysis.tokens[name_idx - 1].kind == TokenKind::Symbol('.') {
+        let dot_offset = analysis.tokens[name_idx - 1].span.start;
+        let receiver = receiver_before_dot(text, dot_offset);
+        if !receiver.is_empty() {
+            return infer_receiver(types, analysis, &receiver);
+        }
+
+        // Handle common complex receivers like `new Foo().bar()`.
+        if let Some(receiver_ty) = infer_receiver_type_of_expr_ending_at(types, analysis, text, dot_offset)
+        {
+            return (receiver_ty, CallKind::Instance);
+        }
+
+        return (Type::Unknown, CallKind::Instance);
+    }
+
+    // Unqualified call (`foo()`), treat as a call on `this` (enclosing class).
+    let Some(class) = enclosing_class(analysis, call.name_span.start) else {
+        return (Type::Unknown, CallKind::Instance);
+    };
+    (parse_source_type(types, &class.name), CallKind::Instance)
+}
+
+fn enclosing_class<'a>(analysis: &'a Analysis, offset: usize) -> Option<&'a ClassDecl> {
+    analysis
+        .classes
+        .iter()
+        .filter(|c| span_contains(c.span, offset))
+        .min_by_key(|c| c.span.len())
+}
+
+fn infer_receiver_type_of_expr_ending_at(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    text: &str,
+    expr_end: usize,
+) -> Option<Type> {
+    let end = skip_whitespace_backwards(text, expr_end);
+    if end == 0 {
+        return None;
+    }
+    let bytes = text.as_bytes();
+
+    if bytes.get(end - 1) != Some(&b')') {
+        return None;
+    }
+
+    // Prefer constructor calls like `new Foo()`.
+    if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
+        if is_constructor_call(analysis, call) {
+            return Some(parse_source_type(types, call.name.as_str()));
+        }
+
+        // Best-effort: avoid recursive semantic resolution to keep completion fast.
+        if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
+            return Some(Type::Named(ty));
+        }
+    }
+
+    // Parenthesized expression like `(foo)`.
+    let open_paren = find_matching_open_paren(bytes, end - 1)?;
+    let inner = text.get(open_paren + 1..end - 1)?.trim();
+    let ty_name = infer_receiver_type_name(analysis, inner)?;
+    Some(parse_source_type(types, &ty_name))
 }
 
 fn general_completions(
@@ -4436,6 +4669,14 @@ fn infer_receiver(types: &mut TypeStore, analysis: &Analysis, receiver: &str) ->
     if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
         return (parse_source_type(types, &var.ty), CallKind::Instance);
     }
+    if let Some(param) = analysis
+        .methods
+        .iter()
+        .flat_map(|m| m.params.iter())
+        .find(|p| p.name == receiver)
+    {
+        return (parse_source_type(types, &param.ty), CallKind::Instance);
+    }
     if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
         return (parse_source_type(types, &field.ty), CallKind::Instance);
     }
@@ -4472,6 +4713,14 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
                 .iter()
                 .find(|v| v.name == ident)
                 .map(|v| parse_source_type(types, &v.ty))
+                .or_else(|| {
+                    analysis
+                        .methods
+                        .iter()
+                        .flat_map(|m| m.params.iter())
+                        .find(|p| p.name == ident)
+                        .map(|p| parse_source_type(types, &p.ty))
+                })
                 .or_else(|| {
                     analysis
                         .fields
@@ -4560,6 +4809,15 @@ fn merge_method_defs(existing: &mut Vec<MethodDef>, incoming: Vec<MethodDef>) {
 fn ensure_class_id(types: &mut TypeStore, name: &str) -> Option<ClassId> {
     if let Some(id) = types.class_id(name) {
         return Some(id);
+    }
+
+    // Best-effort: resolve unqualified names against the implicit `java.lang.*`
+    // universe so semantic features can work with `TypeStore::with_minimal_jdk`
+    // even when a full `JdkIndex` isn't available.
+    if !name.contains('.') && !name.contains('/') {
+        if let Some(id) = types.class_id(&format!("java.lang.{name}")) {
+            return Some(id);
+        }
     }
 
     let jdk = JDK_INDEX.as_ref()?;

@@ -139,6 +139,48 @@ class A {
 }
 
 #[test]
+fn completion_includes_chained_call_receiver_members_for_jdk_type() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    "x".substring(0).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length after substring(); got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_chained_call_receiver_members_for_local_types() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo { Bar bar(){return null;} }
+class Bar { int x; }
+class A {
+  void m() {
+    new Foo().bar().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"x"),
+        "expected completion list to contain Bar.x after bar(); got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_if_snippet_template() {
     let (db, file, pos) = fixture(
         r#"
