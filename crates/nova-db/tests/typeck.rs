@@ -1,5 +1,5 @@
 //! Compatibility shim for running a small subset of `nova-db` type-checking tests via
-//! `cargo test -p nova-db --test typeck`.
+//! `cargo test --locked -p nova-db --test typeck`.
 //!
 //! Most `nova-db` integration tests live in `tests/harness.rs` (which compiles a single test
 //! crate to keep overall compile times down). Some tooling and older instructions still expect a
@@ -85,4 +85,3 @@ class C {
         "expected varargs call to resolve, got {diags:?}"
     );
 }
-
