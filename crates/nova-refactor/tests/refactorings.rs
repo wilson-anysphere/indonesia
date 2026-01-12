@@ -1562,12 +1562,8 @@ fn extract_variable_rejects_expression_in_assert_condition() {
     .unwrap_err();
 
     assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from assert statement"
-        ),
-        "expected assert ExtractNotSupported error, got: {err:?}"
+        matches!(err, SemanticRefactorError::ExtractNotSupportedInAssert),
+        "expected assert ExtractNotSupportedInAssert error, got: {err:?}"
     );
 }
 
@@ -1597,12 +1593,8 @@ fn extract_variable_rejects_expression_in_assert_message() {
     .unwrap_err();
 
     assert!(
-        matches!(
-            err,
-            SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from assert statement"
-        ),
-        "expected assert ExtractNotSupported error, got: {err:?}"
+        matches!(err, SemanticRefactorError::ExtractNotSupportedInAssert),
+        "expected assert ExtractNotSupportedInAssert error, got: {err:?}"
     );
 }
 
