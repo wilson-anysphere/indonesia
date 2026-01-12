@@ -1844,14 +1844,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const handleAiNotConfigured = async (): Promise<void> => {
     const picked = await vscode.window.showErrorMessage(
-      'Nova AI is not configured. Configure an AI provider for nova-lsp (e.g. via NOVA_AI_PROVIDER / NOVA_AI_API_KEY) and restart the language server.',
-      'Open Settings',
+      'Nova AI is not configured. Configure an AI provider for nova-lsp (e.g. via NOVA_AI_PROVIDER / NOVA_AI_API_KEY or nova.toml) and restart the language server.',
+      'Open Settings (nova.lsp.configPath)',
       'Open AI docs',
+      'Restart Language Server',
     );
-    if (picked === 'Open Settings') {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.ai');
+    if (picked === 'Open Settings (nova.lsp.configPath)') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.lsp.configPath');
     } else if (picked === 'Open AI docs') {
       await openAiDocs();
+    } else if (picked === 'Restart Language Server') {
+      await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
     }
   };
 
@@ -2869,10 +2872,13 @@ function isAiNotConfiguredError(err: unknown): boolean {
     return false;
   }
   const code = (err as { code?: unknown }).code;
-  if (code === -32600) {
-    return true;
+  if (code !== -32600) {
+    return false;
   }
 
+  // `nova-lsp` uses -32600 for "AI is not configured" as well as a few other
+  // AI-related gating errors (e.g. privacy exclusions). Only treat the canonical
+  // "AI is not configured" message as actionable configuration guidance.
   const message = formatError(err).toLowerCase();
   return message.includes('ai is not configured');
 }
