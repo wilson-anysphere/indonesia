@@ -132,101 +132,139 @@ pub struct SamSignature {
 /// Applies type argument substitution so `Function<String, Integer>` yields `(String) -> Integer`.
 /// Returns `None` if `ty` is not (obviously) a functional interface.
 pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
-    let ty = crate::canonicalize_named(env, ty);
-    let Type::Class(ClassType { def, args }) = ty else {
-        return None;
-    };
-
-    let root_def = env.class(def)?;
-    if root_def.kind != ClassKind::Interface {
-        return None;
-    }
-
-    // Walk the interface inheritance graph, collecting abstract instance methods and applying
-    // type argument substitution along the way.
-    let mut queue: VecDeque<Type> = VecDeque::new();
-    let mut seen: HashSet<(ClassId, Vec<Type>)> = HashSet::new();
-    queue.push_back(Type::class(def, args));
-
-    // Map (name, parameter types) to the most specific return type we've seen so far.
-    let mut candidates: HashMap<(String, Vec<Type>), Type> = HashMap::new();
-
-    while let Some(current) = queue.pop_front() {
-        let Type::Class(ClassType { def, args }) = current.clone() else {
-            continue;
-        };
-        if !seen.insert((def, args.clone())) {
-            continue;
+    fn inner(
+        env: &dyn TypeEnv,
+        ty: &Type,
+        seen_type_vars: &mut HashSet<TypeVarId>,
+    ) -> Option<SamSignature> {
+        match ty {
+            Type::TypeVar(id) => {
+                if !seen_type_vars.insert(*id) {
+                    return None;
+                }
+                let sig = env.type_param(*id).and_then(|tp| {
+                    tp.upper_bounds
+                        .iter()
+                        .find_map(|b| inner(env, b, seen_type_vars))
+                });
+                seen_type_vars.remove(id);
+                return sig;
+            }
+            Type::Intersection(parts) => {
+                // Best-effort: treat an intersection type as functional if all functional
+                // components share the same SAM signature.
+                let mut sig: Option<SamSignature> = None;
+                for part in parts {
+                    let Some(part_sig) = inner(env, part, seen_type_vars) else {
+                        continue;
+                    };
+                    match &sig {
+                        None => sig = Some(part_sig),
+                        Some(existing) if *existing == part_sig => {}
+                        Some(_) => return None,
+                    }
+                }
+                return sig;
+            }
+            _ => {}
         }
 
-        let Some(class_def) = env.class(def) else {
-            continue;
+        let ty = crate::canonicalize_named(env, ty);
+        let Type::Class(ClassType { def, args }) = ty else {
+            return None;
         };
 
-        // Build substitution mapping for this interface instantiation.
-        //
-        // If `args` is missing entries (raw or malformed), fall back to `Unknown` so downstream
-        // callers still get a stable shape.
-        let mut subst: HashMap<TypeVarId, Type> =
-            HashMap::with_capacity(class_def.type_params.len());
-        for (idx, formal) in class_def.type_params.iter().copied().enumerate() {
-            subst.insert(formal, args.get(idx).cloned().unwrap_or(Type::Unknown));
+        let root_def = env.class(def)?;
+        if root_def.kind != ClassKind::Interface {
+            return None;
         }
 
-        // Collect abstract instance methods.
-        for m in &class_def.methods {
-            if m.is_static || !m.is_abstract {
+        // Walk the interface inheritance graph, collecting abstract instance methods and applying
+        // type argument substitution along the way.
+        let mut queue: VecDeque<Type> = VecDeque::new();
+        let mut seen: HashSet<(ClassId, Vec<Type>)> = HashSet::new();
+        queue.push_back(Type::class(def, args));
+
+        // Map (name, parameter types) to the most specific return type we've seen so far.
+        let mut candidates: HashMap<(String, Vec<Type>), Type> = HashMap::new();
+
+        while let Some(current) = queue.pop_front() {
+            let Type::Class(ClassType { def, args }) = current.clone() else {
+                continue;
+            };
+            if !seen.insert((def, args.clone())) {
                 continue;
             }
 
-            let params: Vec<Type> = m
-                .params
-                .iter()
-                .map(|p| crate::substitute(p, &subst))
-                .collect();
-            let return_type = crate::substitute(&m.return_type, &subst);
-
-            if is_object_method(env, &m.name, &params, &return_type) {
+            let Some(class_def) = env.class(def) else {
                 continue;
+            };
+
+            // Build substitution mapping for this interface instantiation.
+            //
+            // If `args` is missing entries (raw or malformed), fall back to `Unknown` so downstream
+            // callers still get a stable shape.
+            let mut subst: HashMap<TypeVarId, Type> =
+                HashMap::with_capacity(class_def.type_params.len());
+            for (idx, formal) in class_def.type_params.iter().copied().enumerate() {
+                subst.insert(formal, args.get(idx).cloned().unwrap_or(Type::Unknown));
             }
 
-            let key = (m.name.clone(), params.clone());
-            if let Some(existing) = candidates.get(&key).cloned() {
-                let merged = merge_return_types(env, existing, return_type)?;
-                candidates.insert(key, merged);
-            } else {
-                candidates.insert(key, return_type);
+            // Collect abstract instance methods.
+            for m in &class_def.methods {
+                if m.is_static || !m.is_abstract {
+                    continue;
+                }
+
+                let params: Vec<Type> = m
+                    .params
+                    .iter()
+                    .map(|p| crate::substitute(p, &subst))
+                    .collect();
+                let return_type = crate::substitute(&m.return_type, &subst);
+
+                if is_object_method(env, &m.name, &params, &return_type) {
+                    continue;
+                }
+
+                let key = (m.name.clone(), params.clone());
+                if let Some(existing) = candidates.get(&key).cloned() {
+                    let merged = merge_return_types(env, existing, return_type)?;
+                    candidates.insert(key, merged);
+                } else {
+                    candidates.insert(key, return_type);
+                }
+            }
+
+            // Visit supertypes with substitution applied.
+            if let Some(sc) = &class_def.super_class {
+                let sc = crate::canonicalize_named(env, &crate::substitute(sc, &subst));
+                if matches!(sc, Type::Class(_) | Type::Named(_)) {
+                    queue.push_back(sc);
+                }
+            }
+            for iface in &class_def.interfaces {
+                let iface = crate::canonicalize_named(env, &crate::substitute(iface, &subst));
+                if matches!(iface, Type::Class(_) | Type::Named(_)) {
+                    queue.push_back(iface);
+                }
+            }
+
+            // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
+            if class_def.kind == ClassKind::Interface {
+                queue.push_back(Type::class(env.well_known().object, vec![]));
             }
         }
 
-        // Visit supertypes with substitution applied.
-        if let Some(sc) = &class_def.super_class {
-            let sc = crate::canonicalize_named(env, &crate::substitute(sc, &subst));
-            if matches!(sc, Type::Class(_) | Type::Named(_)) {
-                queue.push_back(sc);
-            }
+        if candidates.len() != 1 {
+            return None;
         }
-        for iface in &class_def.interfaces {
-            let iface = crate::canonicalize_named(env, &crate::substitute(iface, &subst));
-            if matches!(iface, Type::Class(_) | Type::Named(_)) {
-                queue.push_back(iface);
-            }
-        }
-
-        // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
-        if class_def.kind == ClassKind::Interface {
-            queue.push_back(Type::class(env.well_known().object, vec![]));
-        }
+        let ((_name, params), return_type) = candidates.into_iter().next()?;
+        Some(SamSignature { params, return_type })
     }
 
-    if candidates.len() != 1 {
-        return None;
-    }
-    let ((_name, params), return_type) = candidates.into_iter().next()?;
-    Some(SamSignature {
-        params,
-        return_type,
-    })
+    let mut seen_type_vars = HashSet::new();
+    inner(env, ty, &mut seen_type_vars)
 }
 
 fn merge_return_types(env: &dyn TypeEnv, a: Type, b: Type) -> Option<Type> {
@@ -406,5 +444,41 @@ mod tests {
         let sig = sam_signature(&store, &iface_string).expect("should still be functional");
         assert_eq!(sig.params, vec![string.clone()]);
         assert_eq!(sig.return_type, string);
+    }
+
+    #[test]
+    fn sam_signature_accepts_intersection_with_single_functional_interface() {
+        let store = TypeStore::with_minimal_jdk();
+        let runnable = store
+            .class_id("java.lang.Runnable")
+            .expect("minimal JDK should define java.lang.Runnable");
+        let cloneable = store.well_known().cloneable;
+
+        let ty = Type::Intersection(vec![
+            Type::class(runnable, vec![]),
+            Type::class(cloneable, vec![]),
+        ]);
+
+        let sig = sam_signature(&store, &ty).expect("Runnable & Cloneable should be functional");
+        assert_eq!(sig.params, Vec::<Type>::new());
+        assert_eq!(sig.return_type, Type::Void);
+    }
+
+    #[test]
+    fn sam_signature_accepts_type_var_with_functional_bound() {
+        let mut store = TypeStore::with_minimal_jdk();
+        let function = store
+            .class_id("java.util.function.Function")
+            .expect("minimal JDK should define java.util.function.Function");
+
+        let string = Type::class(store.well_known().string, vec![]);
+        let integer = Type::class(store.well_known().integer, vec![]);
+        let bound = Type::class(function, vec![string.clone(), integer.clone()]);
+        let tv = store.add_type_param("F", vec![bound]);
+
+        let sig = sam_signature(&store, &Type::TypeVar(tv))
+            .expect("type variable with functional interface bound should be functional");
+        assert_eq!(sig.params, vec![string]);
+        assert_eq!(sig.return_type, integer);
     }
 }
