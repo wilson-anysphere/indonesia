@@ -892,18 +892,97 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return;
         }
 
+        if !name_text.contains('.') {
+            let ident = Name::from(name_text);
+            match self
+                .resolver
+                .resolve_type_name_detailed(self.scopes, self.scope, &ident)
+            {
+                TypeNameResolution::Resolved(_) => return,
+                TypeNameResolution::Ambiguous(candidates) => {
+                    let mut candidate_names: Vec<String> = candidates
+                        .iter()
+                        .filter_map(|c| {
+                            self.resolver
+                                .type_name_for_resolution(self.scopes, c)
+                                .map(|n| n.as_str().to_string())
+                        })
+                        .collect();
+                    candidate_names.sort();
+                    candidate_names.dedup();
+
+                    let mut msg = format!("ambiguous type `{name_text}`");
+                    if !candidate_names.is_empty() {
+                        msg.push_str(": ");
+                        msg.push_str(&candidate_names.join(", "));
+                    }
+
+                    self.diagnostics.push(Diagnostic::error(
+                        "ambiguous-type",
+                        msg,
+                        self.anchor_span(name_range),
+                    ));
+                    return;
+                }
+                TypeNameResolution::Unresolved => {
+                    self.diagnostics.push(Diagnostic::error(
+                        "unresolved-type",
+                        format!("unresolved type `{name_text}`"),
+                        self.anchor_span(name_range),
+                    ));
+                    return;
+                }
+            }
+        }
+
         let qname = QualifiedName::from_dotted(name_text);
         if self
             .resolver
             .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
-            .is_none()
+            .is_some()
         {
-            self.diagnostics.push(Diagnostic::error(
-                "unresolved-type",
-                format!("unresolved type `{}`", name_text),
-                self.anchor_span(name_range),
-            ));
+            return;
         }
+
+        // If the resolution failed because the first segment is ambiguous (e.g. `Map.Entry`
+        // where `Map` is ambiguous), avoid misreporting an `unresolved-type` diagnostic.
+        if let Some(first_segment) = name_text.split('.').next() {
+            let first = Name::from(first_segment);
+            if let TypeNameResolution::Ambiguous(candidates) =
+                self.resolver
+                    .resolve_type_name_detailed(self.scopes, self.scope, &first)
+            {
+                let mut candidate_names: Vec<String> = candidates
+                    .iter()
+                    .filter_map(|c| {
+                        self.resolver
+                            .type_name_for_resolution(self.scopes, c)
+                            .map(|n| n.as_str().to_string())
+                    })
+                    .collect();
+                candidate_names.sort();
+                candidate_names.dedup();
+
+                let mut msg = format!("ambiguous type `{first_segment}`");
+                if !candidate_names.is_empty() {
+                    msg.push_str(": ");
+                    msg.push_str(&candidate_names.join(", "));
+                }
+
+                self.diagnostics.push(Diagnostic::error(
+                    "ambiguous-type",
+                    msg,
+                    self.anchor_span(name_range),
+                ));
+                return;
+            }
+        }
+
+        self.diagnostics.push(Diagnostic::error(
+            "unresolved-type",
+            format!("unresolved type `{name_text}`"),
+            self.anchor_span(name_range),
+        ));
     }
 
     fn find_best_annotation_name_end(

@@ -972,6 +972,51 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
 }
 
 #[test]
+fn type_use_annotation_ambiguous_type_reports_ambiguous_type() {
+    let (jdk, mut index, scopes, scope) = setup(&["import q.*;"]);
+    index.add_type("q", "String");
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let text = "@String Object";
+    let base_span = Span::new(0, text.len());
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        text,
+        Some(base_span),
+    );
+
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.code.as_ref() == "ambiguous-type"
+                && d.message.contains("q.String")
+                && d.message.contains("java.lang.String")
+        }),
+        "expected ambiguous-type diagnostic for type-use annotation name; got {:#?}",
+        result.diagnostics
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("String")),
+        "did not expect unresolved-type for ambiguous annotation name; got {:#?}",
+        result.diagnostics
+    );
+
+    let object_id = env
+        .lookup_class("java.lang.Object")
+        .expect("java.lang.Object");
+    assert_eq!(result.ty, Type::class(object_id, vec![]));
+}
+
+#[test]
 fn type_use_annotation_missing_type_is_not_diagnosed_without_base_span() {
     let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
