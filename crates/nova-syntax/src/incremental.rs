@@ -715,7 +715,6 @@ fn shift_preserved_errors(
         }
         count
     }
-
     // Preserve errors that are *entirely* outside the reparsed region. Empty ranges anchored at the
     // region boundary are tricky: many "missing token" diagnostics use a zero-length range at the
     // expected token position (often exactly `reparsed_old_range.end`).

@@ -4337,6 +4337,38 @@ fn incremental_edit_removing_unclosed_block_drops_stale_eof_error() {
     );
 }
 
+#[test]
+fn incremental_edit_with_nested_unclosed_class_bodies_preserves_outer_class_body_eof_error() {
+    // Regression test for fuzz artifact `crash-1d52a...`: when reparsing a method block that ends
+    // at EOF and contains a nested, unclosed class declaration, we must preserve the correct number
+    // of outer "expected `}` to close class body" errors.
+    let prefix = "class Bar {}\n";
+    let old_text = format!("{prefix}class Foo {{ m() {{\n  class Foo {{ m() {{\n    i\n ");
+    let old = parse_java(&old_text);
+
+    // Replace everything after the first line in `Foo`'s method body.
+    let start = (prefix.len() + 18) as u32;
+    let end = (prefix.len() + 45) as u32;
+    let replacement = " m() {\n    int x  i\n  void m() {\n  ";
+    let edit = TextEdit::new(TextRange { start, end }, replacement);
+
+    let mut new_text = old_text.clone();
+    new_text.replace_range(start as usize..end as usize, replacement);
+
+    let new_parse = reparse_java(&old, &old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse, parse_java(&new_text));
+
+    // Ensure this exercised incremental reparsing by verifying the untouched leading class was
+    // reused.
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        green_ptr_eq(&old_bar, &new_bar),
+        "expected `Bar` subtree to be reused"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Schema/versioning guardrails
 //
