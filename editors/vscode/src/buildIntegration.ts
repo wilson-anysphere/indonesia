@@ -145,6 +145,11 @@ export function registerNovaBuildIntegration(
 
   const getWorkspaceFolders = (): readonly vscode.WorkspaceFolder[] => vscode.workspace.workspaceFolders ?? [];
 
+  const isWorkspaceFolderActive = (folder: vscode.WorkspaceFolder): boolean => {
+    const key = getWorkspaceKey(folder);
+    return getWorkspaceFolders().some((candidate) => getWorkspaceKey(candidate) === key);
+  };
+
   const toStatusLabel = (status: NovaBuildStatus): BuildStatusLabel => {
     switch (status) {
       case 'idle':
@@ -204,6 +209,10 @@ export function registerNovaBuildIntegration(
       return;
     }
 
+    if (!isWorkspaceFolderActive(folder)) {
+      return;
+    }
+
     const state = getWorkspaceState(folder);
     if (state.statusTimer) {
       clearTimeout(state.statusTimer);
@@ -217,6 +226,9 @@ export function registerNovaBuildIntegration(
     folder: vscode.WorkspaceFolder,
     token?: vscode.CancellationToken,
   ): Promise<NovaBuildStatusResult | undefined> => {
+    if (!isWorkspaceFolderActive(folder)) {
+      return undefined;
+    }
     if (token?.isCancellationRequested) {
       return undefined;
     }
@@ -301,7 +313,15 @@ export function registerNovaBuildIntegration(
     folder: vscode.WorkspaceFolder,
     token?: vscode.CancellationToken,
   ): Promise<NovaBuildStatusResult | undefined> => {
+    if (!isWorkspaceFolderActive(folder)) {
+      return undefined;
+    }
+
     const result = await pollBuildStatusOnce(folder, token);
+
+    if (!isWorkspaceFolderActive(folder)) {
+      return result;
+    }
 
     const state = getWorkspaceState(folder);
     if (state.statusSupported === false) {
@@ -406,6 +426,10 @@ export function registerNovaBuildIntegration(
     folder: vscode.WorkspaceFolder,
     opts?: { target?: string; silent?: boolean; token?: vscode.CancellationToken },
   ): Promise<NovaBuildDiagnosticsResult | undefined> {
+    if (!isWorkspaceFolderActive(folder)) {
+      return undefined;
+    }
+
     const state = getWorkspaceState(folder);
     const stateKey = getWorkspaceKey(folder);
     const projectRoot = folder.uri.fsPath;
