@@ -98,6 +98,32 @@ impl JavaParseStore {
         self.open_docs.is_open(file)
     }
 
+    fn prune_closed_files_locked(
+        &self,
+        inner: &mut HashMap<FileId, JavaParseEntry>,
+    ) -> Vec<(FileId, u64)> {
+        let mut removed = Vec::new();
+        inner.retain(|file, entry| {
+            let keep = self.open_docs.is_open(*file);
+            if !keep {
+                removed.push((*file, entry.text.len() as u64));
+            }
+            keep
+        });
+        removed
+    }
+
+    fn notify_removed(&self, removed: Vec<(FileId, u64)>) {
+        if removed.is_empty() {
+            return;
+        }
+        if let Some(callback) = self.on_remove.get() {
+            for (file, bytes) in removed {
+                callback.call(file, bytes);
+            }
+        }
+    }
+
     /// Returns the cached parse result for `file` if:
     /// - the document is currently open, and
     /// - the cached text snapshot is the same allocation as `text` (`Arc::ptr_eq`).
@@ -106,59 +132,63 @@ impl JavaParseStore {
         file: FileId,
         text: &Arc<String>,
     ) -> Option<Arc<JavaParseResult>> {
-        let mut inner = self.inner.lock().unwrap();
+        let (cached, removed) = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut removed = self.prune_closed_files_locked(&mut inner);
 
-        // Opportunistically drop closed documents so the store only retains
-        // items for currently-open files.
-        let len_before = inner.len();
-        inner.retain(|file, _| self.open_docs.is_open(*file));
-        if inner.len() != len_before {
-            self.update_tracker_locked(&inner);
-        }
+            if !self.open_docs.is_open(file) {
+                if !removed.is_empty() {
+                    self.update_tracker_locked(&inner);
+                }
+                (None, removed)
+            } else {
+                let cached =
+                    inner.get(&file).and_then(|entry| Arc::ptr_eq(&entry.text, text).then(|| entry.parse.clone()));
 
-        if !self.open_docs.is_open(file) {
-            return None;
-        }
-
-        let entry = inner.get(&file)?;
-        if Arc::ptr_eq(&entry.text, text) {
-            return Some(entry.parse.clone());
-        }
-
-        // Stale entry (file still open but text changed). Drop it now so the
-        // next computed tree can replace it.
-        let removed = inner.remove(&file);
-        if removed.is_some() {
-            self.update_tracker_locked(&inner);
-        }
-        drop(inner);
-        if let Some(removed) = removed {
-            if let Some(callback) = self.on_remove.get() {
-                callback.call(file, removed.text.len() as u64);
+                if cached.is_some() {
+                    if !removed.is_empty() {
+                        self.update_tracker_locked(&inner);
+                    }
+                    (cached, removed)
+                } else {
+                    // Stale entry (file still open but text changed). Drop it now so the
+                    // next computed tree can replace it.
+                    let removed_entry = inner.remove(&file);
+                    if let Some(entry) = removed_entry {
+                        removed.push((file, entry.text.len() as u64));
+                    }
+                    if !removed.is_empty() {
+                        self.update_tracker_locked(&inner);
+                    }
+                    (None, removed)
+                }
             }
-        }
-        None
+        };
+
+        self.notify_removed(removed);
+        cached
     }
 
     /// Insert a parse result for `file` if it is currently open.
     ///
     /// If the file is not open, this removes any existing cached entry for it.
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<JavaParseResult>) {
-        let mut inner = self.inner.lock().unwrap();
-        let len_before = inner.len();
+        let removed = {
+            let mut inner = self.inner.lock().unwrap();
+            let removed = self.prune_closed_files_locked(&mut inner);
 
-        // Opportunistically drop closed docs whenever we touch the store.
-        inner.retain(|file, _| self.open_docs.is_open(*file));
-
-        if !self.open_docs.is_open(file) {
-            if inner.len() != len_before {
+            if !self.open_docs.is_open(file) {
+                if !removed.is_empty() {
+                    self.update_tracker_locked(&inner);
+                }
+                removed
+            } else {
+                inner.insert(file, JavaParseEntry { text, parse });
                 self.update_tracker_locked(&inner);
+                removed
             }
-            return;
-        }
-
-        inner.insert(file, JavaParseEntry { text, parse });
-        self.update_tracker_locked(&inner);
+        };
+        self.notify_removed(removed);
     }
 
     pub fn remove(&self, file: FileId) {
@@ -179,9 +209,15 @@ impl JavaParseStore {
     }
 
     pub fn release_closed_files(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.retain(|file, _| self.open_docs.is_open(*file));
-        self.update_tracker_locked(&inner);
+        let removed = {
+            let mut inner = self.inner.lock().unwrap();
+            let removed = self.prune_closed_files_locked(&mut inner);
+            if !removed.is_empty() {
+                self.update_tracker_locked(&inner);
+            }
+            removed
+        };
+        self.notify_removed(removed);
     }
 
     pub fn contains(&self, file: FileId) -> bool {

@@ -4371,6 +4371,58 @@ class Foo {
     }
 
     #[test]
+    fn syntax_tree_store_release_closed_files_restores_salsa_memo_bytes_for_closed_documents() {
+        use nova_syntax::SyntaxTreeStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = SyntaxTreeStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store.clone());
+
+        let file = FileId::from_raw(500);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+        db.with_snapshot(|snap| {
+            let parse = snap.parse(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let pinned = manager.report();
+        assert!(
+            pinned.usage.query_cache < text_len / 2,
+            "expected parse memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned.usage.query_cache
+        );
+        assert!(
+            pinned.usage.syntax_trees > 0,
+            "expected syntax tree store to report usage while pinned"
+        );
+
+        // Close without calling `Database::unpin_syntax_tree`. If the store releases closed files,
+        // it should restore memo accounting via the on-remove callback.
+        open_docs.close(file);
+        store.release_closed_files();
+
+        let after = manager.report();
+        assert!(
+            after.usage.syntax_trees < text_len / 4,
+            "expected syntax tree store to release closed files (syntax_trees={}, text_len={text_len})",
+            after.usage.syntax_trees
+        );
+        assert!(
+            after.usage.query_cache >= text_len / 2,
+            "expected parse memo bytes to be restored after releasing closed files (query_cache={}, text_len={text_len})",
+            after.usage.query_cache
+        );
+    }
+
+    #[test]
     fn java_parse_store_eviction_restores_salsa_memo_bytes_for_open_documents() {
         use nova_memory::{EvictionRequest, MemoryEvictor};
         use nova_syntax::JavaParseStore;
@@ -4474,6 +4526,108 @@ class Foo {
         assert!(
             after.usage.query_cache >= text_len.saturating_mul(3) / 2,
             "expected item_tree memo bytes to be restored after store eviction (query_cache={}, text_len={text_len})",
+            after.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn item_tree_store_release_closed_files_restores_salsa_memo_bytes_for_closed_documents() {
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+
+        let db = Database::new_with_memory_manager(&manager);
+        let store = db.attach_item_tree_store(&manager, open_docs.clone());
+
+        let file = FileId::from_raw(502);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+        db.with_snapshot(|snap| {
+            let it = snap.item_tree(file);
+            assert!(!it.items.is_empty(), "expected item_tree to contain items");
+        });
+
+        let pinned = manager.report();
+        assert!(
+            pinned.usage.query_cache < text_len.saturating_mul(3) / 2,
+            "expected item_tree memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned.usage.query_cache
+        );
+        assert!(
+            pinned.usage.syntax_trees > 0,
+            "expected item_tree store to report usage while pinned"
+        );
+
+        // Close without calling `Database::unpin_item_tree`. If the store releases closed files,
+        // it should restore memo accounting via the on-remove callback.
+        open_docs.close(file);
+        store.release_closed_files();
+
+        let after = manager.report();
+        assert!(
+            after.usage.syntax_trees < text_len / 4,
+            "expected item_tree store to release closed files (syntax_trees={}, text_len={text_len})",
+            after.usage.syntax_trees
+        );
+        assert!(
+            after.usage.query_cache >= text_len.saturating_mul(3) / 2,
+            "expected item_tree memo bytes to be restored after releasing closed files (query_cache={}, text_len={text_len})",
+            after.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn java_parse_store_release_closed_files_restores_salsa_memo_bytes_for_closed_documents() {
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = JavaParseStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_java_parse_store(Some(store.clone()));
+
+        let file = FileId::from_raw(501);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let pinned = manager.report();
+        assert!(
+            pinned.usage.query_cache < text_len / 2,
+            "expected parse_java memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned.usage.query_cache
+        );
+        assert!(
+            pinned.usage.syntax_trees > 0,
+            "expected java parse store to report usage while pinned"
+        );
+
+        // Close without calling `Database::unpin_java_parse_tree`. If the store releases closed
+        // files, it should restore memo accounting via the on-remove callback.
+        open_docs.close(file);
+        store.release_closed_files();
+
+        let after = manager.report();
+        assert!(
+            after.usage.syntax_trees < text_len / 4,
+            "expected java parse store to release closed files (syntax_trees={}, text_len={text_len})",
+            after.usage.syntax_trees
+        );
+        assert!(
+            after.usage.query_cache >= text_len / 2,
+            "expected parse_java memo bytes to be restored after releasing closed files (query_cache={}, text_len={text_len})",
             after.usage.query_cache
         );
     }
