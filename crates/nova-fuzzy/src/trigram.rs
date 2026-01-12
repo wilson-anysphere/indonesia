@@ -781,6 +781,17 @@ mod tests {
 
     #[cfg(feature = "unicode")]
     #[test]
+    fn unicode_hashed_trigrams_are_tagged() {
+        // Ensure hashed (non-ASCII) trigram keys cannot collide with packed
+        // 3-byte ASCII trigrams.
+        let mut out = Vec::new();
+        trigrams("éab", &mut out);
+        assert_eq!(out.len(), 1);
+        assert_ne!(out[0] & 0x8000_0000, 0);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
     fn ascii_query_can_match_unicode_identifier() {
         // Ensure ASCII-only queries can still hit identifiers containing Unicode,
         // as long as the relevant trigram is ASCII.
