@@ -17,6 +17,23 @@ running Gradle in that workspace, then read later without invoking Gradle again.
 
 ---
 
+## Typical end-to-end flow (discovery → classpath → reload)
+
+1. **Open workspace**: `nova-project` loads a Gradle project model heuristically (fast, no Gradle
+   invocation).
+2. **Build integration runs** (explicitly, or via a host opting in): `nova-build` executes Gradle to
+   extract a resolved `JavaCompileConfig` (classpath/source roots/output dirs).
+3. **Snapshot handoff**: `nova-build` writes `.nova/queries/gradle.json` (schema + fingerprint).
+4. **Reload trigger**: file watching / reload logic treats `.nova/queries/gradle.json` as a build
+   change and reloads the project model.
+5. **Snapshot consumption**: `nova-project` validates `schemaVersion` and `buildFingerprint`, then
+   uses the snapshot to populate classpath/source roots/output dirs more accurately than heuristics.
+
+This pattern keeps “open folder” cheap while still allowing richer, build-tool-derived metadata to
+be reused without re-running Gradle on every reload.
+
+---
+
 ## Why both heuristic parsing and build-tool execution?
 
 Running Gradle is the only reliable way to obtain:
