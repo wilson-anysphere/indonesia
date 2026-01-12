@@ -19,7 +19,12 @@ use crate::ProjectId;
 /// This file defines a minimal `InternedClassKey` value type plus an
 /// `InternedClassKeyId` handle type, and tests how the resulting ids behave
 /// under snapshots and `Database::evict_salsa_memos` (which rebuilds Salsa
-/// storage but preserves intern tables).
+/// storage but preserves selected intern tables via
+/// `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`).
+///
+/// Important: memo eviction *can* preserve `#[ra_salsa::interned]` IDs, but only
+/// for interned queries included in `InternedTablesSnapshot`. Interned ids are
+/// also not stable across process restarts or across fresh database instances.
 ///
 /// ## Raw id mapping to `nova_ids::ClassId`
 ///
@@ -52,8 +57,11 @@ use crate::ProjectId;
 /// // Recover the interned handle from the raw id.
 /// //
 /// // SAFETY: `class_id` must have been produced by the same interner (same
-/// // database storage) and must still refer to a live interned entry, or
-/// // `lookup_intern_class_key` will panic.
+/// // database instance) and must still refer to a live interned entry, or
+/// // `lookup_intern_class_key` will panic. In Nova, ids for interned queries
+/// // included in `InternedTablesSnapshot` remain stable across
+/// // `evict_salsa_memos`, but they are not stable across process restarts or
+/// // across different database instances.
 /// let interned2 = unsafe { InternedClassKeyId::from_nova_class_id(class_id) };
 /// assert_eq!(interned, interned2);
 /// ```
@@ -100,9 +108,14 @@ impl InternedClassKeyId {
     /// storage, and that the interned entry is still present.
     ///
     /// In particular, Nova's `Database::evict_salsa_memos` rebuilds Salsa's
-    /// memo storage under memory pressure. Nova snapshots+restores interned
-    /// tables during this process, so `InternId`-backed handles remain stable
-    /// across memo eviction *within the lifetime of a single `Database`*.
+    /// memo storage under memory pressure. Nova snapshots+restores *selected*
+    /// interned tables during this process (see
+    /// `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`), so `InternId`-
+    /// backed handles can remain stable across memo eviction *within the
+    /// lifetime of a single `Database`*.
+    ///
+    /// This does **not** make raw ids safe across process restarts or across
+    /// different `Database` instances.
     pub unsafe fn from_nova_class_id(id: nova_ids::ClassId) -> Self {
         Self(ra_salsa::InternId::from(id.to_raw()))
     }

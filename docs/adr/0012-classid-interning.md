@@ -19,6 +19,12 @@ In the Salsa layer, we also have a *database-level* memory eviction mechanism:
   snapshots+restores the `#[ra_salsa::interned]` tables it relies on so interned IDs can remain
   stable across memo eviction within the lifetime of a single `SalsaDatabase` (see
   `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`).
+  - The snapshot captures entries from selected `#[ra_salsa::interned]` query tables and then
+    *re-interns them* into the fresh storage in the original id order so the raw `InternId` values
+    stay stable across memo eviction.
+  - Only the interned queries explicitly included in `InternedTablesSnapshot` are preserved. If a
+    new `#[ra_salsa::interned]` query becomes part of a long-lived identity, the snapshot must be
+    extended accordingly.
 
 See: `crates/nova-db/src/salsa/mod.rs` (`evict_salsa_memos`).
 
@@ -128,15 +134,18 @@ Cons:
 
 Pros:
 - Integrated with Salsa; easy to use as compact keys in query results.
-- Stable across snapshots and revisions *as long as the underlying `ra_salsa::Storage` (and its
-  intern tables) remain intact*.
+- Stable across snapshots and revisions within a single db instance.
+- In Nova, stable across memo eviction for interned queries included in
+  `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot` (because `evict_salsa_memos` rebuilds the
+  storage but restores those intern tables).
 
 Cons:
 - Interned integer assignment is order-dependent. Raw ids can differ across fresh database
   instances/process restarts, and can become evaluation-order dependent if values are interned “on
   demand” inside queries (parallel scheduling, differing query orders, etc).
-- Memo eviction rebuilds Salsa storage; Nova snapshots+restores the interned tables it relies on to
-  keep interned ids stable, and this list must be maintained if new `#[ra_salsa::interned]` queries
+- Memo eviction rebuilds Salsa storage; preserving interned ids across eviction is not automatic and
+  requires explicitly snapshotting/restoring the relevant interned query tables (Nova does this via
+  `InternedTablesSnapshot`). This list must be maintained if new `#[ra_salsa::interned]` queries
   become part of long-lived identities.
 
 #### Empirical confirmation (prototype)
@@ -204,7 +213,9 @@ Negative:
 - A deterministic mapping may introduce `ClassId` churn when the set of known classes changes,
   unless we adopt a more sophisticated stable scheme.
 - If Nova chooses Salsa `#[interned]` for class identity, we likely need follow-up work in
-  `evict_salsa_memos` to preserve intern tables or seed them deterministically.
+  `evict_salsa_memos` to preserve intern tables or seed them deterministically. Nova currently
+  preserves a small set of interned queries via `InternedTablesSnapshot`; this list must be kept up
+  to date if new interned queries become part of long-lived identities.
 
 ## Follow-ups
 
