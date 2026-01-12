@@ -285,6 +285,18 @@ impl PartialEq for Import {
 
 impl Eq for Import {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordComponent {
+    pub ty: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     Class(ClassId),
@@ -300,6 +312,10 @@ pub struct Class {
     pub name_range: Span,
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
+    pub type_params: Vec<TypeParam>,
+    pub extends: Vec<String>,
+    pub implements: Vec<String>,
+    pub permits: Vec<String>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -310,6 +326,10 @@ impl PartialEq for Class {
         self.name == other.name
             && self.modifiers == other.modifiers
             && self.annotations == other.annotations
+            && self.type_params == other.type_params
+            && self.extends == other.extends
+            && self.implements == other.implements
+            && self.permits == other.permits
             && self.members == other.members
     }
 }
@@ -322,6 +342,9 @@ pub struct Interface {
     pub name_range: Span,
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
+    pub type_params: Vec<TypeParam>,
+    pub extends: Vec<String>,
+    pub permits: Vec<String>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -332,6 +355,9 @@ impl PartialEq for Interface {
         self.name == other.name
             && self.modifiers == other.modifiers
             && self.annotations == other.annotations
+            && self.type_params == other.type_params
+            && self.extends == other.extends
+            && self.permits == other.permits
             && self.members == other.members
     }
 }
@@ -344,6 +370,8 @@ pub struct Enum {
     pub name_range: Span,
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
+    pub implements: Vec<String>,
+    pub permits: Vec<String>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -354,6 +382,8 @@ impl PartialEq for Enum {
         self.name == other.name
             && self.modifiers == other.modifiers
             && self.annotations == other.annotations
+            && self.implements == other.implements
+            && self.permits == other.permits
             && self.members == other.members
     }
 }
@@ -366,6 +396,10 @@ pub struct Record {
     pub name_range: Span,
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
+    pub type_params: Vec<TypeParam>,
+    pub implements: Vec<String>,
+    pub permits: Vec<String>,
+    pub components: Vec<RecordComponent>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -376,6 +410,10 @@ impl PartialEq for Record {
         self.name == other.name
             && self.modifiers == other.modifiers
             && self.annotations == other.annotations
+            && self.type_params == other.type_params
+            && self.implements == other.implements
+            && self.permits == other.permits
+            && self.components == other.components
             && self.members == other.members
     }
 }

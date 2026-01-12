@@ -515,6 +515,68 @@ fn lower_non_sealed_class() {
     );
 }
 
+#[test]
+fn lower_sealed_class_type_parameters_and_clauses() {
+    let source = r#"
+sealed class A<T extends java.lang.Cloneable & java.io.Serializable> extends B implements I1, I2 permits C, D {}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.items.len(), 1);
+    let class_id = match tree.items[0] {
+        nova_hir::item_tree::Item::Class(id) => id,
+        other => panic!("expected class item, got {other:?}"),
+    };
+
+    let class = tree.class(class_id);
+    assert_eq!(class.name, "A");
+    assert_eq!(class.type_params.len(), 1);
+    assert_eq!(class.type_params[0].name, "T");
+    assert_eq!(
+        class.type_params[0].bounds,
+        vec![
+            "java.lang.Cloneable".to_string(),
+            "java.io.Serializable".to_string()
+        ]
+    );
+    assert_eq!(class.extends, vec!["B".to_string()]);
+    assert_eq!(
+        class.implements,
+        vec!["I1".to_string(), "I2".to_string()]
+    );
+    assert_eq!(class.permits, vec!["C".to_string(), "D".to_string()]);
+}
+
+#[test]
+fn lower_record_components() {
+    let source = "record Point(int x, int y) {}";
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.items.len(), 1);
+    let record_id = match tree.items[0] {
+        nova_hir::item_tree::Item::Record(id) => id,
+        other => panic!("expected record item, got {other:?}"),
+    };
+
+    let record = tree.record(record_id);
+    let components: Vec<_> = record
+        .components
+        .iter()
+        .map(|c| (c.ty.as_str(), c.name.as_str()))
+        .collect();
+    assert_eq!(components, vec![("int", "x"), ("int", "y")]);
+}
+
 fn method_id_by_name(
     tree: &nova_hir::item_tree::ItemTree,
     file: FileId,
