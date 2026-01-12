@@ -317,6 +317,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_body(method);
                 record_body_references(
                     file,
+                    BodyOwner::Method(method),
                     &body,
                     scope_result,
                     &resolver,
@@ -332,6 +333,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_constructor_body(ctor);
                 record_body_references(
                     file,
+                    BodyOwner::Constructor(ctor),
                     &body,
                     scope_result,
                     &resolver,
@@ -347,6 +349,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_initializer_body(init);
                 record_body_references(
                     file,
+                    BodyOwner::Initializer(init),
                     &body,
                     scope_result,
                     &resolver,
@@ -405,13 +408,15 @@ fn refactor_local_scope(
     body: &hir::Body,
     local_scope: nova_resolve::ScopeId,
 ) -> nova_resolve::ScopeId {
-    let Some(let_stmt_id) = (match scope_result.scopes.scope(local_scope).kind() {
-        ScopeKind::Block { stmt, .. } if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. }) => {
-            Some(*stmt)
+    let (owner, let_stmt_id) = match scope_result.scopes.scope(local_scope).kind() {
+        ScopeKind::Block { owner, stmt }
+            if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. }) =>
+        {
+            (*owner, *stmt)
         }
-        _ => None,
-    }) else {
-        return local_scope;
+        _ => {
+            return local_scope;
+        }
     };
 
     let mut current = Some(local_scope);
@@ -430,7 +435,9 @@ fn refactor_local_scope(
                     let mut visible_scope = scope_id;
                     for init_stmt in init {
                         if matches!(&body.stmts[*init_stmt], hir::Stmt::Let { .. }) {
-                            if let Some(&stmt_scope) = scope_result.stmt_scopes.get(init_stmt) {
+                            if let Some(&stmt_scope) =
+                                scope_result.stmt_scopes.get(&(owner, *init_stmt))
+                            {
                                 visible_scope = stmt_scope;
                             }
                         }
@@ -442,7 +449,7 @@ fn refactor_local_scope(
                 if let Some(last_stmt) = statements.last() {
                     return scope_result
                         .stmt_scopes
-                        .get(last_stmt)
+                        .get(&(owner, *last_stmt))
                         .copied()
                         .unwrap_or(scope_id);
                 }
@@ -529,6 +536,7 @@ impl RefactorDatabase for RefactorJavaDatabase {
 
 fn record_body_references(
     file: &FileId,
+    owner: BodyOwner,
     body: &hir::Body,
     scope_result: &ScopeBuildResult,
     resolver: &Resolver<'_>,
@@ -541,7 +549,7 @@ fn record_body_references(
             return;
         };
 
-        let Some(&scope) = scope_result.expr_scopes.get(&expr_id) else {
+        let Some(&scope) = scope_result.expr_scopes.get(&(owner, expr_id)) else {
             return;
         };
 

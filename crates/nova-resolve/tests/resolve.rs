@@ -93,6 +93,7 @@ class C {
 
     let scopes = build_scopes(&db, file);
     let &method = scopes.method_scopes.keys().next().expect("method");
+    let owner = BodyOwner::Method(method);
     let body = queries::body(&db, method);
     let statements = match &body.stmts[body.root] {
         hir::Stmt::Block { statements, .. } => statements,
@@ -101,7 +102,7 @@ class C {
     let stmt_local = statements[0];
     let local_scope = *scopes
         .stmt_scopes
-        .get(&stmt_local)
+        .get(&(owner, stmt_local))
         .expect("local statement scope");
 
     let jdk = JdkIndex::new();
@@ -128,6 +129,7 @@ class C {
 
     let scopes = build_scopes(&db, file);
     let &method = scopes.method_scopes.keys().next().expect("method");
+    let owner = BodyOwner::Method(method);
     let body = queries::body(&db, method);
     let statements = match &body.stmts[body.root] {
         hir::Stmt::Block { statements, .. } => statements,
@@ -149,7 +151,10 @@ class C {
         other => panic!("expected call expr, got {other:?}"),
     };
 
-    let a_scope = *scopes.expr_scopes.get(&a_expr).expect("a expr scope");
+    let a_scope = *scopes
+        .expr_scopes
+        .get(&(owner, a_expr))
+        .expect("a expr scope");
     let jdk = JdkIndex::new();
     let resolver = Resolver::new(&jdk);
     let res = resolver.resolve_name(&scopes.scopes, a_scope, &Name::from("a"));
@@ -171,6 +176,7 @@ class C {
 
     let scopes = build_scopes(&db, file);
     let &method = scopes.method_scopes.keys().next().expect("method");
+    let owner = BodyOwner::Method(method);
     let body = queries::body(&db, method);
     let statements = match &body.stmts[body.root] {
         hir::Stmt::Block { statements, .. } => statements,
@@ -187,7 +193,10 @@ class C {
         other => panic!("expected let with initializer, got {other:?}"),
     };
 
-    let init_scope = *scopes.expr_scopes.get(&init_expr).expect("init scope");
+    let init_scope = *scopes
+        .expr_scopes
+        .get(&(owner, init_expr))
+        .expect("init scope");
     let jdk = JdkIndex::new();
     let resolver = Resolver::new(&jdk);
     let res = resolver.resolve_name(&scopes.scopes, init_scope, &Name::from("x"));
@@ -215,6 +224,7 @@ class C {
 
     let scopes = build_scopes(&db, file);
     let &method = scopes.method_scopes.keys().next().expect("method");
+    let owner = BodyOwner::Method(method);
     let body = queries::body(&db, method);
     let statements = match &body.stmts[body.root] {
         hir::Stmt::Block { statements, .. } => statements,
@@ -255,7 +265,7 @@ class C {
 
     let inner_scope = *scopes
         .expr_scopes
-        .get(&inner_use_expr)
+        .get(&(owner, inner_use_expr))
         .expect("inner use scope");
     let inner_res = resolver.resolve_name(&scopes.scopes, inner_scope, &Name::from("x"));
     assert_eq!(
@@ -268,7 +278,7 @@ class C {
 
     let outer_scope = *scopes
         .expr_scopes
-        .get(&outer_use_expr)
+        .get(&(owner, outer_use_expr))
         .expect("outer use scope");
     let outer_res = resolver.resolve_name(&scopes.scopes, outer_scope, &Name::from("x"));
     assert_eq!(

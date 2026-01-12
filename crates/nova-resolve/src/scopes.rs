@@ -111,8 +111,8 @@ pub struct ScopeBuildResult {
     pub initializer_scopes: HashMap<InitializerId, ScopeId>,
     pub body_scopes: HashMap<BodyOwner, ScopeId>,
     pub block_scopes: Vec<ScopeId>,
-    pub stmt_scopes: HashMap<hir::StmtId, ScopeId>,
-    pub expr_scopes: HashMap<hir::ExprId, ScopeId>,
+    pub stmt_scopes: HashMap<(BodyOwner, hir::StmtId), ScopeId>,
+    pub expr_scopes: HashMap<(BodyOwner, hir::ExprId), ScopeId>,
 }
 
 mod item_tree_scopes;
@@ -141,8 +141,8 @@ struct ScopeBuilder<'a> {
     initializer_scopes: HashMap<InitializerId, ScopeId>,
     body_scopes: HashMap<BodyOwner, ScopeId>,
     block_scopes: Vec<ScopeId>,
-    stmt_scopes: HashMap<hir::StmtId, ScopeId>,
-    expr_scopes: HashMap<hir::ExprId, ScopeId>,
+    stmt_scopes: HashMap<(BodyOwner, hir::StmtId), ScopeId>,
+    expr_scopes: HashMap<(BodyOwner, hir::ExprId), ScopeId>,
 }
 
 impl<'a> ScopeBuilder<'a> {
@@ -433,7 +433,10 @@ impl<'a> ScopeBuilder<'a> {
         // statements (order-sensitive), while `body_scopes` is expected to point at
         // the lexical scope for the body root statement itself.
         self.build_stmt_scopes(parent, owner, body, body.root);
-        self.stmt_scopes.get(&body.root).copied().unwrap_or(parent)
+        self.stmt_scopes
+            .get(&(owner, body.root))
+            .copied()
+            .unwrap_or(parent)
     }
 
     fn build_stmt_scopes(
@@ -446,7 +449,7 @@ impl<'a> ScopeBuilder<'a> {
         match &body.stmts[stmt_id] {
             hir::Stmt::Block { statements, .. } => {
                 let block_scope = self.alloc_block_scope(parent, owner, stmt_id);
-                self.stmt_scopes.insert(stmt_id, block_scope);
+                self.stmt_scopes.insert((owner, stmt_id), block_scope);
 
                 let mut current_scope = block_scope;
                 for stmt in statements {
@@ -461,7 +464,7 @@ impl<'a> ScopeBuilder<'a> {
             } => {
                 // Java: a local variable is in scope within its own initializer.
                 let let_scope = self.alloc_block_scope(parent, owner, stmt_id);
-                self.stmt_scopes.insert(stmt_id, let_scope);
+                self.stmt_scopes.insert((owner, stmt_id), let_scope);
                 let local_data = &body.locals[*local];
                 self.scopes[let_scope].values.insert(
                     Name::from(local_data.name.clone()),
@@ -479,12 +482,12 @@ impl<'a> ScopeBuilder<'a> {
                 let_scope
             }
             hir::Stmt::Expr { expr, .. } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 self.record_expr_scopes(parent, owner, body, *expr);
                 parent
             }
             hir::Stmt::Return { expr, .. } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 if let Some(expr) = expr {
                     self.record_expr_scopes(parent, owner, body, *expr);
                 }
@@ -496,7 +499,7 @@ impl<'a> ScopeBuilder<'a> {
                 else_branch,
                 ..
             } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 self.record_expr_scopes(parent, owner, body, *condition);
 
                 // Ensure any locals introduced by malformed/unsupported statements do not leak
@@ -516,7 +519,7 @@ impl<'a> ScopeBuilder<'a> {
                 body: loop_body,
                 ..
             } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 self.record_expr_scopes(parent, owner, body, *condition);
 
                 let loop_scope = self.alloc_block_scope(parent, owner, *loop_body);
@@ -533,7 +536,7 @@ impl<'a> ScopeBuilder<'a> {
                 // The `for` init variables are scoped to the entire `for` statement (condition,
                 // update and body), but must not leak outside the loop.
                 let for_scope = self.alloc_block_scope(parent, owner, stmt_id);
-                self.stmt_scopes.insert(stmt_id, for_scope);
+                self.stmt_scopes.insert((owner, stmt_id), for_scope);
 
                 let mut current_scope = for_scope;
                 for stmt in init {
@@ -559,7 +562,7 @@ impl<'a> ScopeBuilder<'a> {
                 body: loop_body,
                 ..
             } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 // The foreach variable is not in scope for the iterable expression.
                 self.record_expr_scopes(parent, owner, body, *iterable);
 
@@ -582,7 +585,7 @@ impl<'a> ScopeBuilder<'a> {
                 body: switch_body,
                 ..
             } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 self.record_expr_scopes(parent, owner, body, *selector);
 
                 let switch_scope = self.alloc_block_scope(parent, owner, *switch_body);
@@ -595,7 +598,7 @@ impl<'a> ScopeBuilder<'a> {
                 finally,
                 ..
             } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
 
                 // The try body is a block statement in well-formed Java.
                 self.build_stmt_scopes(parent, owner, body, *try_body);
@@ -622,16 +625,16 @@ impl<'a> ScopeBuilder<'a> {
                 parent
             }
             hir::Stmt::Throw { expr, .. } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 self.record_expr_scopes(parent, owner, body, *expr);
                 parent
             }
             hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 parent
             }
             hir::Stmt::Empty { .. } => {
-                self.stmt_scopes.insert(stmt_id, parent);
+                self.stmt_scopes.insert((owner, stmt_id), parent);
                 parent
             }
         }
@@ -644,7 +647,7 @@ impl<'a> ScopeBuilder<'a> {
         body: &hir::Body,
         expr_id: hir::ExprId,
     ) {
-        self.expr_scopes.insert(expr_id, scope);
+        self.expr_scopes.insert((owner, expr_id), scope);
 
         match &body.exprs[expr_id] {
             hir::Expr::Name { .. }
