@@ -248,7 +248,8 @@ pub fn extract_variable_code_actions(
             conflicts.iter().all(|conflict| match conflict {
                 Conflict::NameCollision { name: n, .. }
                 | Conflict::Shadowing { name: n, .. }
-                | Conflict::FieldShadowing { name: n, .. } => n == name,
+                | Conflict::FieldShadowing { name: n, .. }
+                | Conflict::ReferenceWillChangeResolution { name: n, .. } => n == name,
                 Conflict::VisibilityLoss { .. } | Conflict::FileAlreadyExists { .. } => false,
             })
         }
