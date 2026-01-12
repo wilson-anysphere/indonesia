@@ -41,13 +41,11 @@ impl<'a> JavaPrettyFormatter<'a> {
         body: Option<SyntaxNode>,
     ) -> Doc<'a> {
         let Some(body) = body else {
-            self.comments.consume_in_range(decl.text_range());
-            return fallback::node(self.source, decl);
+            return self.print_verbatim_node_with_boundary_comments(decl);
         };
 
         let Some((l_brace, r_brace)) = find_braces(&body) else {
-            self.comments.consume_in_range(decl.text_range());
-            return fallback::node(self.source, decl);
+            return self.print_verbatim_node_with_boundary_comments(decl);
         };
 
         let first_sig = decl
