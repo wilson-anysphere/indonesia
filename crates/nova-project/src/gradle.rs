@@ -602,7 +602,7 @@ pub(crate) fn load_gradle_project(
         }
     }
 
-    sort_dedup_modules(&mut modules);
+    sort_dedup_modules(&mut modules, root);
 
     // Add user-provided classpath entries for unresolved dependencies (Gradle).
     for entry in &options.classpath_overrides {
@@ -2414,13 +2414,34 @@ fn canonicalize_or_fallback(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn sort_dedup_modules(modules: &mut Vec<Module>) {
-    modules.sort_by(|a, b| a.root.cmp(&b.root).then(a.name.cmp(&b.name)));
+fn sort_dedup_modules(modules: &mut Vec<Module>, workspace_root: &Path) {
+    modules.sort_by(|a, b| {
+        let a_is_root = a.root == workspace_root;
+        let b_is_root = b.root == workspace_root;
+        b_is_root
+            .cmp(&a_is_root)
+            .then_with(|| a.root.cmp(&b.root))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     modules.dedup_by(|a, b| a.root == b.root);
 }
 
 fn sort_dedup_workspace_modules(modules: &mut Vec<WorkspaceModuleConfig>) {
-    modules.sort_by(|a, b| a.root.cmp(&b.root).then(a.id.cmp(&b.id)));
+    modules.sort_by(|a, b| {
+        let a_is_root = matches!(
+            &a.build_id,
+            WorkspaceModuleBuildId::Gradle { project_path } if project_path == ":"
+        );
+        let b_is_root = matches!(
+            &b.build_id,
+            WorkspaceModuleBuildId::Gradle { project_path } if project_path == ":"
+        );
+
+        b_is_root
+            .cmp(&a_is_root)
+            .then_with(|| a.root.cmp(&b.root))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     modules.dedup_by(|a, b| a.root == b.root);
 }
 

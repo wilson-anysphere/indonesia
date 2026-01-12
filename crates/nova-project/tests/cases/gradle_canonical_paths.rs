@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use nova_project::{load_workspace_model, BuildSystem, SourceRootKind};
+use nova_project::{load_project, load_workspace_model, BuildSystem, SourceRootKind};
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -20,9 +20,16 @@ fn gradle_module_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
     fs::create_dir_all(&workspace_root).expect("mkdir workspace");
     write(
         &workspace_root.join("settings.gradle"),
-        // This simulates settings constructs like `includeFlat` / `projectDir = file("../...")`
+        // This simulates settings constructs like `includeFlat` / `projectDir = file(\"../...\")`
         // that can introduce `..` components into module roots.
-        "include ':..:external'\ninclude ':consumer'\n",
+        "includeFlat 'external'\ninclude ':consumer'\n",
+    );
+    // Ensure the root project is also treated as a module so we can validate that root-first
+    // ordering is preserved even when an external module root sorts lexicographically before the
+    // workspace root.
+    write(
+        &workspace_root.join("src/main/java/com/example/Root.java"),
+        "package com.example; class Root {}",
     );
 
     // External module lives outside the workspace root (sibling directory).
@@ -36,11 +43,22 @@ fn gradle_module_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
     // consumer's classpath).
     write(
         &workspace_root.join("consumer/build.gradle"),
-        "dependencies { implementation project(':..:external') }\n",
+        "dependencies { implementation project(':external') }\n",
+    );
+
+    let config = load_project(&workspace_root).expect("load project config");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(
+        config.modules[0].root, config.workspace_root,
+        "expected root module to remain first for determinism"
     );
 
     let model = load_workspace_model(&workspace_root).expect("load workspace model");
     assert_eq!(model.build_system, BuildSystem::Gradle);
+    assert_eq!(
+        model.modules[0].id, "gradle::",
+        "expected root module to remain first for determinism"
+    );
 
     let expected_module_root = fs::canonicalize(&external_module_root).expect("canonicalize module");
     let expected_source_root = expected_module_root.join("src/main/java");
