@@ -229,3 +229,10 @@ debug = 0
 debug = 0
 [profile.test.package.wasmparser]
 debug = 0
+
+# Integration tests for `nova-lsp` (and its transitive WASM/tooling dependencies)
+# are extremely heavy to link in `test` profile. Disable debuginfo globally to
+# keep link-time address space usage under the default `scripts/cargo_agent.sh`
+# RLIMIT_AS budget.
+[profile.test]
+debug = 0

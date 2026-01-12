@@ -508,6 +508,70 @@ pub fn type_definition(
     nova_ide::type_definition(db, file, position)
 }
 
+/// Delegate "find references" requests to `nova-ide`.
+pub fn references(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+    include_declaration: bool,
+) -> Vec<lsp_types::Location> {
+    nova_ide::find_references(db, file, position, include_declaration)
+}
+
+/// Delegate call hierarchy preparation requests to `nova-ide`.
+pub fn prepare_call_hierarchy(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<Vec<lsp_types::CallHierarchyItem>> {
+    nova_ide::prepare_call_hierarchy(db, file, position)
+}
+
+/// Delegate call hierarchy incoming calls requests to `nova-ide`.
+pub fn call_hierarchy_incoming_calls(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    method_name: &str,
+) -> Vec<lsp_types::CallHierarchyIncomingCall> {
+    nova_ide::call_hierarchy_incoming_calls(db, file, method_name)
+}
+
+/// Delegate call hierarchy outgoing calls requests to `nova-ide`.
+pub fn call_hierarchy_outgoing_calls(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    method_name: &str,
+) -> Vec<lsp_types::CallHierarchyOutgoingCall> {
+    nova_ide::call_hierarchy_outgoing_calls(db, file, method_name)
+}
+
+/// Delegate type hierarchy preparation requests to `nova-ide`.
+pub fn prepare_type_hierarchy(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<Vec<lsp_types::TypeHierarchyItem>> {
+    nova_ide::prepare_type_hierarchy(db, file, position)
+}
+
+/// Delegate type hierarchy supertypes requests to `nova-ide`.
+pub fn type_hierarchy_supertypes(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    class_name: &str,
+) -> Vec<lsp_types::TypeHierarchyItem> {
+    nova_ide::type_hierarchy_supertypes(db, file, class_name)
+}
+
+/// Delegate type hierarchy subtypes requests to `nova-ide`.
+pub fn type_hierarchy_subtypes(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    class_name: &str,
+) -> Vec<lsp_types::TypeHierarchyItem> {
+    nova_ide::type_hierarchy_subtypes(db, file, class_name)
+}
+
 /// Delegate diagnostics to `nova-ide`.
 pub fn diagnostics(
     db: &dyn nova_db::Database,
@@ -568,10 +632,46 @@ pub fn server_capabilities() -> ServerCapabilities {
             first_trigger_character: "}".to_string(),
             more_trigger_character: Some(vec![";".to_string()]),
         }),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         declaration_provider: Some(DeclarationCapability::Simple(true)),
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
+        // `lsp-types` 0.97 does not expose a first-class `typeHierarchyProvider`
+        // field on `ServerCapabilities` yet, but Nova supports type hierarchy
+        // endpoints. Advertise support via `experimental` so embedders can still
+        // surface the feature.
+        experimental: Some(serde_json::json!({
+            "typeHierarchyProvider": true,
+        })),
         ..ServerCapabilities::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn server_capabilities_advertise_navigation_providers() {
+        let caps = crate::server_capabilities();
+        let json = serde_json::to_value(&caps).expect("server capabilities should serialize");
+
+        assert_eq!(
+            json.get("definitionProvider"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            json.get("referencesProvider"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            json.get("callHierarchyProvider"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let type_hierarchy = json
+            .get("typeHierarchyProvider")
+            .or_else(|| json.get("experimental").and_then(|exp| exp.get("typeHierarchyProvider")));
+        assert_eq!(type_hierarchy, Some(&serde_json::Value::Bool(true)));
     }
 }
 
