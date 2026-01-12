@@ -287,6 +287,8 @@ impl DapClient {
             )
             .await;
         assert_success(&resp, "attach");
+        // Wire adapter emits a `process` event after attach succeeds.
+        let _ = self.wait_for_event("process").await;
         resp
     }
 

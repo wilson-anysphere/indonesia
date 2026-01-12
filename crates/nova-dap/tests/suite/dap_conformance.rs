@@ -44,6 +44,14 @@ async fn transcript_attach_breakpoints_continue_stop_disconnect() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event(
+            "process",
+            Some(json!({
+                "name": "java",
+                "isLocalProcess": true,
+                "startMethod": "attach",
+            })),
+        ),
         tr::request(
             "setBreakpoints",
             json!({
@@ -143,6 +151,14 @@ async fn transcript_attach_function_breakpoints_continue_stop_disconnect() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event(
+            "process",
+            Some(json!({
+                "name": "java",
+                "isLocalProcess": true,
+                "startMethod": "attach",
+            })),
+        ),
         tr::request(
             "setFunctionBreakpoints",
             json!({
@@ -240,6 +256,14 @@ async fn transcript_step_sequences() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event(
+            "process",
+            Some(json!({
+                "name": "java",
+                "isLocalProcess": true,
+                "startMethod": "attach",
+            })),
+        ),
         tr::request(
             "setBreakpoints",
             json!({
@@ -395,6 +419,14 @@ async fn transcript_cancel_delayed_request() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event(
+            "process",
+            Some(json!({
+                "name": "java",
+                "isLocalProcess": true,
+                "startMethod": "attach",
+            })),
+        ),
         tr::request("threads", json!({})),
         tr::request("cancel", json!({ "requestId": tr::ignore() })),
         tr::response("cancel", true, None),

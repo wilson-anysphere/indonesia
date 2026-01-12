@@ -208,7 +208,7 @@ impl Debugger {
         let temp_dir = hot_swap_temp_dir().map_err(|err| {
             DebuggerError::InvalidRequest(format!("failed to create javac output dir: {err}"))
         })?;
-        let output_dir = temp_dir.path().to_path_buf();
+        let output_dir = temp_dir.path();
         let source_path = output_dir.join(format!("{simple_name}.java"));
         std::fs::write(&source_path, &source).map_err(|err| {
             DebuggerError::InvalidRequest(format!(
@@ -216,8 +216,6 @@ impl Debugger {
                 source_path.display()
             ))
         })?;
-
-        let output_dir = temp_dir.path();
 
         // If we don't have a resolved build-system language level, default to a conservative
         // `--release 8` so the injected helper class can load on older debuggee JVMs.

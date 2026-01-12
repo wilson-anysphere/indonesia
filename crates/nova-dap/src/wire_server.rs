@@ -687,6 +687,11 @@ async fn handle_request_inner(
                 return;
             };
 
+            let process_name = match mode {
+                LaunchMode::Command => args.command.clone().unwrap_or_default(),
+                LaunchMode::Java => args.main_class.clone().unwrap_or_default(),
+            };
+
             // Apply launch defaults so they can be reused by `restart`.
             match mode {
                 LaunchMode::Command => {
@@ -705,7 +710,7 @@ async fn handle_request_inner(
             }
 
             let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
-            let (attach_hosts, attach_port, attach_target_label) = match mode {
+            let (attach_hosts, attach_port, attach_target_label, launched_pid) = match mode {
                 LaunchMode::Command => {
                     let Some(cwd) = args.cwd.as_deref() else {
                         send_response(
@@ -787,6 +792,7 @@ async fn handle_request_inner(
                         }
                     };
 
+                    let launched_pid = child.id();
                     if let Some(stdout) = child.stdout.take() {
                         spawn_output_task(
                             stdout,
@@ -820,7 +826,7 @@ async fn handle_request_inner(
                         *guard = Some(proc);
                     }
 
-                    (resolved_hosts, port, attach_target_label)
+                    (resolved_hosts, port, attach_target_label, launched_pid)
                 }
                 LaunchMode::Java => {
                     let main_class = args.main_class.as_deref().unwrap_or_default();
@@ -912,6 +918,7 @@ async fn handle_request_inner(
                         }
                     };
 
+                    let launched_pid = child.id();
                     if let Some(stdout) = child.stdout.take() {
                         spawn_output_task(
                             stdout,
@@ -945,9 +952,12 @@ async fn handle_request_inner(
                         *guard = Some(proc);
                     }
 
-                    (vec![host], port, attach_target_label)
+                    (vec![host], port, attach_target_label, launched_pid)
                 }
             };
+
+            let process_event_body =
+                make_process_event_body(&process_name, launched_pid, true, "launch");
 
             {
                 let mut sess = session.lock().await;
@@ -1122,6 +1132,7 @@ async fn handle_request_inner(
                 }
 
                 send_response(out_tx, seq, request, true, None, None);
+                send_event(out_tx, seq, "process", Some(process_event_body));
                 send_event(
                     out_tx,
                     seq,
@@ -1130,6 +1141,7 @@ async fn handle_request_inner(
                 );
             } else {
                 send_response(out_tx, seq, request, true, None, None);
+                send_event(out_tx, seq, "process", Some(process_event_body));
             }
 
             if let Some(tx) = launch_outcome_tx.take() {
@@ -1219,6 +1231,7 @@ async fn handle_request_inner(
                     return;
                 }
             };
+            let is_local_process = resolved_hosts.iter().any(|host| host.is_loopback());
 
             {
                 let guard = debugger.lock().await;
@@ -1303,6 +1316,9 @@ async fn handle_request_inner(
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
             send_response(out_tx, seq, request, true, None, None);
+            let process_event_body =
+                make_process_event_body("java", None, is_local_process, "attach");
+            send_event(out_tx, seq, "process", Some(process_event_body));
         }
         "restart" => {
             let (launch_cfg, previous_debugger_id) = {
@@ -4606,6 +4622,22 @@ fn send_event(
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event, body);
     let _ = tx.send(serde_json::to_value(evt).unwrap_or_else(|_| json!({})));
+}
+
+fn make_process_event_body(
+    name: &str,
+    system_process_id: Option<u32>,
+    is_local_process: bool,
+    start_method: &str,
+) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("name".to_string(), json!(name));
+    if let Some(pid) = system_process_id {
+        body.insert("systemProcessId".to_string(), json!(pid));
+    }
+    body.insert("isLocalProcess".to_string(), json!(is_local_process));
+    body.insert("startMethod".to_string(), json!(start_method));
+    Value::Object(body)
 }
 
 fn send_response(
