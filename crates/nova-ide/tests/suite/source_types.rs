@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use nova_ide::java_semantics::source_types::SourceTypeProvider;
 use nova_types::{
-    resolve_method_call, CallKind, MethodCall, MethodResolution, PrimitiveType, TyContext, Type,
-    TypeEnv, TypeStore,
+    is_subtype, resolve_method_call, CallKind, MethodCall, MethodResolution, PrimitiveType,
+    TyContext, Type, TypeEnv, TypeStore,
 };
 
 #[test]
@@ -178,4 +178,61 @@ enum Color { RED, GREEN }
         .expect("expected enum constant RED to be lowered as a field");
     assert!(red.is_static);
     assert!(red.is_final);
+}
+
+#[test]
+fn source_types_capture_implements_relationships_for_subtyping() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Test.java"),
+        r#"
+package p;
+interface I {}
+class Impl implements I {}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("p.Impl".to_string()),
+        &Type::Named("p.I".to_string())
+    ));
+}
+
+#[test]
+fn source_types_capture_extends_relationships_for_super_class() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Test.java"),
+        r#"
+package p;
+class A { int x; }
+class B extends A {}
+"#,
+    );
+
+    let b_id = store
+        .class_id("p.B")
+        .expect("expected SourceTypeProvider to register p.B");
+    let b_def = store.class(b_id).unwrap();
+    let Some(sc) = &b_def.super_class else {
+        panic!("expected p.B to have a super_class");
+    };
+
+    match sc {
+        Type::Class(class_ty) => {
+            let super_def = store.class(class_ty.def).unwrap();
+            assert_eq!(super_def.name, "p.A");
+        }
+        Type::Named(name) => {
+            assert_eq!(name, "p.A");
+        }
+        other => panic!("unexpected super_class type: {other:?}"),
+    }
 }
