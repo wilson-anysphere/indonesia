@@ -6681,6 +6681,27 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 } else if matches!(else_ty, Type::Null) && then_ty.is_reference() {
                     // `cond ? null : ref` => ref
                     then_ty
+                } else if matches!(then_ty, Type::Null) {
+                    // `cond ? primitive : null` => boxed primitive (JLS 15.25).
+                    //
+                    // NOTE: This is intentionally only for the literal null type. If the other
+                    // branch is a boxed primitive expression that happens to evaluate to null
+                    // (e.g. `(Integer) null`), Java picks the unboxed primitive result and will
+                    // throw NPE at runtime if that branch is taken.
+                    let prim = {
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        primitive_like(env_ro, &else_ty)
+                    };
+                    prim.map(|p| boxed_primitive_type(loader, p))
+                        .unwrap_or(Type::Unknown)
+                } else if matches!(else_ty, Type::Null) {
+                    // `cond ? null : primitive` => boxed primitive (JLS 15.25).
+                    let prim = {
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        primitive_like(env_ro, &then_ty)
+                    };
+                    prim.map(|p| boxed_primitive_type(loader, p))
+                        .unwrap_or(Type::Unknown)
                 } else if let (Some(a), Some(b)) = {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     (
@@ -9365,6 +9386,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
 fn primitive_like(env: &dyn TypeEnv, ty: &Type) -> Option<PrimitiveType> {
     primitive_like_inner(env, ty, 8)
+}
+
+fn boxed_primitive_type(loader: &mut ExternalTypeLoader<'_>, prim: PrimitiveType) -> Type {
+    let name = match prim {
+        PrimitiveType::Boolean => "java.lang.Boolean",
+        PrimitiveType::Byte => "java.lang.Byte",
+        PrimitiveType::Short => "java.lang.Short",
+        PrimitiveType::Char => "java.lang.Character",
+        PrimitiveType::Int => "java.lang.Integer",
+        PrimitiveType::Long => "java.lang.Long",
+        PrimitiveType::Float => "java.lang.Float",
+        PrimitiveType::Double => "java.lang.Double",
+    };
+    let id = loader.store.intern_class_id(name);
+    Type::class(id, vec![])
 }
 
 fn primitive_like_inner(env: &dyn TypeEnv, ty: &Type, depth: u8) -> Option<PrimitiveType> {

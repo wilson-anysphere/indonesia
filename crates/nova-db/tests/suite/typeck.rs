@@ -2326,6 +2326,33 @@ class C {
 }
 
 #[test]
+fn conditional_boxes_primitive_with_null() {
+    let src = r#"
+class C {
+    void m(boolean cond) {
+        var x = cond ? 1 : null;
+        x.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-method" || !d.message.contains("toString")),
+        "expected toString() call to resolve, got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Integer");
+}
+
+#[test]
 fn plus_unboxes_integer_operands_to_int() {
     let src = r#"
 class C {
