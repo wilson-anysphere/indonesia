@@ -2,9 +2,87 @@ use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::Mutex;
+
+// Serialize passthrough tests that spawn an LSP stdio server to keep timings and resource usage
+// predictable under parallel `cargo test` execution.
+static STDIO_SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 fn nova() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("nova"))
+}
+
+fn lsp_test_server() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_nova-cli-test-lsp"))
+}
+
+/// Returns a temporary directory containing a `nova-lsp` executable (backed by a lightweight
+/// test server binary), plus a PATH value that prepends that directory.
+fn path_with_test_nova_lsp() -> (TempDir, std::ffi::OsString) {
+    let temp = TempDir::new().expect("tempdir");
+    let stub = lsp_test_server();
+
+    let exe_name = format!("nova-lsp{}", std::env::consts::EXE_SUFFIX);
+    let dest = temp.path().join(exe_name);
+
+    if std::fs::hard_link(&stub, &dest).is_err() {
+        // `hard_link` can fail on some filesystems; fall back to a copy.
+        std::fs::copy(&stub, &dest).expect("copy nova-lsp test server");
+    }
+
+    let mut entries =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
+    entries.insert(0, temp.path().to_path_buf());
+    let path = std::env::join_paths(entries).expect("join PATH");
+    (temp, path)
+}
+
+fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
+    let bytes = serde_json::to_vec(message).expect("serialize");
+    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
+    writer.write_all(&bytes).expect("write body");
+    writer.flush().expect("flush");
+}
+
+fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line).expect("read header line");
+        assert!(bytes_read > 0, "unexpected EOF while reading headers");
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("Content-Length") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+
+    let len = content_length.expect("Content-Length header");
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).expect("read body");
+    serde_json::from_slice(&buf).expect("parse json")
+}
+
+fn read_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
+    loop {
+        let msg = read_jsonrpc_message(reader);
+        if msg.get("method").is_some() {
+            continue;
+        }
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
+            return msg;
+        }
+    }
 }
 
 #[test]
@@ -18,8 +96,109 @@ fn help_mentions_core_commands() {
             .and(predicate::str::contains("perf"))
             .and(predicate::str::contains("parse"))
             .and(predicate::str::contains("extensions"))
+            .and(predicate::str::contains("lsp"))
+            .and(predicate::str::contains("dap"))
             .and(predicate::str::contains("bugreport")),
     );
+}
+
+#[test]
+fn lsp_version_passthrough_matches_nova_lsp() {
+    let nova_lsp = lsp_test_server();
+
+    let direct = ProcessCommand::new(&nova_lsp)
+        .arg("--version")
+        .output()
+        .expect("run nova-lsp --version");
+    assert!(
+        direct.status.success(),
+        "direct stderr: {}",
+        String::from_utf8_lossy(&direct.stderr)
+    );
+
+    // Verify PATH lookup: `nova lsp --version` should behave like `nova-lsp --version`.
+    let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
+
+    let via_nova = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("lsp")
+        .arg("--version")
+        .env("PATH", &path_with_nova_lsp)
+        .output()
+        .expect("run nova lsp --version");
+    assert!(
+        via_nova.status.success(),
+        "via nova (PATH) stderr: {}",
+        String::from_utf8_lossy(&via_nova.stderr)
+    );
+    assert_eq!(
+        direct.stdout,
+        via_nova.stdout,
+        "expected identical stdout for `nova-lsp --version` and `nova lsp --version`"
+    );
+
+    // Verify explicit `--path` override.
+    let via_nova_path = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("lsp")
+        .arg("--path")
+        .arg(&nova_lsp)
+        .arg("--version")
+        .output()
+        .expect("run nova lsp --path ... --version");
+    assert!(
+        via_nova_path.status.success(),
+        "via nova (--path) stderr: {}",
+        String::from_utf8_lossy(&via_nova_path.stderr)
+    );
+    assert_eq!(
+        direct.stdout,
+        via_nova_path.stdout,
+        "expected identical stdout for `nova-lsp --version` and `nova lsp --path ... --version`"
+    );
+}
+
+#[test]
+fn lsp_stdio_initialize_shutdown_exit_passthrough() {
+    let _guard = STDIO_SERVER_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
+
+    let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .env("PATH", path_with_nova_lsp)
+        .spawn()
+        .expect("spawn nova lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let initialize_resp = read_response_with_id(&mut stdout, 1);
+    assert_eq!(initialize_resp.get("id").and_then(|v| v.as_i64()), Some(1));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 2);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "expected successful LSP lifecycle, got {status:?}");
 }
 
 #[test]

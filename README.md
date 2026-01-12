@@ -118,6 +118,14 @@ nova cache clean --path <workspace>
 # Debug parsing for a single file
 nova parse <file>
 
+# Launch the Nova language server (LSP) (defaults to `nova-lsp --stdio`)
+nova lsp
+nova lsp --version
+nova lsp -- --config nova.toml
+
+# Launch the Nova debug adapter (DAP)
+nova dap
+
 # Generate a diagnostic bug report bundle
 nova bugreport
 nova bugreport --json

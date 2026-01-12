@@ -50,7 +50,7 @@ use tokio_util::sync::CancellationToken;
 #[command(
     name = "nova",
     version,
-    about = "Nova CLI (indexing, diagnostics, cache, perf)"
+    about = "Nova CLI (indexing, diagnostics, cache, perf, server launcher)"
 )]
 struct Cli {
     /// Optional path to a TOML config file.
@@ -63,6 +63,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Launch the Nova language server (LSP) by spawning `nova-lsp`.
+    ///
+    /// With no additional arguments, this defaults to `nova-lsp --stdio`.
+    Lsp(LspLauncherArgs),
+    /// Launch the Nova debug adapter (DAP) by spawning `nova-dap`.
+    Dap(DapLauncherArgs),
     /// Load a project and build indexes/caches
     Index(IndexArgs),
     /// Run diagnostics for an entire project or a single file
@@ -109,6 +115,34 @@ struct AiModelsArgs {
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args)]
+struct LspLauncherArgs {
+    /// Path to the `nova-lsp` binary (defaults to resolving `nova-lsp` on $PATH).
+    #[arg(long)]
+    path: Option<PathBuf>,
+
+    /// Arguments to pass through to `nova-lsp`.
+    ///
+    /// Use `--` to disambiguate flags intended for `nova-lsp` from `nova lsp` flags:
+    /// `nova lsp -- --config nova.toml`.
+    #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
+#[derive(Args)]
+struct DapLauncherArgs {
+    /// Path to the `nova-dap` binary (defaults to resolving `nova-dap` on $PATH).
+    #[arg(long)]
+    path: Option<PathBuf>,
+
+    /// Arguments to pass through to `nova-dap`.
+    ///
+    /// Use `--` to disambiguate flags intended for `nova-dap` from `nova dap` flags:
+    /// `nova dap -- --config nova.toml`.
+    #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -489,6 +523,17 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
 
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
     match cli.command {
+        Command::Lsp(args) => {
+            let mut forwarded = args.args;
+            if forwarded.is_empty() {
+                forwarded.push("--stdio".to_string());
+            }
+            spawn_passthrough_command("nova-lsp", args.path, &forwarded)
+        }
+        Command::Dap(args) => {
+            let forwarded = args.args;
+            spawn_passthrough_command("nova-dap", args.path, &forwarded)
+        }
         Command::Index(args) => {
             let ws = Workspace::open_with_config(&args.path, config)?;
             let report = ws.index_and_write_cache()?;
@@ -944,6 +989,47 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             Ok(exit)
         }
     }
+}
+
+fn spawn_passthrough_command(
+    command_name: &str,
+    command_path: Option<PathBuf>,
+    args: &[String],
+) -> Result<i32> {
+    use std::process::{Command, Stdio};
+
+    let mut cmd = match command_path {
+        Some(path) => Command::new(path),
+        None => Command::new(command_name),
+    };
+
+    let status = cmd
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to spawn {command_name}"))?;
+
+    Ok(exit_code_from_status(status))
+}
+
+fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+
+    // If the process was killed by a signal, emulate the common Unix convention
+    // of using 128+<signal> as the exit code.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+
+    1
 }
 
 #[derive(Serialize)]

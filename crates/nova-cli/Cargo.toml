@@ -8,6 +8,10 @@ publish = false
 name = "nova"
 path = "src/main.rs"
 
+[[bin]]
+name = "nova-cli-test-lsp"
+path = "tests/fixtures/nova_lsp_test_helper.rs"
+
 [features]
 default = ["extensions"]
 extensions = ["dep:nova-ext", "nova-ext/extension-bundles"]
