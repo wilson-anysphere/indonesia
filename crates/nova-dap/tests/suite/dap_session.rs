@@ -959,6 +959,136 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
 }
 
 #[tokio::test]
+async fn dap_wire_handle_tables_are_invalidated_on_step_in_target() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    let temp = tempfile::tempdir().unwrap();
+    let main_path = temp.path().join("Main.java");
+    std::fs::write(
+        &main_path,
+        "class Main {\n  void main() {\n    foo(bar(), baz(qux()), corge()).trim();\n  }\n}\n",
+    )
+    .unwrap();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+    client
+        .set_breakpoints(main_path.to_str().unwrap(), &[3])
+        .await;
+
+    let thread_id = client.first_thread_id().await;
+
+    client.continue_with_thread_id(Some(thread_id)).await;
+    let _ = client.wait_for_stopped_reason("breakpoint").await;
+
+    // Repeated stackTrace calls should return stable frame ids.
+    let stack_a = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
+    let frame_id_a = stack_a
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    let stack_b = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
+    let frame_id_b = stack_b
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(frame_id_a, frame_id_b);
+
+    // And repeated scopes calls should return stable locals handles.
+    let scopes_a = client
+        .request("scopes", json!({ "frameId": frame_id_a }))
+        .await;
+    let locals_ref_a = scopes_a
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    let scopes_b = client
+        .request("scopes", json!({ "frameId": frame_id_a }))
+        .await;
+    let locals_ref_b = scopes_b
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(locals_ref_a, locals_ref_b);
+
+    // Step via targetId; the next stop should allocate fresh handles (stale ids must not alias).
+    let targets_resp = client
+        .request("stepInTargets", json!({ "frameId": frame_id_a }))
+        .await;
+    assert_eq!(
+        targets_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    let targets = targets_resp
+        .pointer("/body/targets")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let baz_id = targets
+        .iter()
+        .find(|t| t.get("label").and_then(|v| v.as_str()) == Some("baz()"))
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    let step_resp = client
+        .request(
+            "stepIn",
+            json!({ "threadId": thread_id, "targetId": baz_id }),
+        )
+        .await;
+    assert_eq!(
+        step_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    let _ = client.wait_for_stopped_reason("step").await;
+
+    let stack_after = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
+    let frame_id_after = stack_after
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_ne!(frame_id_a, frame_id_after);
+
+    let scopes_after = client
+        .request("scopes", json!({ "frameId": frame_id_after }))
+        .await;
+    let locals_ref_after = scopes_after
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_ne!(locals_ref_a, locals_ref_after);
+
+    // Old frame ids should be rejected rather than resolving to a different frame.
+    let stale_scopes = client
+        .request("scopes", json!({ "frameId": frame_id_a }))
+        .await;
+    assert_eq!(
+        stale_scopes.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    // Old variables references should return empty results.
+    let stale_vars = client
+        .request("variables", json!({ "variablesReference": locals_ref_a }))
+        .await;
+    let vars = stale_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert!(vars.is_empty());
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_a_scope() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
     let (client, server_task) = spawn_wire_server();

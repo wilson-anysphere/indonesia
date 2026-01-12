@@ -622,7 +622,6 @@ impl Debugger {
         dap_thread_id: i64,
         target_id: i64,
     ) -> Result<()> {
-        self.invalidate_handles();
         self.smart_step_into = None;
         check_cancel(cancel)?;
 
