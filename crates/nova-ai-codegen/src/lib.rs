@@ -35,6 +35,35 @@ impl Default for ValidationConfig {
     }
 }
 
+impl ValidationConfig {
+    /// Default maximum number of *new* type-checking errors permitted by
+    /// [`ValidationConfig::relaxed_for_tests`].
+    ///
+    /// This is intended for AI test generation in environments where the
+    /// type-checker doesn't have access to test dependencies (e.g. JUnit), which
+    /// can otherwise cause false-negative validation failures.
+    pub const RELAXED_TEST_MAX_NEW_TYPE_ERRORS: usize = 25;
+
+    /// Validation preset suitable for AI-generated test files.
+    ///
+    /// - Syntax must remain clean (`max_new_syntax_errors = 0`).
+    /// - Type-checking errors are allowed up to [`Self::RELAXED_TEST_MAX_NEW_TYPE_ERRORS`]
+    ///   to tolerate missing test-classpath dependencies (e.g. JUnit).
+    #[must_use]
+    pub fn relaxed_for_tests() -> Self {
+        Self::relaxed_for_tests_with_max_new_type_errors(Self::RELAXED_TEST_MAX_NEW_TYPE_ERRORS)
+    }
+
+    /// Like [`ValidationConfig::relaxed_for_tests`], but with a custom type error limit.
+    #[must_use]
+    pub fn relaxed_for_tests_with_max_new_type_errors(max_new_type_errors: usize) -> Self {
+        Self {
+            max_new_type_errors,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodeGenerationConfig {
     pub safety: PatchSafetyConfig,
@@ -906,5 +935,107 @@ mod tests {
                 .any(|diag| diag.diagnostic.code.as_ref() == "UNRESOLVED_REFERENCE"),
             "expected unresolved reference diagnostic, got: {report:?}"
         );
+    }
+
+    #[test]
+    fn strict_validation_rejects_new_junit_test_file_without_classpath() {
+        // In minimal/no-classpath environments we can't resolve JUnit types, so a
+        // syntactically-correct test file can still produce type diagnostics.
+        let provider = StaticProvider {
+            response: r#"{
+  "ops": [
+    {
+      "op": "create",
+      "file": "ExampleTest.java",
+      "text": "import org.junit.jupiter.api.Assertions;\nimport org.junit.jupiter.api.Test;\n\npublic class ExampleTest {\n    @Test\n    void itWorks() {\n        Assertions.assertEquals(42, 42);\n    }\n}\n"
+    }
+  ]
+}"#
+            .to_string(),
+        };
+
+        let workspace = VirtualWorkspace::default();
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.safety.allow_new_files = true;
+
+        let cancel = CancellationToken::new();
+        let err = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Generate a new JUnit test file.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect_err("strict validation should fail due to unresolved JUnit types");
+
+        let CodeGenerationError::ValidationFailed { report } = err else {
+            panic!("expected ValidationFailed, got {err:?}");
+        };
+
+        assert!(
+            report.summary.contains("Introduced 0 syntax errors"),
+            "expected syntactically valid file, got: {report:?}"
+        );
+        assert!(
+            !report.new_diagnostics.is_empty(),
+            "expected at least one new diagnostic, got: {report:?}"
+        );
+    }
+
+    #[test]
+    fn relaxed_validation_allows_new_junit_test_file_without_classpath() {
+        let provider = StaticProvider {
+            response: r#"{
+  "ops": [
+    {
+      "op": "create",
+      "file": "ExampleTest.java",
+      "text": "import org.junit.jupiter.api.Assertions;\nimport org.junit.jupiter.api.Test;\n\npublic class ExampleTest {\n    @Test\n    void itWorks() {\n        Assertions.assertEquals(42, 42);\n    }\n}\n"
+    }
+  ]
+}"#
+            .to_string(),
+        };
+
+        let workspace = VirtualWorkspace::default();
+
+        let mut config = CodeGenerationConfig {
+            allow_repair: false,
+            ..CodeGenerationConfig::default()
+        };
+        config.safety.allow_new_files = true;
+        config.validation = ValidationConfig::relaxed_for_tests();
+
+        let cancel = CancellationToken::new();
+        let result = block_on(generate_patch(
+            &provider,
+            &workspace,
+            "Generate a new JUnit test file.",
+            &config,
+            &AiPrivacyConfig::default(),
+            &cancel,
+            None,
+        ))
+        .expect("relaxed validation should allow unresolved JUnit types");
+
+        let generated = result
+            .formatted_workspace
+            .get("ExampleTest.java")
+            .expect("new file should be present");
+        assert!(
+            generated.contains("org.junit.jupiter.api.Test"),
+            "expected JUnit @Test import, got: {generated}"
+        );
+        assert!(
+            generated.contains("org.junit.jupiter.api.Assertions"),
+            "expected JUnit Assertions import, got: {generated}"
+        );
+        assert!(generated.contains("@Test"), "expected @Test, got: {generated}");
     }
 }

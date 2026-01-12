@@ -8,6 +8,7 @@ use nova_ai::PrivacyMode;
 use nova_ai_codegen::{
     generate_patch, CodeGenerationConfig, CodeGenerationError, CodegenProgressEvent,
     CodegenProgressReporter, CodegenProgressStage, PromptCompletionError, PromptCompletionProvider,
+    ValidationConfig,
 };
 use nova_config::AiPrivacyConfig;
 use nova_core::{LineIndex, Position as CorePosition};
@@ -131,6 +132,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                 );
 
                 let mut config = self.config.clone();
+                config.validation = ValidationConfig::relaxed_for_tests();
                 if config.safety.allowed_path_prefixes.is_empty() {
                     config.safety.allowed_path_prefixes = vec![file.clone()];
                 }
