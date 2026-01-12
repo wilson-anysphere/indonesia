@@ -189,8 +189,18 @@
       },
       {
         "view": "novaFrameworks",
-        "contents": "This version of Nova does not support framework endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
+        "contents": "This version of Nova does not support web endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
         "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.webEndpointsSupported"
+      },
+      {
+        "view": "novaFrameworks",
+        "contents": "This version of Nova does not support Micronaut endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautEndpointsSupported"
+      },
+      {
+        "view": "novaFrameworks",
+        "contents": "This version of Nova does not support Micronaut bean discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && nova.frameworks.webEndpointsSupported && !nova.frameworks.micronautBeansSupported"
       }
     ],
     "menus": {

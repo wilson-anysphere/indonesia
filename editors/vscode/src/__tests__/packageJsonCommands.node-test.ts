@@ -115,7 +115,7 @@ test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance
       entry && typeof entry === 'object' && (entry as { view?: unknown }).view === 'novaFrameworks',
   );
 
-  assert.ok(frameworksWelcome.length >= 3);
+  assert.ok(frameworksWelcome.length >= 4);
 
   const hasNoWorkspaceHint = frameworksWelcome.some((entry) => {
     const when = typeof entry.when === 'string' ? entry.when : '';
@@ -129,6 +129,18 @@ test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance
     return contents.includes('nova.installOrUpdateServer');
   });
   assert.ok(hasServerMissingHint);
+
+  const hasMicronautEndpointsContext = frameworksWelcome.some((entry) => {
+    const when = typeof entry.when === 'string' ? entry.when : '';
+    return when.includes('nova.frameworks.micronautEndpointsSupported');
+  });
+  assert.ok(hasMicronautEndpointsContext);
+
+  const hasMicronautBeansContext = frameworksWelcome.some((entry) => {
+    const when = typeof entry.when === 'string' ? entry.when : '';
+    return when.includes('nova.frameworks.micronautBeansSupported');
+  });
+  assert.ok(hasMicronautBeansContext);
 
   const hasUnsupportedHint = frameworksWelcome.some((entry) => {
     const contents = typeof entry.contents === 'string' ? entry.contents : '';

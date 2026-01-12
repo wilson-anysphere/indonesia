@@ -29,6 +29,8 @@ export type NovaFrameworksViewController = {
 };
 
 const OPEN_ENDPOINT_COMMAND = 'nova.frameworks.openEndpoint';
+const MICRONAUT_ENDPOINTS_METHOD = 'nova/micronaut/endpoints';
+const MICRONAUT_BEANS_METHOD = 'nova/micronaut/beans';
 
 export function registerNovaFrameworksView(
   context: vscode.ExtensionContext,
@@ -64,6 +66,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
 
   private lastContextServerRunning: boolean | undefined;
   private lastContextWebEndpointsSupported: boolean | undefined;
+  private lastContextMicronautEndpointsSupported: boolean | undefined;
+  private lastContextMicronautBeansSupported: boolean | undefined;
 
   constructor(private readonly request: NovaRequest) {}
 
@@ -115,7 +119,12 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
 
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     if (workspaces.length === 0) {
-      await this.setContexts({ serverRunning: false, webEndpointsSupported: true });
+      await this.setContexts({
+        serverRunning: false,
+        webEndpointsSupported: true,
+        micronautEndpointsSupported: true,
+        micronautBeansSupported: true,
+      });
       this.setMessage(undefined);
       return [];
     }
@@ -171,14 +180,30 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
 
     // If we couldn't reach any running server, treat the view as disconnected (old behavior).
     if (!foundRunningServer) {
-      await this.setContexts({ serverRunning: false, webEndpointsSupported: true });
+      await this.setContexts({
+        serverRunning: false,
+        webEndpointsSupported: true,
+        micronautEndpointsSupported: true,
+        micronautBeansSupported: true,
+      });
       this.setMessage(undefined);
       return [];
     }
 
+    const probeProjectRoot = workspaces[0].uri.fsPath;
+    const [micronautEndpointsSupported, micronautBeansSupported] = await Promise.all([
+      probeNovaRequestSupport(this.request, MICRONAUT_ENDPOINTS_METHOD, { projectRoot: probeProjectRoot }),
+      probeNovaRequestSupport(this.request, MICRONAUT_BEANS_METHOD, { projectRoot: probeProjectRoot }),
+    ]);
+
     const webEndpointsSupported =
       foundSupportedWorkspace || workspacesWithSafeMode.length > 0 || workspacesWithErrors.length > 0;
-    await this.setContexts({ serverRunning: true, webEndpointsSupported });
+    await this.setContexts({
+      serverRunning: true,
+      webEndpointsSupported,
+      micronautEndpointsSupported,
+      micronautBeansSupported,
+    });
 
     if (!webEndpointsSupported) {
       this.setMessage('nova/web/endpoints not supported by this server');
@@ -241,7 +266,12 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     this.treeView.message = message;
   }
 
-  private async setContexts(opts: { serverRunning: boolean; webEndpointsSupported: boolean }): Promise<void> {
+  private async setContexts(opts: {
+    serverRunning: boolean;
+    webEndpointsSupported: boolean;
+    micronautEndpointsSupported: boolean;
+    micronautBeansSupported: boolean;
+  }): Promise<void> {
     if (this.lastContextServerRunning !== opts.serverRunning) {
       this.lastContextServerRunning = opts.serverRunning;
       await vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', opts.serverRunning);
@@ -250,6 +280,24 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     if (this.lastContextWebEndpointsSupported !== opts.webEndpointsSupported) {
       this.lastContextWebEndpointsSupported = opts.webEndpointsSupported;
       await vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', opts.webEndpointsSupported);
+    }
+
+    if (this.lastContextMicronautEndpointsSupported !== opts.micronautEndpointsSupported) {
+      this.lastContextMicronautEndpointsSupported = opts.micronautEndpointsSupported;
+      await vscode.commands.executeCommand(
+        'setContext',
+        'nova.frameworks.micronautEndpointsSupported',
+        opts.micronautEndpointsSupported,
+      );
+    }
+
+    if (this.lastContextMicronautBeansSupported !== opts.micronautBeansSupported) {
+      this.lastContextMicronautBeansSupported = opts.micronautBeansSupported;
+      await vscode.commands.executeCommand(
+        'setContext',
+        'nova.frameworks.micronautBeansSupported',
+        opts.micronautBeansSupported,
+      );
     }
   }
 }
@@ -260,6 +308,30 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine: unknown): Promise<v
   const doc = await vscode.workspace.openTextDocument(uri);
   const range = new vscode.Range(line, 0, line, 0);
   await vscode.window.showTextDocument(doc, { selection: range, preview: true });
+}
+
+async function probeNovaRequestSupport(
+  request: NovaRequest,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<boolean> {
+  const supported = isNovaRequestSupported(method);
+  if (supported === true) {
+    return true;
+  }
+  if (supported === false) {
+    return false;
+  }
+
+  try {
+    await request<unknown>(method, params);
+    return true;
+  } catch (err) {
+    if (isNovaMethodNotFoundError(err)) {
+      return false;
+    }
+    return true;
+  }
 }
 
 async function fetchWebEndpoints(request: NovaRequest, projectRoot: string): Promise<WebEndpointsResponse | undefined> {
