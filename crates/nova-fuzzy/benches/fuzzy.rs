@@ -4,6 +4,19 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use nova_core::SymbolId;
 use nova_fuzzy::{FuzzyMatcher, TrigramIndexBuilder};
 
+fn configure_rayon() {
+    // Criterion uses Rayon internally for statistics. On constrained CI hosts we can fail to spawn
+    // the default-sized thread pool (EAGAIN / WouldBlock), which panics during analysis.
+    //
+    // Prefer stability over maximal parallelism in benches; allow users to override explicitly.
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+            std::env::set_var("RAYON_NUM_THREADS", "1");
+        }
+    });
+}
+
 fn lcg(seed: &mut u64) -> u64 {
     // Deterministic, cheap RNG (not cryptographically secure).
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -61,6 +74,8 @@ struct FuzzyScoreCase {
 }
 
 fn bench_fuzzy_score(c: &mut Criterion) {
+    configure_rayon();
+
     let mut group = c.benchmark_group("fuzzy_score");
     group.measurement_time(Duration::from_secs(2));
     group.warm_up_time(Duration::from_secs(1));
@@ -94,6 +109,8 @@ fn bench_fuzzy_score(c: &mut Criterion) {
 }
 
 fn bench_trigram_candidates(c: &mut Criterion) {
+    configure_rayon();
+
     // Keep the corpus size large enough to be representative but small enough
     // to keep `cargo bench` runs reasonable in CI-ish environments.
     const SYMBOLS: usize = 100_000;
