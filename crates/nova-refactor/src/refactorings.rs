@@ -1372,6 +1372,9 @@ fn ensure_inline_variable_value_stable(
 ///
 /// This is intentionally syntax-based and only understands:
 /// - local variables declared via `LocalVariableDeclarationStatement` in blocks,
+/// - locals declared in `for (...)` headers,
+/// - locals declared in `try ( ... )` resource specifications,
+/// - catch clause parameters,
 /// - method/constructor parameters, and
 /// - lambda parameters.
 ///
@@ -1406,6 +1409,24 @@ fn lexical_resolve_local_or_param_decl_offset(
         // Lambdas introduce their own parameter scope which shadows outer locals/params.
         if let Some(lambda) = ast::LambdaExpression::cast(anc.clone()) {
             if let Some(decl_offset) = lexical_resolve_in_lambda_params(&lambda, name) {
+                return Some(decl_offset);
+            }
+        }
+
+        if let Some(catch_clause) = ast::CatchClause::cast(anc.clone()) {
+            if let Some(decl_offset) = lexical_resolve_in_catch_param(&catch_clause, name) {
+                return Some(decl_offset);
+            }
+        }
+
+        if let Some(try_stmt) = ast::TryStatement::cast(anc.clone()) {
+            if let Some(decl_offset) = lexical_resolve_in_try_resources(&try_stmt, offset, name) {
+                return Some(decl_offset);
+            }
+        }
+
+        if let Some(for_stmt) = ast::ForStatement::cast(anc.clone()) {
+            if let Some(decl_offset) = lexical_resolve_in_for_header(&for_stmt, offset, name) {
                 return Some(decl_offset);
             }
         }
@@ -1471,6 +1492,99 @@ fn lexical_resolve_in_lambda_params(lambda: &ast::LambdaExpression, name: &str) 
         }
     }
     None
+}
+
+fn lexical_resolve_in_for_header(
+    for_stmt: &ast::ForStatement,
+    offset: usize,
+    name: &str,
+) -> Option<usize> {
+    let header = for_stmt.header()?;
+    for declarator in header
+        .syntax()
+        .descendants()
+        .filter_map(ast::VariableDeclarator::cast)
+    {
+        let Some(name_tok) = declarator.name_token() else {
+            continue;
+        };
+        if name_tok.text() != name {
+            continue;
+        }
+        let start = u32::from(name_tok.text_range().start()) as usize;
+        if start < offset {
+            return Some(start);
+        }
+    }
+    None
+}
+
+fn lexical_resolve_in_try_resources(
+    try_stmt: &ast::TryStatement,
+    offset: usize,
+    name: &str,
+) -> Option<usize> {
+    let resources = try_stmt.resources()?;
+    let resources_range = syntax_range(resources.syntax());
+    let in_resources = resources_range.start <= offset && offset < resources_range.end;
+
+    let in_body = try_stmt.body().is_some_and(|body| {
+        let body_range = syntax_range(body.syntax());
+        body_range.start <= offset && offset < body_range.end
+    });
+
+    if !in_resources && !in_body {
+        // Resource variables are not in scope in `catch`/`finally` clauses (javac rejects them),
+        // so only resolve them when the usage is inside the resource specification itself or the
+        // try body.
+        return None;
+    }
+
+    for resource in resources.resources() {
+        for declarator in resource
+            .syntax()
+            .descendants()
+            .filter_map(ast::VariableDeclarator::cast)
+        {
+            let Some(name_tok) = declarator.name_token() else {
+                continue;
+            };
+            if name_tok.text() != name {
+                continue;
+            }
+            let start = u32::from(name_tok.text_range().start()) as usize;
+            if start < offset {
+                return Some(start);
+            }
+        }
+    }
+    None
+}
+
+fn lexical_resolve_in_catch_param(catch_clause: &ast::CatchClause, name: &str) -> Option<usize> {
+    // There is no typed AST wrapper for the catch parameter yet, so parse it token-wise.
+    // The parameter name is the last identifier before the closing `)` of `catch (...)`.
+    let mut last_ident: Option<(usize, bool)> = None;
+    for el in catch_clause.syntax().children_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        if tok.kind().is_trivia() {
+            continue;
+        }
+        if tok.kind() == SyntaxKind::Identifier {
+            let start = u32::from(tok.text_range().start()) as usize;
+            last_ident = Some((start, tok.text() == name));
+        }
+        if tok.kind() == SyntaxKind::RParen {
+            break;
+        }
+    }
+
+    match last_ident {
+        Some((start, true)) => Some(start),
+        _ => None,
+    }
 }
 
 fn lexical_resolve_in_parameter_list(

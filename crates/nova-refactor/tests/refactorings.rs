@@ -6032,6 +6032,160 @@ fn inline_variable_rejects_shadowing_by_lambda_parameter() {
 }
 
 #[test]
+fn inline_variable_rejects_shadowing_by_for_header_declaration() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    for (int b = 2; b < 3; b++) {
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            SemanticRefactorError::InlineShadowedDependency { name } if name == "b"
+        ),
+        "expected InlineShadowedDependency for `b`, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_shadowing_by_catch_parameter() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    try {
+      System.out.println("x");
+    } catch (Exception b) {
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            SemanticRefactorError::InlineShadowedDependency { name } if name == "b"
+        ),
+        "expected InlineShadowedDependency for `b`, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejects_shadowing_by_try_resource() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    try (java.io.ByteArrayInputStream b = new java.io.ByteArrayInputStream(new byte[0])) {
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            SemanticRefactorError::InlineShadowedDependency { name } if name == "b"
+        ),
+        "expected InlineShadowedDependency for `b`, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_allows_resource_shadowing_in_catch_clause() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int b = 1;
+    int a = b;
+    try (java.io.ByteArrayInputStream b = new java.io.ByteArrayInputStream(new byte[0])) {
+      System.out.println("x");
+    } catch (RuntimeException e) {
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("catch (RuntimeException e) {\n      System.out.println(b);"),
+        "expected `a` to be inlined to outer `b` in catch clause, got: {after}"
+    );
+    assert!(
+        !after.contains("int a ="),
+        "expected `a` declaration to be removed, got: {after}"
+    );
+}
+
+#[test]
 fn symbol_at_returns_type_for_class_name() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
