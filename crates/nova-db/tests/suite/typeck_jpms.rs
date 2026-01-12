@@ -767,7 +767,20 @@ fn jpms_typeck_reports_unresolved_type_for_unexported_workspace_module_package()
     ];
     db.set_project_config(project, Arc::new(cfg));
 
-    let file_a = FileId::from_raw(1);
+    let file_hidden = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file_hidden,
+        "mod-b/src/main/java/b/internal/Hidden.java",
+        r#"
+package b.internal;
+
+public class Hidden {}
+"#,
+    );
+
+    let file_a = FileId::from_raw(2);
     set_file(
         &mut db,
         project,
@@ -777,26 +790,14 @@ fn jpms_typeck_reports_unresolved_type_for_unexported_workspace_module_package()
 package a;
 
 class App {
-  void m() {
-    b.internal.Hidden h;
-  }
+    void m() {
+        b.internal.Hidden h = null;
+    }
 }
 "#,
     );
 
-    let file_b = FileId::from_raw(2);
-    set_file(
-        &mut db,
-        project,
-        file_b,
-        "mod-b/src/main/java/b/internal/Hidden.java",
-        r#"
-package b.internal;
-public class Hidden {}
-"#,
-    );
-
-    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+    db.set_project_files(project, Arc::new(vec![file_a, file_hidden]));
 
     let diags = db.type_diagnostics(file_a);
     assert!(
