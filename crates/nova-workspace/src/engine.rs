@@ -95,7 +95,7 @@ impl Drop for WatcherHandle {
 
 pub(crate) struct WorkspaceEngine {
     vfs: Vfs<LocalFs>,
-    query_db: salsa::Database,
+    pub(crate) query_db: salsa::Database,
     indexes: Arc<Mutex<ProjectIndexes>>,
 
     config: RwLock<EffectiveConfig>,
@@ -1182,20 +1182,6 @@ impl WorkspaceEngine {
 
     pub(crate) fn vfs(&self) -> &Vfs<LocalFs> {
         &self.vfs
-    }
-
-    pub(crate) fn salsa_file_content(&self, file: FileId) -> Option<std::sync::Arc<String>> {
-        self.query_db.with_snapshot(|snap| {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if snap.file_exists(file) {
-                    Some(snap.file_content(file))
-                } else {
-                    None
-                }
-            }))
-            .ok()
-            .flatten()
-        })
     }
 }
 

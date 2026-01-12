@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nova_core::ProjectDatabase;
-use nova_db::{Database, FileId};
+use nova_db::{Database, FileId, NovaInputs};
 use nova_vfs::FileSystem;
 use nova_vfs::VfsPath;
 
@@ -33,40 +33,62 @@ impl WorkspaceSnapshot {
     /// Capture an owned snapshot from the in-memory workspace engine.
     ///
     /// This preserves the existing `FileId`s allocated by the VFS. Content is read
-    /// from the VFS overlay when possible (so open documents win over disk). When
-    /// the VFS cannot provide a file's text, we fall back to the Salsa input stored
-    /// in the engine.
+    /// primarily from the Salsa inputs stored in the engine, which already include
+    /// open-document overlays. If a `FileId` exists in the VFS registry but its
+    /// Salsa inputs haven't been initialized yet, we fall back to reading from the
+    /// VFS (and ultimately disk for non-open files).
     pub(crate) fn from_engine(engine: &WorkspaceEngine) -> Self {
-        let all_file_ids = engine.vfs().all_file_ids();
+        let vfs = engine.vfs();
+        let all_file_ids = vfs.all_file_ids();
 
         let mut file_paths = HashMap::with_capacity(all_file_ids.len());
         let mut file_contents = HashMap::with_capacity(all_file_ids.len());
         let mut path_to_id = HashMap::with_capacity(all_file_ids.len());
+        let empty = Arc::new(String::new());
 
-        for file_id in &all_file_ids {
-            let vfs_path = engine.vfs().path_for_id(*file_id);
+        engine.query_db.with_snapshot(|snap| {
+            for file_id in &all_file_ids {
+                let vfs_path = vfs.path_for_id(*file_id);
 
-            let local_path = vfs_path
-                .as_ref()
-                .and_then(VfsPath::as_local_path)
-                .map(Path::to_path_buf);
+                let local_path = vfs_path
+                    .as_ref()
+                    .and_then(VfsPath::as_local_path)
+                    .map(Path::to_path_buf);
 
-            file_paths.insert(*file_id, local_path.clone());
-            if let Some(path) = local_path {
-                path_to_id.insert(path, *file_id);
+                file_paths.insert(*file_id, local_path.clone());
+                if let Some(path) = local_path {
+                    path_to_id.insert(path, *file_id);
+                }
+
+                // Prefer the Salsa input contents (already include open document overlays).
+                // `ra_salsa` panics on uninitialized inputs, so we must be defensive here: file ids
+                // can exist in the VFS registry before the workspace has synced inputs.
+                let exists_in_salsa =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        snap.file_exists(*file_id)
+                    }))
+                    .ok();
+                let from_salsa = match exists_in_salsa {
+                    Some(true) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        snap.file_content(*file_id)
+                    }))
+                    .ok(),
+                    _ => None,
+                };
+
+                let content = match from_salsa {
+                    Some(content) => content,
+                    None if exists_in_salsa == Some(false) => empty.clone(),
+                    None => vfs_path
+                        .as_ref()
+                        .and_then(|path| vfs.read_to_string(path).ok())
+                        .map(Arc::new)
+                        .unwrap_or_else(|| empty.clone()),
+                };
+
+                file_contents.insert(*file_id, content);
             }
-
-            let from_vfs = vfs_path
-                .as_ref()
-                .and_then(|path| engine.vfs().read_to_string(path).ok())
-                .map(Arc::new);
-
-            let content = from_vfs
-                .or_else(|| engine.salsa_file_content(*file_id))
-                .unwrap_or_else(|| Arc::new(String::new()));
-
-            file_contents.insert(*file_id, content);
-        }
+        });
 
         Self {
             file_paths,
@@ -170,6 +192,8 @@ mod tests {
     use super::*;
 
     use nova_core::AbsPathBuf;
+    use nova_db::NovaInputs;
+    use std::fs;
 
     #[test]
     fn from_sources_roundtrips_file_id_lookup() {
@@ -216,6 +240,55 @@ mod tests {
         assert_eq!(snapshot.file_id(abs.as_path()), Some(file_id));
         assert!(snapshot.all_file_ids().contains(&file_id));
         assert_eq!(snapshot.file_content(file_id), "class Main {}");
+    }
+
+    #[test]
+    fn from_engine_prefers_salsa_file_contents_over_vfs_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file_a = root.join("src/A.java");
+        let file_b = root.join("src/B.java");
+        fs::write(&file_a, "class A {}".as_bytes()).unwrap();
+        fs::write(&file_b, "class B {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let vfs_a = VfsPath::local(file_a);
+        let file_id = engine.vfs().get_id(&vfs_a).expect("file id for A");
+
+        let from_salsa = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
+
+        let snapshot = workspace.snapshot();
+        let from_snapshot = snapshot
+            .file_contents
+            .get(&file_id)
+            .expect("snapshot contents for A");
+
+        assert!(
+            Arc::ptr_eq(from_snapshot, &from_salsa),
+            "expected snapshot to reuse the existing Salsa Arc<String> without re-reading from disk"
+        );
+    }
+
+    #[test]
+    fn from_engine_uses_open_document_overlay_text() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/Main.java");
+        fs::write(&file, "class Main { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let vfs_path = VfsPath::local(file);
+        let file_id = workspace.open_document(vfs_path, "class Main { overlay }".to_string(), 1);
+
+        let snapshot = workspace.snapshot();
+        assert_eq!(snapshot.file_content(file_id), "class Main { overlay }");
     }
 
     #[test]
