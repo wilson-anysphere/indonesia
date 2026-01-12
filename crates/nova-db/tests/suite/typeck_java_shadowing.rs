@@ -27,6 +27,19 @@ fn base_project_config(root: PathBuf) -> ProjectConfig {
     }
 }
 
+fn set_file(
+    db: &mut SalsaRootDatabase,
+    project: ProjectId,
+    file: FileId,
+    rel_path: &str,
+    text: &str,
+) {
+    db.set_file_project(file, project);
+    db.set_file_rel_path(file, Arc::new(rel_path.to_string()));
+    db.set_source_root(file, SourceRootId::from_raw(0));
+    db.set_file_text(file, text);
+}
+
 #[test]
 fn typeck_does_not_load_java_types_from_classpath_stubs() {
     let project = ProjectId::from_raw(0);
@@ -74,10 +87,7 @@ class C {
 "#;
 
     let file = FileId::from_raw(1);
-    db.set_file_project(file, project);
-    db.set_file_rel_path(file, Arc::new("src/Test.java".to_string()));
-    db.set_source_root(file, SourceRootId::from_raw(0));
-    db.set_file_text(file, src);
+    set_file(&mut db, project, file, "src/Test.java", src);
     db.set_project_files(project, Arc::new(vec![file]));
 
     let diags = db.type_diagnostics(file);
@@ -117,11 +127,7 @@ class Foo {
 }
 "#;
     let foo_file = FileId::from_raw(1);
-    db.set_file_project(foo_file, project);
-    db.set_file_rel_path(foo_file, Arc::new("src/java/fake/Foo.java".to_string()));
-    db.set_source_root(foo_file, SourceRootId::from_raw(0));
-    db.set_file_exists(foo_file, true);
-    db.set_file_content(foo_file, Arc::new(foo_src.to_string()));
+    set_file(&mut db, project, foo_file, "src/java/fake/Foo.java", foo_src);
 
     let test_src = r#"
 class C {
@@ -132,11 +138,7 @@ class C {
 }
 "#;
     let test_file = FileId::from_raw(2);
-    db.set_file_project(test_file, project);
-    db.set_file_rel_path(test_file, Arc::new("src/Test.java".to_string()));
-    db.set_source_root(test_file, SourceRootId::from_raw(0));
-    db.set_file_exists(test_file, true);
-    db.set_file_content(test_file, Arc::new(test_src.to_string()));
+    set_file(&mut db, project, test_file, "src/Test.java", test_src);
 
     db.set_project_files(project, Arc::new(vec![foo_file, test_file]));
 
@@ -152,5 +154,78 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("bar")),
         "expected unresolved-method diagnostic for bar, got {diags:?}"
+    );
+}
+
+#[test]
+fn typeck_prefers_workspace_types_over_classpath_stubs() {
+    let project = ProjectId::from_raw(0);
+    let mut db = SalsaRootDatabase::default();
+    let tmp = TempDir::new().unwrap();
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // Classpath stub that conflicts with a workspace type of the same binary name. If typeck were
+    // to lazily load it, it could overwrite the workspace `ClassDef` in the `TypeStore` and change
+    // method resolution results.
+    let a_stub = nova_classpath::ClasspathClassStub {
+        binary_name: "p.A".to_string(),
+        internal_name: "p/A".to_string(),
+        access_flags: 0,
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: Vec::new(),
+        signature: None,
+        annotations: Vec::new(),
+        fields: Vec::new(),
+        methods: vec![nova_classpath::ClasspathMethodStub {
+            name: "m".to_string(),
+            // static String m()
+            descriptor: "()Ljava/lang/String;".to_string(),
+            signature: None,
+            access_flags: 0x0008,
+            annotations: Vec::new(),
+        }],
+    };
+    let module_aware_index =
+        nova_classpath::ModuleAwareClasspathIndex::from_stubs(vec![(a_stub, None)]);
+    db.set_classpath_index(
+        project,
+        Some(ArcEq::new(Arc::new(module_aware_index.types.clone()))),
+    );
+
+    let src_a = r#"
+package p;
+class A {
+  static int m() { return 1; }
+}
+"#;
+    let src_b = r#"
+package p;
+class B {
+  void test() {
+    int x = A.m();
+  }
+}
+"#;
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+    set_file(&mut db, project, a_file, "src/p/A.java", src_a);
+    set_file(&mut db, project, b_file, "src/p/B.java", src_b);
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let offset = src_b
+        .find("A.m()")
+        .expect("snippet should contain A.m()")
+        + "A.m".len();
+    let ty = db
+        .type_at_offset_display(b_file, offset as u32)
+        .expect("expected a type at offset for A.m()");
+    assert_eq!(
+        ty, "int",
+        "expected workspace definition of p.A.m() to win over classpath stub; got type {ty:?}"
     );
 }
