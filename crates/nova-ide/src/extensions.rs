@@ -628,10 +628,9 @@ impl FrameworkAnalyzerRegistryProvider {
     /// Construct a provider that always returns empty results without attempting to build the
     /// framework database.
     ///
-    /// This is used by `IdeExtensions::with_default_registry` to register the provider ID in the
-    /// registry (so downstream callers can opt into registry-backed analyzers) without adding per
-    /// request overhead while Nova's legacy `framework_cache` providers are still the source of
-    /// built-in framework intelligence.
+    /// This can be useful when a consumer wants to reserve the provider ID in an
+    /// [`ExtensionRegistry`] without paying per-request overhead, while still allowing the provider
+    /// to be replaced with a real analyzer registry later.
     pub fn empty() -> Self {
         Self {
             registry: Arc::new(AnalyzerRegistry::new()),
@@ -903,7 +902,7 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
 }
 
 #[allow(private_bounds)]
-impl<DB> IdeExtensions<DB>
+impl<DB: ?Sized> IdeExtensions<DB>
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
@@ -922,25 +921,6 @@ where
         this
     }
 }
-#[allow(private_bounds)]
-impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
-    pub fn with_default_registry(
-        db: Arc<dyn nova_db::Database + Send + Sync>,
-        config: Arc<NovaConfig>,
-        project: ProjectId,
-    ) -> Self {
-        let mut this = Self::new(db, config, project);
-        let registry = this.registry_mut();
-        let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
-        let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
-
-        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
-        let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider);
-        this
-    }
-}
-
 #[allow(private_bounds)]
 impl<DB: ?Sized> IdeExtensions<DB>
 where
