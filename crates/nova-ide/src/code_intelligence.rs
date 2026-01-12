@@ -5680,7 +5680,7 @@ pub(crate) fn core_completions(
         if is_type_completion_context(text, prefix_start, offset) {
             let query = type_completion_query(text, prefix_start, &prefix);
             if !query.qualifier_prefix.is_empty() {
-                let items = type_completions(db, &prefix, query);
+                let items = type_completions(db, file, &prefix, query);
                 if cancel.is_cancelled() {
                     return Vec::new();
                 }
@@ -6296,7 +6296,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         if is_type_completion_context(text, prefix_start, offset) {
             let query = type_completion_query(text, prefix_start, &prefix);
             if !query.qualifier_prefix.is_empty() {
-                let items = type_completions(db, &prefix, query);
+                let items = type_completions(db, file, &prefix, query);
                 if !items.is_empty() {
                     return decorate_completions(&text_index, prefix_start, offset, items);
                 }
@@ -6820,6 +6820,7 @@ fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) 
 
 fn type_completions(
     db: &dyn Database,
+    file: FileId,
     segment_prefix: &str,
     query: TypeCompletionQuery,
 ) -> Vec<CompletionItem> {
@@ -6829,7 +6830,7 @@ fn type_completions(
     let mut seen: HashSet<String> = HashSet::new();
 
     // Workspace types.
-    for (label, detail) in workspace_type_candidates(db, segment_prefix, &query, LIMIT) {
+    for (label, detail) in workspace_type_candidates(db, file, segment_prefix, &query, LIMIT) {
         if seen.insert(label.clone()) {
             items.push(CompletionItem {
                 label,
@@ -6894,12 +6895,49 @@ fn type_completions(
 
 fn workspace_type_candidates(
     db: &dyn Database,
+    file: FileId,
     segment_prefix: &str,
     query: &TypeCompletionQuery,
     limit: usize,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let qualified = !query.qualifier_prefix.is_empty();
+
+    // Prefer cached workspace type index (fast path).
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        let index = env.workspace_index();
+        if segment_prefix.is_empty() {
+            for ty in index.types() {
+                if out.len() >= limit {
+                    break;
+                }
+                let matches = if qualified {
+                    ty.qualified.starts_with(&query.full_prefix)
+                } else {
+                    true
+                };
+                if matches {
+                    out.push((ty.simple.clone(), ty.qualified.clone()));
+                }
+            }
+        } else {
+            for ty in index.types_with_prefix(segment_prefix) {
+                if out.len() >= limit {
+                    break;
+                }
+                let matches = if qualified {
+                    ty.qualified.starts_with(&query.full_prefix)
+                } else {
+                    true
+                };
+                if matches {
+                    out.push((ty.simple.clone(), ty.qualified.clone()));
+                }
+            }
+        }
+
+        return out;
+    }
 
     for file_id in db.all_file_ids() {
         if out.len() >= limit {
