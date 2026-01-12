@@ -240,7 +240,8 @@ where
         let Some(fw_db) = self.framework_db(host_db, params.file, &ctx.cancel) else {
             return Vec::new();
         };
-        self.registry.framework_diagnostics(fw_db.as_ref(), params.file)
+        self.registry
+            .framework_diagnostics_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
     }
 }
 
@@ -272,7 +273,7 @@ where
             offset: params.offset,
         };
         self.registry
-            .framework_completions(fw_db.as_ref(), &completion_ctx)
+            .framework_completions_with_cancel(fw_db.as_ref(), &completion_ctx, &ctx.cancel)
     }
 }
 
@@ -310,7 +311,7 @@ where
         };
 
         self.registry
-            .framework_navigation_targets(fw_db.as_ref(), &symbol)
+            .framework_navigation_targets_with_cancel(fw_db.as_ref(), &symbol, &ctx.cancel)
             .into_iter()
             .map(|target| NavigationTarget {
                 file: target.file,
@@ -343,7 +344,7 @@ where
         };
 
         self.registry
-            .framework_inlay_hints(fw_db.as_ref(), params.file)
+            .framework_inlay_hints_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
             .into_iter()
             .map(|hint| InlayHint {
                 span: hint.span,
@@ -369,7 +370,8 @@ impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
         let Some(fw_db) = self.framework_db(ctx.db.clone(), params.file, &ctx.cancel) else {
             return Vec::new();
         };
-        self.registry.framework_diagnostics(fw_db.as_ref(), params.file)
+        self.registry
+            .framework_diagnostics_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
     }
 }
 
@@ -397,7 +399,7 @@ impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
             offset: params.offset,
         };
         self.registry
-            .framework_completions(fw_db.as_ref(), &completion_ctx)
+            .framework_completions_with_cancel(fw_db.as_ref(), &completion_ctx, &ctx.cancel)
     }
 }
 
@@ -429,7 +431,7 @@ impl NavigationProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyz
         };
 
         self.registry
-            .framework_navigation_targets(fw_db.as_ref(), &symbol)
+            .framework_navigation_targets_with_cancel(fw_db.as_ref(), &symbol, &ctx.cancel)
             .into_iter()
             .map(|target| NavigationTarget {
                 file: target.file,
@@ -458,7 +460,7 @@ impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyze
         };
 
         self.registry
-            .framework_inlay_hints(fw_db.as_ref(), params.file)
+            .framework_inlay_hints_with_cancel(fw_db.as_ref(), params.file, &ctx.cancel)
             .into_iter()
             .map(|hint| InlayHint {
                 span: hint.span,

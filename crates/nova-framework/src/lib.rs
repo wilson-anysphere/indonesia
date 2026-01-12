@@ -549,6 +549,28 @@ impl AnalyzerRegistry {
         out
     }
 
+    /// Collect all framework diagnostics for `file`, cooperating with request cancellation.
+    pub fn framework_diagnostics_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<Diagnostic> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+
+        let project = db.project_of_file(file);
+        let mut out = Vec::new();
+        for analyzer in self.applicable_analyzers(db, project) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            out.extend(analyzer.diagnostics_with_cancel(db, file, cancel));
+        }
+        out
+    }
+
     /// Collect all framework completion items for a completion context.
     pub fn framework_completions(
         &self,
@@ -558,6 +580,28 @@ impl AnalyzerRegistry {
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, ctx.project) {
             out.extend(analyzer.completions(db, ctx));
+        }
+        out
+    }
+
+    /// Collect all framework completion items for a completion context, cooperating with request
+    /// cancellation.
+    pub fn framework_completions_with_cancel(
+        &self,
+        db: &dyn Database,
+        ctx: &CompletionContext,
+        cancel: &CancellationToken,
+    ) -> Vec<CompletionItem> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        for analyzer in self.applicable_analyzers(db, ctx.project) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            out.extend(analyzer.completions_with_cancel(db, ctx, cancel));
         }
         out
     }
@@ -576,6 +620,32 @@ impl AnalyzerRegistry {
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
             out.extend(analyzer.navigation(db, symbol));
+        }
+        out
+    }
+
+    /// Aggregate navigation targets for a symbol, cooperating with request cancellation.
+    pub fn framework_navigation_targets_with_cancel(
+        &self,
+        db: &dyn Database,
+        symbol: &Symbol,
+        cancel: &CancellationToken,
+    ) -> Vec<NavigationTarget> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+
+        let project = match *symbol {
+            Symbol::File(file) => db.project_of_file(file),
+            Symbol::Class(class) => db.project_of_class(class),
+        };
+
+        let mut out = Vec::new();
+        for analyzer in self.applicable_analyzers(db, project) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            out.extend(analyzer.navigation_with_cancel(db, symbol, cancel));
         }
         out
     }
@@ -607,6 +677,28 @@ impl AnalyzerRegistry {
         let mut out = Vec::new();
         for analyzer in self.applicable_analyzers(db, project) {
             out.extend(analyzer.inlay_hints(db, file));
+        }
+        out
+    }
+
+    /// Collect inlay hints for a file, cooperating with request cancellation.
+    pub fn framework_inlay_hints_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<InlayHint> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+
+        let project = db.project_of_file(file);
+        let mut out = Vec::new();
+        for analyzer in self.applicable_analyzers(db, project) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            out.extend(analyzer.inlay_hints_with_cancel(db, file, cancel));
         }
         out
     }
