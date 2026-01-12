@@ -6237,7 +6237,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 let rhs_prim = primitive_like(env_ro, &rhs_ty);
                                 let result_ty = match op {
                                     AssignOp::AddAssign => {
-                                        if is_java_lang_string(loader.store, &lhs_ty)
+                                        // String concatenation is only defined for non-void
+                                        // expressions.
+                                        if rhs_ty == Type::Void || lhs_ty == Type::Void {
+                                            None
+                                        } else if is_java_lang_string(loader.store, &lhs_ty)
                                             || is_java_lang_string(loader.store, &rhs_ty)
                                         {
                                             Some(string_ty)
@@ -8621,7 +8625,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             // `+` is special: numeric addition or string concatenation.
             BinaryOp::Add => {
                 if lhs_ty == string_ty || rhs_ty == string_ty {
-                    string_ty.clone()
+                    // String concatenation is only defined for non-void expressions.
+                    if lhs_ty == Type::Void || rhs_ty == Type::Void {
+                        type_mismatch(self);
+                        Type::Error
+                    } else {
+                        string_ty.clone()
+                    }
                 } else if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
                     Type::Unknown
                 } else {

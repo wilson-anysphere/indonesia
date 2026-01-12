@@ -1510,6 +1510,45 @@ class C {
 }
 
 #[test]
+fn string_concat_rejects_void_operand() {
+    let src = r#"
+class C {
+    void foo() {}
+    void m() {
+        String s = "a" + foo();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected string concatenation with void operand to be rejected; got {diags:?}"
+    );
+}
+
+#[test]
+fn compound_assign_string_concat_rejects_void_operand() {
+    let src = r#"
+class C {
+    void foo() {}
+    void m() {
+        String s = "a";
+        s += foo();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected `s += foo()` with void operand to be rejected; got {diags:?}"
+    );
+}
+
+#[test]
 fn compound_assign_rejects_non_numeric() {
     let src = r#"
 class C {
