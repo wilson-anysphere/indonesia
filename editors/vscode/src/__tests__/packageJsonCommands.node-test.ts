@@ -3,6 +3,46 @@ import test from 'node:test';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
+function findDuplicates(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    else seen.add(value);
+  }
+  return [...duplicates].sort();
+}
+
+test('package.json has no duplicate activationEvents or contributes.commands entries', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEventsRaw = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const activationEvents = activationEventsRaw.filter((value): value is string => typeof value === 'string');
+  const activationEventDuplicates = findDuplicates(activationEvents);
+  assert.equal(
+    activationEventDuplicates.length,
+    0,
+    `Expected activationEvents to contain no duplicates, but found: ${activationEventDuplicates.join(', ')}`,
+  );
+
+  const commandsRaw = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+  const commandIds = commandsRaw
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+    .filter((id): id is string => typeof id === 'string');
+
+  const commandDuplicates = findDuplicates(commandIds);
+  assert.equal(
+    commandDuplicates.length,
+    0,
+    `Expected contributes.commands[].command to contain no duplicates, but found: ${commandDuplicates.join(', ')}`,
+  );
+});
+
 test('package.json contributes Nova request metrics commands', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
