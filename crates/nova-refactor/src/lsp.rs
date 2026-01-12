@@ -9,7 +9,7 @@ use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_index::Index;
 use thiserror::Error;
 
-use crate::edit::{apply_workspace_edit, FileId, FileOp, TextEdit, WorkspaceEdit};
+use crate::edit::{apply_workspace_edit, EditError, FileId, FileOp, TextEdit, WorkspaceEdit};
 use crate::java::{JavaSymbolKind, SymbolId};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
 
@@ -138,6 +138,8 @@ where
             .file_text(&e.file)
             .ok_or_else(|| LspConversionError::UnknownFile(e.file.clone()))?;
         let uri = file_id_to_uri(&e.file)?;
+
+        validate_text_range_in_text(&e.file, e.range, text)?;
 
         let line_index = line_indexes
             .entry(e.file.clone())
@@ -272,17 +274,18 @@ where
         // Convert byte offsets -> UTF-16 positions.
         let mut lsp_edits: Vec<lsp_types::OneOf<LspTextEdit, lsp_types::AnnotatedTextEdit>> = edits
             .drain(..)
-            .map(|e| {
+            .map(|e| -> Result<_, LspConversionError> {
+                validate_text_range_in_text(&file, e.range, text)?;
                 let range = Range {
                     start: offset_to_position(&line_index, text, e.range.start),
                     end: offset_to_position(&line_index, text, e.range.end),
                 };
-                lsp_types::OneOf::Left(LspTextEdit {
+                Ok(lsp_types::OneOf::Left(LspTextEdit {
                     range,
                     new_text: e.replacement,
-                })
+                }))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         // LSP clients tend to apply edits sequentially. Provide them in reverse order to avoid
         // offset shifting even if a client ignores the spec.
@@ -350,6 +353,31 @@ fn offset_to_position(line_index: &LineIndex, text: &str, offset: usize) -> Posi
         line: position.line,
         character: position.character,
     }
+}
+
+fn validate_text_range_in_text(
+    file: &FileId,
+    range: crate::edit::TextRange,
+    text: &str,
+) -> Result<(), EditError> {
+    let len = text.len();
+    if range.start > len || range.end > len {
+        return Err(EditError::OutOfBounds {
+            file: file.clone(),
+            range,
+            len,
+        });
+    }
+
+    if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
+        return Err(EditError::InvalidUtf8Boundary {
+            file: file.clone(),
+            range,
+            len,
+        });
+    }
+
+    Ok(())
 }
 
 fn full_document_range(contents: &str) -> Range {
@@ -427,6 +455,7 @@ fn _lsp_text_edit(
         .file_text(&edit.file)
         .ok_or_else(|| LspConversionError::UnknownFile(edit.file.clone()))?;
     let line_index = LineIndex::new(text);
+    validate_text_range_in_text(&edit.file, edit.range, text)?;
     Ok(LspTextEdit {
         range: Range {
             start: offset_to_position(&line_index, text, edit.range.start),
@@ -601,5 +630,43 @@ mod tests {
         let rename_op = rename_op.expect("expected rename operation");
         assert_eq!(rename_op.old_uri.as_str(), "file:///workspace/old.txt");
         assert_eq!(rename_op.new_uri.as_str(), "file:///workspace/new.txt");
+    }
+
+    #[test]
+    fn workspace_edit_to_lsp_rejects_ranges_that_split_utf8_characters() {
+        // 😀 is 4 bytes in UTF-8. Use a range inside the byte sequence.
+        let file = FileId::new("file:///test.txt");
+        let db = TextDatabase::new([(file.clone(), "😀".to_string())]);
+
+        let edit = WorkspaceEdit::new(vec![TextEdit::replace(
+            file.clone(),
+            crate::edit::TextRange::new(1, 2),
+            "X",
+        )]);
+
+        let err = workspace_edit_to_lsp(&db, &edit).unwrap_err();
+        assert!(matches!(
+            err,
+            LspConversionError::Edit(crate::edit::EditError::InvalidUtf8Boundary { .. })
+        ));
+    }
+
+    #[test]
+    fn workspace_edit_to_lsp_document_changes_rejects_ranges_that_split_utf8_characters() {
+        // 😀 is 4 bytes in UTF-8. Use a range inside the byte sequence.
+        let file = FileId::new("file:///test.txt");
+        let db = TextDatabase::new([(file.clone(), "😀".to_string())]);
+
+        let edit = WorkspaceEdit::new(vec![TextEdit::replace(
+            file.clone(),
+            crate::edit::TextRange::new(1, 2),
+            "X",
+        )]);
+
+        let err = workspace_edit_to_lsp_document_changes(&db, &edit).unwrap_err();
+        assert!(matches!(
+            err,
+            LspConversionError::Edit(crate::edit::EditError::InvalidUtf8Boundary { .. })
+        ));
     }
 }

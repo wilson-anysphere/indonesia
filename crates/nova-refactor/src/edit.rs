@@ -585,6 +585,14 @@ pub enum EditError {
         range: TextRange,
         len: usize,
     },
+    #[error(
+        "text edit range {range:?} does not lie on UTF-8 character boundaries (len={len}) in {file:?}"
+    )]
+    InvalidUtf8Boundary {
+        file: FileId,
+        range: TextRange,
+        len: usize,
+    },
     #[error("unknown file {0:?}")]
     UnknownFile(FileId),
     #[error("file already exists {0:?}")]

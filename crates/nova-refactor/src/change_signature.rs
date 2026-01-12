@@ -1286,6 +1286,12 @@ fn build_workspace_edit(
             file,
             context: "edit out of bounds",
         },
+        EditError::InvalidUtf8Boundary {
+            file: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "edit range is not on UTF-8 character boundaries",
+        },
         EditError::UnknownFile(FileId(file)) => ChangeSignatureConflict::ParseError {
             file,
             context: "unknown file referenced by edit",
