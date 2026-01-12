@@ -337,3 +337,37 @@ class Use {
         "expected value chain to not be rewritten as type: {out_use}"
     );
 }
+
+#[test]
+fn rename_field_updates_references_in_assert_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 1;
+  void m() {
+    assert foo > 0 : foo;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int foo").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("field symbol");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Field));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".to_string(),
+        },
+    )
+    .expect("rename succeeds");
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+    let out = apply_workspace_edit(&files, &edit).expect("edit applies");
+
+    let out_src = out.get(&file).expect("Test.java updated");
+    assert!(out_src.contains("int bar = 1;"));
+    assert!(out_src.contains("assert bar > 0 : bar;"));
+}
