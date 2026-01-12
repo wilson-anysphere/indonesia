@@ -1022,6 +1022,11 @@ fn parse_java_surfaces_unterminated_string_template_lexer_errors_as_parse_errors
         ),
     ] {
         let result = parse_java(input);
+        assert_eq!(
+            result.syntax().text().to_string(),
+            input,
+            "expected parse tree to be lossless for `{input}`"
+        );
         assert!(
             result.errors.iter().any(|e| e.message.starts_with(expected_prefix)),
             "expected parse errors starting with `{expected_prefix}` for `{input}`, got: {:#?}",
