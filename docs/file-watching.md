@@ -157,8 +157,8 @@ coalescing, and timing).
 Note: some Nova tests (especially in `nova-workspace`) may spawn background threads (scheduler pools,
 debouncers, etc.). In very resource-constrained environments you may see errors like `failed to
 spawn thread` / `Resource temporarily unavailable`. If that happens, try rerunning with a single
- test thread (e.g. `cargo test --locked -p nova-workspace --lib -- --test-threads=1`) to reduce peak thread
- usage.
+test thread (e.g. `cargo test --locked -p nova-workspace --lib -- --test-threads=1`) to reduce peak
+thread usage.
 
 Prefer one of these deterministic approaches:
 
