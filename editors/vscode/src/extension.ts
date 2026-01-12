@@ -1914,7 +1914,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         const doc = await openUntitledAiDocument({
-          title: 'Nova AI - Explain Error',
+          title: 'Nova AI: Explain Error',
           extension: 'md',
           languageId: 'markdown',
           content: text,
@@ -1967,7 +1967,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         await openUntitledAiDocument({
-          title: 'Nova AI - Generate Method Body',
+          title: 'Nova AI: Generate Method Body',
           extension: 'java',
           languageId: 'java',
           content: text,
@@ -2010,7 +2010,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         await openUntitledAiDocument({
-          title: 'Nova AI - Generate Tests',
+          title: 'Nova AI: Generate Tests',
           extension: 'java',
           languageId: 'java',
           content: text,

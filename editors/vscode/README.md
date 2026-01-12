@@ -331,9 +331,9 @@ Nova AI code actions are implemented as LSP `workspace/executeCommand` calls (e.
 VS Code does **not** automatically display the returned value from `workspace/executeCommand`, so the
 extension intercepts these AI code actions client-side and surfaces the returned text in an editor:
 
-- **Explain this error** opens a Markdown document (with preview) titled like **“Nova AI - Explain Error”**.
-- **Generate method body with AI** opens an untitled Java document titled like **“Nova AI - Generate Method Body”**.
-- **Generate tests with AI** opens an untitled Java document titled like **“Nova AI - Generate Tests”**.
+- **Explain this error** opens a Markdown document (with preview) titled like **“Nova AI: Explain Error”**.
+- **Generate method body with AI** opens an untitled Java document titled like **“Nova AI: Generate Method Body”**.
+- **Generate tests with AI** opens an untitled Java document titled like **“Nova AI: Generate Tests”**.
 
 Each UI includes a **Copy to Clipboard** action for convenience.
 
@@ -349,6 +349,9 @@ environment variables read by the `nova-lsp` process, for example:
 These environment variables must be present in the VS Code environment (e.g. set them in your shell
 before launching VS Code, or configure them via your OS / remote environment) and require restarting
 the language server.
+
+Alternatively, configure AI in a `nova.toml` file and point the extension at it via `nova.lsp.configPath`
+(then restart `nova-lsp`).
 
 ### Debugging
 
