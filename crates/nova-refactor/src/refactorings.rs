@@ -173,6 +173,29 @@ pub fn extract_variable(
     let expr =
         find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
 
+    // Java pattern matching for `instanceof` introduces pattern variables whose scope is tied to
+    // the conditional expression. Extracting an `instanceof <pattern>` would remove the binding
+    // and either break compilation (pattern variable no longer in scope) or change semantics.
+    if let ast::Expression::InstanceofExpression(instanceof) = &expr {
+        if instanceof.pattern().is_some() {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract `instanceof` pattern matching expression",
+            });
+        }
+    }
+
+    // Be conservative: reject extracting any expression subtree that contains patterns (nested
+    // patterns, switch patterns, etc) so we never let pattern variables escape their scope.
+    if expr
+        .syntax()
+        .descendants()
+        .any(|node| node.kind() == SyntaxKind::Pattern)
+    {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract expression containing pattern variables",
+        });
+    }
+
     // `extract_variable` inserts the new declaration before the enclosing statement. For
     // expression-bodied lambdas (`x -> x + 1`), there is no statement inside the lambda body,
     // so extraction would hoist the declaration outside the lambda (breaking compilation when

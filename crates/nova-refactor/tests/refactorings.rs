@@ -179,6 +179,42 @@ fn extract_variable_generates_valid_edit() {
 }
 
 #[test]
+fn extract_variable_rejects_instanceof_pattern_expression() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(Object obj) {
+    if (/*select*/obj instanceof String s/*end*/ && s.length() > 0) {
+      System.out.println(s);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "extract variable is not supported in this context: cannot extract `instanceof` pattern matching expression"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_empty_name() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
