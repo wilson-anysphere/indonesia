@@ -153,117 +153,68 @@ impl ExtractMethod {
 }
 ```
 
-### Extract Variable/Constant
+### Extract Variable
+
+Current implementation policy (semantic + statement-aware):
+
+- **Insertion point:** the new local declaration is inserted immediately **before the _enclosing statement_** that contains the extracted expression (statement-aware), not simply at the start of the current line.
+- **Formatting:** newline style (LF vs CRLF) and indentation are preserved. The inserted declaration uses the indentation of the enclosing statement, and we preserve surrounding blank lines as much as possible.
+- **Type annotation:**
+  - `use_var: true` emits `var <name> = <expr>;`
+  - `use_var: false` emits an explicit Java type when we can infer it **best-effort** from semantic type information. If we cannot infer a safe explicit type, we fall back to `var` rather than guessing.
+- **Applicability:** the implementation is intentionally conservative and rejects extractions from contexts where hoisting the expression would change semantics or where we cannot reliably pick a statement insertion point. Known non-applicable contexts include:
+  - expressions that are the condition of `while (...) { ... }` loops
+  - expressions that are the condition of `do { ... } while (...);` loops
+
+API shape (refactoring-engine entrypoint):
 
 ```rust
-/// Extract expression to variable
-pub fn extract_variable(
-    db: &dyn Database,
-    expr: ExprId,
-    name: String,
-    use_var: bool,  // var vs explicit type
-) -> WorkspaceEdit {
-    let expr_range = db.expr_range(expr);
-    let expr_text = db.expr_text(expr);
-    let expr_type = db.type_of(expr);
-    
-    // Find insertion point (before statement)
-    let stmt = db.enclosing_statement(expr);
-    let insert_pos = db.statement_start(stmt);
-    
-    // Determine type annotation
-    let type_str = if use_var {
-        "var".into()
-    } else {
-        format_type(&expr_type)
-    };
-    
-    // Generate declaration
-    let decl = format!("{} {} = {};\n", type_str, name, expr_text);
-    
-    // Find all occurrences (for "replace all" option)
-    let occurrences = find_equivalent_expressions(db, expr);
-    
-    WorkspaceEdit {
-        changes: vec![
-            TextEdit::insert(insert_pos, decl),
-            TextEdit::replace(expr_range, name),
-            // Optionally replace other occurrences
-        ],
-    }
-}
+use nova_refactor::{extract_variable, ExtractVariableParams, FileId, WorkspaceTextRange};
+
+let edit = extract_variable(
+    db,
+    ExtractVariableParams {
+        file: FileId::new("file:///Test.java"),
+        // Byte range that should correspond to a single expression node.
+        expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+        name: "extracted".to_string(),
+        // `true` => `var`, `false` => best-effort explicit type.
+        use_var: true,
+    },
+)?;
 ```
 
-### Inline
+### Inline Variable
+
+Current implementation policy:
+
+- **Two modes:**
+  - **Inline at cursor**: inline the single usage that the user invoked the refactoring on.
+  - **Inline all usages**: inline every usage of the variable within its scope.
+- **Usage selection required:** in “inline at cursor” mode, the API must identify *which* usage to inline (e.g. via a `usage_range`/cursor selection in the params), since a variable may have multiple references.
+- **Safety restrictions:** the implementation rejects variables that:
+  - do not have an initializer
+  - are written to / mutated after initialization (must be effectively final)
+  - have an initializer that is not safe to duplicate (side-effectful initializers are rejected, especially when inlining multiple usages)
+- **Safe deletion rules:** the declaration is removed only when:
+  - the refactoring is run in **inline all usages** mode, or
+  - the refactoring is run in **inline at cursor** mode *and* that usage is the **last remaining** usage.
+  Otherwise, the declaration is kept.
+
+API shape (refactoring-engine entrypoint):
 
 ```rust
-/// Inline variable, method, or constant
-pub enum InlineTarget {
-    Variable(LocalVarId),
-    Method(MethodId),
-    Constant(FieldId),
-}
+use nova_refactor::{inline_variable, InlineVariableParams, SymbolId, WorkspaceTextRange};
 
-pub fn inline(
-    db: &dyn Database,
-    target: InlineTarget,
-    inline_all: bool,
-) -> Result<WorkspaceEdit, InlineError> {
-    match target {
-        InlineTarget::Variable(var) => {
-            let init = db.variable_initializer(var)
-                .ok_or(InlineError::NoInitializer)?;
-            let init_text = db.expr_text(init);
-            
-            let usages = if inline_all {
-                db.find_references(Symbol::Local(var), false)
-            } else {
-                // Single usage at cursor
-                vec![db.current_reference()]
-            };
-            
-            // Check for side effects
-            if has_side_effects(db, init) && usages.len() > 1 {
-                return Err(InlineError::SideEffects);
-            }
-            
-            let mut edits = Vec::new();
-            
-            // Replace each usage
-            for usage in usages {
-                edits.push(TextEdit::replace(usage.range, init_text.clone()));
-            }
-            
-            // Remove declaration if inlining all
-            if inline_all {
-                edits.push(TextEdit::delete(db.declaration_range(var)));
-            }
-            
-            Ok(WorkspaceEdit { changes: edits })
-        }
-        
-        InlineTarget::Method(method) => {
-            let body = db.method_body(method)
-                .ok_or(InlineError::NoBody)?;
-            
-            // Check method is suitable for inlining
-            if db.method_is_recursive(method) {
-                return Err(InlineError::Recursive);
-            }
-            
-            // Transform body for inline context
-            let inlined = transform_for_inline(db, method, body);
-            
-            // ... similar pattern for finding and replacing usages
-            todo!()
-        }
-        
-        InlineTarget::Constant(field) => {
-            // Similar to variable
-            todo!()
-        }
-    }
-}
+let edit = inline_variable(
+    db,
+    InlineVariableParams {
+        symbol: my_local_symbol_id,
+        inline_all: false,
+        // Selects the usage at the cursor when `inline_all == false`.
+        usage_range: WorkspaceTextRange::new(use_start, use_end),
+    },
+)?;
 ```
 
 ### Move
