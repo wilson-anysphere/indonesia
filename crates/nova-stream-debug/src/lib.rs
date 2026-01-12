@@ -775,8 +775,15 @@ fn eval_sample<C: JdwpClient>(
     };
 
     let truncated = raw_elements.len() < size;
-    let element_type = infer_element_type(jdwp, &raw_elements);
-    let elements = raw_elements.iter().map(|v| format_value(jdwp, v)).collect();
+    let mut element_type: Option<String> = None;
+    let mut elements = Vec::with_capacity(raw_elements.len());
+    for v in &raw_elements {
+        let (display, ty) = format_sample_value(jdwp, v);
+        elements.push(display);
+        if element_type.is_none() {
+            element_type = ty;
+        }
+    }
 
     Ok(StreamSample {
         elements,
@@ -825,29 +832,52 @@ fn wrap_void_expression(expr: &str) -> String {
     format!("((java.util.function.Supplier<Object>)(() -> {{{expr};return null;}})).get()")
 }
 
-fn infer_element_type<C: JdwpClient>(jdwp: &mut C, sample: &[JdwpValue]) -> Option<String> {
-    for v in sample {
-        if matches!(v, JdwpValue::Null) {
-            continue;
-        }
-
-        match v {
-            JdwpValue::Object(obj) => {
-                // For list samples, object values frequently have a placeholder runtime type (e.g.
-                // `java.lang.Object`). Use `preview_object` to recover a more useful type name.
-                if let Ok(preview) = jdwp.preview_object(obj.id) {
-                    if let ObjectKindPreview::PrimitiveWrapper { value } = &preview.kind {
-                        return Some(type_name_for_value(value));
+fn format_sample_value<C: JdwpClient>(jdwp: &mut C, value: &JdwpValue) -> (String, Option<String>) {
+    match value {
+        JdwpValue::Null => ("null".to_string(), None),
+        JdwpValue::Void => ("void".to_string(), Some("void".to_string())),
+        JdwpValue::Boolean(v) => (v.to_string(), Some("boolean".to_string())),
+        JdwpValue::Byte(v) => (v.to_string(), Some("byte".to_string())),
+        JdwpValue::Short(v) => (v.to_string(), Some("short".to_string())),
+        JdwpValue::Int(v) => (v.to_string(), Some("int".to_string())),
+        JdwpValue::Long(v) => (v.to_string(), Some("long".to_string())),
+        JdwpValue::Float(v) => (v.to_string(), Some("float".to_string())),
+        JdwpValue::Double(v) => (v.to_string(), Some("double".to_string())),
+        JdwpValue::Char(v) => (v.to_string(), Some("char".to_string())),
+        JdwpValue::Object(obj) => {
+            // For list samples, object values frequently have a placeholder runtime type (e.g.
+            // `java.lang.Object`). Use `preview_object` to recover a more useful type name and
+            // unwrap boxed primitives.
+            if let Ok(preview) = jdwp.preview_object(obj.id) {
+                match preview.kind {
+                    ObjectKindPreview::String { value } => {
+                        return (value, Some(preview.runtime_type));
                     }
-                    return Some(preview.runtime_type);
+                    ObjectKindPreview::PrimitiveWrapper { value } => {
+                        return format_sample_value(jdwp, &value);
+                    }
+                    ObjectKindPreview::Optional { value } => {
+                        let display = match value {
+                            None => "Optional.empty".to_string(),
+                            Some(v) => format!("Optional[{}]", format_value(jdwp, &v)),
+                        };
+                        return (display, Some(preview.runtime_type));
+                    }
+                    _ => {
+                        return (
+                            format!("{}#{}", preview.runtime_type, obj.id),
+                            Some(preview.runtime_type),
+                        );
+                    }
                 }
-                return Some(type_name_for_value(v));
             }
-            other => return Some(type_name_for_value(other)),
+
+            (
+                format!("{}#{}", obj.runtime_type, obj.id),
+                Some(obj.runtime_type.clone()),
+            )
         }
     }
-
-    None
 }
 
 fn type_name_for_value(value: &JdwpValue) -> String {
