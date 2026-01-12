@@ -3596,33 +3596,49 @@ fn check_extract_variable_field_shadowing(
         {
             continue;
         }
-        // Only flag *unqualified* same-name identifier references. Qualified names like `C.value`
-        // or `obj.value` are unaffected by introducing a same-named local.
-        if name_expression_has_dot(&name_expr) {
-            continue;
-        }
-        // Avoid false positives: `foo` in `foo(...)` is a method name, not a field access.
-        if let Some(parent) = name_expr.syntax().parent() {
-            if let Some(call) = ast::MethodCallExpression::cast(parent) {
-                if call
-                    .callee()
-                    .is_some_and(|callee| callee.syntax() == name_expr.syntax())
-                {
-                    continue;
+
+        // Avoid false positives: `foo` in `foo(...)` is a method name, not a field access, and is
+        // not affected by introducing a same-named local.
+        //
+        // For qualified callees like `value.toString(...)`, the *leftmost* segment (`value`) is a
+        // field/variable read that can be shadowed, so we only skip *unqualified* callees.
+        if !name_expression_has_dot(&name_expr) {
+            if let Some(parent) = name_expr.syntax().parent() {
+                if let Some(call) = ast::MethodCallExpression::cast(parent) {
+                    if call
+                        .callee()
+                        .is_some_and(|callee| callee.syntax() == name_expr.syntax())
+                    {
+                        continue;
+                    }
                 }
             }
         }
-        let Some(tok) = ast::support::ident_token(name_expr.syntax()) else {
+
+        // `NameExpression` may represent:
+        // - an unqualified identifier (`value`)
+        // - a qualified name (`value.field` / `Test.value` / `System.out.println`)
+        //
+        // We care about the *leftmost* identifier segment: introducing a same-named local changes
+        // what that segment resolves to (field vs local), which can silently change behavior or
+        // even break compilation.
+        let Some(first_ident) = name_expr
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| !tok.kind().is_trivia())
+            .find(|tok| tok.kind().is_identifier_like())
+        else {
             continue;
         };
-        if tok.text() != name {
+        if first_ident.text() != name {
             continue;
         }
 
         return Err(RefactorError::Conflicts(vec![Conflict::FieldShadowing {
             file: file.clone(),
             name: name.to_string(),
-            usage_range: range,
+            usage_range: syntax_token_range(&first_ident),
         }]));
     }
 
@@ -3632,19 +3648,29 @@ fn check_extract_variable_field_shadowing(
 fn enclosing_type_declares_field_named(node: &nova_syntax::SyntaxNode, name: &str) -> bool {
     for anc in node.ancestors() {
         if let Some(body) = ast::ClassBody::cast(anc.clone()) {
-            return members_declare_field_named(body.members(), name);
+            if members_declare_field_named(body.members(), name) {
+                return true;
+            }
         }
         if let Some(body) = ast::InterfaceBody::cast(anc.clone()) {
-            return members_declare_field_named(body.members(), name);
+            if members_declare_field_named(body.members(), name) {
+                return true;
+            }
         }
         if let Some(body) = ast::EnumBody::cast(anc.clone()) {
-            return members_declare_field_named(body.members(), name);
+            if members_declare_field_named(body.members(), name) {
+                return true;
+            }
         }
         if let Some(body) = ast::RecordBody::cast(anc.clone()) {
-            return members_declare_field_named(body.members(), name);
+            if members_declare_field_named(body.members(), name) {
+                return true;
+            }
         }
         if let Some(body) = ast::AnnotationBody::cast(anc.clone()) {
-            return members_declare_field_named(body.members(), name);
+            if members_declare_field_named(body.members(), name) {
+                return true;
+            }
         }
     }
     false

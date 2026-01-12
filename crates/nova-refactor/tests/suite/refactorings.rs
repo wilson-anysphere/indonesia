@@ -934,8 +934,183 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
 }
 
 #[test]
-fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses(
-) {
+fn extract_variable_rejects_name_that_would_shadow_field_used_as_name_qualifier() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  static class Box { int field = 0; }
+
+  Box value = new Box();
+
+  void m() {
+    int x = /*select*/1 + 2/*end*/;
+    System.out.println(value.field);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::FieldShadowing { name, .. } if name == "value")),
+        "expected FieldShadowing conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_name_that_matches_field_when_later_access_is_this_qualified_chain() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  static class Box { int field = 0; }
+
+  Box value = new Box();
+
+  void m() {
+    int x = /*select*/1 + 2/*end*/;
+    System.out.println(this.value.field);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  static class Box { int field = 0; }
+
+  Box value = new Box();
+
+  void m() {
+    var value = 1 + 2;
+    int x = value;
+    System.out.println(this.value.field);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_rejects_name_that_would_shadow_outer_field_used_in_inner_class() {
+    let file = FileId::new("Outer.java");
+    let fixture = r#"class Outer {
+  int value = 0;
+
+  class Inner {
+    void m() {
+      int x = /*select*/1 + 2/*end*/;
+      System.out.println(value);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::FieldShadowing { name, .. } if name == "value")),
+        "expected FieldShadowing conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_name_that_matches_outer_field_when_access_is_outer_this_qualified() {
+    let file = FileId::new("Outer.java");
+    let fixture = r#"class Outer {
+  int value = 0;
+
+  class Inner {
+    void m() {
+      int x = /*select*/1 + 2/*end*/;
+      System.out.println(Outer.this.value);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Outer {
+  int value = 0;
+
+  class Inner {
+    void m() {
+      var value = 1 + 2;
+      int x = value;
+      System.out.println(Outer.this.value);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   int value = 0;
