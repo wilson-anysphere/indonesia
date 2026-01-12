@@ -549,14 +549,6 @@ mod notify_impl {
             Self::new_with_capacities(RAW_QUEUE_CAPACITY, EVENTS_QUEUE_CAPACITY)
         }
 
-        #[cfg(test)]
-        fn new_with_capacities_for_tests(
-            raw_queue_capacity: usize,
-            events_queue_capacity: usize,
-        ) -> io::Result<Self> {
-            Self::new_with_capacities(raw_queue_capacity, events_queue_capacity)
-        }
-
         fn new_with_capacities(
             raw_queue_capacity: usize,
             events_queue_capacity: usize,
