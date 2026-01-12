@@ -3002,7 +3002,10 @@ fn is_build_tool_input_file(path: &Path) -> bool {
     }
 
     match name {
-        "gradle.properties" | "gradlew" | "gradlew.bat" => true,
+        "gradle.properties" => true,
+        // Gradle wrapper scripts should only be treated as build inputs at the workspace root (this
+        // matches Gradle build-file fingerprinting semantics in `nova-build-model`).
+        "gradlew" | "gradlew.bat" => path == Path::new(name),
         "gradle-wrapper.properties" => {
             path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
         }
@@ -3657,6 +3660,21 @@ mod tests {
     #[test]
     fn build_config_refresh_is_triggered_by_gradle_version_catalogs_script_plugins_and_lockfiles() {
         let root = PathBuf::from("/tmp/workspace");
+
+        assert!(
+            should_refresh_build_config(&root, &[root.join("gradlew")]),
+            "expected root gradlew to trigger build-tool refresh"
+        );
+
+        assert!(
+            should_refresh_build_config(&root, &[root.join("gradlew.bat")]),
+            "expected root gradlew.bat to trigger build-tool refresh"
+        );
+
+        assert!(
+            !should_refresh_build_config(&root, &[root.join("sub").join("gradlew")]),
+            "expected nested gradlew to be ignored"
+        );
 
         assert!(
             should_refresh_build_config(&root, &[root.join("libs.versions.toml")]),

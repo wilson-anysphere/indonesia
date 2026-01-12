@@ -317,7 +317,10 @@ pub fn is_build_file(path: &Path) -> bool {
     }
 
     match name {
-        "gradle.properties" | "gradlew" | "gradlew.bat" => true,
+        "gradle.properties" => true,
+        // Gradle wrapper scripts should only be treated as build inputs at the workspace root (this
+        // matches Gradle build-file fingerprinting semantics in `nova-build-model`).
+        "gradlew" | "gradlew.bat" => path == Path::new(name),
         "gradle-wrapper.properties" => {
             path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
         }
@@ -433,6 +436,9 @@ mod tests {
             root.join(".bsp").join("server.txt"),
             root.join("foo.lockfile"),
             root.join(".gradle").join("gradle.lockfile"),
+            // Wrapper scripts must be at the workspace root.
+            root.join("sub").join("gradlew"),
+            root.join("sub").join("gradlew.bat"),
             // Version catalogs must be either `libs.versions.toml` or direct children of `gradle/`.
             root.join("deps.versions.toml"),
             root.join("gradle").join("sub").join("nested.versions.toml"),
