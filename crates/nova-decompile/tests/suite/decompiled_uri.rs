@@ -45,6 +45,16 @@ fn canonical_decompiled_uri_is_content_addressed() {
 }
 
 #[test]
+fn decompiled_uri_for_classfile_normalizes_internal_name() {
+    let uri = decompiled_uri_for_classfile(FOO_CLASS, "com//example\\Foo");
+    let expected_hash = content_hash_for(DECOMPILER_SCHEMA_VERSION);
+    assert_eq!(
+        uri,
+        format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{expected_hash}/com.example.Foo.java")
+    );
+}
+
+#[test]
 fn parse_decompiled_uri_round_trips() {
     let uri = decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME);
     let parsed = parse_decompiled_uri(&uri).expect("parse");
