@@ -335,6 +335,16 @@ mod tests {
         let _ = db.snapshot().parse(file);
         assert!(db.salsa_memo_bytes() > 0);
 
+        // Intern a sentinel first so `Foo` does *not* receive the first intern id. If eviction
+        // resets intern tables, `Foo` would be re-interned as the first entry and the change would
+        // be observable.
+        let _sentinel = db.with_write(|db| {
+            db.intern_class_key(InternedClassKey {
+                project,
+                binary_name: "Sentinel".to_string(),
+            })
+        });
+
         let key = InternedClassKey {
             project,
             binary_name: "Foo".to_string(),
