@@ -23,6 +23,15 @@ const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
 const NOVA_GRADLE_TASK: &str = "printNovaJavaCompileConfig";
 
+/// Gradle's special `buildSrc/` build is modeled in `nova-project` as a synthetic
+/// project with Gradle path `:__buildSrc`. It is not a real subproject of the
+/// root build, so tasks cannot be invoked as `:__buildSrc:<task>`.
+///
+/// Instead, we must run Gradle against the nested build by passing
+/// `--project-dir buildSrc` and invoking the Nova tasks at the root of that build.
+const GRADLE_BUILDSRC_PROJECT_PATH: &str = ":__buildSrc";
+const GRADLE_BUILDSRC_PROJECT_DIR: &str = "buildSrc";
+
 const NOVA_ALL_JSON_BEGIN: &str = "NOVA_ALL_JSON_BEGIN";
 const NOVA_ALL_JSON_END: &str = "NOVA_ALL_JSON_END";
 const NOVA_GRADLE_ALL_TASK: &str = "printNovaAllJavaCompileConfigs";
@@ -421,13 +430,17 @@ impl GradleBuild {
 
         let combined = output.combined();
         let json = parse_gradle_java_compile_config_json(&combined)?;
-        let project_path_for_snapshot = json
-            .project_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| project_path.unwrap_or(":").to_string());
+        let is_buildsrc = project_path == Some(GRADLE_BUILDSRC_PROJECT_PATH);
+        let project_path_for_snapshot = if is_buildsrc {
+            GRADLE_BUILDSRC_PROJECT_PATH.to_string()
+        } else {
+            json.project_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| project_path.unwrap_or(":").to_string())
+        };
 
         // Aggregator roots often don't apply the Java plugin and thus do not
         // expose `compileClasspath`. When querying the workspace-level config
@@ -700,16 +713,21 @@ impl GradleBuild {
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
         let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         let init_script = write_init_script(project_root)?;
+        let is_buildsrc = project_path == Some(GRADLE_BUILDSRC_PROJECT_PATH);
 
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
         args.push("-q".into());
         args.push("--init-script".into());
         args.push(init_script.to_string_lossy().to_string());
+        if is_buildsrc {
+            args.push("--project-dir".into());
+            args.push(GRADLE_BUILDSRC_PROJECT_DIR.to_string());
+        }
 
         let task = match project_path {
-            Some(p) => format!("{p}:{NOVA_GRADLE_TASK}"),
-            None => NOVA_GRADLE_TASK.to_string(),
+            Some(p) if !is_buildsrc => format!("{p}:{NOVA_GRADLE_TASK}"),
+            _ => NOVA_GRADLE_TASK.to_string(),
         };
         args.push(task);
 
@@ -725,16 +743,21 @@ impl GradleBuild {
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
         let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         let init_script = write_init_script(project_root)?;
+        let is_buildsrc = project_path == Some(GRADLE_BUILDSRC_PROJECT_PATH);
 
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
         args.push("-q".into());
         args.push("--init-script".into());
         args.push(init_script.to_string_lossy().to_string());
+        if is_buildsrc {
+            args.push("--project-dir".into());
+            args.push(GRADLE_BUILDSRC_PROJECT_DIR.to_string());
+        }
 
         let task = match project_path {
-            Some(p) => format!("{p}:{NOVA_GRADLE_APT_TASK}"),
-            None => NOVA_GRADLE_APT_TASK.to_string(),
+            Some(p) if !is_buildsrc => format!("{p}:{NOVA_GRADLE_APT_TASK}"),
+            _ => NOVA_GRADLE_APT_TASK.to_string(),
         };
         args.push(task);
 
@@ -790,11 +813,22 @@ impl GradleBuild {
         let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
+        let is_buildsrc = project_path == Some(GRADLE_BUILDSRC_PROJECT_PATH);
+        if is_buildsrc {
+            args.push("--project-dir".into());
+            args.push(GRADLE_BUILDSRC_PROJECT_DIR.to_string());
+        }
 
         let task_name = match task {
             GradleBuildTask::CompileJava => "compileJava",
             GradleBuildTask::CompileTestJava => "compileTestJava",
         };
+
+        if is_buildsrc {
+            args.push(task_name.to_string());
+            let output = self.runner.run(project_root, &program, &args)?;
+            return Ok((program, args, output));
+        }
 
         match project_path {
             Some(p) => {
@@ -1094,6 +1128,9 @@ fn gradle_project_dir_cached(
     if project_path == ":" {
         return Ok(project_root.to_path_buf());
     }
+    if project_path == GRADLE_BUILDSRC_PROJECT_PATH {
+        return Ok(project_root.join(GRADLE_BUILDSRC_PROJECT_DIR));
+    }
 
     if let Some(data) = cache.load(project_root, BuildSystemKind::Gradle, fingerprint)? {
         if let Some(projects) = data.projects {
@@ -1121,9 +1158,13 @@ fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf
     // predictable.
     let mut rel = PathBuf::new();
     if let Some(path) = project_path {
+        if path == GRADLE_BUILDSRC_PROJECT_PATH {
+            rel.push(GRADLE_BUILDSRC_PROJECT_DIR);
+        } else {
         let trimmed = path.trim_matches(':');
         for part in trimmed.split(':').filter(|p| !p.is_empty()) {
             rel.push(part);
+        }
         }
     }
 
@@ -1266,6 +1307,10 @@ val doc = """includeBuild(":other")"""
         assert_eq!(
             gradle_output_dir(root, Some(":app")),
             PathBuf::from("/workspace/app/build/classes/java/main")
+        );
+        assert_eq!(
+            gradle_output_dir(root, Some(GRADLE_BUILDSRC_PROJECT_PATH)),
+            PathBuf::from("/workspace/buildSrc/build/classes/java/main")
         );
         assert_eq!(
             gradle_output_dir(root, Some(":lib:core")),

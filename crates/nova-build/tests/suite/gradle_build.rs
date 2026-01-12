@@ -1,4 +1,5 @@
 use nova_build::{BuildCache, CommandOutput, CommandRunner, GradleBuild, GradleConfig};
+use nova_build_model::GRADLE_SNAPSHOT_REL_PATH;
 use nova_core::DiagnosticSeverity;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -186,5 +187,73 @@ fn annotation_processing_fallback_prefers_project_dir_from_apt_payload() {
     assert_eq!(
         main.generated_sources_dir,
         Some(app_dir.join("build/generated/sources/annotationProcessor/java/main"))
+    );
+}
+
+#[test]
+fn java_compile_config_for_buildsrc_uses_project_dir_flag_and_root_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let buildsrc_dir = project_root.join("buildSrc");
+    std::fs::create_dir_all(&buildsrc_dir).unwrap();
+
+    let dep_jar = buildsrc_dir.join("deps.jar");
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    let payload = serde_json::json!({
+        "projectDir": buildsrc_dir.to_string_lossy(),
+        "compileClasspath": [dep_jar.to_string_lossy()],
+    });
+    let stdout = format!(
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, &stdout, "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, Some(":__buildSrc"), &cache)
+        .unwrap();
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    let args = &invocations[0].args;
+
+    // The buildSrc module is a separate nested build. Ensure we run Gradle against that build.
+    let mut has_project_dir_flag = false;
+    for window in args.windows(2) {
+        if window[0] == "--project-dir" || window[0] == "-p" {
+            assert_eq!(window[1], "buildSrc");
+            has_project_dir_flag = true;
+        }
+    }
+    assert!(
+        has_project_dir_flag,
+        "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
+    );
+
+    // Nova task should be invoked at the root of the nested build (no `:__buildSrc:` prefix).
+    assert_eq!(args.last().map(String::as_str), Some("printNovaJavaCompileConfig"));
+    assert!(!args
+        .iter()
+        .any(|arg| arg == ":__buildSrc:printNovaJavaCompileConfig"));
+
+    // Snapshot should store this config under the synthetic path.
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    let bytes = std::fs::read(snapshot_path).unwrap();
+    let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let java_configs = snapshot
+        .get("javaCompileConfigs")
+        .and_then(|v| v.as_object())
+        .expect("expected javaCompileConfigs mapping in snapshot");
+    assert!(
+        java_configs.contains_key(":__buildSrc"),
+        "expected snapshot to include config for :__buildSrc, got keys {:?}",
+        java_configs.keys().collect::<Vec<_>>()
     );
 }
