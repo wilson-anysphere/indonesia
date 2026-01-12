@@ -642,6 +642,56 @@ fn fingerprint_changes_on_custom_gradle_version_catalog_edit() {
 }
 
 #[test]
+fn fingerprint_ignores_versions_toml_outside_gradle_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    // Only `gradle/*.versions.toml` should affect the fingerprint (not `*.versions.toml` anywhere).
+    let misplaced = root.join("foo.versions.toml");
+    std::fs::write(&misplaced, "[versions]\nfoo = \"1.0\"\n").unwrap();
+
+    let files = collect_gradle_build_files(&root).unwrap();
+    assert!(!files.contains(&misplaced));
+
+    let fp1 = BuildFileFingerprint::from_files(&root, files).unwrap();
+    std::fs::write(&misplaced, "[versions]\nfoo = \"1.1\"\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+            .unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_ignores_nested_gradle_versions_toml() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    // Only direct children of `gradle/` should count (`gradle/*.versions.toml`).
+    let nested_dir = root.join("gradle").join("sub");
+    std::fs::create_dir_all(&nested_dir).unwrap();
+    let nested = nested_dir.join("nested.versions.toml");
+    std::fs::write(&nested, "[versions]\nfoo = \"1.0\"\n").unwrap();
+
+    let files = collect_gradle_build_files(&root).unwrap();
+    assert!(!files.contains(&nested));
+
+    let fp1 = BuildFileFingerprint::from_files(&root, files).unwrap();
+    std::fs::write(&nested, "[versions]\nfoo = \"1.1\"\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+            .unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_ignores_gradle_build_markers_under_node_modules() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
