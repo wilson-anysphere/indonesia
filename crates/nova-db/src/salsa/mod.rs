@@ -2560,13 +2560,8 @@ impl Database {
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
         use std::collections::hash_map::Entry;
 
-        let content_len_override = if self.open_docs.is_open(file) {
-            Some(0)
-        } else {
-            None
-        };
         self.input_footprint
-            .record_file_text(file, &content, &content, None, content_len_override);
+            .record_file_text(file, &content, &content, None, None);
 
         let init_dirty = {
             let mut inputs = self.inputs.lock();
@@ -2598,13 +2593,8 @@ impl Database {
         use std::collections::hash_map::Entry;
 
         let text = Arc::new(text.into());
-        let content_len_override = if self.open_docs.is_open(file) {
-            Some(0)
-        } else {
-            None
-        };
         self.input_footprint
-            .record_file_text(file, &text, &text, None, content_len_override);
+            .record_file_text(file, &text, &text, None, None);
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
         let (
@@ -3007,17 +2997,12 @@ impl Database {
             )
         };
 
-        let content_len_override = if self.open_docs.is_open(file) {
-            Some(0)
-        } else {
-            None
-        };
         self.input_footprint.record_file_text(
             file,
             &new_text,
             &old_text,
             Some(&syntax_edit),
-            content_len_override,
+            None,
         );
         if let Some((project, files)) = project_files_update.as_ref() {
             let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);

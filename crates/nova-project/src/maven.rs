@@ -363,18 +363,33 @@ pub(crate) fn load_maven_workspace_model(
         };
 
         let mut source_roots = Vec::new();
-        push_source_root(
+        let main_standard = push_source_root(
             &mut source_roots,
             module_root,
             SourceRootKind::Main,
             "src/main/java",
         );
-        push_source_root(
+        let test_standard = push_source_root(
             &mut source_roots,
             module_root,
             SourceRootKind::Test,
             "src/test/java",
         );
+
+        // Some large OSS projects (e.g. Guava) still use a legacy "src/" + "test/" layout in
+        // Maven modules. Fall back to those roots when the standard Maven conventions are not
+        // present.
+        if !main_standard {
+            push_source_root_if_has_java(&mut source_roots, module_root, SourceRootKind::Main, "src");
+        }
+        if !test_standard {
+            push_source_root_if_has_java(
+                &mut source_roots,
+                module_root,
+                SourceRootKind::Test,
+                "test",
+            );
+        }
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             root,

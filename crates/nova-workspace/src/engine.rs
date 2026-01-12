@@ -554,6 +554,14 @@ impl MemoryEvictor for ClosedFileTextStore {
             .unwrap_or(MemoryCategory::QueryCache)
     }
 
+    fn eviction_priority(&self) -> u8 {
+        // Closed-file texts are needed to compute semantic queries (imports, typechecking, etc).
+        // Prefer evicting memoized query results (e.g. Salsa memos) before replacing file contents
+        // with empty placeholders, which would otherwise degrade diagnostics even under moderate
+        // budgets.
+        20
+    }
+
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
         let before = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
         if before <= request.target_bytes {
