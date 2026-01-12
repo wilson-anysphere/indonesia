@@ -4126,12 +4126,8 @@ pub(crate) fn core_completions(
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
-    let before_double_colon = skip_whitespace_backwards(text, prefix_start);
-    if before_double_colon >= 2
-        && text.as_bytes()[before_double_colon - 1] == b':'
-        && text.as_bytes()[before_double_colon - 2] == b':'
-    {
-        let receiver = receiver_before_double_colon(text, before_double_colon - 2);
+    if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
+        let receiver = receiver_before_double_colon(text, double_colon_offset);
         return decorate_completions(
             &text_index,
             prefix_start,
@@ -4646,12 +4642,8 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
-    let before_double_colon = skip_whitespace_backwards(text, prefix_start);
-    if before_double_colon >= 2
-        && text.as_bytes()[before_double_colon - 1] == b':'
-        && text.as_bytes()[before_double_colon - 2] == b':'
-    {
-        let receiver = receiver_before_double_colon(text, before_double_colon - 2);
+    if let Some(double_colon_offset) = method_reference_double_colon_offset(text, prefix_start) {
+        let receiver = receiver_before_double_colon(text, double_colon_offset);
         return decorate_completions(
             &text_index,
             prefix_start,
@@ -5740,21 +5732,49 @@ fn parse_source_type_in_context(
     ctx: &JavaFileTypeContext,
     source: &str,
 ) -> Type {
-    let mut s = source.trim();
+    fn strip_generic_arguments(source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        let mut depth: i32 = 0;
+        for ch in source.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                }
+                _ => {
+                    if depth == 0 {
+                        out.push(ch);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    let s = source.trim();
     if s.is_empty() {
         return Type::Unknown;
     }
 
-    // Strip generics.
-    if let Some(idx) = s.find('<') {
-        s = &s[..idx];
+    // Types may contain whitespace (e.g. `int []`, `Foo <T>`). Remove it up front so downstream
+    // parsing can operate on a compact representation.
+    let mut compact = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if !ch.is_ascii_whitespace() {
+            compact.push(ch);
+        }
     }
+
+    let compact = strip_generic_arguments(&compact);
+    let mut s: &str = compact.as_str();
 
     // Arrays.
     let mut array_dims = 0usize;
     while let Some(stripped) = s.strip_suffix("[]") {
         array_dims += 1;
-        s = stripped.trim_end();
+        s = stripped;
     }
 
     let mut ty = match s {
@@ -5907,56 +5927,38 @@ fn method_reference_completions(
         return Vec::new();
     }
 
-    ensure_type_methods_loaded(&mut types, &receiver_ty);
+    let mut items = Vec::new();
+    let mut seen = HashSet::<String>::new();
 
-    let class_id = match &receiver_ty {
-        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
-        Type::Named(name) => ensure_class_id(&mut types, name.as_str()),
-        _ => None,
+    let mut collect_methods = |call_kind: CallKind| {
+        for item in semantic_member_completions(&mut types, &receiver_ty, call_kind) {
+            if item.kind != Some(CompletionItemKind::METHOD) {
+                continue;
+            }
+            if !seen.insert(item.label.clone()) {
+                continue;
+            }
+            items.push(CompletionItem {
+                label: item.label.clone(),
+                kind: Some(CompletionItemKind::METHOD),
+                insert_text: Some(item.label),
+                ..Default::default()
+            });
+        }
     };
 
-    let mut items = Vec::new();
-
-    if let Some(class_id) = class_id {
-        if let Some(class_def) = types.class(class_id) {
-            let mut candidates: Vec<&MethodDef> = class_def.methods.iter().collect();
-
-            match call_kind {
-                CallKind::Instance => {
-                    let instance: Vec<&MethodDef> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|m| !m.is_static)
-                        .collect();
-                    if !instance.is_empty() {
-                        candidates = instance;
-                    }
-                }
-                CallKind::Static => {
-                    let static_methods: Vec<&MethodDef> =
-                        candidates.iter().copied().filter(|m| m.is_static).collect();
-                    if !static_methods.is_empty() {
-                        candidates = static_methods;
-                    }
-                }
-            }
-
-            let mut seen = HashSet::<String>::new();
-            for method in candidates {
-                if !seen.insert(method.name.clone()) {
-                    continue;
-                }
-                items.push(CompletionItem {
-                    label: method.name.clone(),
-                    kind: Some(CompletionItemKind::METHOD),
-                    insert_text: Some(method.name.clone()),
-                    ..Default::default()
-                });
-            }
+    match call_kind {
+        CallKind::Instance => collect_methods(CallKind::Instance),
+        // `TypeName::method` can refer to both static *and* instance methods.
+        CallKind::Static => {
+            collect_methods(CallKind::Static);
+            collect_methods(CallKind::Instance);
         }
     }
 
-    if call_kind == CallKind::Static && matches!(receiver_ty, Type::Class(_) | Type::Named(_)) {
+    if call_kind == CallKind::Static
+        && matches!(receiver_ty, Type::Class(_) | Type::Named(_) | Type::Array(_))
+    {
         items.push(CompletionItem {
             label: "new".to_string(),
             kind: Some(CompletionItemKind::CONSTRUCTOR),
@@ -13197,6 +13199,41 @@ pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize 
     offset
 }
 
+fn find_matching_open_angle(bytes: &[u8], close_angle_idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = close_angle_idx + 1;
+    while i > 0 {
+        i -= 1;
+        match bytes.get(i)? {
+            b'>' => depth += 1,
+            b'<' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut before = skip_whitespace_backwards(text, prefix_start);
+
+    // Handle `Foo::<T>bar` where `<T>` provides explicit method type arguments.
+    if before > 0 && bytes.get(before - 1) == Some(&b'>') {
+        let open = find_matching_open_angle(bytes, before - 1)?;
+        before = skip_whitespace_backwards(text, open);
+    }
+
+    (before >= 2
+        && bytes.get(before - 1) == Some(&b':')
+        && bytes.get(before - 2) == Some(&b':'))
+    .then_some(before - 2)
+}
+
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
     let bytes = text.as_bytes();
     let mut end = dot_offset.min(bytes.len());
@@ -13221,20 +13258,49 @@ pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
 
 pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usize) -> String {
     let bytes = text.as_bytes();
-    let mut end = double_colon_offset;
-    while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
-        end -= 1;
-    }
+    let end = skip_whitespace_backwards(text, double_colon_offset.min(bytes.len()));
+
     let mut start = end;
     while start > 0 {
         let ch = bytes[start - 1] as char;
+        if ch.is_ascii_whitespace() {
+            start -= 1;
+            continue;
+        }
+
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
             start -= 1;
-        } else {
+            continue;
+        }
+
+        // Arrays: `Foo[]::new`.
+        if ch == ']' {
+            start -= 1;
+            if start > 0 && bytes.get(start - 1) == Some(&b'[') {
+                start -= 1;
+                continue;
+            }
             break;
         }
+
+        // Parameterized types: `Foo<String>::bar`.
+        if ch == '>' {
+            let Some(open) = find_matching_open_angle(bytes, start - 1) else {
+                break;
+            };
+            start = open;
+            continue;
+        }
+
+        break;
     }
-    text[start..end].trim().to_string()
+
+    text.get(start..end)
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect()
 }
 
 #[cfg(test)]

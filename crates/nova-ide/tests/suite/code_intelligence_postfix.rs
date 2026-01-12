@@ -282,6 +282,92 @@ class A {
 }
 
 #[test]
+fn completion_method_reference_type_receiver_includes_instance_method_when_static_exists() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  static void stat() {}
+  void inst() {}
+}
+class A {
+  void m() {
+    Foo::in<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "inst"),
+        "expected completion list to contain Foo::inst; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_parameterized_type_receiver_includes_method() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo<T> {
+  static void stat() {}
+}
+class A {
+  void m() {
+    Foo<String>::st<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "stat"),
+        "expected completion list to contain Foo<String>::stat; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_with_explicit_type_arguments_after_double_colon_triggers_completions() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  static void stat() {}
+}
+class A {
+  void m() {
+    Foo::<String>st<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "stat"),
+        "expected completion list to contain Foo::<String>stat; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_array_constructor_includes_new() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class A {
+  void m() {
+    int[]::<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "new"),
+        "expected completion list to contain int[]::new; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_enum_constants_in_switch_case_labels() {
     let (db, file, pos, _text) = fixture(
         r#"
