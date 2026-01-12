@@ -116,6 +116,7 @@ Notable “delta” areas to be aware of:
     - `workspace/symbol` is served via the distributed router (`handle_workspace_symbol` in `crates/nova-lsp/src/main.rs`).
     - The frontend forwards best-effort file text updates to the router from `textDocument/didOpen`, `textDocument/didChange`, and `workspace/didChangeWatchedFiles` notifications (`handle_notification` in `crates/nova-lsp/src/main.rs`).
     - Most other LSP features still run in-process (the router/worker layer is not yet a general “semantic query RPC”).
+    - See `crates/nova-lsp/tests/stdio_distributed_workspace_symbol.rs` for an end-to-end stdio integration test covering the distributed `workspace/symbol` flow.
 - **Protocol extensions:**
   - Custom `nova/*` methods exist (implemented across `crates/nova-lsp/src/extensions/`, `crates/nova-lsp/src/hardening.rs`, and the `nova-lsp` binary) and are advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (see `initialize_result_json()` in `crates/nova-lsp/src/main.rs`).
   - Clients should still be defensive for older servers (or non-Nova servers) that don’t advertise these capabilities: use “optimistic call + method-not-found fallback” gating (see [`protocol-extensions.md`](protocol-extensions.md)).
