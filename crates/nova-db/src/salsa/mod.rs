@@ -310,12 +310,31 @@ struct SalsaMemoFootprintInner {
 
 #[derive(Debug, Default)]
 struct SalsaInputFootprintInner {
-    file_content_by_file: HashMap<FileId, u64>,
+    file_text_by_file: HashMap<FileId, FileTextBytes>,
     file_rel_path_by_file: HashMap<FileId, u64>,
     project_config_by_project: HashMap<ProjectId, u64>,
     project_files_by_project: HashMap<ProjectId, u64>,
     project_class_ids_by_project: HashMap<ProjectId, u64>,
     total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FileTextBytes {
+    content_ptr: usize,
+    content_len: u64,
+    prev_content_ptr: usize,
+    prev_content_len: u64,
+    last_edit_len: u64,
+}
+
+impl FileTextBytes {
+    fn total(self) -> u64 {
+        let mut bytes = self.content_len;
+        if self.prev_content_ptr != self.content_ptr {
+            bytes = bytes.saturating_add(self.prev_content_len);
+        }
+        bytes.saturating_add(self.last_edit_len)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -453,10 +472,34 @@ impl SalsaInputFootprint {
         let _ = self.registration.set(registration);
     }
 
-    fn record_file_content_len(&self, file: FileId, len: u64) {
+    fn record_file_text(
+        &self,
+        file: FileId,
+        content: &Arc<String>,
+        prev_content: &Arc<String>,
+        last_edit: Option<&TextEdit>,
+    ) {
+        let next = FileTextBytes {
+            content_ptr: Arc::as_ptr(content) as usize,
+            content_len: content.len() as u64,
+            prev_content_ptr: Arc::as_ptr(prev_content) as usize,
+            prev_content_len: prev_content.len() as u64,
+            last_edit_len: last_edit.map(|edit| edit.replacement.len() as u64).unwrap_or(0),
+        };
+
         let mut inner = self.lock_inner();
-        let prev = inner.file_content_by_file.insert(file, len).unwrap_or(0);
-        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(len);
+        let prev_total = inner
+            .file_text_by_file
+            .get(&file)
+            .copied()
+            .map(FileTextBytes::total)
+            .unwrap_or(0);
+        let next_total = next.total();
+        inner.file_text_by_file.insert(file, next);
+        inner.total_bytes = inner
+            .total_bytes
+            .saturating_sub(prev_total)
+            .saturating_add(next_total);
         drop(inner);
         self.refresh_tracker();
     }
@@ -1952,7 +1995,7 @@ impl Database {
         use std::collections::hash_map::Entry;
 
         self.input_footprint
-            .record_file_content_len(file, content.len() as u64);
+            .record_file_text(file, &content, &content, None);
 
         let init_dirty = {
             let mut inputs = self.inputs.lock();
@@ -1985,7 +2028,7 @@ impl Database {
 
         let text = Arc::new(text.into());
         self.input_footprint
-            .record_file_content_len(file, text.len() as u64);
+            .record_file_text(file, &text, &text, None);
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
         let (
@@ -2146,8 +2189,6 @@ impl Database {
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
 
-        let new_text_len = new_text.len() as u64;
-
         let (old_text, syntax_edit, set_default_project, set_default_root, project_files_update) = {
             let mut inputs = self.inputs.lock();
 
@@ -2242,7 +2283,7 @@ impl Database {
         };
 
         self.input_footprint
-            .record_file_content_len(file, new_text_len);
+            .record_file_text(file, &new_text, &old_text, Some(&syntax_edit));
         if let Some((project, files)) = project_files_update.as_ref() {
             let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
             self.input_footprint
@@ -3778,7 +3819,10 @@ class Foo {
         db.apply_file_text_edit(file, edit, Arc::new("axxxxc".to_string()));
 
         // "abc" -> replace "b" with "xxxx" => "axxxxc" (6 bytes).
-        let expected = 6 + rel_path_bytes + project_files_bytes;
+        // Incremental parse metadata keeps the previous text snapshot and the edit replacement.
+        let expected = (6 /* new file_content */ + 3 /* file_prev_content */ + 4 /* replacement */)
+            + rel_path_bytes
+            + project_files_bytes;
         assert_eq!(manager.report().usage.other, expected);
         assert_eq!(db.salsa_input_bytes(), expected);
     }
