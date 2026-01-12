@@ -429,21 +429,28 @@ export async function activate(context: vscode.ExtensionContext) {
     },
     middleware: {
       executeCommand: async (command, args, next) => {
-        const handled = serverCommandHandlers?.dispatch(command, args);
-        if (handled) {
-          return await handled;
-        }
+        try {
+          const handled = serverCommandHandlers?.dispatch(command, args);
+          if (handled) {
+            return await handled;
+          }
 
-        // Safety net: if nova-lsp ever returns AI code lenses (or other `workspace/executeCommand`
-        // invocations) that we didn't rewrite in the code action middleware, route them through the
-        // existing VS Code-side "show" commands so users see the AI output.
-        const rewrittenAi = rewriteNovaAiCodeActionOrCommand({ command, arguments: args });
-        if (rewrittenAi) {
-          await vscode.commands.executeCommand(rewrittenAi.command, ...rewrittenAi.args);
-          return;
-        }
+          // Safety net: if nova-lsp ever returns AI code lenses (or other `workspace/executeCommand`
+          // invocations) that we didn't rewrite in the code action middleware, route them through the
+          // existing VS Code-side "show" commands so users see the AI output.
+          const rewrittenAi = rewriteNovaAiCodeActionOrCommand({ command, arguments: args });
+          if (rewrittenAi) {
+            await vscode.commands.executeCommand(rewrittenAi.command, ...rewrittenAi.args);
+            return;
+          }
 
-        return await next(command, args);
+          return await next(command, args);
+        } catch (err) {
+          if (isSafeModeError(err)) {
+            setSafeModeEnabled?.(true);
+          }
+          throw err;
+        }
       },
       sendRequest: async (type, param, token, next) => {
         try {

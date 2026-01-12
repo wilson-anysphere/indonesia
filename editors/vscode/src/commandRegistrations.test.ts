@@ -77,4 +77,41 @@ describe('command registrations', () => {
       expect(counts.get(id)).toBe(1);
     }
   });
+
+  it('does not manually register server-provided executeCommand IDs', async () => {
+    // nova-lsp advertises these command IDs via executeCommandProvider.commands.
+    // vscode-languageclient auto-registers them, so we must not also register them
+    // with vscode.commands.registerCommand (would cause a runtime collision).
+    const executeCommandIds = [
+      'nova.ai.explainError',
+      'nova.ai.generateMethodBody',
+      'nova.ai.generateTests',
+      'nova.runTest',
+      'nova.debugTest',
+      'nova.runMain',
+      'nova.debugMain',
+      'nova.extractMethod',
+      'nova.safeDelete',
+    ];
+
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const files = await listTypescriptFiles(srcRoot);
+
+    const counts = new Map<string, number>(executeCommandIds.map((id) => [id, 0]));
+
+    for (const filePath of files) {
+      const contents = await fs.readFile(filePath, 'utf8');
+      for (const id of executeCommandIds) {
+        const regex = new RegExp(`registerCommand\\(\\s*['"]${escapeRegExp(id)}['"]`, 'g');
+        const matches = contents.match(regex);
+        if (matches?.length) {
+          counts.set(id, (counts.get(id) ?? 0) + matches.length);
+        }
+      }
+    }
+
+    for (const id of executeCommandIds) {
+      expect(counts.get(id)).toBe(0);
+    }
+  });
 });

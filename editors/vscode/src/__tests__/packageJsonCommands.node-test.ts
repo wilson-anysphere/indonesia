@@ -90,12 +90,15 @@ test('package.json contributes Nova CodeLens executeCommand command palette entr
     byId.set(id, { title: (entry as { title?: unknown }).title });
   }
 
-  assert.equal(byId.get('nova.runTest')?.title, 'Nova: Run Test');
+  // `nova.runTest` is a server-provided `workspace/executeCommand` ID.
+  // We intentionally do NOT contribute a command palette entry for it to avoid
+  // confusion/collisions with vscode-languageclient's auto-registered command.
+  assert.equal(byId.get('nova.runTest')?.title, undefined);
   assert.equal(byId.get('nova.debugTest')?.title, 'Nova: Debug Test');
   assert.equal(byId.get('nova.runMain')?.title, 'Nova: Run Main…');
   assert.equal(byId.get('nova.debugMain')?.title, 'Nova: Debug Main…');
 
-  assert.ok(activationEvents.includes('onCommand:nova.runTest'));
+  assert.ok(!activationEvents.includes('onCommand:nova.runTest'));
   assert.ok(activationEvents.includes('onCommand:nova.debugTest'));
   assert.ok(activationEvents.includes('onCommand:nova.runMain'));
   assert.ok(activationEvents.includes('onCommand:nova.debugMain'));

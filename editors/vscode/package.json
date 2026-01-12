@@ -36,7 +36,6 @@
     "onCommand:nova.resetRequestMetrics",
     "onCommand:nova.discoverTests",
     "onCommand:nova.reloadProject",
-    "onCommand:nova.runTest",
     "onCommand:nova.debugTest",
     "onCommand:nova.runMain",
     "onCommand:nova.debugMain",
@@ -126,10 +125,6 @@
       {
         "command": "nova.reloadProject",
         "title": "Nova: Reload Project"
-      },
-      {
-        "command": "nova.runTest",
-        "title": "Nova: Run Test"
       },
       {
         "command": "nova.debugTest",
