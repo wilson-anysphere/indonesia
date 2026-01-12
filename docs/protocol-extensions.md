@@ -532,6 +532,43 @@ Notes:
 
 ---
 
+### `nova/build/fileClasspath`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`FileClasspathParams`, `TargetClasspathResult`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_file_classpath`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+This endpoint is the **file-based** variant of `nova/build/targetClasspath` for Bazel projects. It
+uses Bazel file → owning-target resolution to return compilation flags only for the currently opened
+file (on-demand), without requiring clients to know a Bazel target upfront.
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "uri": "file:///absolute/path/to/workspace/java/Hello.java",
+  "runTarget": null
+}
+```
+
+Notes:
+
+- `projectRoot` also accepts the legacy alias `root`.
+- `uri` must be a `file://` URI.
+- `runTarget` is optional; when provided, resolution is restricted to the transitive closure of that
+  Bazel target (`deps(runTarget)`).
+
+#### Response
+
+On success, the response is a `TargetClasspathResult` object (same shape as `nova/build/targetClasspath`).
+If Nova cannot resolve compile info for the file (outside workspace / not in a Bazel package / no owning
+`java_*` target), the result is `null`.
+
+---
+
 ### `nova/build/status`
 
 - **Kind:** request

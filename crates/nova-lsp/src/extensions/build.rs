@@ -757,6 +757,16 @@ pub struct TargetClasspathParams {
     pub target: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileClasspathParams {
+    #[serde(alias = "root")]
+    pub project_root: String,
+    pub uri: Option<String>,
+    #[serde(default)]
+    pub run_target: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetClasspathResult {
@@ -1042,6 +1052,85 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         status_guard.finish_from_result(&value_result);
         value_result
     }
+}
+
+pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
+    let req: FileClasspathParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+
+    if req.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let Some(uri) = req.uri.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
+        return Err(NovaLspError::InvalidParams(
+            "`uri` must be provided".to_string(),
+        ));
+    };
+
+    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) else {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must be a Bazel workspace root for fileClasspath".to_string(),
+        ));
+    };
+
+    let url = url::Url::parse(uri)
+        .map_err(|err| NovaLspError::InvalidParams(format!("invalid uri: {err}")))?;
+    let path = url
+        .to_file_path()
+        .map_err(|_| NovaLspError::InvalidParams("`uri` must be a file:// URI".to_string()))?;
+
+    let mut status_guard = BuildStatusGuard::new(&workspace_root);
+    let value_result: Result<serde_json::Value> = (|| {
+        let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
+            .map(|dir| dir.queries_dir().join("bazel.json"))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        let runner = nova_build_bazel::DefaultCommandRunner::default();
+        let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+            .and_then(|ws| ws.with_cache_path(cache_path))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+
+        let info = match req
+            .run_target
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            Some(run_target) => workspace
+                .compile_info_for_file_in_run_target_closure(&path, run_target)
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?,
+            None => workspace
+                .compile_info_for_file(&path)
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?,
+        };
+
+        let Some(info) = info else {
+            return Ok(serde_json::Value::Null);
+        };
+
+        let result = TargetClasspathResult {
+            project_root: workspace_root.to_string_lossy().to_string(),
+            target: None,
+            classpath: info.classpath,
+            module_path: info.module_path,
+            source_roots: info.source_roots,
+            source: info.source,
+            target_version: info.target,
+            release: info.release,
+            output_dir: info.output_dir,
+            enable_preview: info.preview,
+        };
+        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+    })();
+    status_guard.finish_from_result(&value_result);
+    value_result
 }
 
 // -----------------------------------------------------------------------------
@@ -2197,6 +2286,20 @@ mod tests {
 
         let msg = err.to_string();
         assert!(msg.contains("`target` must be provided for Bazel projects"));
+    }
+
+    #[test]
+    fn file_classpath_requires_uri() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
+
+        let err = handle_file_classpath(serde_json::json!({
+            "projectRoot": tmp.path().to_string_lossy(),
+        }))
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("`uri` must be provided"));
     }
 
     #[test]

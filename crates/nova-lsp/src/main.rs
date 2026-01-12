@@ -598,6 +598,7 @@ fn initialize_result_json() -> serde_json::Value {
         nova_lsp::DEBUG_HOT_SWAP_METHOD,
         // Build status/diagnostics
         nova_lsp::BUILD_TARGET_CLASSPATH_METHOD,
+        nova_lsp::BUILD_FILE_CLASSPATH_METHOD,
         nova_lsp::BUILD_STATUS_METHOD,
         nova_lsp::BUILD_DIAGNOSTICS_METHOD,
         nova_lsp::PROJECT_MODEL_METHOD,

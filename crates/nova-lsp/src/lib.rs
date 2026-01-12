@@ -31,6 +31,7 @@
 //!   - `nova/ai/generateTests`
 //! - Build integration endpoints (classpath, build status, diagnostics)
 //!   - `nova/build/targetClasspath`
+//!   - `nova/build/fileClasspath`
 //!   - `nova/build/status`
 //!   - `nova/build/diagnostics`
 //! - Resilience endpoints
@@ -141,6 +142,7 @@ pub const WORKSPACE_RENAME_PATH_METHOD: &str = "nova/workspace/renamePath";
 pub const WORKSPACE_RENAME_PATH_NOTIFICATION: &str = WORKSPACE_RENAME_PATH_METHOD;
 
 pub const BUILD_TARGET_CLASSPATH_METHOD: &str = "nova/build/targetClasspath";
+pub const BUILD_FILE_CLASSPATH_METHOD: &str = "nova/build/fileClasspath";
 pub const BUILD_STATUS_METHOD: &str = "nova/build/status";
 pub const BUILD_DIAGNOSTICS_METHOD: &str = "nova/build/diagnostics";
 pub const PROJECT_MODEL_METHOD: &str = "nova/projectModel";
@@ -313,6 +315,12 @@ fn handle_custom_request_inner_cancelable(
             params,
             cancel,
             extensions::build::handle_target_classpath,
+        ),
+        BUILD_FILE_CLASSPATH_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_file_classpath,
         ),
         BUILD_STATUS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
