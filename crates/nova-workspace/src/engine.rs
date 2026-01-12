@@ -2333,10 +2333,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let root = dir.path().canonicalize().unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("Main.java"), "class Main {}".as_bytes()).unwrap();
 
-        let module_info = root.join("src/module-info.java");
-        fs::write(&module_info, "module com.example.one { }".as_bytes()).unwrap();
+        let module_info = root.join("module-info.java");
+        fs::write(
+            &module_info,
+            "module com.example.one { }".as_bytes(),
+        )
+        .unwrap();
 
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();

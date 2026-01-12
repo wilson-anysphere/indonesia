@@ -155,7 +155,7 @@ mod tests {
 
         let build_files = [
             root.join("pom.xml"),
-            root.join("src").join("module-info.java"),
+            root.join("module-info.java"),
             root.join("nova.toml"),
             root.join(".nova.toml"),
             root.join("nova.config.toml"),
