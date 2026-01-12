@@ -3011,6 +3011,7 @@ function hasExplicitWorkspaceRoutingHint(params: unknown): boolean {
 async function promptWorkspaceFolder(
   workspaces: readonly vscode.WorkspaceFolder[],
   placeHolder: string,
+  token?: vscode.CancellationToken,
 ): Promise<vscode.WorkspaceFolder | undefined> {
   const picked = await vscode.window.showQuickPick(
     workspaces.map((workspace) => ({
@@ -3019,6 +3020,7 @@ async function promptWorkspaceFolder(
       workspace,
     })),
     { placeHolder },
+    token,
   );
   return picked?.workspace;
 }
@@ -3075,7 +3077,7 @@ async function pickWorkspaceFolderForRequest(
     return undefined;
   }
 
-  return await promptWorkspaceFolder(workspaces, `Select workspace folder for ${method}`);
+  return await promptWorkspaceFolder(workspaces, `Select workspace folder for ${method}`, token);
 }
 
 async function waitForStartPromise(startPromise: Promise<void>, token?: vscode.CancellationToken): Promise<boolean> {
@@ -3117,7 +3119,7 @@ async function requireClient(opts?: { token?: vscode.CancellationToken }): Promi
     (vscode.window.activeTextEditor
       ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)
       : undefined) ??
-    (workspaces.length === 1 ? workspaces[0] : await promptWorkspaceFolder(workspaces, 'Select workspace folder'));
+    (workspaces.length === 1 ? workspaces[0] : await promptWorkspaceFolder(workspaces, 'Select workspace folder', opts?.token));
 
   if (!workspaceFolder) {
     throw new Error('Request cancelled');
