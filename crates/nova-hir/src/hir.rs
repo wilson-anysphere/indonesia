@@ -261,6 +261,11 @@ pub enum Expr {
         name_range: Span,
         range: Span,
     },
+    ArrayAccess {
+        array: ExprId,
+        index: ExprId,
+        range: Span,
+    },
     MethodReference {
         receiver: ExprId,
         name: String,
@@ -353,6 +358,7 @@ impl Expr {
             | Expr::Super { range }
             | Expr::Call { range, .. }
             | Expr::FieldAccess { range, .. }
+            | Expr::ArrayAccess { range, .. }
             | Expr::MethodReference { range, .. }
             | Expr::ConstructorReference { range, .. }
             | Expr::ClassLiteral { range, .. }

@@ -1055,6 +1055,12 @@ fn resolve_method_call_demand(
                     set_parent(parent_expr, *receiver);
                     visit_expr(body, *receiver, parent_expr, visited_expr);
                 }
+                HirExpr::ArrayAccess { array, index, .. } => {
+                    set_parent(parent_expr, *array);
+                    set_parent(parent_expr, *index);
+                    visit_expr(body, *array, parent_expr, visited_expr);
+                    visit_expr(body, *index, parent_expr, visited_expr);
+                }
                 HirExpr::ClassLiteral { ty, .. } => {
                     set_parent(parent_expr, *ty);
                     visit_expr(body, *ty, parent_expr, visited_expr);
@@ -4040,6 +4046,46 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 name_range,
                 ..
             } => self.infer_field_access(loader, *receiver, name.as_str(), *name_range, expr),
+            HirExpr::ArrayAccess { array, index, range } => {
+                let array_ty = self.infer_expr(loader, *array).ty;
+                let index_ty = self.infer_expr(loader, *index).ty;
+
+                if !index_ty.is_errorish()
+                    && !matches!(
+                        index_ty,
+                        Type::Primitive(
+                            PrimitiveType::Byte
+                                | PrimitiveType::Short
+                                | PrimitiveType::Char
+                                | PrimitiveType::Int
+                        )
+                    )
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-array-index",
+                        "array index must be an integral type",
+                        Some(*range),
+                    ));
+                }
+
+                match &array_ty {
+                    Type::Array(elem) => ExprInfo {
+                        ty: elem.as_ref().clone(),
+                        is_type_ref: false,
+                    },
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-array-access",
+                            "cannot index non-array type",
+                            Some(*range),
+                        ));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
+                    }
+                }
+            }
             HirExpr::MethodReference { receiver, .. } => {
                 // Always infer the receiver so IDE hover works.
                 let _ = self.infer_expr(loader, *receiver);
@@ -7306,6 +7352,9 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
 
     match &body.exprs[expr] {
         HirExpr::FieldAccess { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
+        HirExpr::ArrayAccess { array, index, .. } => {
+            contains_expr_in_expr(body, *array, target) || contains_expr_in_expr(body, *index, target)
+        }
         HirExpr::MethodReference { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
         HirExpr::ConstructorReference { receiver, .. } => {
             contains_expr_in_expr(body, *receiver, target)
@@ -7374,6 +7423,10 @@ fn find_best_expr_in_expr(
     match &body.exprs[expr] {
         HirExpr::FieldAccess { receiver, .. } => {
             find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::ArrayAccess { array, index, .. } => {
+            find_best_expr_in_expr(body, *array, offset, owner, best);
+            find_best_expr_in_expr(body, *index, offset, owner, best);
         }
         HirExpr::MethodReference { receiver, .. } => {
             find_best_expr_in_expr(body, *receiver, offset, owner, best);

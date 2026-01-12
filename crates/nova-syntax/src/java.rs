@@ -401,6 +401,7 @@ pub mod ast {
         Super(Span),
         Call(CallExpr),
         FieldAccess(FieldAccessExpr),
+        ArrayAccess(ArrayAccessExpr),
         New(NewExpr),
         Unary(UnaryExpr),
         Binary(BinaryExpr),
@@ -433,6 +434,7 @@ pub mod ast {
                 Expr::This(range) | Expr::Super(range) => *range,
                 Expr::Call(expr) => expr.range,
                 Expr::FieldAccess(expr) => expr.range,
+                Expr::ArrayAccess(expr) => expr.range,
                 Expr::New(expr) => expr.range,
                 Expr::Unary(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
@@ -473,6 +475,13 @@ pub mod ast {
         pub receiver: Box<Expr>,
         pub name: String,
         pub name_range: Span,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ArrayAccessExpr {
+        pub array: Box<Expr>,
+        pub index: Box<Expr>,
         pub range: Span,
     }
 
@@ -2014,6 +2023,27 @@ impl Lowerer {
             SyntaxKind::ArrayCreationExpression => self.lower_array_creation_expr(node),
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
+            SyntaxKind::ArrayAccessExpression => {
+                let range = self.spans.map_node(node);
+                let mut expr_children = node
+                    .children()
+                    .filter(|child| is_expression_kind(child.kind()));
+
+                let array = expr_children
+                    .next()
+                    .map(|expr| self.lower_expr(&expr))
+                    .unwrap_or_else(|| ast::Expr::Missing(range));
+                let index = expr_children
+                    .next()
+                    .map(|expr| self.lower_expr(&expr))
+                    .unwrap_or_else(|| ast::Expr::Missing(range));
+
+                ast::Expr::ArrayAccess(ast::ArrayAccessExpr {
+                    array: Box::new(array),
+                    index: Box::new(index),
+                    range,
+                })
+            }
             SyntaxKind::MethodReferenceExpression => self.lower_method_reference_expr(node),
             SyntaxKind::ConstructorReferenceExpression => {
                 self.lower_constructor_reference_expr(node)
@@ -3032,6 +3062,22 @@ mod tests {
         assert!(
             matches!(expr_stmt.expr, ast::Expr::Instanceof(_)),
             "expected instanceof expression"
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_array_access() {
+        let text = "{ a[0]; }";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        assert!(
+            matches!(expr_stmt.expr, ast::Expr::ArrayAccess(_)),
+            "expected array access expression"
         );
     }
 }

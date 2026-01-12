@@ -1222,6 +1222,15 @@ impl<'a> BodyLower<'a> {
                     range: access.range,
                 })
             }
+            syntax::Expr::ArrayAccess(access) => {
+                let array = self.lower_expr(access.array.as_ref());
+                let index = self.lower_expr(access.index.as_ref());
+                self.alloc_expr(Expr::ArrayAccess {
+                    array,
+                    index,
+                    range: access.range,
+                })
+            }
             syntax::Expr::Call(call) => {
                 let callee = self.lower_expr(&call.callee);
                 let mut args = Vec::with_capacity(call.args.len());

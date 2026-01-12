@@ -703,6 +703,10 @@ impl<'a> ScopeBuilder<'a> {
             hir::Expr::FieldAccess { receiver, .. } => {
                 self.record_expr_scopes(scope, owner, body, *receiver);
             }
+            hir::Expr::ArrayAccess { array, index, .. } => {
+                self.record_expr_scopes(scope, owner, body, *array);
+                self.record_expr_scopes(scope, owner, body, *index);
+            }
             hir::Expr::MethodReference { receiver, .. }
             | hir::Expr::ConstructorReference { receiver, .. } => {
                 self.record_expr_scopes(scope, owner, body, *receiver);

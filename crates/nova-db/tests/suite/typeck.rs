@@ -938,6 +938,34 @@ class C {
 }
 
 #[test]
+fn array_access_returns_element_type() {
+    let src = r#"
+class C { int m(int[] a){ return a[0]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("a[0]").expect("snippet should contain a[0]") + 1; // at `[`
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn indexing_non_array_is_error() {
+    let src = r#"
+class C { int m(int a){ return a[0]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-array-access"),
+        "expected invalid-array-access diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn qualified_type_receiver_resolves_for_static_call() {
     let src = r#"
 class C {

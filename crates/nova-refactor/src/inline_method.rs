@@ -364,6 +364,10 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     || call.args.iter().any(|a| walk_expr(source, method_name, a))
             }
             jast::Expr::FieldAccess(field) => walk_expr(source, method_name, &field.receiver),
+            jast::Expr::ArrayAccess(access) => {
+                walk_expr(source, method_name, access.array.as_ref())
+                    || walk_expr(source, method_name, access.index.as_ref())
+            }
             jast::Expr::MethodReference(expr) => walk_expr(source, method_name, &expr.receiver),
             jast::Expr::ConstructorReference(expr) => {
                 walk_expr(source, method_name, &expr.receiver)

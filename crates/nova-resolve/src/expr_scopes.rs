@@ -331,6 +331,10 @@ impl Builder {
             Expr::FieldAccess { receiver, .. } => {
                 self.visit_expr(body, *receiver, scope);
             }
+            Expr::ArrayAccess { array, index, .. } => {
+                self.visit_expr(body, *array, scope);
+                self.visit_expr(body, *index, scope);
+            }
             Expr::MethodReference { receiver, .. }
             | Expr::ConstructorReference { receiver, .. } => {
                 self.visit_expr(body, *receiver, scope);

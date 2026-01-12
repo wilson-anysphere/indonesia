@@ -1781,6 +1781,10 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
             hir::Expr::FieldAccess { receiver, .. }
             | hir::Expr::MethodReference { receiver, .. }
             | hir::Expr::ConstructorReference { receiver, .. } => walk_expr(body, *receiver, f),
+            hir::Expr::ArrayAccess { array, index, .. } => {
+                walk_expr(body, *array, f);
+                walk_expr(body, *index, f);
+            }
             hir::Expr::ClassLiteral { ty, .. } => walk_expr(body, *ty, f),
             hir::Expr::Call { callee, args, .. } => {
                 walk_expr(body, *callee, f);
