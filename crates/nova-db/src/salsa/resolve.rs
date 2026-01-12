@@ -616,7 +616,12 @@ impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
                 format!("{pkg}.")
             };
 
-            for binary_name in self.classpath.types.class_names_with_prefix(&prefix) {
+            let names = self.classpath.types.binary_names_sorted();
+            let start = names.partition_point(|name| name.as_str() < prefix.as_str());
+            for binary_name in &names[start..] {
+                if !binary_name.starts_with(prefix.as_str()) {
+                    break;
+                }
                 let Some((found_pkg, _)) = binary_name.rsplit_once('.') else {
                     continue;
                 };
@@ -643,14 +648,18 @@ impl nova_core::TypeIndex for JpmsProjectIndex<'_> {
                 format!("{pkg}.")
             };
 
-            let binary_names = match self.jdk.class_names_with_prefix(&prefix) {
+            let binary_names = match self.jdk.all_binary_class_names() {
                 Ok(names) => names,
                 // Best-effort fallback: if we cannot inspect the package contents
                 // (e.g. due to an indexing error), preserve the old behavior.
                 Err(_) => return true,
             };
 
-            for binary_name in binary_names {
+            let start = binary_names.partition_point(|name| name.as_str() < prefix.as_str());
+            for binary_name in &binary_names[start..] {
+                if !binary_name.starts_with(prefix.as_str()) {
+                    break;
+                }
                 let Some((found_pkg, _)) = binary_name.rsplit_once('.') else {
                     continue;
                 };

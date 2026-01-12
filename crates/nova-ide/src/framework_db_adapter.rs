@@ -286,7 +286,24 @@ impl FrameworkDatabase for FrameworkIdeDatabase {
             return false;
         };
 
-        !index.class_names_with_prefix(prefix).is_empty()
+        // Avoid allocating a `Vec<String>` just to check if any class exists under a prefix.
+        let names = index.binary_names_sorted();
+        let has_match = |prefix: &str| {
+            let start = names.partition_point(|name| name.as_str() < prefix);
+            for name in &names[start..] {
+                if name.starts_with(prefix) {
+                    return true;
+                }
+                break;
+            }
+            false
+        };
+
+        if prefix.contains('/') {
+            has_match(&prefix.replace('/', "."))
+        } else {
+            has_match(prefix)
+        }
     }
 }
 
