@@ -14,7 +14,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -29,6 +29,7 @@ const BSP_MAX_MESSAGE_BYTES_DEFAULT: usize = 64 * 1024 * 1024;
 const BSP_MAX_MESSAGE_BYTES_FLOOR: usize = 1024 * 1024;
 const BSP_MAX_MESSAGE_BYTES_CEILING: usize = 512 * 1024 * 1024;
 const BSP_MAX_MESSAGE_BYTES_ENV_VAR: &str = "NOVA_BSP_MAX_MESSAGE_BYTES";
+const BSP_MAX_HEADER_LINE_BYTES: usize = 8 * 1024; // 8 KiB
 
 fn bsp_max_message_bytes() -> usize {
     let configured = std::env::var(BSP_MAX_MESSAGE_BYTES_ENV_VAR).ok();
@@ -42,6 +43,38 @@ fn bsp_max_message_bytes() -> usize {
         .unwrap_or(BSP_MAX_MESSAGE_BYTES_DEFAULT);
 
     value.clamp(BSP_MAX_MESSAGE_BYTES_FLOOR, BSP_MAX_MESSAGE_BYTES_CEILING)
+}
+
+fn read_line_limited<R: BufRead>(reader: &mut R, max_len: usize) -> io::Result<Option<String>> {
+    let mut buf = Vec::<u8>::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let take = newline_pos.map(|pos| pos + 1).unwrap_or(available.len());
+        if buf.len() + take > max_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("BSP header line exceeds maximum size ({max_len} bytes)"),
+            ));
+        }
+
+        buf.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline_pos.is_some() {
+            break;
+        }
+    }
+
+    let line = String::from_utf8(buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "BSP header line is not UTF-8"))?;
+    Ok(Some(line))
 }
 
 const ENV_BSP_CONNECT_TIMEOUT_MS: &str = "NOVA_BSP_CONNECT_TIMEOUT_MS";
@@ -764,9 +797,7 @@ impl BspClient {
         let mut content_length: Option<usize> = None;
 
         loop {
-            let mut line = String::new();
-            let bytes = self.stdout.read_line(&mut line)?;
-            if bytes == 0 {
+            let Some(line) = read_line_limited(&mut self.stdout, BSP_MAX_HEADER_LINE_BYTES)? else {
                 if self.timed_out.load(Ordering::SeqCst) {
                     if let Some(timeout) = self.timeout {
                         return Err(anyhow!("BSP server timed out after {timeout:?}"));
@@ -774,7 +805,7 @@ impl BspClient {
                     return Err(anyhow!("BSP server timed out"));
                 }
                 return Err(anyhow!("BSP server closed the connection"));
-            }
+            };
 
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.is_empty() {
@@ -1752,5 +1783,15 @@ mod tests {
             err.to_string(),
             format!("BSP message too large: {len} bytes (limit {max})")
         );
+    }
+
+    #[test]
+    fn bsp_read_message_rejects_overlong_header_lines() {
+        let long = "A".repeat(BSP_MAX_HEADER_LINE_BYTES + 1);
+        let payload = format!("{long}\n\n");
+        let mut client = BspClient::from_streams(std::io::Cursor::new(payload), std::io::sink());
+
+        let err = client.read_message().unwrap_err();
+        assert!(err.to_string().contains("BSP header line exceeds maximum size"));
     }
 }
