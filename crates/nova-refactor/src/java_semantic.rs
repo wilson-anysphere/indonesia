@@ -5908,6 +5908,8 @@ fn collect_switch_contexts(
                 range,
                 ..
             } => {
+                walk_expr(body, *selector, owner, scope_result, resolver, item_trees, out);
+
                 let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
                     walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
                     return;
@@ -6023,15 +6025,7 @@ fn collect_switch_contexts(
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
                 }
                 if let Some(initializer) = initializer {
-                    walk_expr(
-                        body,
-                        *initializer,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
+                    walk_expr(body, *initializer, owner, scope_result, resolver, item_trees, out);
                 }
             }
             hir::Expr::ArrayInitializer { items, .. } => {

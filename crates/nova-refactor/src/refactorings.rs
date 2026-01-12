@@ -5858,25 +5858,33 @@ fn find_innermost_statement_containing_range(
         .min_by_key(|stmt| syntax_range(stmt.syntax()).len())
 }
 
-fn statement_block_and_index(stmt: &ast::Statement) -> Option<(ast::Block, usize)> {
-    let block = stmt.syntax().parent().and_then(ast::Block::cast)?;
-    let idx = block
-        .statements()
-        .position(|candidate| candidate.syntax() == stmt.syntax())?;
-    Some((block, idx))
-}
+fn statement_list_container_and_index(
+    stmt: &ast::Statement,
+) -> Option<(nova_syntax::SyntaxNode, usize)> {
+    let parent = stmt.syntax().parent()?;
 
-fn check_side_effectful_inline_order(
-    root: &nova_syntax::SyntaxNode,
-    decl_stmt: &ast::LocalVariableDeclarationStatement,
-    targets: &[crate::semantic::Reference],
-    decl_file: &FileId,
-) -> Result<(), RefactorError> {
-    match check_order_sensitive_inline_order(root, decl_stmt, targets, decl_file) {
-        Ok(()) => Ok(()),
-        Err(RefactorError::InlineNotSupported) => Err(RefactorError::InlineSideEffects),
-        Err(err) => Err(err),
+    if let Some(block) = ast::Block::cast(parent.clone()) {
+        let idx = block
+            .statements()
+            .position(|candidate| candidate.syntax() == stmt.syntax())?;
+        return Some((block.syntax().clone(), idx));
     }
+
+    if let Some(block) = ast::SwitchBlock::cast(parent.clone()) {
+        let idx = block
+            .statements()
+            .position(|candidate| candidate.syntax() == stmt.syntax())?;
+        return Some((block.syntax().clone(), idx));
+    }
+
+    if let Some(group) = ast::SwitchGroup::cast(parent) {
+        let idx = group
+            .statements()
+            .position(|candidate| candidate.syntax() == stmt.syntax())?;
+        return Some((group.syntax().clone(), idx));
+    }
+
+    None
 }
 
 fn check_order_sensitive_inline_order(
@@ -5885,15 +5893,10 @@ fn check_order_sensitive_inline_order(
     targets: &[crate::semantic::Reference],
     decl_file: &FileId,
 ) -> Result<(), RefactorError> {
-    let decl_block = decl_stmt
-        .syntax()
-        .parent()
-        .and_then(ast::Block::cast)
+    let decl_stmt = ast::Statement::cast(decl_stmt.syntax().clone())
         .ok_or(RefactorError::InlineNotSupported)?;
-    let decl_index = decl_block
-        .statements()
-        .position(|stmt| stmt.syntax() == decl_stmt.syntax())
-        .ok_or(RefactorError::InlineNotSupported)?;
+    let (decl_container, decl_index) =
+        statement_list_container_and_index(&decl_stmt).ok_or(RefactorError::InlineNotSupported)?;
 
     let mut earliest_usage_index: Option<usize> = None;
     for target in targets {
@@ -5904,10 +5907,10 @@ fn check_order_sensitive_inline_order(
 
         let usage_stmt = find_innermost_statement_containing_range(root, target.range)
             .ok_or(RefactorError::InlineNotSupported)?;
-        let (usage_block, usage_index) =
-            statement_block_and_index(&usage_stmt).ok_or(RefactorError::InlineNotSupported)?;
+        let (usage_container, usage_index) = statement_list_container_and_index(&usage_stmt)
+            .ok_or(RefactorError::InlineNotSupported)?;
 
-        if usage_block.syntax() != decl_block.syntax() {
+        if usage_container != decl_container {
             return Err(RefactorError::InlineNotSupported);
         }
 
