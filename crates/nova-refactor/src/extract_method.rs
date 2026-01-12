@@ -592,6 +592,7 @@ fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
 enum EnclosingMethod {
     Method(ast::MethodDeclaration),
     Constructor(ast::ConstructorDeclaration),
+    CompactConstructor(ast::CompactConstructorDeclaration),
     Initializer(ast::InitializerBlock),
 }
 
@@ -600,6 +601,7 @@ impl EnclosingMethod {
         match self {
             EnclosingMethod::Method(method) => method.syntax(),
             EnclosingMethod::Constructor(ctor) => ctor.syntax(),
+            EnclosingMethod::CompactConstructor(ctor) => ctor.syntax(),
             EnclosingMethod::Initializer(init) => init.syntax(),
         }
     }
@@ -608,6 +610,13 @@ impl EnclosingMethod {
         match self {
             EnclosingMethod::Method(method) => method.parameter_list(),
             EnclosingMethod::Constructor(ctor) => ctor.parameter_list(),
+            // Compact constructors have no explicit parameter list, but record components are in
+            // scope as if they were constructor parameters.
+            EnclosingMethod::CompactConstructor(ctor) => ctor
+                .syntax()
+                .ancestors()
+                .find_map(ast::RecordDeclaration::cast)
+                .and_then(|record| record.parameter_list()),
             EnclosingMethod::Initializer(_) => None,
         }
     }
@@ -616,6 +625,7 @@ impl EnclosingMethod {
         match self {
             EnclosingMethod::Method(method) => method_is_static(method),
             EnclosingMethod::Constructor(_) => false,
+            EnclosingMethod::CompactConstructor(_) => false,
             EnclosingMethod::Initializer(init) => initializer_is_static(init),
         }
     }
@@ -696,6 +706,25 @@ fn find_enclosing_method(
                 .is_none_or(|(best_span, _, _)| span < *best_span)
             {
                 best = Some((span, EnclosingMethod::Constructor(ctor), body));
+            }
+        }
+    }
+
+    for ctor in root
+        .descendants()
+        .filter_map(ast::CompactConstructorDeclaration::cast)
+    {
+        let Some(body) = ctor.body() else {
+            continue;
+        };
+        let body_range = syntax_range(body.syntax());
+        if body_range.start <= selection.start && selection.end <= body_range.end {
+            let span = body_range.len();
+            if best
+                .as_ref()
+                .is_none_or(|(best_span, _, _)| span < *best_span)
+            {
+                best = Some((span, EnclosingMethod::CompactConstructor(ctor), body));
             }
         }
     }
