@@ -17,8 +17,23 @@ pub fn format_java_ast(parse: &JavaParseResult, source: &str, config: &FormatCon
     let newline = NewlineStyle::detect(source);
     let input_has_final_newline = ends_with_line_break(source);
     let mut out = format_compilation_unit(parse, source, config, newline);
-
     finalize_output(&mut out, config, input_has_final_newline, newline);
+
+    // Ensure the formatter is idempotent on its own output, even when formatting
+    // changes the parser's tokenization decisions on malformed inputs (e.g.
+    // generic `>>` vs shift operators).
+    //
+    // Mirror the legacy token formatter's stabilization loop to guarantee that
+    // the canonical full-document formatting pipeline reaches a fixed point.
+    for _ in 0..8 {
+        let reparsed = nova_syntax::parse_java(&out);
+        let mut next = format_compilation_unit(&reparsed, &out, config, newline);
+        finalize_output(&mut next, config, input_has_final_newline, newline);
+        if next == out {
+            break;
+        }
+        out = next;
+    }
 
     out
 }

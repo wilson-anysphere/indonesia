@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 nova-classfile = { path = "../crates/nova-classfile" }
+nova-core = { path = "../crates/nova-core" }
 nova-format = { path = "../crates/nova-format" }
 nova-refactor = { path = "../crates/nova-refactor", optional = true }
 nova-syntax = { path = "../crates/nova-syntax" }
