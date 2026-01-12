@@ -355,6 +355,27 @@ pub fn framework_completions(
         }
     }
 
+    // MapStruct `@Mapping(target="...")` / `@Mapping(source="...")` property completions.
+    //
+    // Guard with a cheap text heuristic to avoid filesystem scans on unrelated files.
+    let maybe_mapstruct_file =
+        text.contains("@Mapper") || text.contains("@Mapping") || text.contains("org.mapstruct");
+    if maybe_mapstruct_file {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        if let Some(path) = db.file_path(file) {
+            let root = project_root_for_path(path);
+            if let Ok(items) =
+                nova_framework_mapstruct::completions_for_file(&root, path, text, offset)
+            {
+                if !items.is_empty() && !cancel.is_cancelled() {
+                    return items;
+                }
+            }
+        }
+    }
+
     Vec::new()
 }
 

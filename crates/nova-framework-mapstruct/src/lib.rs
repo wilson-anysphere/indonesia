@@ -60,7 +60,7 @@ pub struct NavigationTarget {
 pub struct PropertyMappingModel {
     pub source: Option<String>,
     /// Byte span of the source string literal *value* (without quotes) inside the
-    /// mapper source file.
+    /// mapper source file (if `source = "..."` is present).
     pub source_span: Option<Span>,
     pub target: String,
     /// Byte span of the target string literal *value* (without quotes) inside the
@@ -1302,6 +1302,109 @@ fn find_matching_paren(haystack: &str, open_idx: usize) -> Option<usize> {
     }
 
     None
+}
+
+/// Completion support for MapStruct `@Mapping(source="...")` / `@Mapping(target="...")`.
+///
+/// This is intentionally best-effort and relies on filesystem-based type discovery, consistent
+/// with the non-workspace-scoped MapStruct helpers in this crate (e.g. `goto_definition`).
+///
+/// Returns an empty list when:
+/// - the file does not look like a MapStruct mapper,
+/// - the cursor is not within a supported string literal context,
+/// - type/property discovery fails.
+pub fn completions_for_file(
+    project_root: &Path,
+    file: &Path,
+    source: &str,
+    offset: usize,
+) -> std::io::Result<Vec<CompletionItem>> {
+    if offset > source.len() {
+        return Ok(Vec::new());
+    }
+    if !looks_like_mapstruct_source(source) {
+        return Ok(Vec::new());
+    }
+
+    let mappers = match discover_mappers_in_source(file, source) {
+        Ok(m) => m,
+        Err(_) => return Ok(Vec::new()),
+    };
+    if mappers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let roots = source_roots(project_root);
+
+    for mapper in &mappers {
+        for method in &mapper.methods {
+            for mapping in &method.mappings {
+                if span_contains_inclusive(mapping.target_span, offset) {
+                    return Ok(mapping_property_completions_fs(
+                        project_root,
+                        &roots,
+                        source,
+                        offset,
+                        mapping.target_span,
+                        &method.target_type,
+                    ));
+                }
+
+                if let Some(span) = mapping.source_span {
+                    if span_contains_inclusive(span, offset) {
+                        return Ok(mapping_property_completions_fs(
+                            project_root,
+                            &roots,
+                            source,
+                            offset,
+                            span,
+                            &method.source_type,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+fn mapping_property_completions_fs(
+    project_root: &Path,
+    roots: &[PathBuf],
+    file_text: &str,
+    offset: usize,
+    value_span: Span,
+    ty: &JavaType,
+) -> Vec<CompletionItem> {
+    let cursor = offset.min(value_span.end).min(file_text.len());
+    if cursor < value_span.start || value_span.start > file_text.len() {
+        return Vec::new();
+    }
+
+    let before_cursor = file_text
+        .get(value_span.start..cursor)
+        .unwrap_or_default();
+    let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
+    let segment_start = value_span.start + segment_start_rel;
+    let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
+
+    let Some(props) = properties_for_type(project_root, roots, ty).ok().flatten() else {
+        return Vec::new();
+    };
+
+    let replace_span = Span::new(segment_start, cursor);
+    let mut items: Vec<CompletionItem> = props
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .map(|name| CompletionItem {
+            label: name,
+            detail: None,
+            replace_span: Some(replace_span),
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
 }
 
 fn parse_formal_parameter_types(

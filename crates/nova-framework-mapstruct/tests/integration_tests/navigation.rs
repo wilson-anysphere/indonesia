@@ -202,6 +202,7 @@ fn goto_definition_update_method_to_generated_impl() {
 public class CarMapperImpl implements CarMapper {
   @Override
   public void updateCarDto(Car car, CarDto carDto) {
+    // stub
   }
 }
 "#,
@@ -227,4 +228,3 @@ public class CarMapperImpl implements CarMapper {
         "expected update method signature, got line: {line}"
     );
 }
-
