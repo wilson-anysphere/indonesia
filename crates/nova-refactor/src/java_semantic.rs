@@ -405,35 +405,53 @@ fn refactor_local_scope(
     body: &hir::Body,
     local_scope: nova_resolve::ScopeId,
 ) -> nova_resolve::ScopeId {
-    let is_let_scope = matches!(
-        scope_result.scopes.scope(local_scope).kind(),
-        ScopeKind::Block { stmt, .. } if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. })
-    );
-
-    if !is_let_scope {
+    let Some(let_stmt_id) = (match scope_result.scopes.scope(local_scope).kind() {
+        ScopeKind::Block { stmt, .. } if matches!(&body.stmts[*stmt], hir::Stmt::Let { .. }) => {
+            Some(*stmt)
+        }
+        _ => None,
+    }) else {
         return local_scope;
-    }
+    };
 
     let mut current = Some(local_scope);
     while let Some(scope_id) = current {
-        let ScopeKind::Block { stmt, .. } = scope_result.scopes.scope(scope_id).kind() else {
-            current = scope_result.scopes.scope(scope_id).parent();
-            continue;
-        };
-        let hir::Stmt::Block { statements, .. } = &body.stmts[*stmt] else {
-            current = scope_result.scopes.scope(scope_id).parent();
+        let data = scope_result.scopes.scope(scope_id);
+        let ScopeKind::Block { stmt, .. } = data.kind() else {
+            current = data.parent();
             continue;
         };
 
-        if let Some(last_stmt) = statements.last() {
-            return scope_result
-                .stmt_scopes
-                .get(last_stmt)
-                .copied()
-                .unwrap_or(scope_id);
+        match &body.stmts[*stmt] {
+            hir::Stmt::For { init, .. } => {
+                // `for (int i = 0; ...)` locals are scoped to the `for` statement itself (not the
+                // enclosing `{}` block), so don't consider locals declared after the loop.
+                if init.iter().any(|stmt_id| *stmt_id == let_stmt_id) {
+                    let mut visible_scope = scope_id;
+                    for init_stmt in init {
+                        if matches!(&body.stmts[*init_stmt], hir::Stmt::Let { .. }) {
+                            if let Some(&stmt_scope) = scope_result.stmt_scopes.get(init_stmt) {
+                                visible_scope = stmt_scope;
+                            }
+                        }
+                    }
+                    return visible_scope;
+                }
+            }
+            hir::Stmt::Block { statements, .. } => {
+                if let Some(last_stmt) = statements.last() {
+                    return scope_result
+                        .stmt_scopes
+                        .get(last_stmt)
+                        .copied()
+                        .unwrap_or(scope_id);
+                }
+                return scope_id;
+            }
+            _ => {}
         }
 
-        return scope_id;
+        current = data.parent();
     }
 
     local_scope

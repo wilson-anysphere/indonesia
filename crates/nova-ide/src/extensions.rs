@@ -144,7 +144,6 @@ where
             .collect()
     }
 }
-
 pub struct IdeExtensions<DB: ?Sized + Send + Sync + 'static> {
     db: Arc<DB>,
     config: Arc<NovaConfig>,

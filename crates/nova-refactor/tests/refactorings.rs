@@ -73,6 +73,47 @@ fn rename_conflict_detection_triggers_on_collision() {
 }
 
 #[test]
+fn rename_for_init_variable_does_not_conflict_with_later_block_local() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    for (int foo = 0; foo < 1; foo++) {
+    }
+    int bar = 0;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("for (int bar = 0; bar < 1; bar++)"),
+        "expected for-loop binding to be renamed: {after}"
+    );
+    assert!(
+        after.contains("}\n    int bar = 0;\n"),
+        "expected later bar declaration to remain (scopes do not overlap): {after}"
+    );
+    assert!(
+        !after.contains("foo"),
+        "expected all occurrences of foo to be renamed: {after}"
+    );
+}
+
+#[test]
 fn extract_variable_generates_valid_edit() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
