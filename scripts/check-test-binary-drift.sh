@@ -48,7 +48,7 @@ has_test_target() {
   fi
 
   git show "${rev}:${manifest}" | awk -v wanted="${test_name}" '
-    BEGIN { in_test = 0 }
+    BEGIN { in_test = 0; found = 0 }
     /^[[:space:]]*\[\[test\]\][[:space:]]*$/ { in_test = 1; next }
     # Any other TOML section header ends the current [[test]] block.
     /^[[:space:]]*\[/ && $0 !~ /^[[:space:]]*\[\[test\]\]/ { in_test = 0 }
@@ -57,11 +57,9 @@ has_test_target() {
       sub(/^[[:space:]]*name[[:space:]]*=[[:space:]]*/, "", line)
       gsub(/[[:space:]]/, "", line)
       gsub(/["'\''\r]/, "", line)
-      if (line == wanted) {
-        exit 0
-      }
+      if (line == wanted) { found = 1 }
     }
-    END { exit 1 }
+    END { exit found ? 0 : 1 }
   '
 }
 
