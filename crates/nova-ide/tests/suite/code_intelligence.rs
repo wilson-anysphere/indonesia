@@ -458,6 +458,53 @@ class A {
 }
 
 #[test]
+fn completion_includes_postfix_if_for_field_when_shadowed_out_of_scope() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  boolean cond = true;
+  void m() {
+    {
+      String cond = "";
+    }
+    cond.if<|>
+  }
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let cond_start = text_without_caret
+        .rfind("cond.if")
+        .expect("expected cond.if in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "if" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `if` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, cond_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("if (cond)"),
+        "expected snippet to contain `if (cond)`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn completion_includes_postfix_nn_for_reference() {
     let (db, file, pos) = fixture(
         r#"

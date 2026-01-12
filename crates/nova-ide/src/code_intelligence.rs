@@ -2108,15 +2108,36 @@ fn infer_simple_expr_type(
 
     // Identifier (local vars / params / fields).
     if expr.chars().next().is_some_and(|ch| is_ident_start(ch)) {
-        if let Some(var) = analysis.vars.iter().find(|v| v.name == expr) {
-            return parse_source_type(types, &var.ty);
-        }
-
         if let Some(method) = analysis
             .methods
             .iter()
             .find(|m| span_contains(m.body_span, offset))
         {
+            let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
+
+            // Best-effort local variable scoping:
+            // - must be in the same method
+            // - must be declared before the cursor
+            // - must have a brace-stack that is a prefix of the cursor's stack
+            // Pick the most recent declaration to approximate shadowing.
+            if let Some(var) = analysis
+                .vars
+                .iter()
+                .filter(|v| {
+                    v.name == expr
+                        && span_within(v.name_span, method.body_span)
+                        && v.name_span.start < offset
+                })
+                .filter(|v| {
+                    let var_brace_stack =
+                        brace_stack_at_offset(&analysis.tokens, v.name_span.start);
+                    brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack)
+                })
+                .max_by_key(|v| v.name_span.start)
+            {
+                return parse_source_type(types, &var.ty);
+            }
+
             if let Some(param) = method.params.iter().find(|p| p.name == expr) {
                 return parse_source_type(types, &param.ty);
             }
