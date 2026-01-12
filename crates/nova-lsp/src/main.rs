@@ -495,12 +495,18 @@ fn initialize_result_json() -> serde_json::Value {
         }
     });
 
+    let semantic_tokens_legend = nova_ide::semantic_tokens_legend();
+
     json!({
         "capabilities": {
             "textDocumentSync": { "openClose": true, "change": 2 },
             "completionProvider": {
                 "resolveProvider": true,
                 "triggerCharacters": ["."]
+            },
+            "semanticTokensProvider": {
+                "legend": semantic_tokens_legend,
+                "full": true
             },
             "documentFormattingProvider": true,
             "documentRangeFormattingProvider": true,
@@ -1509,6 +1515,18 @@ fn handle_request_json(
                 return Ok(server_shutting_down_error(id));
             }
             let result = handle_document_symbol(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/semanticTokens/full" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_semantic_tokens_full(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -3105,6 +3123,27 @@ fn handle_document_symbol(
 
     let symbols = nova_ide::document_symbols(&state.analysis, file_id);
     serde_json::to_value(symbols).map_err(|e| e.to_string())
+}
+
+fn handle_semantic_tokens_full(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: lsp_types::SemanticTokensParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let tokens = nova_ide::semantic_tokens(&state.analysis, file_id);
+    let result = lsp_types::SemanticTokens {
+        result_id: None,
+        data: tokens,
+    };
+    serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
