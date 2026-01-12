@@ -37,6 +37,7 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
  10. [0010 — Extension system (native + WASM providers)](adr/0010-extension-system.md)
 11. [0011 — Stable `ClassId` and project-level type environments](adr/0011-stable-classid-and-project-type-environments.md)
 12. [0012 — `ClassId` stability and interning policy](adr/0012-classid-interning.md)
+13. [0013 — Wire adapter stream-debug evaluation strategy](adr/0013-stream-debug-evaluation-strategy.md)
 
 ## Where to look in code
 
