@@ -47,7 +47,9 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
                     };
                     out = match out {
                         None => Some(found),
-                        Some(existing) => Some(merge_instantiated_supertypes(env, existing, found)?),
+                        Some(existing) => {
+                            Some(merge_instantiated_supertypes(env, existing, found)?)
+                        }
                     };
                 }
 
@@ -75,15 +77,16 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
                         };
                         out = match out {
                             None => Some(found),
-                            Some(existing) => match merge_instantiated_supertypes(env, existing, found)
-                            {
-                                Some(merged) => Some(merged),
-                                None => {
-                                    // Ensure recursion guard is cleared before returning.
-                                    seen_type_vars.remove(id);
-                                    return None;
+                            Some(existing) => {
+                                match merge_instantiated_supertypes(env, existing, found) {
+                                    Some(merged) => Some(merged),
+                                    None => {
+                                        // Ensure recursion guard is cleared before returning.
+                                        seen_type_vars.remove(id);
+                                        return None;
+                                    }
                                 }
-                            },
+                            }
                         };
                     }
                 }

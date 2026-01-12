@@ -7091,7 +7091,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let env_ro: &dyn TypeEnv = &*loader.store;
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
-                            MethodResolution::Found(method) if !method.inferred_type_args.is_empty() => {
+                            MethodResolution::Found(method)
+                                if !method.inferred_type_args.is_empty() =>
+                            {
                                 Type::Unknown
                             }
                             _ => this.infer_expr(loader, *arg).ty,
@@ -8148,7 +8150,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 text.as_str(),
                 Some(*span),
             );
-            explicit_type_args_errorish |= resolved.ty.is_errorish() || !resolved.diagnostics.is_empty();
+            explicit_type_args_errorish |=
+                resolved.ty.is_errorish() || !resolved.diagnostics.is_empty();
             self.diagnostics.extend(resolved.diagnostics);
             resolved_explicit_type_args.push(resolved.ty);
             explicit_type_args_span = Some(match explicit_type_args_span {

@@ -5306,9 +5306,11 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"
-            && d.code.as_ref() != "unresolved-method"
-            && d.code.as_ref() != "type-mismatch"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"
+                && d.code.as_ref() != "unresolved-method"
+                && d.code.as_ref() != "type-mismatch"),
         "expected ctor-arg poly call to target-type without errors; got {diags:?}"
     );
 
