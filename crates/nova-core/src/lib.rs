@@ -288,6 +288,86 @@ pub struct JdkConfig {
     pub toolchains: Vec<JdkToolchain>,
 }
 
+impl JdkConfig {
+    /// Returns the configured toolchain home for `release` if one exists.
+    ///
+    /// If multiple toolchains share the same release, the **last** one wins.
+    pub fn toolchain_home_for_release(&self, release: u16) -> Option<&PathBuf> {
+        self.toolchains
+            .iter()
+            .rev()
+            .find(|toolchain| toolchain.release == release)
+            .map(|toolchain| &toolchain.home)
+    }
+
+    /// Returns the preferred JDK home for the requested API release.
+    ///
+    /// Resolution order:
+    /// 1. If `requested_release` is `Some`, use it; otherwise fall back to `self.release`.
+    /// 2. If a matching toolchain exists, return its home.
+    /// 3. Otherwise return `self.home`.
+    pub fn preferred_home(&self, requested_release: Option<u16>) -> Option<&PathBuf> {
+        requested_release
+            .or(self.release)
+            .and_then(|release| self.toolchain_home_for_release(release))
+            .or_else(|| self.home.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod jdk_config_tests {
+    use super::*;
+
+    #[test]
+    fn prefers_matching_toolchain_over_default_home() {
+        let cfg = JdkConfig {
+            home: Some(PathBuf::from("/default-jdk")),
+            release: Some(17),
+            toolchains: vec![
+                JdkToolchain {
+                    release: 8,
+                    home: PathBuf::from("/jdk-8"),
+                },
+                JdkToolchain {
+                    release: 17,
+                    home: PathBuf::from("/jdk-17"),
+                },
+            ],
+        };
+
+        assert_eq!(cfg.preferred_home(None), Some(&PathBuf::from("/jdk-17")));
+        assert_eq!(cfg.preferred_home(Some(8)), Some(&PathBuf::from("/jdk-8")));
+        assert_eq!(
+            cfg.preferred_home(Some(11)),
+            Some(&PathBuf::from("/default-jdk"))
+        );
+    }
+
+    #[test]
+    fn last_toolchain_wins_for_duplicate_releases() {
+        let cfg = JdkConfig {
+            home: None,
+            release: Some(17),
+            toolchains: vec![
+                JdkToolchain {
+                    release: 17,
+                    home: PathBuf::from("/jdk-17-a"),
+                },
+                JdkToolchain {
+                    release: 17,
+                    home: PathBuf::from("/jdk-17-b"),
+                },
+            ],
+        };
+
+        assert_eq!(
+            cfg.toolchain_home_for_release(17),
+            Some(&PathBuf::from("/jdk-17-b"))
+        );
+        assert_eq!(cfg.preferred_home(None), Some(&PathBuf::from("/jdk-17-b")));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticSeverity {
     Error,
