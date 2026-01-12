@@ -8779,8 +8779,7 @@ fn catch_statement_end_offset(tokens: &[Token], catch_idx: usize) -> Option<usiz
 
 pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
     let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let offset = text_index.position_to_offset(position)?;
+    let offset = crate::text::position_to_offset(text, position)?;
 
     // Best-effort MapStruct support: allow "go to definition" from a mapper method
     // (or `@Mapping(target="...")`) into generated sources when they exist on disk.
@@ -8885,13 +8884,23 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
     }
 
     let resolver = nav_resolve::Resolver::new(db);
+    // Prefer offset conversion using the parsed file's cached line index.
+    let offset = resolver
+        .parsed_file(file)
+        .and_then(|parsed| {
+            crate::text::position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+        })
+        .unwrap_or(offset);
     let resolved = resolver.resolve_at(file, offset)?;
     let def_file = resolver.parsed_file(resolved.def.file)?;
-    let def_index = TextIndex::new(&def_file.text);
 
     Some(Location {
         uri: resolved.def.uri,
-        range: def_index.span_to_lsp_range(resolved.def.name_span),
+        range: crate::text::span_to_lsp_range_with_index(
+            &def_file.line_index,
+            &def_file.text,
+            resolved.def.name_span,
+        ),
     })
 }
 
@@ -8910,8 +8919,7 @@ pub fn find_references(
     include_declaration: bool,
 ) -> Vec<Location> {
     let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let Some(offset) = text_index.position_to_offset(position) else {
+    let Some(mut offset) = crate::text::position_to_offset(text, position) else {
         return Vec::new();
     };
 
@@ -9005,6 +9013,14 @@ pub fn find_references(
     }
 
     let resolver = nav_resolve::Resolver::new(db);
+    // Prefer offset conversion using the parsed file's cached line index.
+    if let Some(parsed) = resolver.parsed_file(file) {
+        if let Some(off) =
+            crate::text::position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+        {
+            offset = off;
+        }
+    }
     let Some(target) = resolver.resolve_at(file, offset) else {
         return Vec::new();
     };
@@ -9015,10 +9031,13 @@ pub fn find_references(
         nav_resolve::ResolvedKind::LocalVar { scope } => {
             if include_declaration {
                 if let Some(def_parsed) = resolver.parsed_file(target.def.file) {
-                    let def_index = TextIndex::new(&def_parsed.text);
                     out.push(Location {
                         uri: target.def.uri.clone(),
-                        range: def_index.span_to_lsp_range(target.def.name_span),
+                        range: crate::text::span_to_lsp_range_with_index(
+                            &def_parsed.line_index,
+                            &def_parsed.text,
+                            target.def.name_span,
+                        ),
                     });
                 }
             }
@@ -9029,7 +9048,6 @@ pub fn find_references(
             let Some(parsed) = resolver.parsed_file(file) else {
                 return Vec::new();
             };
-            let file_index = TextIndex::new(&parsed.text);
             for span in spans {
                 if !include_declaration && file == target.def.file && span == target.def.name_span {
                     continue;
@@ -9042,7 +9060,11 @@ pub fn find_references(
                 }
                 out.push(Location {
                     uri: parsed.uri.clone(),
-                    range: file_index.span_to_lsp_range(span),
+                    range: crate::text::span_to_lsp_range_with_index(
+                        &parsed.line_index,
+                        &parsed.text,
+                        span,
+                    ),
                 });
             }
         }
@@ -9051,10 +9073,13 @@ pub fn find_references(
         | nav_resolve::ResolvedKind::Type => {
             if include_declaration {
                 if let Some(def_parsed) = resolver.parsed_file(target.def.file) {
-                    let def_index = TextIndex::new(&def_parsed.text);
                     out.push(Location {
                         uri: target.def.uri.clone(),
-                        range: def_index.span_to_lsp_range(target.def.name_span),
+                        range: crate::text::span_to_lsp_range_with_index(
+                            &def_parsed.line_index,
+                            &def_parsed.text,
+                            target.def.name_span,
+                        ),
                     });
                 }
             }
@@ -9063,7 +9088,6 @@ pub fn find_references(
                 let Some(parsed) = resolver.parsed_file(file_id) else {
                     continue;
                 };
-                let file_index = TextIndex::new(&parsed.text);
                 let spans = nav_resolve::scan_identifier_occurrences(
                     &parsed.text,
                     Span::new(0, parsed.text.len()),
@@ -9084,7 +9108,11 @@ pub fn find_references(
                     }
                     out.push(Location {
                         uri: parsed.uri.clone(),
-                        range: file_index.span_to_lsp_range(span),
+                        range: crate::text::span_to_lsp_range_with_index(
+                            &parsed.line_index,
+                            &parsed.text,
+                            span,
+                        ),
                     });
                 }
             }
