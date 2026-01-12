@@ -166,8 +166,8 @@ impl WorkspaceLoader {
                 let is_new_file = !self.path_to_file.contains_key(&file_path);
                 let file_id = self.file_id_for_path(file_path.as_path(), file_id_for_path);
 
-                let rel = rel_path_under_root(&model.workspace_root, &file_path);
-                db.set_file_rel_path(file_id, Arc::new(rel.clone()));
+                let rel = Arc::new(rel_path_under_root(&model.workspace_root, &file_path));
+                db.set_file_rel_path(file_id, rel.clone());
 
                 db.set_file_project(file_id, project);
 
