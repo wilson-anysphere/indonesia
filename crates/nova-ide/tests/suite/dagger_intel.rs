@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use lsp_types::Position;
-
 use nova_db::{Database as _, InMemoryFileStore};
 use nova_ide::{file_diagnostics, goto_definition};
+
+use crate::text_fixture::offset_to_position as offset_to_lsp_position;
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-framework-dagger/tests/fixtures")
@@ -38,27 +38,6 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) {
         }
         out.push(path);
     }
-}
-
-fn offset_to_lsp_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position::new(line, col_utf16)
 }
 
 fn slice_lsp_range(text: &str, range: lsp_types::Range) -> String {

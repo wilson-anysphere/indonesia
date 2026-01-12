@@ -8,6 +8,8 @@ use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::goto_definition;
 use tempfile::TempDir;
 
+use crate::text_fixture::offset_to_position;
+
 struct FileIdFixture {
     _temp_dir: TempDir,
     db: InMemoryFileStore,
@@ -136,30 +138,6 @@ fn uri_for_path(path: &Path) -> Uri {
     Uri::from_str(&uri).expect("URI should parse")
 }
 
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col_utf16,
-    }
-}
-
 fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -188,4 +166,3 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 
     (out, markers)
 }
-

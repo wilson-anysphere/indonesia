@@ -1,11 +1,13 @@
 use std::path::Path;
 use std::str::FromStr;
 
-use lsp_types::{Position, Uri};
+use lsp_types::Uri;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::InMemoryFileStore;
 use nova_ide::{declaration, implementation, Database as IdeDatabase};
 use tempfile::TempDir;
+
+use crate::text_fixture::offset_to_position;
 
 #[test]
 fn mapstruct_implementation_falls_back_to_generated_impl_method() {
@@ -17,7 +19,8 @@ fn mapstruct_implementation_falls_back_to_generated_impl_method() {
 
     let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
     let dto_path = root.join("src/main/java/com/example/CarDto.java");
-    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    let impl_path =
+        root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
 
     let mapper_source = r#"package com.example;
 
@@ -62,7 +65,11 @@ public class CarMapperImpl implements CarMapper {
     let pos = offset_to_position(mapper_source, method_offset + 1);
 
     let got = implementation(&db, mapper_file, pos);
-    assert_eq!(got.len(), 1, "expected one implementation location; got {got:#?}");
+    assert_eq!(
+        got.len(),
+        1,
+        "expected one implementation location; got {got:#?}"
+    );
 
     let expected_uri = uri_for_path(&impl_path);
     assert_eq!(got[0].uri, expected_uri);
@@ -70,7 +77,10 @@ public class CarMapperImpl implements CarMapper {
     let impl_offset = impl_source
         .find("toDto")
         .expect("method name in generated impl source");
-    assert_eq!(got[0].range.start, offset_to_position(impl_source, impl_offset));
+    assert_eq!(
+        got[0].range.start,
+        offset_to_position(impl_source, impl_offset)
+    );
     assert_eq!(
         got[0].range.end,
         offset_to_position(impl_source, impl_offset + "toDto".len())
@@ -86,7 +96,8 @@ fn mapstruct_declaration_falls_back_to_target_property_definition() {
 
     let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
     let dto_path = root.join("src/main/java/com/example/CarDto.java");
-    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    let impl_path =
+        root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
 
     let mapper_source = r#"package com.example;
 
@@ -153,7 +164,8 @@ fn mapstruct_declaration_uses_in_memory_mapper_text() {
 
     let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
     let dto_path = root.join("src/main/java/com/example/CarDto.java");
-    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    let impl_path =
+        root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
 
     let mapper_source_on_disk = r#"package com.example;
 
@@ -228,30 +240,6 @@ fn uri_for_path(path: &Path) -> Uri {
     Uri::from_str(&uri).expect("URI should parse")
 }
 
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col_utf16,
-    }
-}
-
 #[test]
 fn mapstruct_snapshot_implementation_falls_back_to_generated_impl_method() {
     let dir = TempDir::new().expect("tempdir");
@@ -261,7 +249,8 @@ fn mapstruct_snapshot_implementation_falls_back_to_generated_impl_method() {
 
     let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
     let dto_path = root.join("src/main/java/com/example/CarDto.java");
-    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    let impl_path =
+        root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
 
     let mapper_source = r#"package com.example;
 
@@ -307,13 +296,20 @@ public class CarMapperImpl implements CarMapper {
     let pos = offset_to_position(mapper_source, method_offset + 1);
 
     let got = snap.implementation(&mapper_uri, pos);
-    assert_eq!(got.len(), 1, "expected one implementation location; got {got:#?}");
+    assert_eq!(
+        got.len(),
+        1,
+        "expected one implementation location; got {got:#?}"
+    );
     assert_eq!(got[0].uri, uri_for_path(&impl_path));
 
     let impl_offset = impl_source
         .find("toDto")
         .expect("method name in generated impl source");
-    assert_eq!(got[0].range.start, offset_to_position(impl_source, impl_offset));
+    assert_eq!(
+        got[0].range.start,
+        offset_to_position(impl_source, impl_offset)
+    );
 }
 
 #[test]
@@ -325,7 +321,8 @@ fn mapstruct_snapshot_declaration_falls_back_to_target_property_definition() {
 
     let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
     let dto_path = root.join("src/main/java/com/example/CarDto.java");
-    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    let impl_path =
+        root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
 
     let mapper_source = r#"package com.example;
 

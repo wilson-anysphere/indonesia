@@ -1,24 +1,9 @@
-use lsp_types::{CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+use lsp_types::{
+    CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
+};
 use nova_ide::code_action::diagnostic_quick_fixes;
 
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-    Position::new(line, col_utf16)
-}
+use crate::text_fixture::offset_to_position;
 
 #[test]
 fn create_class_quick_fix_inserts_skeleton_at_eof() {
@@ -27,7 +12,10 @@ fn create_class_quick_fix_inserts_skeleton_at_eof() {
 
     let start = source.find("MissingType").expect("MissingType start");
     let end = start + "MissingType".len();
-    let selection = Range::new(offset_to_position(source, start), offset_to_position(source, end));
+    let selection = Range::new(
+        offset_to_position(source, start),
+        offset_to_position(source, end),
+    );
 
     let diagnostic = Diagnostic {
         range: selection,
@@ -98,7 +86,10 @@ fn create_class_quick_fix_is_not_suggested_for_qualified_names() {
 
     let start = source.find("foo.Bar").expect("type start");
     let end = start + "foo.Bar".len();
-    let range = Range::new(offset_to_position(source, start), offset_to_position(source, end));
+    let range = Range::new(
+        offset_to_position(source, start),
+        offset_to_position(source, end),
+    );
 
     let diagnostic = Diagnostic {
         range,
@@ -114,4 +105,3 @@ fn create_class_quick_fix_is_not_suggested_for_qualified_names() {
         "expected no actions for qualified type names; got {actions:#?}"
     );
 }
-
