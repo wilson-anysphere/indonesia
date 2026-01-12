@@ -614,10 +614,7 @@ impl MavenBuild {
 
         let maven_repo = self
             .evaluate_scalar_best_effort(project_root, module_relative, "settings.localRepository")?
-            .and_then(|value| {
-                let value = value.trim();
-                (!value.is_empty()).then(|| PathBuf::from(value))
-            })
+            .and_then(|value| resolve_maven_repo_path_best_effort(&value))
             .unwrap_or_else(default_maven_repo);
 
         let mut config = parse_maven_effective_pom_annotation_processing_with_repo(
@@ -1132,6 +1129,98 @@ fn default_maven_repo() -> PathBuf {
     home.join(".m2/repository")
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn resolve_maven_repo_path_best_effort(value: &str) -> Option<PathBuf> {
+    let value = value.trim().trim_matches(|c| matches!(c, '"' | '\'')).trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some(path) = expand_maven_tilde_home(value) {
+        return Some(path);
+    }
+    if let Some(path) = expand_maven_env_placeholder(value) {
+        return Some(path);
+    }
+    if let Some(path) = expand_maven_user_home_placeholder(value) {
+        return Some(path);
+    }
+
+    // If there are any remaining placeholders, bail out rather than guessing.
+    if value.contains("${") {
+        return None;
+    }
+
+    Some(PathBuf::from(value))
+}
+
+fn expand_maven_tilde_home(value: &str) -> Option<PathBuf> {
+    let rest = value.strip_prefix('~')?;
+    let home = home_dir()?;
+
+    if rest.is_empty() {
+        return Some(home);
+    }
+
+    // Only expand `~/...` (or `~\\...` on Windows). Don't guess for `~user/...`.
+    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\'))?;
+    if rest.contains("${") {
+        return None;
+    }
+
+    Some(home.join(rest))
+}
+
+fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
+    const USER_HOME: &str = "${user.home}";
+    let rest = value.strip_prefix(USER_HOME)?;
+
+    let home = home_dir()?;
+    if rest.is_empty() {
+        return Some(home);
+    }
+
+    // Accept both separators so configs remain portable.
+    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+    if rest.contains("${") {
+        // If there are any remaining placeholders, bail out rather than guessing.
+        return None;
+    }
+
+    Some(home.join(rest))
+}
+
+fn expand_maven_env_placeholder(value: &str) -> Option<PathBuf> {
+    const PREFIX: &str = "${env.";
+    let rest = value.strip_prefix(PREFIX)?;
+    let (raw_key, rest) = rest.split_once('}')?;
+    let key = raw_key.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    let base = PathBuf::from(std::env::var_os(key)?);
+    if rest.is_empty() {
+        return Some(base);
+    }
+
+    // Accept both separators so configs remain portable.
+    let rest = rest
+        .strip_prefix('/')
+        .or_else(|| rest.strip_prefix('\\'))
+        .unwrap_or(rest);
+    if rest.contains("${") {
+        return None;
+    }
+
+    Some(base.join(rest))
+}
+
 pub fn maven_jar_path(
     repo: &Path,
     group_id: &str,
@@ -1587,10 +1676,51 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::collections::BTreeSet;
     use std::collections::HashMap;
     use std::process::ExitStatus;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prior: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&std::path::Path>) -> Self {
+            let prior = std::env::var_os(key);
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, prior }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn with_home_dir<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        // Set both to behave deterministically on Windows/Linux.
+        let _home = EnvVarGuard::set("HOME", Some(home));
+        let _userprofile = EnvVarGuard::set("USERPROFILE", Some(home));
+
+        f()
+    }
 
     #[test]
     fn parse_maven_classpath_output_strips_quotes_from_bracket_list_entries() {
@@ -1617,6 +1747,56 @@ mod tests {
         assert_eq!(
             parse_maven_evaluate_scalar_output(output),
             Some("/tmp/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_maven_repo_path_best_effort_expands_user_home_placeholder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        with_home_dir(&home, || {
+            let repo = resolve_maven_repo_path_best_effort("${user.home}/.m2/custom-repo")
+                .expect("repo");
+            assert_eq!(repo, home.join(".m2").join("custom-repo"));
+        });
+    }
+
+    #[test]
+    fn resolve_maven_repo_path_best_effort_expands_tilde_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        with_home_dir(&home, || {
+            let repo =
+                resolve_maven_repo_path_best_effort("~/.m2/custom-repo").expect("repo");
+            assert_eq!(repo, home.join(".m2").join("custom-repo"));
+        });
+    }
+
+    #[test]
+    fn resolve_maven_repo_path_best_effort_expands_env_placeholder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        let repo_root = tmp.path().join("repo-root");
+        std::fs::create_dir_all(&repo_root).expect("create repo root");
+
+        with_home_dir(&home, || {
+            let _guard = EnvVarGuard::set("M2_REPO_ROOT", Some(&repo_root));
+            let repo = resolve_maven_repo_path_best_effort("${env.M2_REPO_ROOT}/m2")
+                .expect("repo");
+            assert_eq!(repo, repo_root.join("m2"));
+        });
+    }
+
+    #[test]
+    fn resolve_maven_repo_path_best_effort_rejects_unknown_placeholders() {
+        assert!(
+            resolve_maven_repo_path_best_effort("${something}/repo").is_none(),
+            "unknown placeholders should be rejected so callers can fall back to defaults"
         );
     }
 
