@@ -1157,6 +1157,22 @@ mod tests {
         }
     }
 
+    struct PanickingAppliesToAnalyzer;
+
+    impl FrameworkAnalyzer for PanickingAppliesToAnalyzer {
+        fn applies_to(&self, _db: &dyn Database, _project: ProjectId) -> bool {
+            panic!("applies_to panic");
+        }
+
+        fn diagnostics(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<Diagnostic> {
+            vec![Diagnostic::warning(
+                "FW",
+                "should not run",
+                Some(Span::new(0, 1)),
+            )]
+        }
+    }
+
     struct ExtraDiagProvider;
     impl DiagnosticProvider<dyn Database + Send + Sync> for ExtraDiagProvider {
         fn id(&self) -> &str {
@@ -1366,6 +1382,28 @@ mod tests {
         assert!(
             saw_cancel.load(Ordering::SeqCst),
             "expected analyzer to observe cancellation"
+        );
+    }
+
+    #[test]
+    fn panicking_framework_analyzer_is_applicable_is_ignored() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        let file = db.add_file(project);
+
+        let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
+
+        let analyzer =
+            FrameworkAnalyzerAdapter::new("framework.panics", PanickingAppliesToAnalyzer).into_arc();
+        ide.registry_mut()
+            .register_diagnostic_provider(analyzer)
+            .unwrap();
+
+        let diags = ide.diagnostics(CancellationToken::new(), file);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics because is_applicable panicked; got {diags:?}"
         );
     }
 
