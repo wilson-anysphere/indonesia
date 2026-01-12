@@ -74,13 +74,13 @@ impl From<(String, Vec<String>)> for BazelBspConfig {
 ///
 /// This helper intentionally does not apply environment variable overrides; callers can layer
 /// additional discovery (e.g. `NOVA_BSP_*`) on top.
-#[cfg(feature = "bsp")]
+#[cfg(any(test, feature = "bsp"))]
 pub fn discover_bsp_connection(workspace_root: &Path) -> Option<(String, Vec<String>)> {
     let config = crate::bsp_config::discover_bsp_server_config_from_dot_bsp(workspace_root)?;
     Some((config.program, config.args))
 }
 
-#[cfg(feature = "bsp")]
+#[cfg(any(test, feature = "bsp"))]
 fn parse_bsp_args_env(args_raw: &str) -> Vec<String> {
     let args_raw = args_raw.trim();
     if args_raw.is_empty() {
@@ -99,7 +99,7 @@ fn parse_bsp_args_env(args_raw: &str) -> Vec<String> {
 ///
 /// This is shared by both long-lived BSP workspaces (via [`BspServerConfig`]) and one-shot
 /// builds/diagnostics (via [`BazelBspConfig`]) so behavior stays consistent.
-#[cfg(feature = "bsp")]
+#[cfg(any(test, feature = "bsp"))]
 pub(crate) fn apply_bsp_env_overrides(program: &mut String, args: &mut Vec<String>) {
     if let Ok(program_env) = std::env::var("NOVA_BSP_PROGRAM") {
         let program_env = program_env.trim();
@@ -116,7 +116,7 @@ pub(crate) fn apply_bsp_env_overrides(program: &mut String, args: &mut Vec<Strin
     }
 }
 
-#[cfg(feature = "bsp")]
+#[cfg(any(test, feature = "bsp"))]
 impl BazelBspConfig {
     /// Discover a Bazel BSP launcher configuration for `workspace_root`.
     ///

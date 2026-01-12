@@ -1,7 +1,7 @@
 use crate::bsp::{BazelBspConfig, BspCompileOutcome};
 use anyhow::Result;
 use nova_process::CancellationToken;
-use std::{collections::VecDeque, env};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
@@ -373,47 +373,14 @@ fn run_build(
         );
     }
 
-    let mut config = request.bsp_config.clone().or_else(|| {
-        crate::bsp_config::discover_bazel_bsp_config_from_dot_bsp(&inner.workspace_root)
-    });
-
-    // Environment-based override (and configuration injection). This matches the behavior in
-    // `BazelWorkspace` so users have a consistent escape hatch across Nova.
-    if let Ok(program) = env::var("NOVA_BSP_PROGRAM") {
-        let program = program.trim();
-        if !program.is_empty() {
-            match config.as_mut() {
-                Some(existing) => existing.program = program.to_string(),
-                None => {
-                    config = Some(BazelBspConfig {
-                        program: program.to_string(),
-                        args: Vec::new(),
-                    });
-                }
-            }
+    let config = match request.bsp_config.clone() {
+        Some(mut config) => {
+            crate::bsp::apply_bsp_env_overrides(&mut config.program, &mut config.args);
+            (!config.program.trim().is_empty()).then_some(config)
         }
+        None => None,
     }
-
-    if let Ok(args_raw) = env::var("NOVA_BSP_ARGS") {
-        let args_raw = args_raw.trim();
-        if !args_raw.is_empty() {
-            if let Some(existing) = config.as_mut() {
-                existing.args = if args_raw.starts_with('[') {
-                    serde_json::from_str::<Vec<String>>(args_raw).unwrap_or_else(|_| {
-                        args_raw
-                            .split_whitespace()
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                } else {
-                    args_raw
-                        .split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect()
-                };
-            }
-        }
-    }
+    .or_else(|| crate::bsp::BazelBspConfig::discover(&inner.workspace_root));
 
     let Some(config) = config.as_ref() else {
         return (

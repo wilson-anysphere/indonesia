@@ -6,7 +6,7 @@
 //! This module implements deterministic discovery of those configs so Nova can "just work" in
 //! workspaces that use BSP implementations other than `bsp4bazel` (notably `bazel-bsp`).
 
-use crate::bsp::{BazelBspConfig, BspServerConfig};
+use crate::bsp::BspServerConfig;
 use serde::Deserialize;
 use std::{
     fs,
@@ -98,13 +98,4 @@ pub(crate) fn discover_bsp_server_config_from_dot_bsp(
     }
 
     candidates.first().map(|c| c.config.clone())
-}
-
-pub(crate) fn discover_bazel_bsp_config_from_dot_bsp(
-    workspace_root: &Path,
-) -> Option<BazelBspConfig> {
-    discover_bsp_server_config_from_dot_bsp(workspace_root).map(|config| BazelBspConfig {
-        program: config.program,
-        args: config.args,
-    })
 }
