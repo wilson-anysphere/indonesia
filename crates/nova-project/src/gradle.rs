@@ -301,23 +301,41 @@ pub(crate) fn load_gradle_project(
         root_java = java;
     }
     let mut workspace_java = root_java;
-    let gradle_properties = load_gradle_properties(root);
-    let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
+
+    struct GradleBuildContext {
+        project_path_prefix: String,
+        build_root: PathBuf,
+        gradle_properties: GradleProperties,
+        version_catalog: Option<GradleVersionCatalog>,
+    }
+
     // Included builds (`includeBuild(...)`) are separate Gradle builds and can have their own
-    // `gradle.properties` / version catalogs. Collect per-build parsing contexts so we can resolve
-    // `libs.*` references inside build scripts for:
-    // - included builds, and
-    // - `buildSrc` (which is also a separate build).
-    let mut included_build_contexts: Vec<(String, GradleProperties, Option<GradleVersionCatalog>)> =
-        included_builds
-            .iter()
-            .map(|included| {
-                let build_root = canonicalize_or_fallback(&root.join(&included.dir_rel));
-                let props = load_gradle_properties(&build_root);
-                let catalog = load_gradle_version_catalog(&build_root, &props);
-                (included.project_path.clone(), props, catalog)
-            })
-            .collect();
+    // `gradle.properties` / version catalogs. Collect per-build parsing contexts so we can resolve:
+    // - `libs.*` references inside build scripts, and
+    // - root-level `subprojects { ... }` / `allprojects { ... }` dependencies.
+    //
+    // NOTE: keep the context matching logic consistent with `load_gradle_workspace_model`.
+    let mut build_contexts: Vec<GradleBuildContext> = Vec::new();
+    let root_gradle_properties = load_gradle_properties(root);
+    let root_version_catalog = load_gradle_version_catalog(root, &root_gradle_properties);
+    build_contexts.push(GradleBuildContext {
+        project_path_prefix: ":".to_string(),
+        build_root: canonicalize_or_fallback(root),
+        gradle_properties: root_gradle_properties,
+        version_catalog: root_version_catalog,
+    });
+
+    build_contexts.extend(included_builds.iter().map(|included| {
+        let build_root = canonicalize_or_fallback(&root.join(&included.dir_rel));
+        let props = load_gradle_properties(&build_root);
+        let catalog = load_gradle_version_catalog(&build_root, &props);
+        GradleBuildContext {
+            project_path_prefix: included.project_path.clone(),
+            build_root,
+            gradle_properties: props,
+            version_catalog: catalog,
+        }
+    }));
     if module_refs
         .iter()
         .any(|m| m.project_path == GRADLE_BUILDSRC_PROJECT_PATH)
@@ -329,15 +347,41 @@ pub(crate) fn load_gradle_project(
         let buildsrc_root = canonicalize_or_fallback(&buildsrc_root);
         let props = load_gradle_properties(&buildsrc_root);
         let catalog = load_gradle_version_catalog(&buildsrc_root, &props);
-        included_build_contexts.push((GRADLE_BUILDSRC_PROJECT_PATH.to_string(), props, catalog));
+        build_contexts.push(GradleBuildContext {
+            project_path_prefix: GRADLE_BUILDSRC_PROJECT_PATH.to_string(),
+            build_root: buildsrc_root,
+            gradle_properties: props,
+            version_catalog: catalog,
+        });
     }
     // Deterministic longest-prefix matching.
-    included_build_contexts.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
-    dependencies.extend(parse_gradle_root_dependencies(
-        root,
-        version_catalog.as_ref(),
-        &gradle_properties,
-    ));
+    build_contexts.sort_by(|a, b| {
+        b.project_path_prefix
+            .len()
+            .cmp(&a.project_path_prefix.len())
+            .then(a.project_path_prefix.cmp(&b.project_path_prefix))
+    });
+
+    // Root build scripts can define shared dependencies via `subprojects { ... }` / `allprojects { ... }`
+    // blocks. Collect these dependencies for *each* independent Gradle build (root, buildSrc, included
+    // builds) so the heuristic `ProjectConfig` still sees common deps even when subproject build
+    // scripts are empty.
+    for ctx in &build_contexts {
+        // Direct dependencies in the root project's build script.
+        dependencies.extend(parse_gradle_dependencies(
+            &ctx.build_root,
+            ctx.version_catalog.as_ref(),
+            &ctx.gradle_properties,
+        ));
+        // Dependencies declared in `subprojects {}` / `allprojects {}` blocks.
+        let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
+            &ctx.build_root,
+            ctx.version_catalog.as_ref(),
+            &ctx.gradle_properties,
+        );
+        dependencies.extend(subprojects);
+        dependencies.extend(allprojects);
+    }
 
     for module_ref in module_refs {
         let project_path = &module_ref.project_path;
@@ -503,16 +547,33 @@ pub(crate) fn load_gradle_project(
         }
 
         // Dependency extraction is best-effort; useful for later external jar resolution.
-        let (ctx_props, ctx_catalog) = included_build_contexts
+        let ctx = build_contexts
             .iter()
-            .find(|(prefix, _, _)| project_path.starts_with(prefix))
-            .map(|(_prefix, props, catalog)| (props, catalog.as_ref()))
-            .unwrap_or((&gradle_properties, version_catalog.as_ref()));
+            .find(|ctx| project_path.starts_with(&ctx.project_path_prefix))
+            .expect("expected gradle project path to match a build context");
         dependencies.extend(parse_gradle_dependencies(
             &module_root,
-            ctx_catalog,
-            ctx_props,
+            ctx.version_catalog.as_ref(),
+            &ctx.gradle_properties,
         ));
+
+        // `subprojects { ... }` / `allprojects { ... }` root blocks may reference Gradle properties
+        // that are only defined in a subproject's `gradle.properties`. When that happens, re-parse
+        // the root blocks using the module's merged properties so we still discover a resolved
+        // version in the heuristic dependency list (which helps Gradle cache jar lookup).
+        if module_root != ctx.build_root {
+            let module_gradle_properties =
+                merged_gradle_properties_for_module(&module_root, &ctx.gradle_properties);
+            if matches!(&module_gradle_properties, Cow::Owned(_)) {
+                let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
+                    &ctx.build_root,
+                    ctx.version_catalog.as_ref(),
+                    module_gradle_properties.as_ref(),
+                );
+                dependencies.extend(subprojects);
+                dependencies.extend(allprojects);
+            }
+        }
 
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.

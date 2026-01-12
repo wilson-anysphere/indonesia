@@ -201,3 +201,57 @@ plugins {
 
     Ok(())
 }
+
+#[test]
+fn gradle_project_dependencies_interpolate_from_module_gradle_properties_in_root_subprojects_block(
+) -> anyhow::Result<()> {
+    let dir = tempdir().context("tempdir")?;
+
+    std::fs::write(dir.path().join("settings.gradle"), "include ':app'\n")
+        .context("write settings.gradle")?;
+    std::fs::write(
+        dir.path().join("build.gradle"),
+        r#"
+subprojects {
+  dependencies {
+    implementation "com.google.guava:guava:$guavaVersion"
+  }
+}
+"#,
+    )
+    .context("write build.gradle")?;
+
+    std::fs::create_dir_all(dir.path().join("app")).context("mkdir app/")?;
+    std::fs::write(
+        dir.path().join("app/gradle.properties"),
+        "guavaVersion=33.0.0-jre\n",
+    )
+    .context("write app/gradle.properties")?;
+    std::fs::write(
+        dir.path().join("app/build.gradle"),
+        r#"
+plugins {
+  id 'java'
+}
+"#,
+    )
+    .context("write app/build.gradle")?;
+
+    let gradle_home = tempdir().context("tempdir (gradle home)")?;
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(dir.path(), &options).context("load gradle project")?;
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert!(
+        config.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected project dependency list to include guava with interpolated version from app/gradle.properties"
+    );
+
+    Ok(())
+}
