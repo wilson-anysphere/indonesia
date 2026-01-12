@@ -55,6 +55,10 @@ Values must be positive integers. Empty/`0` values fall back to built-in default
 `WatchMode` is owned by `nova-vfs` so higher layers can express “recursive vs non-recursive” without
 depending on `notify`’s backend-specific enums.
 
+Convenience: `nova_vfs::FileWatcher` also exposes `watch_root(root)` / `unwatch_root(root)` helpers
+for the common case of recursively watching a directory root. These are equivalent to
+`watch_path(root, WatchMode::Recursive)` / `unwatch_path(root)`.
+
 ## Dynamic watch paths (workspace reloads)
 
 In `nova-workspace`, the set of watched **paths** (directory roots + their `WatchMode`) can change
