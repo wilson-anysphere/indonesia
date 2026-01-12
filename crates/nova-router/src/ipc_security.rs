@@ -37,6 +37,18 @@ pub(crate) fn ensure_unix_socket_dir(path: &Path) -> Result<()> {
         if !meta.is_dir() {
             return Err(anyhow!("unix socket parent {parent:?} is not a directory"));
         }
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            if let Err(err) =
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            {
+                return Err(anyhow!(
+                    "unix socket parent directory {parent:?} must be user-private (0700) but is {mode:03o}; \
+failed to chmod it to 0700: {err}. \
+Place the socket under a user-private runtime directory (e.g. $XDG_RUNTIME_DIR) and ensure the parent directory is 0700."
+                ));
+            }
+        }
         return Ok(());
     }
 
