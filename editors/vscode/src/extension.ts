@@ -707,6 +707,21 @@ export async function activate(context: vscode.ExtensionContext) {
             out = result.filter((item) => !isNovaAiCodeActionOrCommand(item));
           }
 
+          if (document.uri.scheme !== 'file') {
+            // Patch-based AI code-edit commands require a file-backed URI so nova-lsp can apply
+            // workspace edits. Hide those code actions for non-file documents (e.g. untitled).
+            out = out.filter((item) => {
+              const rewritten = rewriteNovaAiCodeActionOrCommand(item);
+              if (!rewritten) {
+                return true;
+              }
+              return (
+                rewritten.command !== NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND &&
+                rewritten.command !== NOVA_AI_SHOW_GENERATE_TESTS_COMMAND
+              );
+            });
+          }
+
           for (const item of out) {
             if (!(item instanceof vscode.CodeAction)) {
               continue;
@@ -2244,6 +2259,11 @@ export async function activate(context: vscode.ExtensionContext) {
       };
     }
 
+    if (doc.uri.scheme !== 'file' && (opts.kind === 'generateMethodBody' || opts.kind === 'generateTests')) {
+      void vscode.window.showInformationMessage('Nova AI: Save this file to disk to run AI code-edit commands.');
+      return undefined;
+    }
+
     const selectionText = doc.getText(selection).trim();
     const defaultRange = selection.isEmpty
       ? new vscode.Range(
@@ -2409,6 +2429,19 @@ export async function activate(context: vscode.ExtensionContext) {
       await openAiDocs();
     } else if (picked === 'Restart Language Server') {
       await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
+    }
+  };
+
+  const handleAiUnsupportedUri = async (): Promise<void> => {
+    const picked = await vscode.window.showErrorMessage(
+      'Nova AI code-edit actions require a Java file on disk. Save the file and try again.',
+      'Save File',
+      'Save As…',
+    );
+    if (picked === 'Save File') {
+      await vscode.commands.executeCommand('workbench.action.files.save');
+    } else if (picked === 'Save As…') {
+      await vscode.commands.executeCommand('workbench.action.files.saveAs');
     }
   };
 
@@ -2594,6 +2627,10 @@ export async function activate(context: vscode.ExtensionContext) {
           await handleAiCodeEditPolicyError(err);
           return;
         }
+        if (isAiUnsupportedUriError(err)) {
+          await handleAiUnsupportedUri();
+          return;
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova AI: generate method body failed: ${message}`);
       }
@@ -2647,6 +2684,10 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (isAiCodeEditPolicyError(err)) {
           await handleAiCodeEditPolicyError(err);
+          return;
+        }
+        if (isAiUnsupportedUriError(err)) {
+          await handleAiUnsupportedUri();
           return;
         }
         const message = formatError(err);
@@ -3833,6 +3874,18 @@ function isAiCodeEditPolicyError(err: unknown): boolean {
   }
   const message = formatError(err).toLowerCase();
   return message.includes('ai code edits are disabled');
+}
+
+function isAiUnsupportedUriError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (code !== -32602 && code !== -32603) {
+    return false;
+  }
+  const message = formatError(err).toLowerCase();
+  return message.includes('unsupported uri');
 }
 
 function normalizeAiResult(result: unknown): string {
