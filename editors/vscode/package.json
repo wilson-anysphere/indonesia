@@ -138,7 +138,11 @@
       },
       {
         "command": "nova.frameworks.search",
-        "title": "Nova: Search Framework Items\u2026"
+        "title": "Nova: Search Framework Items\u2026",
+        "icon": {
+          "light": "resources/light/search.svg",
+          "dark": "resources/dark/search.svg"
+        }
       },
       {
         "command": "nova.frameworks.refresh",

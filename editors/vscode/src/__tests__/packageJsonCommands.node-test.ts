@@ -195,14 +195,25 @@ test('package.json contributes Nova framework search command', async () => {
   const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
   const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
 
-  const commandIds = new Set(
-    commands
-      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
-      .filter((id): id is string => typeof id === 'string'),
-  );
+  const search = commands.find((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    return (entry as { command?: unknown }).command === 'nova.frameworks.search';
+  }) as { command?: unknown; title?: unknown; icon?: unknown } | undefined;
 
-  assert.ok(commandIds.has('nova.frameworks.search'));
+  assert.ok(search, 'expected nova.frameworks.search command to be contributed');
+  assert.equal(search.title, 'Nova: Search Framework Items…');
   assert.ok(activationEvents.includes('onCommand:nova.frameworks.search'));
+
+  const icon = search.icon;
+  assert.ok(icon && typeof icon === 'object', 'expected search command to include light/dark icon paths');
+  const light = (icon as { light?: unknown }).light;
+  const dark = (icon as { dark?: unknown }).dark;
+  assert.ok(typeof light === 'string' && light.length > 0);
+  assert.ok(typeof dark === 'string' && dark.length > 0);
+  await fs.stat(path.resolve(path.dirname(pkgPath), light));
+  await fs.stat(path.resolve(path.dirname(pkgPath), dark));
 });
 
 test('package.json contributes Nova Project Explorer reveal path command', async () => {
