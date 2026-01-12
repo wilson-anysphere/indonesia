@@ -78,6 +78,7 @@ use std::path::{Path, PathBuf};
 use crossbeam_channel as channel;
 
 use crate::change::FileChange;
+use crate::path::VfsPath;
 
 /// An event produced by a file watcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +87,20 @@ pub struct WatchEvent {
     ///
     /// Backends may batch multiple changes together to reduce overhead.
     pub changes: Vec<FileChange>,
+}
+
+impl WatchEvent {
+    /// Returns every VFS path touched by this watch event.
+    ///
+    /// For moves this includes both `from` and `to`.
+    pub fn paths(&self) -> impl Iterator<Item = &VfsPath> {
+        self.changes.iter().flat_map(|change| change.paths())
+    }
+
+    /// Returns every local filesystem path touched by this watch event.
+    pub fn local_paths(&self) -> impl Iterator<Item = &Path> {
+        self.paths().filter_map(|path| path.as_local_path())
+    }
 }
 
 /// Message type delivered by a [`FileWatcher`].
@@ -115,6 +130,21 @@ pub trait FileWatcher: Send {
 
     /// Returns the receiver used to consume watcher events.
     fn receiver(&self) -> &channel::Receiver<WatchMessage>;
+
+    /// Retrieves all currently pending events, if any.
+    ///
+    /// This is a convenience wrapper over [`FileWatcher::receiver`] that drains any available
+    /// messages without blocking.
+    fn poll(&mut self) -> io::Result<Vec<WatchEvent>> {
+        let mut out = Vec::new();
+        for msg in self.receiver().try_iter() {
+            match msg {
+                Ok(event) => out.push(event),
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Deterministic watcher implementation for tests.
@@ -210,21 +240,21 @@ mod notify_impl {
     use std::time::{Duration, Instant};
 
     #[derive(Debug, Default)]
-    struct EventNormalizer {
+    pub struct EventNormalizer {
         pending_renames: VecDeque<(Instant, VfsPath)>,
     }
 
     impl EventNormalizer {
-        const MAX_AGE: Duration = Duration::from_secs(2);
-        const MAX_PENDING_RENAMES: usize = 512;
+        pub const MAX_AGE: Duration = Duration::from_secs(2);
+        pub const MAX_PENDING_RENAMES: usize = 512;
 
-        fn new() -> Self {
+        pub fn new() -> Self {
             Self {
                 pending_renames: VecDeque::new(),
             }
         }
 
-        fn push(&mut self, event: notify::Event, now: Instant) -> Vec<FileChange> {
+        pub fn push(&mut self, event: notify::Event, now: Instant) -> Vec<FileChange> {
             let mut out = self.gc_pending(now);
 
             use notify::event::{ModifyKind, RenameMode};
@@ -284,7 +314,7 @@ mod notify_impl {
         }
 
         /// Flushes internal state for expired/evicted rename-from events.
-        fn flush(&mut self, now: Instant) -> Vec<FileChange> {
+        pub fn flush(&mut self, now: Instant) -> Vec<FileChange> {
             self.gc_pending(now)
         }
 
@@ -638,7 +668,7 @@ mod notify_impl {
 }
 
 #[cfg(feature = "watch-notify")]
-pub use notify_impl::NotifyFileWatcher;
+pub use notify_impl::{EventNormalizer, NotifyFileWatcher};
 
 #[cfg(test)]
 mod tests {
