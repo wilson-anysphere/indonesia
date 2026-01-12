@@ -61,7 +61,9 @@ For quick navigation (including Micronaut endpoints and beans), use the search b
 
 Framework discovery is **on-demand**: click the refresh button in the view title bar, or run **Nova: Refresh Frameworks** (`nova.frameworks.refresh`).
 
-This is intentionally manual because these discovery requests run under a small watchdog time budget; repeatedly refreshing (or refreshing automatically while you type) could otherwise time out or trigger Nova safe mode.
+This is intentionally manual because these discovery requests run under a small watchdog time budget (~2s in most builds); repeatedly refreshing (or refreshing automatically while you type) could otherwise time out or trigger Nova safe mode.
+
+The view also caches results per category until you refresh, so the tree remains stable while you work.
 
 When Nova is in safe mode, framework discovery requests are unavailable; the view will show a safe-mode message with a shortcut to **Nova: Generate Bug Report** (`nova.bugReport`).
 
