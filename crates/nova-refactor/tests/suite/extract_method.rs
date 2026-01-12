@@ -693,6 +693,44 @@ class C {
 }
 
 #[test]
+fn extract_method_adds_throws_for_explicit_throw() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/throw new RuntimeException();/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "boom".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        boom();
+    }
+
+    private void boom() throws RuntimeException {
+        throw new RuntimeException();
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_rejects_keyword_method_name() {
     let fixture = r#"
 class C {

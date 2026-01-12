@@ -207,6 +207,13 @@ impl ExtractMethod {
             );
 
             let type_map = collect_declared_types(source, &method, &method_body);
+            let declared_types_by_name =
+                collect_declared_types_by_name(source, &method, &method_body);
+            let thrown_exceptions = collect_thrown_exceptions_in_statements(
+                source,
+                &selection_info.statements,
+                &declared_types_by_name,
+            );
 
             let flow_params = collect_method_param_spans(&method);
             let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
@@ -246,7 +253,7 @@ impl ExtractMethod {
                 parameters,
                 return_value,
                 return_ty,
-                thrown_exceptions: Vec::new(),
+                thrown_exceptions,
                 hazards,
                 issues,
             });
@@ -469,22 +476,28 @@ impl ExtractMethod {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let throws_clause = if analysis.thrown_exceptions.is_empty() {
+            String::new()
+        } else {
+            format!(" throws {}", analysis.thrown_exceptions.join(", "))
+        };
+
         let vis_kw = self.visibility.keyword();
         let signature = match (vis_kw.is_empty(), enclosing_method_is_static) {
             (true, false) => format!(
-                "{method_indent}{return_ty} {}({params_sig}) {{{newline}",
+                "{method_indent}{return_ty} {}({params_sig}){throws_clause} {{{newline}",
                 self.name
             ),
             (true, true) => format!(
-                "{method_indent}static {return_ty} {}({params_sig}) {{{newline}",
+                "{method_indent}static {return_ty} {}({params_sig}){throws_clause} {{{newline}",
                 self.name
             ),
             (false, false) => format!(
-                "{method_indent}{vis_kw} {return_ty} {}({params_sig}) {{{newline}",
+                "{method_indent}{vis_kw} {return_ty} {}({params_sig}){throws_clause} {{{newline}",
                 self.name
             ),
             (false, true) => format!(
-                "{method_indent}{vis_kw} static {return_ty} {}({params_sig}) {{{newline}",
+                "{method_indent}{vis_kw} static {return_ty} {}({params_sig}){throws_clause} {{{newline}",
                 self.name
             ),
         };
@@ -1049,6 +1062,194 @@ fn collect_declared_types(
         out.insert(span_of_token(&name_tok), ty_text);
     }
     out
+}
+
+#[derive(Debug, Clone)]
+struct DeclaredTypeCandidate {
+    offset: usize,
+    ty: String,
+}
+
+fn collect_declared_types_by_name(
+    source: &str,
+    method: &EnclosingMethod,
+    method_body: &ast::Block,
+) -> HashMap<String, Vec<DeclaredTypeCandidate>> {
+    fn strip_type_arguments(ty: &str) -> &str {
+        ty.split_once('<')
+            .map(|(before, _)| before)
+            .unwrap_or(ty)
+            .trim()
+    }
+
+    let mut out: HashMap<String, Vec<DeclaredTypeCandidate>> = HashMap::new();
+
+    if let Some(params) = method.parameter_list() {
+        for param in params.parameters() {
+            let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
+                continue;
+            };
+            let name = name_tok.text().to_string();
+            let offset = u32::from(name_tok.text_range().start()) as usize;
+
+            let ty_text_full = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim();
+            let ty_text = strip_type_arguments(ty_text_full);
+            if ty_text.is_empty() {
+                continue;
+            }
+
+            out.entry(name).or_default().push(DeclaredTypeCandidate {
+                offset,
+                ty: ty_text.to_string(),
+            });
+        }
+    }
+
+    for stmt in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::LocalVariableDeclarationStatement::cast)
+    {
+        let Some(ty) = stmt.ty() else {
+            continue;
+        };
+        let ty_text_full = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim();
+        let ty_text = strip_type_arguments(ty_text_full);
+        if ty_text.is_empty() {
+            continue;
+        }
+        let Some(list) = stmt.declarator_list() else {
+            continue;
+        };
+        for decl in list.declarators() {
+            let Some(name_tok) = decl.name_token() else {
+                continue;
+            };
+            let name = name_tok.text().to_string();
+            let offset = u32::from(name_tok.text_range().start()) as usize;
+            out.entry(name).or_default().push(DeclaredTypeCandidate {
+                offset,
+                ty: ty_text.to_string(),
+            });
+        }
+    }
+
+    // Keep behavior deterministic.
+    for candidates in out.values_mut() {
+        candidates.sort_by_key(|cand| cand.offset);
+    }
+
+    out
+}
+
+fn collect_thrown_exceptions_in_statements(
+    source: &str,
+    selection_statements: &[ast::Statement],
+    declared_types_by_name: &HashMap<String, Vec<DeclaredTypeCandidate>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    for stmt in selection_statements {
+        for throw_stmt in stmt.syntax().descendants().filter_map(ast::ThrowStatement::cast) {
+            let Some(ty) = infer_thrown_exception_type(source, &throw_stmt, declared_types_by_name)
+            else {
+                continue;
+            };
+            if seen.insert(ty.clone()) {
+                out.push(ty);
+            }
+        }
+    }
+
+    out
+}
+
+fn infer_thrown_exception_type(
+    source: &str,
+    throw_stmt: &ast::ThrowStatement,
+    declared_types_by_name: &HashMap<String, Vec<DeclaredTypeCandidate>>,
+) -> Option<String> {
+    let expr = throw_stmt.expression()?;
+    infer_thrown_exception_type_from_expr(source, &expr, declared_types_by_name)
+}
+
+fn infer_thrown_exception_type_from_expr(
+    source: &str,
+    expr: &ast::Expression,
+    declared_types_by_name: &HashMap<String, Vec<DeclaredTypeCandidate>>,
+) -> Option<String> {
+    fn strip_type_arguments(ty: &str) -> &str {
+        ty.split_once('<')
+            .map(|(before, _)| before)
+            .unwrap_or(ty)
+            .trim()
+    }
+
+    match expr {
+        ast::Expression::ParenthesizedExpression(paren) => {
+            let inner = paren.expression()?;
+            infer_thrown_exception_type_from_expr(source, &inner, declared_types_by_name)
+        }
+        ast::Expression::NewExpression(new_expr) => {
+            let ty = new_expr.ty()?;
+            let ty_range = syntax_range(ty.syntax());
+            let ty_text_full = source.get(ty_range.start..ty_range.end)?.trim();
+            // Best-effort: strip away any type arguments (e.g. `Foo<Bar>` -> `Foo`) since Java
+            // doesn't allow parameterized types in throws clauses.
+            let ty_text = strip_type_arguments(ty_text_full);
+            if ty_text.is_empty() {
+                None
+            } else {
+                Some(ty_text.to_string())
+            }
+        }
+        ast::Expression::NameExpression(name_expr) => {
+            // Only handle simple identifiers, since we can only map those back to method locals or
+            // parameters. If we can't infer a precise type, we omit it instead of falling back to
+            // `Exception` to avoid widening the throws clause and potentially requiring changes at
+            // the call site.
+            if name_expr
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| tok.kind() == SyntaxKind::Dot)
+            {
+                return None;
+            }
+
+            let mut ident_toks = name_expr
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind().is_identifier_like());
+
+            let Some(tok) = ident_toks.next() else {
+                return None;
+            };
+            // Ensure this is a simple name and not something like `a.b` (which would have been
+            // caught above) or other weird constructs with multiple identifiers.
+            if ident_toks.next().is_some() {
+                return None;
+            }
+
+            let name = tok.text();
+            let use_offset = u32::from(tok.text_range().start()) as usize;
+            let candidates = declared_types_by_name.get(name)?;
+
+            // Best-effort: pick the closest declaration that appears before the use site.
+            let mut best: Option<&DeclaredTypeCandidate> = None;
+            for cand in candidates {
+                if cand.offset <= use_offset {
+                    best = Some(cand);
+                } else {
+                    break;
+                }
+            }
+            best.map(|cand| cand.ty.clone())
+        }
+        _ => None,
+    }
 }
 
 fn collect_reads_writes_in_flow_selection(
