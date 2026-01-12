@@ -306,13 +306,11 @@ fn workspace_interned_class_keys(
     let workspace = db.workspace_def_map(project);
 
     // NOTE: `WorkspaceDefMap` is backed by hash maps; iteration order is
-    // intentionally unspecified. We sort by `TypeName::as_str()` to guarantee a
-    // deterministic bulk-intern insertion order.
-    let mut names: Vec<TypeName> = workspace.iter_type_names().cloned().collect();
-    names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-
-    let mut keys = Vec::with_capacity(names.len());
-    for (i, name) in names.into_iter().enumerate() {
+    // intentionally unspecified. `iter_type_names` yields names in a
+    // deterministic order (sorted by `TypeName::as_str()`), which we rely on to
+    // guarantee stable bulk-intern insertion.
+    let mut keys = Vec::with_capacity(workspace.all_type_names().size_hint().0);
+    for (i, name) in workspace.iter_type_names().enumerate() {
         cancel::checkpoint_cancelled_every(db, i as u32, 256);
         let key = InternedClassKey {
             project,
