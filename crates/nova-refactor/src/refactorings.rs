@@ -840,43 +840,34 @@ fn contains_unknown_name_expression(
     let root = parsed.syntax();
 
     for name_expr in root.descendants().filter_map(ast::NameExpression::cast) {
-        let mut text = String::new();
-        let mut ident_start: Option<usize> = None;
-        let mut ident_range: Option<TextRange> = None;
-
-        for tok in name_expr
+        // `NameExpression` nodes cover both simple names (`a`) and qualified names (`a.b.c`).
+        //
+        // For local variables, any reference must start with the variable name as the leftmost
+        // identifier segment.
+        let Some(first_ident) = name_expr
             .syntax()
             .descendants_with_tokens()
             .filter_map(|el| el.into_token())
-        {
-            if tok.kind().is_trivia() {
-                continue;
-            }
-            text.push_str(tok.text());
-            if ident_start.is_none() && tok.kind().is_identifier_like() && tok.text() == name {
-                let start = u32::from(tok.text_range().start()) as usize;
-                let end = u32::from(tok.text_range().end()) as usize;
-                ident_start = Some(start);
-                ident_range = Some(TextRange::new(start, end));
-            }
-        }
-
-        if text != name {
-            continue;
-        }
-
-        let Some(ident_start) = ident_start else {
+            .filter(|tok| !tok.kind().is_trivia())
+            .find(|tok| tok.kind().is_identifier_like())
+        else {
             continue;
         };
 
-        if let Some(ident_range) = ident_range {
-            if known_ranges.contains(&ident_range) {
-                continue;
-            }
+        if first_ident.text() != name {
+            continue;
+        }
+
+        let ident_start = u32::from(first_ident.text_range().start()) as usize;
+        let ident_end = u32::from(first_ident.text_range().end()) as usize;
+        let ident_range = TextRange::new(ident_start, ident_end);
+
+        if known_ranges.contains(&ident_range) {
+            continue;
         }
 
         match db.symbol_at(file, ident_start) {
-            Some(resolved) if resolved == symbol => {}
+            Some(resolved) if resolved == symbol => return true,
             Some(_) => {}
             None => return true,
         }
