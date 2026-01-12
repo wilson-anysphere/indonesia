@@ -307,6 +307,23 @@ impl<'a> ScopeBuilder<'a> {
         let class_scope = self.alloc_scope(Some(parent), ScopeKind::Class { item });
         self.class_scopes.insert(item, class_scope);
 
+        // Declare type parameters in the type namespace.
+        //
+        // Stopgap: treat them as "external" types named by their simple identifier.
+        // This is sufficient for correct shadowing and early type-name resolution.
+        let type_params: &[nova_hir::item_tree::TypeParam] = match item {
+            ItemId::Class(id) => self.tree.class(id).type_params.as_slice(),
+            ItemId::Interface(id) => self.tree.interface(id).type_params.as_slice(),
+            ItemId::Record(id) => self.tree.record(id).type_params.as_slice(),
+            _ => &[],
+        };
+        for tp in type_params {
+            self.scopes[class_scope].types.insert(
+                Name::from(tp.name.clone()),
+                TypeResolution::External(TypeName::from(tp.name.as_str())),
+            );
+        }
+
         // Copy the members out so we can mutably borrow `self` while iterating.
         let members = self.item_members(item).to_vec();
 
@@ -373,6 +390,12 @@ impl<'a> ScopeBuilder<'a> {
         self.method_scopes.insert(method, method_scope);
 
         let method_data = self.tree.method(method);
+        for tp in &method_data.type_params {
+            self.scopes[method_scope].types.insert(
+                Name::from(tp.name.clone()),
+                TypeResolution::External(TypeName::from(tp.name.as_str())),
+            );
+        }
         for (idx, param) in method_data.params.iter().enumerate() {
             self.scopes[method_scope].values.insert(
                 Name::from(param.name.clone()),
@@ -401,6 +424,12 @@ impl<'a> ScopeBuilder<'a> {
         self.constructor_scopes.insert(constructor, ctor_scope);
 
         let data = self.tree.constructor(constructor);
+        for tp in &data.type_params {
+            self.scopes[ctor_scope].types.insert(
+                Name::from(tp.name.clone()),
+                TypeResolution::External(TypeName::from(tp.name.as_str())),
+            );
+        }
         for (idx, param) in data.params.iter().enumerate() {
             self.scopes[ctor_scope].values.insert(
                 Name::from(param.name.clone()),

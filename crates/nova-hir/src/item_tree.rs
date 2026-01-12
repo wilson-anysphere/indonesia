@@ -507,6 +507,7 @@ impl Eq for Param {}
 pub struct Method {
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
+    pub type_params: Vec<TypeParam>,
     pub return_ty: String,
     pub return_ty_range: Span,
     pub name: String,
@@ -520,6 +521,7 @@ impl PartialEq for Method {
     fn eq(&self, other: &Self) -> bool {
         self.modifiers == other.modifiers
             && self.annotations == other.annotations
+            && self.type_params == other.type_params
             && self.return_ty == other.return_ty
             && self.name == other.name
             && self.params == other.params
@@ -533,6 +535,7 @@ impl Eq for Method {}
 pub struct Constructor {
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
+    pub type_params: Vec<TypeParam>,
     pub name: String,
     pub range: Span,
     pub name_range: Span,
@@ -544,6 +547,7 @@ impl PartialEq for Constructor {
     fn eq(&self, other: &Self) -> bool {
         self.modifiers == other.modifiers
             && self.annotations == other.annotations
+            && self.type_params == other.type_params
             && self.name == other.name
             && self.params == other.params
             && self.body.is_some() == other.body.is_some()

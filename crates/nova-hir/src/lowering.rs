@@ -302,6 +302,11 @@ impl ItemTreeLower<'_> {
                 let ast_id =
                     self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range)?;
                 let id = MethodId::new(self.file, ast_id);
+                let type_params = self
+                    .syntax_node_for_name(SyntaxKind::MethodDeclaration, method.name_range)
+                    .and_then(rowan_ast::MethodDeclaration::cast)
+                    .map(|decl| lower_type_params(decl.type_parameters()))
+                    .unwrap_or_default();
                 let params = {
                     let mut params = Vec::with_capacity(method.params.len());
                     for param in &method.params {
@@ -319,6 +324,7 @@ impl ItemTreeLower<'_> {
                     Method {
                         modifiers: lower_modifiers(method.modifiers),
                         annotations: lower_annotation_uses(&method.annotations),
+                        type_params,
                         return_ty: method.return_ty.text.clone(),
                         return_ty_range: method.return_ty.range,
                         name: method.name.clone(),
@@ -340,6 +346,19 @@ impl ItemTreeLower<'_> {
                         )
                     })?;
                 let id = ConstructorId::new(self.file, ast_id);
+                let type_params = self
+                    .syntax_node_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)
+                    .and_then(rowan_ast::ConstructorDeclaration::cast)
+                    .map(|decl| lower_type_params(decl.type_parameters()))
+                    .or_else(|| {
+                        self.syntax_node_for_name(
+                            SyntaxKind::CompactConstructorDeclaration,
+                            cons.name_range,
+                        )
+                        .and_then(rowan_ast::CompactConstructorDeclaration::cast)
+                        .map(|decl| lower_type_params(decl.type_parameters()))
+                    })
+                    .unwrap_or_default();
                 let params = {
                     let mut params = Vec::with_capacity(cons.params.len());
                     for param in &cons.params {
@@ -354,6 +373,7 @@ impl ItemTreeLower<'_> {
                     Constructor {
                         modifiers: lower_modifiers(cons.modifiers),
                         annotations: lower_annotation_uses(&cons.annotations),
+                        type_params,
                         name: cons.name.clone(),
                         range: cons.range,
                         name_range: cons.name_range,

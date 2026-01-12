@@ -228,3 +228,101 @@ class C {
     );
     assert_eq!(resolved, Some(entry));
 }
+
+#[test]
+fn resolves_class_type_param_in_method_scope() {
+    let source = r#"
+class C<T> {
+    void m() {}
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = nova_core::FileId::from_raw(0);
+    let tree = item_tree(&db, file);
+
+    let jdk = JdkIndex::new();
+    let scopes = build_scopes_for_item_tree(file, &tree);
+    let m_id = method_id(&tree, "m");
+    let m_scope = *scopes.method_scopes.get(&m_id).expect("method scope");
+
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, m_scope, &Name::from("T"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "T"
+        ))))
+    );
+}
+
+#[test]
+fn resolves_method_type_param_alongside_class_type_param() {
+    let source = r#"
+class C<T> {
+    <U> void m() {}
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = nova_core::FileId::from_raw(0);
+    let tree = item_tree(&db, file);
+
+    let jdk = JdkIndex::new();
+    let scopes = build_scopes_for_item_tree(file, &tree);
+    let m_id = method_id(&tree, "m");
+    let m_scope = *scopes.method_scopes.get(&m_id).expect("method scope");
+
+    let resolver = Resolver::new(&jdk);
+
+    let class_tp = resolver.resolve_name(&scopes.scopes, m_scope, &Name::from("T"));
+    assert_eq!(
+        class_tp,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "T"
+        ))))
+    );
+
+    let method_tp = resolver.resolve_name(&scopes.scopes, m_scope, &Name::from("U"));
+    assert_eq!(
+        method_tp,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "U"
+        ))))
+    );
+}
+
+#[test]
+fn type_param_shadows_imported_type() {
+    let source = r#"
+import java.util.List;
+
+class C<List> {
+    void m() {}
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = nova_core::FileId::from_raw(0);
+    let tree = item_tree(&db, file);
+
+    let jdk = JdkIndex::new();
+    let scopes = build_scopes_for_item_tree(file, &tree);
+    let m_id = method_id(&tree, "m");
+    let m_scope = *scopes.method_scopes.get(&m_id).expect("method scope");
+
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, m_scope, &Name::from("List"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "List"
+        ))))
+    );
+}
