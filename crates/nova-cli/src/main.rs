@@ -1159,6 +1159,9 @@ enum CliJsonConflict {
         start_byte: usize,
         end_byte: usize,
     },
+    FileAlreadyExists {
+        file: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1593,6 +1596,9 @@ fn conflicts_to_json(
                     end_byte: usage_range.end,
                 })
             }
+            Conflict::FileAlreadyExists { file } => {
+                out.push(CliJsonConflict::FileAlreadyExists { file: file.0 })
+            }
         }
     }
 
@@ -1617,6 +1623,7 @@ fn conflicts_to_json(
                 end_byte,
                 ..
             } => (file, 2, name, *start_byte, *end_byte, ""),
+            CliJsonConflict::FileAlreadyExists { file } => (file, 3, "", 0, 0, ""),
         }
     }
 
