@@ -1,5 +1,7 @@
 use rowan::{NodeOrToken, TokenAtOffset};
 
+use std::collections::HashSet;
+
 use crate::parser::{
     parse_annotation_element_value_pair_list_fragment, parse_argument_list_fragment,
     parse_block_fragment, parse_class_body_fragment, parse_class_member_fragment,
@@ -125,13 +127,35 @@ pub fn reparse_java(
 
     let new_green = plan.target_node.replace_with(fragment.green);
 
-    let mut errors = Vec::new();
-    errors.extend(shift_preserved_errors(
+    let mut preserved_errors = shift_preserved_errors(
         &old.errors,
         plan.old_range,
         edit.delta(),
-    ));
-    errors.extend(offset_errors(fragment.errors, plan.new_range.start));
+    );
+    let fragment_errors = offset_errors(fragment.errors, plan.new_range.start);
+
+    // Some diagnostics are anchored at a zero-length range at the end of a syntactic construct
+    // (commonly: "expected `}` ... found end of file"). When the reparsed range reaches that
+    // boundary, we can end up with identical errors in both the preserved and reparsed sets. Full
+    // parsing would only report them once, so filter preserved errors that are duplicated by the
+    // fragment parse.
+    {
+        let fragment_error_keys: HashSet<(TextRange, &str)> = fragment_errors
+            .iter()
+            .map(|e| (e.range, e.message.as_str()))
+            .collect();
+
+        preserved_errors.retain(|e| {
+            !fragment_error_keys.contains(&(e.range, e.message.as_str()))
+        });
+    }
+
+    let mut errors = Vec::new();
+    // Preserve the parser's natural error ordering at identical offsets: errors emitted while
+    // parsing the fragment (typically inner constructs) should precede errors from preserved outer
+    // contexts.
+    errors.extend(fragment_errors);
+    errors.extend(preserved_errors);
     crate::util::sort_parse_errors(&mut errors);
 
     let result = JavaParseResult {

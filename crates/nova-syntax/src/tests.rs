@@ -3978,6 +3978,57 @@ fn incremental_edit_creating_unterminated_string_template_falls_back_to_full_rep
     );
 }
 
+#[test]
+fn incremental_edit_does_not_duplicate_errors_at_eof() {
+    // When reparsing a region that reaches EOF, the Java parser can emit errors that are anchored
+    // at a zero-length range at the end of the file (e.g. missing `}`).
+    //
+    // Incremental reparsing preserves diagnostics outside of the reparsed range. If we preserve an
+    // EOF-anchored error and also reproduce it during fragment parsing, we'd end up with duplicate
+    // diagnostics that do not match a full parse.
+    let old_text = "class Foo {\n  int a;\n  void m() {\n    int x = 1;\n";
+    let old = parse_java(old_text);
+
+    let one_offset = old_text.find("1").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: one_offset,
+            end: one_offset + 1,
+        },
+        "2",
+    );
+    let mut new_text = old_text.to_string();
+    new_text.replace_range(one_offset as usize..(one_offset + 1) as usize, "2");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    // Ensure this was an incremental reparse by checking that an unrelated field declaration
+    // subtree was reused.
+    let old_a = find_identifier_token(&old, "a");
+    let old_field = old_a
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::FieldDeclaration)
+        .expect("expected a field declaration for `a`");
+    let new_a = find_identifier_token(&new_parse, "a");
+    let new_field = new_a
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::FieldDeclaration)
+        .expect("expected a field declaration for `a`");
+
+    let old_field_green = old_field.green().into_owned();
+    let new_field_green = new_field.green().into_owned();
+    assert!(
+        green_ptr_eq(&old_field_green, &new_field_green),
+        "expected untouched field declaration to be reused"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Schema/versioning guardrails
 //
