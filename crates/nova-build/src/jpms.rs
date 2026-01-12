@@ -317,6 +317,28 @@ mod tests {
         )
         .unwrap();
         assert!(stable_module_path_entry(&multirelease));
+
+        // Exploded JMOD + multi-release layout (`classes/META-INF/versions/9/module-info.class`).
+        let exploded_multirelease = root.join("exploded-multirelease");
+        std::fs::create_dir_all(
+            exploded_multirelease
+                .join("classes")
+                .join("META-INF")
+                .join("versions")
+                .join("9"),
+        )
+        .unwrap();
+        std::fs::write(
+            exploded_multirelease
+                .join("classes")
+                .join("META-INF")
+                .join("versions")
+                .join("9")
+                .join("module-info.class"),
+            b"cafebabe",
+        )
+        .unwrap();
+        assert!(stable_module_path_entry(&exploded_multirelease));
     }
 
     #[test]
@@ -337,6 +359,21 @@ mod tests {
             zip.finish().unwrap();
         }
         assert!(stable_module_path_entry(&mr_jar));
+
+        // Exploded JMOD + multi-release module-info (`classes/META-INF/versions/9/module-info.class`).
+        let exploded_mr_jar = root.join("exploded-mr.jar");
+        {
+            let file = std::fs::File::create(&exploded_mr_jar).unwrap();
+            let mut zip = ZipWriter::new(file);
+            zip.start_file(
+                "classes/META-INF/versions/9/module-info.class",
+                options,
+            )
+            .unwrap();
+            zip.write_all(b"cafebabe").unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(stable_module_path_entry(&exploded_mr_jar));
 
         // Exploded-jmod style manifest inside an archive (`classes/META-INF/MANIFEST.MF`).
         let classes_manifest_jar = root.join("classes-manifest.jar");
