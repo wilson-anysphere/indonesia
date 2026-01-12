@@ -701,6 +701,8 @@ impl MemoryEvictor for WorkspaceSymbolSearcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indexes::IndexedSymbol;
+    use nova_memory::MemoryBudget;
 
     fn sym(name: &str, qualified_name: &str) -> Symbol {
         Symbol {
@@ -1392,5 +1394,56 @@ mod tests {
 
         let results = index.search("com.example.Foo", 10);
         assert_eq!(results[0].symbol.qualified_name, "com.example.Foo");
+    }
+
+    #[test]
+    fn workspace_symbol_searcher_indexes_duplicate_definitions_with_metadata() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
+
+        let mut symbols = SymbolIndex::default();
+        symbols.symbols.insert(
+            "Foo".to_string(),
+            vec![
+                IndexedSymbol {
+                    qualified_name: "pkg.Foo".to_string(),
+                    kind: IndexSymbolKind::Class,
+                    container_name: Some("pkg".to_string()),
+                    location: SymbolLocation {
+                        file: "b/Foo.java".to_string(),
+                        line: 1,
+                        column: 1,
+                    },
+                    ast_id: 0,
+                },
+                IndexedSymbol {
+                    qualified_name: "pkg.Foo".to_string(),
+                    kind: IndexSymbolKind::Class,
+                    container_name: Some("pkg".to_string()),
+                    location: SymbolLocation {
+                        file: "a/Foo.java".to_string(),
+                        line: 1,
+                        column: 1,
+                    },
+                    ast_id: 1,
+                },
+            ],
+        );
+
+        let (results, _stats) = searcher.search_with_stats(&symbols, "Foo", 10, true);
+        assert_eq!(results.len(), 2, "expected one result per definition");
+
+        // Both definitions share the same name/qualified name so the results must be
+        // deterministically ordered by location.file (then ast_id).
+        assert_eq!(results[0].symbol.location.file, "a/Foo.java");
+        assert_eq!(results[1].symbol.location.file, "b/Foo.java");
+        assert_eq!(results[0].symbol.ast_id, 1);
+        assert_eq!(results[1].symbol.ast_id, 0);
+        assert_eq!(results[0].symbol.kind, IndexSymbolKind::Class);
+        assert_eq!(results[1].symbol.kind, IndexSymbolKind::Class);
+        assert_eq!(results[0].symbol.container_name.as_deref(), Some("pkg"));
+        assert_eq!(results[1].symbol.container_name.as_deref(), Some("pkg"));
+        assert_eq!(results[0].symbol.qualified_name, "pkg.Foo");
+        assert_eq!(results[1].symbol.qualified_name, "pkg.Foo");
     }
 }
