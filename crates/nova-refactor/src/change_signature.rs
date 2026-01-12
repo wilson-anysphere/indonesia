@@ -573,6 +573,37 @@ fn compute_new_params(
     params
 }
 
+fn method_param_types_for_signature(index: &Index, method: &ParsedMethod) -> Vec<String> {
+    index
+        .method_param_types(SymbolId(method.method_id.0))
+        .map(|tys| tys.to_vec())
+        .unwrap_or_else(|| method.params.iter().map(|p| p.ty.clone()).collect())
+}
+
+fn compute_new_param_types_for_signature(
+    old_param_types: &[String],
+    ops: &[ParameterOperation],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for op in ops {
+        match op {
+            ParameterOperation::Existing {
+                old_index,
+                new_type,
+                ..
+            } => {
+                if let Some(new_ty) = new_type {
+                    out.push(normalize_ws(new_ty));
+                } else if *old_index < old_param_types.len() {
+                    out.push(old_param_types[*old_index].clone());
+                }
+            }
+            ParameterOperation::Add { ty, .. } => out.push(normalize_ws(ty)),
+        }
+    }
+    out
+}
+
 fn compute_new_signature_for_method(
     old: &ParsedMethod,
     change: &ChangeSignature,
@@ -647,8 +678,9 @@ fn detect_overload_collisions(
     change: &ChangeSignature,
     conflicts: &mut Vec<ChangeSignatureConflict>,
 ) {
-    let new_sig = compute_new_signature_for_method(method, change, &mut Vec::new());
-    let new_param_types: Vec<String> = new_sig.params.iter().map(|p| p.ty.clone()).collect();
+    let new_name = change.new_name.clone().unwrap_or_else(|| method.name.clone());
+    let old_param_types = method_param_types_for_signature(index, method);
+    let new_param_types = compute_new_param_types_for_signature(&old_param_types, &change.parameters);
 
     for sym in index.symbols() {
         if sym.kind != SymbolKind::Method {
@@ -661,7 +693,7 @@ fn detect_overload_collisions(
         if affected.contains(&other_id) {
             continue;
         }
-        if sym.name != new_sig.name {
+        if sym.name != new_name {
             continue;
         }
 
@@ -696,14 +728,11 @@ fn collect_call_site_updates(
     conflicts: &mut Vec<ChangeSignatureConflict>,
 ) -> Vec<(String, TextRange, String)> {
     let old_name = &target.name;
-    let old_param_types: Vec<String> = target.params.iter().map(|p| p.ty.clone()).collect();
-    let old_arity = target.params.len();
+    let old_param_types = method_param_types_for_signature(index, target);
+    let old_arity = old_param_types.len();
 
     let new_name = change.new_name.clone().unwrap_or_else(|| old_name.clone());
-    let new_param_types = compute_new_params(&target.params, &change.parameters, &mut Vec::new())
-        .into_iter()
-        .map(|p| p.ty)
-        .collect::<Vec<_>>();
+    let new_param_types = compute_new_param_types_for_signature(&old_param_types, &change.parameters);
 
     // Exclude method declaration name tokens. `find_name_candidates` is intentionally lexical
     // and reports method declarations as call candidates (identifier followed by `(`).
@@ -1787,6 +1816,23 @@ fn split_top_level_types(text: &str, sep: char) -> Vec<String> {
     }
     out.push(text[start..].to_string());
     out
+}
+
+fn normalize_ws(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_ws = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+                prev_ws = true;
+            }
+        } else {
+            prev_ws = false;
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
 }
 
 fn format_method_header(prefix: &str, sig: &ParsedMethodSig, brace: char) -> String {
