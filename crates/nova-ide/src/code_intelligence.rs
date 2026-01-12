@@ -13838,7 +13838,7 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
     (before >= 2
         && bytes.get(before - 1) == Some(&b':')
         && bytes.get(before - 2) == Some(&b':'))
-    .then_some(before - 2)
+    .then(|| before - 2)
 }
 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
