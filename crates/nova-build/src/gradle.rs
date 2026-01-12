@@ -128,11 +128,15 @@ impl GradleBuild {
             .load(project_root, BuildSystemKind::Gradle, &fingerprint)?
             .unwrap_or_default();
         data.projects = Some(cached_projects);
-        cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data)?;
 
         // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project`
         // can reuse the richer projectDir mapping without invoking Gradle.
         let _ = update_gradle_snapshot_projects(project_root, &fingerprint, &projects);
+
+        // Prefer writing the snapshot even if updating Nova's build cache fails; the snapshot is a
+        // workspace-local handoff consumed by `nova-project` and is independent of the cache.
+        let store_result = cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data);
+        store_result?;
 
         Ok(projects)
     }
@@ -311,14 +315,18 @@ impl GradleBuild {
             module.classpath = Some(root.compile_classpath.clone());
         }
 
-        cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data)?;
-
         // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project` can reuse
         // these resolved configs without invoking Gradle during project discovery.
-        let _ = update_gradle_snapshot(project_root, &fingerprint, |snapshot| {
+        let snapshot_result = update_gradle_snapshot(project_root, &fingerprint, |snapshot| {
             snapshot.projects = snapshot_projects;
             snapshot.java_compile_configs = snapshot_configs;
         });
+        let store_result = cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data);
+
+        // Prefer writing the snapshot even if updating Nova's build cache fails; the snapshot is a
+        // workspace-local handoff consumed by `nova-project` and is independent of the cache.
+        let _ = snapshot_result;
+        store_result?;
 
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out.dedup_by(|a, b| a.0 == b.0);
