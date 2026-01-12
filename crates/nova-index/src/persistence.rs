@@ -3412,14 +3412,17 @@ pub fn load_sharded_index_view_lazy(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let metadata = match CacheMetadata::load(metadata_path) {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+    let metadata = match CacheMetadataArchive::open(&metadata_path)? {
+        Some(metadata) => MetadataSource::Archived(metadata),
+        None => match CacheMetadata::load(&metadata_path) {
+            Ok(metadata) => MetadataSource::Owned(metadata),
+            Err(_) => return Ok(None),
+        },
     };
     if !metadata.is_compatible() {
         return Ok(None);
     }
-    if &metadata.project_hash != current_snapshot.project_hash() {
+    if !metadata.project_hash_matches(current_snapshot) {
         return Ok(None);
     }
 
@@ -3429,10 +3432,8 @@ pub fn load_sharded_index_view_lazy(
         _ => return Ok(None),
     }
 
-    let invalidated_files_set: BTreeSet<String> = metadata
-        .diff_files(current_snapshot)
-        .into_iter()
-        .collect();
+    let invalidated_files_set: BTreeSet<String> =
+        metadata.diff_files(current_snapshot).into_iter().collect();
     let invalidated_files = invalidated_files_set.iter().cloned().collect();
 
     let shards = (0..shard_count).map(|_| OnceLock::new()).collect();
