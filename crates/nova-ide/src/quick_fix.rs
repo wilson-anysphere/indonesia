@@ -108,7 +108,7 @@ pub(crate) fn quick_fixes_for_diagnostics(
     actions
 }
 
-fn spans_intersect(a: Span, b: Span) -> bool {
+pub(crate) fn spans_intersect(a: Span, b: Span) -> bool {
     if a.start == a.end {
         return b.start <= a.start && a.start < b.end;
     }

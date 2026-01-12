@@ -1309,10 +1309,6 @@ fn type_mismatch_quick_fixes(
     selection: Span,
     diagnostics: &[nova_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
-    fn spans_overlap(a: Span, b: Span) -> bool {
-        a.start < b.end && b.start < a.end
-    }
-
     fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
         let message = message.strip_prefix("type mismatch: expected ")?;
         let (expected, found) = message.split_once(", found ")?;
@@ -1352,7 +1348,7 @@ fn type_mismatch_quick_fixes(
         let Some(diag_span) = diag.span else {
             continue;
         };
-        if !spans_overlap(selection, diag_span) {
+        if !crate::quick_fix::spans_intersect(selection, diag_span) {
             continue;
         }
 
@@ -1405,10 +1401,6 @@ fn type_mismatch_quick_fixes_from_context(
     selection: Span,
     context_diagnostics: &[lsp_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
-    fn spans_overlap(a: Span, b: Span) -> bool {
-        a.start < b.end && b.start < a.end
-    }
-
     fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
         let message = message.strip_prefix("type mismatch: expected ")?;
         let (expected, found) = message.split_once(", found ")?;
@@ -1454,7 +1446,7 @@ fn type_mismatch_quick_fixes_from_context(
             continue;
         };
         let diag_span = Span::new(start, end);
-        if !spans_overlap(selection, diag_span) {
+        if !crate::quick_fix::spans_intersect(selection, diag_span) {
             continue;
         }
 
