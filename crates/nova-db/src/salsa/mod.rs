@@ -1924,7 +1924,10 @@ impl MemoryEvictor for SalsaMemoEvictor {
         // Low/Medium pressure unless we're explicitly asked to clear everything
         // (`target_bytes == 0`).
         if request.target_bytes > 0
-            && matches!(request.pressure, MemoryPressure::Low | MemoryPressure::Medium)
+            && matches!(
+                request.pressure,
+                MemoryPressure::Low | MemoryPressure::Medium
+            )
         {
             return EvictionResult {
                 before_bytes: before,
@@ -2241,7 +2244,10 @@ impl Database {
             .record(file, TrackedSalsaMemo::ParseJava, bytes);
     }
 
-    pub fn new_with_persistence(project_root: impl AsRef<Path>, persistence: PersistenceConfig) -> Self {
+    pub fn new_with_persistence(
+        project_root: impl AsRef<Path>,
+        persistence: PersistenceConfig,
+    ) -> Self {
         Self::new_with_persistence_with_open_documents(
             project_root,
             persistence,

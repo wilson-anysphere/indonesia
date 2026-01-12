@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use nova_refactor::{
-    apply_workspace_edit, rename, FileId, FileOp, JavaSymbolKind, RefactorJavaDatabase, RenameParams,
+    apply_workspace_edit, rename, FileId, FileOp, JavaSymbolKind, RefactorJavaDatabase,
+    RenameParams,
 };
 use pretty_assertions::assert_eq;
 

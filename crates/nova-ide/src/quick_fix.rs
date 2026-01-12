@@ -616,7 +616,13 @@ fn remove_unreachable_code_action(uri: &Uri, source: &str, diag_span: Span) -> O
     Some(CodeAction {
         title: "Remove unreachable code".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(single_replace_range_edit(uri, source, start, end, String::new())),
+        edit: Some(single_replace_range_edit(
+            uri,
+            source,
+            start,
+            end,
+            String::new(),
+        )),
         ..Default::default()
     })
 }

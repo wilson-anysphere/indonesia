@@ -81,7 +81,9 @@ fn unreachable_code_quick_fix_removes_statement() {
     let action = actions
         .iter()
         .find_map(|action| match action {
-            CodeActionOrCommand::CodeAction(action) if action.title == "Remove unreachable code" => {
+            CodeActionOrCommand::CodeAction(action)
+                if action.title == "Remove unreachable code" =>
+            {
                 Some(action)
             }
             _ => None,
@@ -90,7 +92,10 @@ fn unreachable_code_quick_fix_removes_statement() {
 
     assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
 
-    let edit = action.edit.clone().expect("expected quickfix workspace edit");
+    let edit = action
+        .edit
+        .clone()
+        .expect("expected quickfix workspace edit");
     let changes = edit.changes.expect("expected `changes` workspace edit");
 
     let path = PathBuf::from("/test.java");

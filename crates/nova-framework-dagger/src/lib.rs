@@ -1254,11 +1254,7 @@ fn parse_method_signature_multiline(
     })
 }
 
-fn parse_method_signature(
-    raw_line: &str,
-    line_idx: u32,
-    path: &Path,
-) -> Option<ParsedMethodSig> {
+fn parse_method_signature(raw_line: &str, line_idx: u32, path: &Path) -> Option<ParsedMethodSig> {
     let line = raw_line.trim();
     if !line.contains('(') || !line.contains(')') {
         return None;
@@ -1382,11 +1378,7 @@ fn parse_constructor_signature(
     })
 }
 
-fn parse_params_from_line(
-    raw_line: &str,
-    line_idx: u32,
-    path: &Path,
-) -> Option<Vec<ParsedParam>> {
+fn parse_params_from_line(raw_line: &str, line_idx: u32, path: &Path) -> Option<Vec<ParsedParam>> {
     let start_paren = raw_line.find('(')?;
     let end_paren = raw_line.rfind(')')?;
     if end_paren <= start_paren {

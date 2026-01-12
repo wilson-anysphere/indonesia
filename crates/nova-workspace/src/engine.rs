@@ -1792,10 +1792,7 @@ impl WorkspaceEngine {
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
         let old_text = self.vfs.open_document_text_arc(path);
-        let evt = match self
-            .vfs
-            .apply_document_changes(path, new_version, changes)
-        {
+        let evt = match self.vfs.apply_document_changes(path, new_version, changes) {
             Ok(evt) => evt,
             Err(err) => {
                 // Best-effort: keep the memory report consistent even when edits fail.
@@ -4619,7 +4616,9 @@ mod tests {
             .vfs
             .open_document_text_arc(&path)
             .expect("document is open in overlay");
-        let salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let salsa = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
         assert!(
             Arc::ptr_eq(&overlay, &salsa),
             "VFS overlay and Salsa should share the same Arc<String>"
@@ -4638,7 +4637,9 @@ mod tests {
 
         let engine = workspace.engine_for_tests();
         let before_overlay = engine.vfs.open_document_text_arc(&path).unwrap();
-        let before_salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let before_salsa = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
         assert!(Arc::ptr_eq(&before_overlay, &before_salsa));
 
         workspace
@@ -4646,7 +4647,9 @@ mod tests {
             .unwrap();
 
         let after_overlay = engine.vfs.open_document_text_arc(&path).unwrap();
-        let after_salsa = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let after_salsa = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
         assert_eq!(after_salsa.as_str(), "hello nova");
         assert!(Arc::ptr_eq(&after_overlay, &after_salsa));
         assert!(

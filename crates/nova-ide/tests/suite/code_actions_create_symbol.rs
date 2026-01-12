@@ -81,7 +81,8 @@ fn code_actions_lsp_with_context_offers_create_method_quick_fix_for_unresolved_m
 
     let db: Arc<InMemoryFileStore> = Arc::new(db);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
-    let actions = ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[]);
+    let actions =
+        ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[]);
 
     let action = actions
         .iter()
@@ -111,7 +112,8 @@ fn code_actions_lsp_with_context_offers_create_field_quick_fix_for_unresolved_fi
 
     let db: Arc<InMemoryFileStore> = Arc::new(db);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
-    let actions = ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[]);
+    let actions =
+        ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[]);
 
     let action = actions
         .iter()
@@ -226,7 +228,8 @@ fn code_actions_lsp_with_context_dedupes_actions_by_kind_and_title() {
         .register_code_action_provider(Arc::new(DuplicateActionProvider))
         .expect("register provider");
 
-    let actions = ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[]);
+    let actions =
+        ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[]);
 
     let matching: Vec<_> = actions
         .iter()

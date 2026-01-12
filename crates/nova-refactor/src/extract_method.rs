@@ -2923,7 +2923,8 @@ fn live_locals_after_selection(
             let Some(stmt_range) = non_trivia_range(stmt.syntax()) else {
                 return fallback();
             };
-            let Some(first_flow_stmt) = first_stmt_in_range(body, stmt_range, &stmt_locations) else {
+            let Some(first_flow_stmt) = first_stmt_in_range(body, stmt_range, &stmt_locations)
+            else {
                 return fallback();
             };
             let Some(location) = stmt_locations.get(&first_flow_stmt).copied() else {
@@ -2954,8 +2955,7 @@ fn selection_exit_point(selection_info: &StatementSelection) -> SelectionExitPoi
 fn selection_exit_after_block_end(block: &ast::Block) -> SelectionExitPoint {
     let mut current_block = block.clone();
     loop {
-        let Some((enclosing_stmt, parent_block)) =
-            enclosing_stmt_and_parent_block(&current_block)
+        let Some((enclosing_stmt, parent_block)) = enclosing_stmt_and_parent_block(&current_block)
         else {
             return SelectionExitPoint::EndOfBody;
         };
@@ -2977,7 +2977,12 @@ fn enclosing_stmt_and_parent_block(block: &ast::Block) -> Option<(ast::Statement
         .syntax()
         .ancestors()
         .filter_map(ast::Statement::cast)
-        .find_map(|stmt| stmt.syntax().parent().and_then(ast::Block::cast).map(|b| (stmt, b)))
+        .find_map(|stmt| {
+            stmt.syntax()
+                .parent()
+                .and_then(ast::Block::cast)
+                .map(|b| (stmt, b))
+        })
 }
 
 fn next_sibling_statement(block: &ast::Block, stmt: &ast::Statement) -> Option<ast::Statement> {

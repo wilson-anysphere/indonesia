@@ -122,9 +122,6 @@ class A {
     let a_type_from_cast = db
         .symbol_at(&file_b, cast_offset)
         .expect("symbol_at (A) raw");
-    assert_eq!(
-        db.symbol_kind(a_type_from_cast),
-        Some(JavaSymbolKind::Type)
-    );
+    assert_eq!(db.symbol_kind(a_type_from_cast), Some(JavaSymbolKind::Type));
     assert_eq!(a_type_from_cast, a_type_from_new);
 }

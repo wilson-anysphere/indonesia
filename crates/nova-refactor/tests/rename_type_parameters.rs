@@ -125,4 +125,3 @@ fn rename_type_parameter_updates_explicit_type_arguments_in_method_call() {
 "#;
     assert_eq!(after, expected);
 }
-

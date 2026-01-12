@@ -531,18 +531,18 @@ impl ProjectIndexesView {
         let invalidated_files = &self.invalidated_files;
         let file_to_segment = &self.file_to_segment;
 
-        let base =
-            self.annotations
-                .archived()
-                .annotations
-                .iter()
-                .filter(move |&(_name, locations)| {
-                    locations.iter().any(|loc| {
-                        let file = loc.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
+        let base = self
+            .annotations
+            .archived()
+            .annotations
+            .iter()
+            .filter(move |&(_name, locations)| {
+                locations.iter().any(|loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
                 })
-                .map(|(name, _locations)| name.as_str());
+            })
+            .map(|(name, _locations)| name.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
@@ -715,18 +715,18 @@ impl ProjectIndexesView {
         let invalidated_files = &self.invalidated_files;
         let file_to_segment = &self.file_to_segment;
 
-        let base =
-            self.references
-                .archived()
-                .references
-                .iter()
-                .filter(move |&(_symbol, locations)| {
-                    locations.iter().any(|loc| {
-                        let file = loc.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
+        let base = self
+            .references
+            .archived()
+            .references
+            .iter()
+            .filter(move |&(_symbol, locations)| {
+                locations.iter().any(|loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
                 })
-                .map(|(symbol, _locations)| symbol.as_str());
+            })
+            .map(|(symbol, _locations)| symbol.as_str());
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {

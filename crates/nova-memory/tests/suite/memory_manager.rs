@@ -556,7 +556,7 @@ fn evicts_lower_priority_first_even_if_smaller() {
     // Ensure we consult `MemoryEvictor::eviction_priority()` before falling back
     // to "largest first" ordering.
     let budget = MemoryBudget::from_total(1_495); // query_cache budget = 598
-    // Keep pressure deterministically Low even if process RSS dwarfs the synthetic budget.
+                                                  // Keep pressure deterministically Low even if process RSS dwarfs the synthetic budget.
     let thresholds = MemoryPressureThresholds {
         medium: 1e12,
         high: 1e12,

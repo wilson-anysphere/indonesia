@@ -2415,11 +2415,12 @@ class C {
     );
     let diag = static_diags[0];
     assert_eq!(
-        diag.message,
-        "cannot call instance method `foo` from a static context",
+        diag.message, "cannot call instance method `foo` from a static context",
         "unexpected diagnostic message: {diag:?}"
     );
-    let span = diag.span.expect("static-context diagnostic should have a span");
+    let span = diag
+        .span
+        .expect("static-context diagnostic should have a span");
     let snippet = src
         .get(span.start..span.end)
         .unwrap_or("<invalid span>")
@@ -2457,11 +2458,12 @@ class C {
     );
     let diag = static_diags[0];
     assert_eq!(
-        diag.message,
-        "cannot reference instance field `x` from a static context",
+        diag.message, "cannot reference instance field `x` from a static context",
         "unexpected diagnostic message: {diag:?}"
     );
-    let span = diag.span.expect("static-context diagnostic should have a span");
+    let span = diag
+        .span
+        .expect("static-context diagnostic should have a span");
     let snippet = src
         .get(span.start..span.end)
         .unwrap_or("<invalid span>")

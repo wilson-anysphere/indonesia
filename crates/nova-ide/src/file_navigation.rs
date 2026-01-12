@@ -227,7 +227,10 @@ pub fn file_navigation_index_build_count_for_tests() -> usize {
 }
 
 #[cfg(any(test, debug_assertions))]
-pub fn file_navigation_index_build_count_for_file_for_tests(db: &dyn Database, file: FileId) -> usize {
+pub fn file_navigation_index_build_count_for_file_for_tests(
+    db: &dyn Database,
+    file: FileId,
+) -> usize {
     let (raw_root, mut root_key) = file_navigation_roots(db, file);
     let workspace_files = workspace_java_files(db, &raw_root, &root_key);
     if root_key.as_path() == Path::new(IN_MEMORY_ROOT) {
