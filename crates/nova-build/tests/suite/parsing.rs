@@ -2,7 +2,7 @@ use nova_build::{
     collect_gradle_build_files, collect_maven_build_files,
     parse_gradle_annotation_processing_output, parse_gradle_classpath_output,
     parse_gradle_projects_output, parse_javac_diagnostics, parse_maven_classpath_output,
-    parse_maven_effective_pom_annotation_processing, parse_maven_evaluate_scalar_output,
+    parse_maven_effective_pom_annotation_processing_with_repo, parse_maven_evaluate_scalar_output,
     BuildFileFingerprint, GradleProjectInfo, JavaCompileConfig,
 };
 use nova_core::{DiagnosticSeverity, Position, Range};
@@ -589,6 +589,15 @@ fn parses_maven_effective_pom_annotation_processing() {
           <proc>none</proc>
           <generatedSourcesDirectory>generated</generatedSourcesDirectory>
           <generatedTestSourcesDirectory>generated-test</generatedTestSourcesDirectory>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>com.example</groupId>
+              <artifactId>demo-processor</artifactId>
+              <version>1.2.3</version>
+              <classifier>shaded</classifier>
+              <type>jar</type>
+            </path>
+          </annotationProcessorPaths>
           <compilerArgs>
             <arg>-Afoo=bar</arg>
             <arg>-processor</arg>
@@ -601,13 +610,23 @@ fn parses_maven_effective_pom_annotation_processing() {
 </project>
 "#;
 
-    let ap =
-        parse_maven_effective_pom_annotation_processing(xml, Path::new("/workspace/app")).unwrap();
+    let ap = parse_maven_effective_pom_annotation_processing_with_repo(
+        xml,
+        Path::new("/workspace/app"),
+        Path::new("/custom/repo"),
+    )
+    .unwrap();
     let main = ap.main.unwrap();
     assert!(!main.enabled);
     assert_eq!(
         main.generated_sources_dir,
         Some(PathBuf::from("/workspace/app/generated"))
+    );
+    assert_eq!(
+        main.processor_path,
+        vec![PathBuf::from(
+            "/custom/repo/com/example/demo-processor/1.2.3/demo-processor-1.2.3-shaded.jar"
+        )]
     );
     assert_eq!(main.processors, vec!["com.example.Proc".to_string()]);
     assert_eq!(main.options.get("foo").map(String::as_str), Some("bar"));
@@ -617,5 +636,11 @@ fn parses_maven_effective_pom_annotation_processing() {
     assert_eq!(
         test.generated_sources_dir,
         Some(PathBuf::from("/workspace/app/generated-test"))
+    );
+    assert_eq!(
+        test.processor_path,
+        vec![PathBuf::from(
+            "/custom/repo/com/example/demo-processor/1.2.3/demo-processor-1.2.3-shaded.jar"
+        )]
     );
 }

@@ -518,7 +518,19 @@ impl MavenBuild {
         let pom_xml = std::fs::read_to_string(&effective_pom)?;
         let _ = std::fs::remove_file(&effective_pom);
 
-        let mut config = parse_maven_effective_pom_annotation_processing(&pom_xml, &module_root)?;
+        let maven_repo = self
+            .evaluate_scalar_best_effort(project_root, module_relative, "settings.localRepository")?
+            .and_then(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then(|| PathBuf::from(value))
+            })
+            .unwrap_or_else(default_maven_repo);
+
+        let mut config = parse_maven_effective_pom_annotation_processing_with_repo(
+            &pom_xml,
+            &module_root,
+            &maven_repo,
+        )?;
 
         // Ensure defaults for generated source directories even when the effective POM does not
         // contain explicit configuration.
@@ -723,6 +735,15 @@ pub fn parse_maven_effective_pom_annotation_processing(
     effective_pom_xml: &str,
     module_root: &Path,
 ) -> Result<AnnotationProcessing> {
+    let repo = default_maven_repo();
+    parse_maven_effective_pom_annotation_processing_with_repo(effective_pom_xml, module_root, &repo)
+}
+
+pub fn parse_maven_effective_pom_annotation_processing_with_repo(
+    effective_pom_xml: &str,
+    module_root: &Path,
+    maven_repo: &Path,
+) -> Result<AnnotationProcessing> {
     let doc = roxmltree::Document::parse(effective_pom_xml)
         .map_err(|err| BuildError::Parse(err.to_string()))?;
     let project = doc.root_element();
@@ -750,7 +771,7 @@ pub fn parse_maven_effective_pom_annotation_processing(
 
     // Apply plugin-level config.
     if let Some(config) = child_element(&plugin, "configuration") {
-        apply_maven_compiler_config(&config, module_root, &mut main, &mut test);
+        apply_maven_compiler_config(&config, module_root, maven_repo, &mut main, &mut test);
     }
 
     // Apply execution-level overrides.
@@ -777,13 +798,19 @@ pub fn parse_maven_effective_pom_annotation_processing(
             };
 
             if goals.iter().any(|g| g == "compile") {
-                apply_maven_compiler_config(&config, module_root, &mut main, &mut test);
+                apply_maven_compiler_config(&config, module_root, maven_repo, &mut main, &mut test);
             }
             if goals.iter().any(|g| g == "testCompile") {
                 // Execution config uses the same keys, but we treat it as test-specific.
                 // Use a dummy "main" config to avoid double-borrowing `test`.
                 let mut dummy_main = AnnotationProcessingConfig::default();
-                apply_maven_compiler_config(&config, module_root, &mut dummy_main, &mut test);
+                apply_maven_compiler_config(
+                    &config,
+                    module_root,
+                    maven_repo,
+                    &mut dummy_main,
+                    &mut test,
+                );
             }
         }
     }
@@ -810,6 +837,7 @@ fn write_temp_effective_pom_path() -> PathBuf {
 fn apply_maven_compiler_config(
     config: &roxmltree::Node<'_, '_>,
     module_root: &Path,
+    maven_repo: &Path,
     main: &mut AnnotationProcessingConfig,
     test: &mut AnnotationProcessingConfig,
 ) {
@@ -870,7 +898,6 @@ fn apply_maven_compiler_config(
     }
 
     if let Some(paths) = child_element(config, "annotationProcessorPaths") {
-        let repo = default_maven_repo();
         for path in paths
             .children()
             .filter(|n| n.is_element() && n.has_tag_name("path"))
@@ -894,7 +921,7 @@ fn apply_maven_compiler_config(
             }
 
             if let Some(jar) = maven_jar_path(
-                &repo,
+                maven_repo,
                 &group_id,
                 &artifact_id,
                 &version,

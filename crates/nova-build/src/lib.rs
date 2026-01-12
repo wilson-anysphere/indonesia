@@ -22,7 +22,8 @@ pub use gradle::{
 pub use javac::{parse_javac_diagnostics, JavacDiagnosticFormat};
 pub use maven::{
     collect_maven_build_files, parse_maven_classpath_output,
-    parse_maven_effective_pom_annotation_processing, parse_maven_evaluate_scalar_output,
+    parse_maven_effective_pom_annotation_processing,
+    parse_maven_effective_pom_annotation_processing_with_repo, parse_maven_evaluate_scalar_output,
     MavenBuild, MavenConfig,
 };
 pub use module_graph::{infer_module_graph, ModuleBuildInfo, ModuleGraph, ModuleId};
