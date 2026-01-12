@@ -810,12 +810,6 @@ fn infer_module_path_for_compile_config(
     module_path
 }
 
-fn main_source_roots_have_module_info(main_source_roots: &[PathBuf]) -> bool {
-    main_source_roots
-        .iter()
-        .any(|root| root.join("module-info.java").is_file())
-}
-
 fn stable_module_path_entry(path: &Path) -> bool {
     if path.is_dir() {
         return directory_contains_module_info(path) || directory_has_automatic_module_name(path);
