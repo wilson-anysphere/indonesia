@@ -12,7 +12,7 @@ fn find_component_bytes(components: &[nova_memory::ComponentUsage], name: &str) 
 #[test]
 fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
+    let root = dir.path().canonicalize().unwrap();
 
     let open_path = root.join("Open.java");
     let closed_a_path = root.join("ClosedA.java");
@@ -37,7 +37,7 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
             critical: 1000.0,
         },
     );
-    let ws = Workspace::open_with_memory_manager(root, memory).unwrap();
+    let ws = Workspace::open_with_memory_manager(&root, memory).unwrap();
 
     // Open one document with an unsaved overlay; it must stay pinned across eviction.
     let overlay_text = "class Open { /* overlay */ }".to_string();
