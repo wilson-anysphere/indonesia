@@ -38,6 +38,7 @@ impl BuildSystemBackend for MavenBuildSystem {
             PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.properties"),
             PathPattern::Glob("**/.mvn/extensions.xml"),
             PathPattern::Glob("**/.mvn/maven.config"),
+            PathPattern::Glob("**/.mvn/jvm.config"),
         ]
     }
 }
@@ -82,6 +83,11 @@ impl BuildSystemBackend for GradleBuildSystem {
             PathPattern::ExactFileName("build.gradle.kts"),
             PathPattern::ExactFileName("settings.gradle"),
             PathPattern::ExactFileName("settings.gradle.kts"),
+            // Gradle script plugins can influence the build and classpath.
+            PathPattern::Glob("**/*.gradle"),
+            PathPattern::Glob("**/*.gradle.kts"),
+            // Version catalogs can influence dependency versions.
+            PathPattern::ExactFileName("libs.versions.toml"),
             PathPattern::ExactFileName("gradle.properties"),
             PathPattern::ExactFileName("gradlew"),
             PathPattern::ExactFileName("gradlew.bat"),
@@ -128,6 +134,7 @@ impl BuildSystemBackend for BazelBuildSystem {
             PathPattern::ExactFileName(".bazelversion"),
             PathPattern::ExactFileName("MODULE.bazel.lock"),
             PathPattern::ExactFileName("bazelisk.rc"),
+            PathPattern::ExactFileName(".bazelignore"),
             PathPattern::Glob("**/*.bzl"),
         ]
     }
@@ -177,4 +184,3 @@ fn canonicalize_root(root: &Path) -> PathBuf {
     root.canonicalize()
         .unwrap_or_else(|_| root.to_path_buf())
 }
-

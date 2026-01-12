@@ -47,16 +47,26 @@ fn watch_files_contains_canonical_markers() {
     assert!(maven
         .watch_files()
         .contains(&PathPattern::ExactFileName("pom.xml")));
+    assert!(maven
+        .watch_files()
+        .contains(&PathPattern::Glob("**/.mvn/jvm.config")));
 
     let gradle = GradleBuildSystem::new(LoadOptions::default());
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::ExactFileName("settings.gradle")));
+    assert!(gradle
+        .watch_files()
+        .contains(&PathPattern::ExactFileName("libs.versions.toml")));
+    assert!(gradle.watch_files().contains(&PathPattern::Glob("**/*.gradle")));
 
     let bazel = BazelBuildSystem::new(LoadOptions::default());
     assert!(bazel
         .watch_files()
         .contains(&PathPattern::ExactFileName("WORKSPACE")));
+    assert!(bazel
+        .watch_files()
+        .contains(&PathPattern::ExactFileName(".bazelignore")));
 }
 
 #[test]
