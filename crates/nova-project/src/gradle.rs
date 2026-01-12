@@ -177,15 +177,18 @@ pub(crate) fn load_gradle_project(
         .map(|name| root.join(name))
         .find(|p| p.is_file());
 
-    let mut module_refs = if let Some(settings_path) = settings_path.as_ref() {
+    let (mut module_refs, include_builds) = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
             std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
                 source,
             })?;
-        parse_gradle_settings_projects(&contents)
+        (
+            parse_gradle_settings_projects(&contents),
+            parse_gradle_settings_included_builds(&contents),
+        )
     } else {
-        vec![GradleModuleRef::root()]
+        (vec![GradleModuleRef::root()], Vec::new())
     };
 
     // When a Gradle workspace defines subprojects in `settings.gradle(.kts)`, we usually treat the
@@ -200,6 +203,9 @@ pub(crate) fn load_gradle_project(
     }
 
     maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+    if settings_path.is_some() {
+        append_included_build_module_refs(&mut module_refs, include_builds);
+    }
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -504,15 +510,18 @@ pub(crate) fn load_gradle_workspace_model(
         .map(|name| root.join(name))
         .find(|p| p.is_file());
 
-    let mut module_refs = if let Some(settings_path) = settings_path.as_ref() {
+    let (mut module_refs, include_builds) = if let Some(settings_path) = settings_path.as_ref() {
         let contents =
             std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
                 path: settings_path.clone(),
                 source,
             })?;
-        parse_gradle_settings_projects(&contents)
+        (
+            parse_gradle_settings_projects(&contents),
+            parse_gradle_settings_included_builds(&contents),
+        )
     } else {
-        vec![GradleModuleRef::root()]
+        (vec![GradleModuleRef::root()], Vec::new())
     };
 
     // See `load_gradle_project`: include the root project as a module when it contains sources,
@@ -525,6 +534,9 @@ pub(crate) fn load_gradle_workspace_model(
     }
 
     maybe_insert_buildsrc_module_ref(&mut module_refs, root);
+    if settings_path.is_some() {
+        append_included_build_module_refs(&mut module_refs, include_builds);
+    }
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -909,7 +921,6 @@ pub(crate) fn load_gradle_workspace_model(
         jpms_modules,
     ))
 }
-
 #[derive(Debug, Clone)]
 struct GradleModuleRef {
     project_path: String,
@@ -922,6 +933,66 @@ impl GradleModuleRef {
             project_path: ":".to_string(),
             dir_rel: ".".to_string(),
         }
+    }
+}
+
+fn sanitize_included_build_name(name: &str) -> String {
+    // Gradle project paths use `:` as a separator. We synthesize a single-segment project name
+    // based on the included build directory name, replacing any characters outside of a small
+    // safe set.
+    let name = name.trim();
+    if name.is_empty() {
+        return "includedBuild".to_string();
+    }
+
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+
+    if out.chars().all(|c| c == '_') {
+        "includedBuild".to_string()
+    } else {
+        out
+    }
+}
+
+fn append_included_build_module_refs(module_refs: &mut Vec<GradleModuleRef>, dirs: Vec<String>) {
+    if dirs.is_empty() {
+        return;
+    }
+
+    let mut used_project_paths: BTreeSet<String> =
+        module_refs.iter().map(|m| m.project_path.clone()).collect();
+    let mut existing_dirs: BTreeSet<String> =
+        module_refs.iter().map(|m| m.dir_rel.clone()).collect();
+
+    for dir_rel in dirs {
+        if existing_dirs.contains(&dir_rel) {
+            continue;
+        }
+
+        let base_name = Path::new(&dir_rel)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&dir_rel);
+        let base_name = sanitize_included_build_name(base_name);
+
+        let base_project_path = format!(":__includedBuild_{base_name}");
+        let mut project_path = base_project_path.clone();
+        let mut suffix = 2usize;
+        while used_project_paths.contains(&project_path) {
+            project_path = format!("{base_project_path}_{suffix}");
+            suffix += 1;
+        }
+        used_project_paths.insert(project_path.clone());
+        existing_dirs.insert(dir_rel.clone());
+
+        module_refs.push(GradleModuleRef { project_path, dir_rel });
     }
 }
 
@@ -1292,6 +1363,58 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
     }
 
     projects
+}
+
+fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
+    // Best-effort extraction of Gradle composite builds:
+    // - Groovy: `includeBuild 'build-logic'`
+    // - Groovy/Kotlin: `includeBuild("build-logic")`
+    //
+    // We intentionally only extract the first quoted string argument per call; `includeBuild`
+    // accepts a single path argument, and this reduces false positives when a config closure
+    // contains additional string literals.
+    let contents = strip_gradle_comments(contents);
+
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\bincludeBuild\b").expect("valid regex"));
+
+    let mut out: BTreeSet<String> = BTreeSet::new();
+
+    for m in re.find_iter(&contents) {
+        let mut idx = m.end();
+        let bytes = contents.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            continue;
+        }
+
+        let args = if bytes[idx] == b'(' {
+            extract_balanced_parens(&contents, idx)
+                .map(|(args, _end)| args)
+                .unwrap_or_default()
+        } else {
+            extract_unparenthesized_args_until_eol_or_continuation(&contents, idx)
+        };
+
+        let Some(raw_dir) = extract_quoted_strings(&args).into_iter().next() else {
+            continue;
+        };
+        let raw_dir = raw_dir.trim();
+        if raw_dir.is_empty() {
+            continue;
+        }
+
+        // Keep behavior consistent with other settings parsers: ignore absolute paths to avoid
+        // escaping the workspace root.
+        let Some(dir_rel) = normalize_dir_rel(raw_dir) else {
+            continue;
+        };
+        out.insert(dir_rel);
+    }
+
+    out.into_iter().collect()
 }
 
 fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<String, String> {

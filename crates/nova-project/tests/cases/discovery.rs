@@ -145,8 +145,7 @@ fn resolves_maven_nested_properties() {
         .expect("expected managed dependency to be discovered");
     assert_eq!(dep.version, Some("1.2.3".to_string()));
 
-    // The Maven dependency jar path is only included when the artifact exists in the local repo.
-    // This test uses an empty repo; version resolution is still validated via the dependency list.
+    // This test uses an empty repo; version resolution is validated via the dependency list.
 }
 
 #[test]
@@ -166,8 +165,7 @@ fn resolves_inherited_maven_managed_versions_with_child_property_overrides() {
         .expect("expected managed dependency to be discovered");
     assert_eq!(dep.version, Some("2.0.0".to_string()));
 
-    // The Maven dependency jar path is only included when the artifact exists in the local repo.
-    // This test uses an empty repo; version resolution is still validated via the dependency list.
+    // This test uses an empty repo; version resolution is validated via the dependency list.
 }
 
 #[test]
@@ -259,7 +257,7 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         .join("com/example/managed-dep/1.2.3/managed-dep-1.2.3.jar");
     assert!(
         !jar_path.is_file(),
-        "jar should not exist before the first load for this test"
+        "jar should not exist yet for this test: {jar_path:?}"
     );
     let jar_entries: Vec<String> = config
         .classpath
@@ -288,7 +286,7 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         .collect();
     assert!(
         jar_entries2.iter().any(|p| p == &jar_path_str),
-        "expected managed-dep jar to remain present after creation, got: {jar_entries2:?}"
+        "expected managed-dep jar to be present after creation, got: {jar_entries2:?}"
     );
 }
 
@@ -1145,6 +1143,36 @@ fn loads_gradle_root_buildscript_dependencies_kotlin_dsl_workspace_model() {
         "guava".to_string(),
         Some("33.0.0-jre".to_string())
     )));
+}
+
+#[test]
+fn loads_gradle_includebuild_workspace_model() {
+    let root = testdata_path("gradle-includebuild");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let build_logic_root = model.workspace_root.join("build-logic");
+    let build_logic = model
+        .modules
+        .iter()
+        .find(|m| m.root == build_logic_root)
+        .expect("expected build-logic module to be discovered via includeBuild");
+    assert_eq!(build_logic.id, "gradle::__includedBuild_build-logic");
+
+    let java_file =
+        model.workspace_root.join("build-logic/src/main/java/com/example/buildlogic/BuildLogic.java");
+    let match_java = model
+        .module_for_path(&java_file)
+        .expect("module for build-logic java file");
+    assert_eq!(match_java.module.id, build_logic.id);
+    assert_eq!(match_java.source_root.kind, SourceRootKind::Main);
 }
 
 #[test]
