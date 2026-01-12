@@ -1,8 +1,15 @@
+use std::path::Path;
+use std::str::FromStr;
+
 use lsp_types::{Location, Position, Uri};
 
 use crate::db::DatabaseSnapshot;
+use crate::framework_cache;
 use crate::nav_core;
 use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
+use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex};
+use nova_framework_mapstruct::NavigationTarget as MapStructNavigationTarget;
+use nova_db::Database as _;
 
 impl DatabaseSnapshot {
     /// Best-effort `textDocument/implementation`.
@@ -21,12 +28,12 @@ impl DatabaseSnapshot {
         let lookup_file = |uri: &Uri| self.file(uri);
         let no_fallback = |_: &str, _: &str| None;
 
-        if let Some(call) = parsed
+        let mut locations = if let Some(call) = parsed
             .calls
             .iter()
             .find(|call| nav_core::span_contains(call.method_span, offset))
         {
-            return nav_core::implementation_for_call(
+            nav_core::implementation_for_call(
                 self.inheritance(),
                 &lookup_type_info,
                 &lookup_file,
@@ -34,34 +41,38 @@ impl DatabaseSnapshot {
                 offset,
                 call,
                 &no_fallback,
-            );
-        }
-
-        if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset) {
-            return nav_core::implementation_for_abstract_method(
+            )
+        } else if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset) {
+            nav_core::implementation_for_abstract_method(
                 self.inheritance(),
                 &lookup_type_info,
                 &lookup_file,
                 &ty_name,
                 &method_name,
-            );
-        }
-
-        if let Some(type_name) = parsed
+            )
+        } else if let Some(type_name) = parsed
             .types
             .iter()
             .find(|ty| nav_core::span_contains(ty.name_span, offset))
             .map(|ty| ty.name.clone())
         {
-            return nav_core::implementation_for_type(
+            nav_core::implementation_for_type(
                 self.inheritance(),
                 &lookup_type_info,
                 &lookup_file,
                 &type_name,
-            );
+            )
+        } else {
+            Vec::new()
+        };
+
+        if locations.is_empty() {
+            if let Some(file_id) = self.file_id_for_uri(file) {
+                locations = mapstruct_fallback_locations(self, file_id, &parsed.text, offset);
+            }
         }
 
-        Vec::new()
+        locations
     }
 
     /// Best-effort `textDocument/declaration`.
@@ -73,26 +84,41 @@ impl DatabaseSnapshot {
         let lookup_type_info = |name: &str| self.type_info(name);
         let lookup_file = |uri: &Uri| self.file(uri);
 
-        if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset) {
-            return nav_core::declaration_for_override(
+        let mut location = if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset)
+        {
+            nav_core::declaration_for_override(
                 &lookup_type_info,
                 &lookup_file,
                 &ty_name,
                 &method_name,
-            );
+            )
+        } else {
+            let (ident, _span) = nav_core::identifier_at(&parsed.text, offset)?;
+            if let Some((decl_file, decl_span)) =
+                nav_core::variable_declaration(parsed, offset, &ident)
+            {
+                let decl_parsed = self.file(&decl_file)?;
+                Some(Location {
+                    uri: decl_file,
+                    range: span_to_lsp_range_with_index(
+                        &decl_parsed.line_index,
+                        &decl_parsed.text,
+                        decl_span,
+                    ),
+                })
+            } else {
+                None
+            }
+        };
+
+        if location.is_none() {
+            if let Some(file_id) = self.file_id_for_uri(file) {
+                location =
+                    mapstruct_fallback_locations(self, file_id, &parsed.text, offset).into_iter().next();
+            }
         }
 
-        let (ident, _span) = nav_core::identifier_at(&parsed.text, offset)?;
-        if let Some((decl_file, decl_span)) = nav_core::variable_declaration(parsed, offset, &ident)
-        {
-            let decl_parsed = self.file(&decl_file)?;
-            return Some(Location {
-                uri: decl_file,
-                range: span_to_lsp_range_with_index(&decl_parsed.line_index, &decl_parsed.text, decl_span),
-            });
-        }
-
-        None
+        location
     }
 
     /// Best-effort `textDocument/typeDefinition`.
@@ -105,4 +131,69 @@ impl DatabaseSnapshot {
         let lookup_file = |uri: &Uri| self.file(uri);
         nav_core::type_definition_best_effort(&lookup_type_info, &lookup_file, parsed, offset)
     }
+}
+
+fn mapstruct_fallback_locations(
+    db: &DatabaseSnapshot,
+    file_id: nova_db::FileId,
+    text: &str,
+    offset: usize,
+) -> Vec<Location> {
+    let Some(path) = db.file_path(file_id) else {
+        return Vec::new();
+    };
+    if path.extension().and_then(|e| e.to_str()) != Some("java") {
+        return Vec::new();
+    }
+    if !(text.contains("@Mapper") || text.contains("org.mapstruct")) {
+        return Vec::new();
+    }
+
+    let root = framework_cache::project_root_for_path(path);
+    let targets = match nova_framework_mapstruct::goto_definition(&root, path, offset) {
+        Ok(targets) => targets,
+        Err(_) => return Vec::new(),
+    };
+
+    targets
+        .into_iter()
+        .filter_map(|target| mapstruct_target_location(db, target))
+        .collect()
+}
+
+fn mapstruct_target_location(db: &DatabaseSnapshot, target: MapStructNavigationTarget) -> Option<Location> {
+    let uri = uri_for_path(&target.file).unwrap_or_else(fallback_unknown_uri);
+
+    if let Some(parsed) = db.file(&uri) {
+        return Some(Location {
+            uri,
+            range: span_to_lsp_range_with_index(&parsed.line_index, &parsed.text, target.span),
+        });
+    }
+
+    if let Some(file_id) = db.file_id(&target.file) {
+        let text = db.file_content(file_id);
+        let line_index = LineIndex::new(text);
+        return Some(Location {
+            uri,
+            range: span_to_lsp_range_with_index(&line_index, text, target.span),
+        });
+    }
+
+    let text = std::fs::read_to_string(&target.file).ok()?;
+    let line_index = LineIndex::new(&text);
+    Some(Location {
+        uri,
+        range: span_to_lsp_range_with_index(&line_index, &text, target.span),
+    })
+}
+
+fn uri_for_path(path: &Path) -> Option<Uri> {
+    let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
+    let uri = path_to_file_uri(&abs).ok()?;
+    Uri::from_str(&uri).ok()
+}
+
+fn fallback_unknown_uri() -> Uri {
+    Uri::from_str("file:///unknown").expect("fallback URI is valid")
 }

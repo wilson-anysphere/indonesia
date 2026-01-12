@@ -4,7 +4,7 @@ use std::str::FromStr;
 use lsp_types::{Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::InMemoryFileStore;
-use nova_ide::{declaration, implementation};
+use nova_ide::{declaration, implementation, Database as IdeDatabase};
 use tempfile::TempDir;
 
 #[test]
@@ -250,4 +250,132 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
         line,
         character: col_utf16,
     }
+}
+
+#[test]
+fn mapstruct_snapshot_implementation_falls_back_to_generated_impl_method() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+
+    std::fs::write(root.join("pom.xml"), "<project />\n").expect("write pom.xml");
+
+    let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
+    let dto_path = root.join("src/main/java/com/example/CarDto.java");
+    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+
+    let mapper_source = r#"package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+    @Mapping(target = "make", source = "make")
+    CarDto toDto(Car car);
+}
+"#;
+
+    let dto_source = r#"package com.example;
+
+public class CarDto {
+    public String make;
+}
+"#;
+
+    let impl_source = r#"package com.example;
+
+public class CarMapperImpl implements CarMapper {
+    @Override
+    public CarDto toDto(Car car) {
+        return new CarDto();
+    }
+}
+"#;
+
+    write_file(&mapper_path, mapper_source);
+    write_file(&dto_path, dto_source);
+    write_file(&impl_path, impl_source);
+
+    let mapper_uri = uri_for_path(&mapper_path);
+    let mut db = IdeDatabase::new();
+    db.set_file_content(mapper_uri.clone(), mapper_source.to_string());
+    let snap = db.snapshot();
+
+    let method_offset = mapper_source
+        .find("toDto")
+        .expect("method name in mapper source");
+    let pos = offset_to_position(mapper_source, method_offset + 1);
+
+    let got = snap.implementation(&mapper_uri, pos);
+    assert_eq!(got.len(), 1, "expected one implementation location; got {got:#?}");
+    assert_eq!(got[0].uri, uri_for_path(&impl_path));
+
+    let impl_offset = impl_source
+        .find("toDto")
+        .expect("method name in generated impl source");
+    assert_eq!(got[0].range.start, offset_to_position(impl_source, impl_offset));
+}
+
+#[test]
+fn mapstruct_snapshot_declaration_falls_back_to_target_property_definition() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+
+    std::fs::write(root.join("pom.xml"), "<project />\n").expect("write pom.xml");
+
+    let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
+    let dto_path = root.join("src/main/java/com/example/CarDto.java");
+    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+
+    let mapper_source = r#"package com.example;
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+    @Mapping(target = "make", source = "make")
+    CarDto toDto(Car car);
+}
+"#;
+
+    let dto_source = r#"package com.example;
+
+public class CarDto {
+    public String make;
+}
+"#;
+
+    let impl_source = r#"package com.example;
+
+public class CarMapperImpl implements CarMapper {
+    @Override
+    public CarDto toDto(Car car) {
+        return new CarDto();
+    }
+}
+"#;
+
+    write_file(&mapper_path, mapper_source);
+    write_file(&dto_path, dto_source);
+    write_file(&impl_path, impl_source);
+
+    let mapper_uri = uri_for_path(&mapper_path);
+    let mut db = IdeDatabase::new();
+    db.set_file_content(mapper_uri.clone(), mapper_source.to_string());
+    let snap = db.snapshot();
+
+    let target_literal_offset = mapper_source
+        .find("target = \"make\"")
+        .expect("@Mapping target string in mapper source");
+    let make_offset = target_literal_offset + "target = \"".len();
+    let pos = offset_to_position(mapper_source, make_offset + 1);
+
+    let got = snap
+        .declaration(&mapper_uri, pos)
+        .expect("expected declaration location");
+    assert_eq!(got.uri, uri_for_path(&dto_path));
+
+    let dto_offset = dto_source.find("make").expect("field name in DTO source");
+    assert_eq!(got.range.start, offset_to_position(dto_source, dto_offset));
 }
