@@ -22,10 +22,7 @@ use nova_framework_parse::{
 };
 use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tree_sitter::Node;
 
 mod workspace;
@@ -131,14 +128,12 @@ pub struct AnalysisResult {
 /// exposed via the free functions in this crate.
 pub struct MapStructAnalyzer {
     workspace: workspace::WorkspaceCache,
-    fs_cache: FsWorkspaceCache,
 }
 
 impl MapStructAnalyzer {
     pub fn new() -> Self {
         Self {
             workspace: workspace::WorkspaceCache::new(),
-            fs_cache: FsWorkspaceCache::new(),
         }
     }
 }
@@ -377,51 +372,6 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 }
 
-#[derive(Debug, Default)]
-struct FsWorkspaceCache {
-    inner: Mutex<HashMap<PathBuf, CachedFsWorkspace>>,
-}
-
-#[derive(Clone, Debug)]
-struct CachedFsWorkspace {
-    fingerprint: u64,
-    analysis: Arc<AnalysisResult>,
-}
-
-impl FsWorkspaceCache {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn analysis_for_root(
-        &self,
-        root: &Path,
-        has_mapstruct_dependency: bool,
-    ) -> Option<Arc<AnalysisResult>> {
-        let key = root.to_path_buf();
-        let fingerprint = fs_cache_fingerprint(root, has_mapstruct_dependency);
-
-        {
-            let cache = lock_unpoison(&self.inner);
-            if let Some(entry) = cache.get(&key) {
-                if entry.fingerprint == fingerprint {
-                    return Some(entry.analysis.clone());
-                }
-            }
-        }
-
-        let analysis = analyze_workspace(root, has_mapstruct_dependency).ok()?;
-        let analysis = Arc::new(analysis);
-        let entry = CachedFsWorkspace {
-            fingerprint,
-            analysis: analysis.clone(),
-        };
-
-        lock_unpoison(&self.inner).insert(key, entry);
-        Some(analysis)
-    }
-}
-
 fn has_mapstruct_dependency(db: &dyn Database, project: ProjectId) -> bool {
     db.has_dependency(project, "org.mapstruct", "mapstruct")
         || db.has_dependency(project, "org.mapstruct", "mapstruct-processor")
@@ -433,111 +383,6 @@ fn has_mapstruct_dependency(db: &dyn Database, project: ProjectId) -> bool {
 fn has_mapstruct_build_dependency(db: &dyn Database, project: ProjectId) -> bool {
     db.has_dependency(project, "org.mapstruct", "mapstruct")
         || db.has_dependency(project, "org.mapstruct", "mapstruct-processor")
-}
-
-fn fs_cache_fingerprint(root: &Path, has_mapstruct_dependency: bool) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-
-    let mut hasher = DefaultHasher::new();
-    build_marker_fingerprint(root).hash(&mut hasher);
-    has_mapstruct_dependency.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
-fn build_marker_fingerprint(root: &Path) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-
-    // Mirror the marker set used by `nova-ide`'s framework cache. The goal here is not perfect
-    // invalidation (that would require hashing every source file), but a cheap signal that build
-    // context likely changed (dependencies, source roots, etc.).
-    const MARKERS: &[&str] = &[
-        // Maven.
-        "pom.xml",
-        // Gradle.
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        // Bazel.
-        "WORKSPACE",
-        "WORKSPACE.bazel",
-        "MODULE.bazel",
-        "MODULE.bazel.lock",
-        ".bazelrc",
-        ".bazelversion",
-        "bazelisk.rc",
-        ".bazelignore",
-        // Simple projects.
-        "src",
-    ];
-
-    let mut hasher = DefaultHasher::new();
-    for marker in MARKERS {
-        marker.hash(&mut hasher);
-        let path = root.join(marker);
-        match std::fs::metadata(&path) {
-            Ok(meta) => {
-                true.hash(&mut hasher);
-                meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
-            }
-            Err(_) => {
-                false.hash(&mut hasher);
-            }
-        }
-    }
-
-    // Include any `.bazelrc.*` fragments at the workspace root.
-    let mut bazelrc_fragments = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if file_name.starts_with(".bazelrc.") {
-                bazelrc_fragments.push(path);
-                if bazelrc_fragments.len() >= 128 {
-                    break;
-                }
-            }
-        }
-    }
-    bazelrc_fragments.sort();
-    for path in bazelrc_fragments {
-        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-            name.hash(&mut hasher);
-        }
-        match std::fs::metadata(&path) {
-            Ok(meta) => {
-                true.hash(&mut hasher);
-                meta.len().hash(&mut hasher);
-                hash_mtime(&mut hasher, meta.modified().ok());
-            }
-            Err(_) => {
-                false.hash(&mut hasher);
-            }
-        }
-    }
-
-    hasher.finish()
-}
-
-fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
-    let Some(time) = time else {
-        0u64.hash(hasher);
-        return;
-    };
-
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
-    duration.as_secs().hash(hasher);
-    duration.subsec_nanos().hash(hasher);
 }
 /// Analyze a workspace directory (best-effort).
 ///
