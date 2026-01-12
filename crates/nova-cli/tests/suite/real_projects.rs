@@ -105,17 +105,17 @@ fn index_and_query_symbols(root: &Path, query: &str, expected_file_contains: &st
 
     let expected_file_contains = expected_file_contains.replace('\\', "/");
     let found = results.iter().any(|sym| {
-        sym.get("locations")
-            .and_then(|locs| locs.as_array())
-            .is_some_and(|locs| {
-                locs.iter().any(|loc| {
-                    loc.get("file")
-                        .and_then(|file| file.as_str())
-                        .is_some_and(|file| {
-                            file.replace('\\', "/").contains(&expected_file_contains)
-                        })
-                })
-            })
+        let mut locations = sym.get("location").into_iter().chain(
+            sym.get("locations")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten(),
+        );
+        locations.any(|loc| {
+            loc.get("file")
+                .and_then(|file| file.as_str())
+                .is_some_and(|file| file.replace('\\', "/").contains(&expected_file_contains))
+        })
     });
 
     assert!(
