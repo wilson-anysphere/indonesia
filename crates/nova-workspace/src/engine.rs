@@ -30,7 +30,7 @@ use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
-    ChangeEvent, ContentChange, DocumentError, FileId, FileSystem, FileWatcher, LocalFs,
+    ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher, LocalFs,
     NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
 };
 use walkdir::WalkDir;
@@ -795,17 +795,62 @@ impl WorkspaceEngine {
                         match res {
                             Ok(WatchEvent::Changes { changes }) => {
                                 let now = Instant::now();
-                                let config = watch_config
-                                    .read()
-                                    .expect("workspace watch config lock poisoned");
-                                for change in changes {
-                                    let Some(norm) = NormalizedEvent::from_file_change(&change) else {
-                                        continue;
-                                    };
-                                    if let Some(cat) = categorize_event(&config, &norm) {
-                                        debouncer.push(&cat, norm, now);
+                                let mut saw_directory_event = false;
+                                {
+                                    let config = watch_config
+                                        .read()
+                                        .expect("workspace watch config lock poisoned");
+                                    for change in changes {
+                                        // NOTE: Directory-level watcher events cannot be safely
+                                        // mapped into per-file operations in the VFS. Falling back
+                                        // to a full rescan keeps the workspace consistent.
+                                        let is_directory_change = match &change {
+                                            FileChange::Created { path }
+                                            | FileChange::Modified { path }
+                                            | FileChange::Deleted { path } => path
+                                                .as_local_path()
+                                                .and_then(|p| fs::metadata(p).ok())
+                                                .is_some_and(|meta| meta.is_dir()),
+                                            FileChange::Moved { from, to } => {
+                                                let from_is_dir = from
+                                                    .as_local_path()
+                                                    .and_then(|p| fs::metadata(p).ok())
+                                                    .is_some_and(|meta| meta.is_dir());
+                                                let to_is_dir = to
+                                                    .as_local_path()
+                                                    .and_then(|p| fs::metadata(p).ok())
+                                                    .is_some_and(|meta| meta.is_dir());
+                                                from_is_dir || to_is_dir
+                                            }
+                                        };
+
+                                        if is_directory_change {
+                                            saw_directory_event = true;
+                                            break;
+                                        }
+
+                                        let Some(norm) =
+                                            NormalizedEvent::from_file_change(&change)
+                                        else {
+                                            continue;
+                                        };
+                                        if let Some(cat) = categorize_event(&config, &norm) {
+                                            debouncer.push(&cat, norm, now);
+                                        }
                                     }
                                 }
+
+                                if saw_directory_event {
+                                    rescan_pending = true;
+                                    // Drop any pending debounced batches; we will reconcile via a
+                                    // full project reload instead.
+                                    debouncer = Debouncer::new([
+                                        (ChangeCategory::Source, debounce.source),
+                                        (ChangeCategory::Build, debounce.build),
+                                    ]);
+                                    continue;
+                                }
+
                                 for (cat, events) in debouncer.flush_due(now) {
                                     if let Err(err) = batch_tx.try_send(WatcherMessage::Batch(cat, events)) {
                                         if matches!(err, channel::TrySendError::Full(_)) {
@@ -5844,6 +5889,79 @@ enabled = false
         })
         .await
         .expect("timed out waiting for rescan-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_move_triggers_rescan_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        let text = "class Main {}";
+        fs::write(project_root.join("src/Main.java"), text.as_bytes()).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let old_path = VfsPath::local(project_root.join("src/Main.java"));
+        let old_id = engine
+            .vfs
+            .get_id(&old_path)
+            .expect("file id allocated for initial project scan");
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Rename the `src/` directory on disk and send a watcher event for the directory move.
+        let src_dir = project_root.join("src");
+        let src2_dir = project_root.join("src2");
+        fs::rename(&src_dir, &src2_dir).unwrap();
+
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Moved {
+                    from: VfsPath::local(src_dir),
+                    to: VfsPath::local(src2_dir),
+                }],
+            })
+            .unwrap();
+
+        // The watcher should detect the directory-level move and fall back to a full rescan,
+        // discovering the file at its new path.
+        let vfs_path = VfsPath::local(project_root.join("src2/Main.java"));
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                    yield_now().await;
+                    continue;
+                };
+
+                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.query_db.with_snapshot(|snap| {
+                        snap.file_exists(file_id)
+                            && snap.file_content(file_id).as_str() == text
+                            && snap.file_rel_path(file_id).as_str() == "src2/Main.java"
+                            && snap.project_files(ProjectId::from_raw(0)).contains(&file_id)
+                            && (file_id == old_id
+                                || (!snap.file_exists(old_id)
+                                    && !snap.project_files(ProjectId::from_raw(0)).contains(&old_id)))
+                    })
+                }))
+                .unwrap_or(false);
+
+                if ready {
+                    break;
+                }
+
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for directory-move-triggered project reload");
     }
 
     #[tokio::test(flavor = "current_thread")]
