@@ -1223,7 +1223,7 @@ fn record_body_references(
                     let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                         return;
                     };
-                    let Some(method) = methods.first().copied() else {
+                    let Some(method) = methods.first().map(|m| m.id) else {
                         return;
                     };
                     let Some(&symbol) =
@@ -1256,7 +1256,7 @@ fn record_body_references(
                 let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
                     return;
                 };
-                let Some(method) = methods.first().copied() else {
+                let Some(method) = methods.first().map(|m| m.id) else {
                     return;
                 };
                 let Some(&symbol) =

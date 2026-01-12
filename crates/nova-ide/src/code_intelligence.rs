@@ -7439,7 +7439,7 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
 fn expected_argument_type_for_completion(
     types: &mut TypeStore,
     analysis: &Analysis,
-    _text: &str,
+    text: &str,
     offset: usize,
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
