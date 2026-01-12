@@ -423,3 +423,51 @@ fn falls_back_to_type_variables_when_name_resolution_fails() {
     assert_eq!(ty.ty, Type::Named("DoesNotExist".to_string()));
     assert!(ty.diagnostics.iter().any(|d| d.code == "unresolved-type"));
 }
+
+#[test]
+fn type_vars_shadow_classes() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let mut env = TypeStore::with_minimal_jdk();
+
+    let tv = env.add_type_param(
+        "String",
+        vec![Type::class(env.well_known().object, vec![])],
+    );
+    let mut type_vars = HashMap::new();
+    type_vars.insert("String".to_string(), tv);
+
+    let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String", None);
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::TypeVar(tv));
+}
+
+#[test]
+fn parses_intersection_types() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let cloneable_id = env.lookup_class("java.lang.Cloneable").unwrap();
+    let serializable_id = env.lookup_class("java.io.Serializable").unwrap();
+
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "Cloneable & java.io.Serializable",
+        None,
+    );
+
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(
+        ty.ty,
+        Type::Intersection(vec![
+            Type::class(cloneable_id, vec![]),
+            Type::class(serializable_id, vec![]),
+        ])
+    );
+}

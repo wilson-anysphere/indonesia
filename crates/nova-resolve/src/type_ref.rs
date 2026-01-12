@@ -98,6 +98,27 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     }
 
     fn parse_type(&mut self) -> Type {
+        let mut types = Vec::new();
+        let first = self.parse_single_type();
+        types.push(first);
+
+        loop {
+            self.skip_ws();
+            if !self.consume_char('&') {
+                break;
+            }
+            let next = self.parse_single_type();
+            types.push(next);
+        }
+
+        if types.len() == 1 {
+            types.pop().unwrap()
+        } else {
+            Type::Intersection(types)
+        }
+    }
+
+    fn parse_single_type(&mut self) -> Type {
         self.skip_ws();
         let start = self.pos;
         if self.is_eof() {
@@ -237,6 +258,20 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         args: Vec<Type>,
         name_range: Range<usize>,
     ) -> Type {
+        // In-scope type variables take precedence over types (JLS 6.5).
+        if segments.len() == 1 {
+            if let Some(tv) = self.type_vars.get(&segments[0]) {
+                if !args.is_empty() {
+                    self.push_error(
+                        "invalid-type-ref",
+                        "type variables cannot have type arguments",
+                        name_range.clone(),
+                    );
+                }
+                return Type::TypeVar(*tv);
+            }
+        }
+
         let dotted = segments.join(".");
         let qname = QualifiedName::from_dotted(&dotted);
 
@@ -253,18 +288,17 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return Type::Named(resolved_name.to_string());
         }
 
-        // Fall back to in-scope type variables (only for simple names).
+        // If the resolver can't map the name (usually because the external index
+        // is incomplete), fall back to the `TypeEnv` for a couple of common cases:
+        // - fully-qualified names (`java.io.Serializable`)
+        // - implicit `java.lang.*` for simple names (`Cloneable`)
         if segments.len() == 1 {
-            if let Some(tv) = self.type_vars.get(&segments[0]) {
-                if !args.is_empty() {
-                    self.push_error(
-                        "invalid-type-ref",
-                        "type variables cannot have type arguments",
-                        name_range.clone(),
-                    );
-                }
-                return Type::TypeVar(*tv);
+            let java_lang = format!("java.lang.{}", segments[0]);
+            if let Some(class_id) = self.env.lookup_class(&java_lang) {
+                return Type::class(class_id, args);
             }
+        } else if let Some(class_id) = self.env.lookup_class(&dotted) {
+            return Type::class(class_id, args);
         }
 
         let mut best_guess = dotted.clone();
@@ -292,6 +326,12 @@ impl<'a, 'idx> Parser<'a, 'idx> {
                     best_guess = candidate;
                 }
             }
+        }
+
+        // If we successfully guessed a binary nested name, try resolving it in
+        // the environment before reporting an unresolved-type diagnostic.
+        if let Some(class_id) = self.env.lookup_class(&best_guess) {
+            return Type::class(class_id, args);
         }
 
         self.diagnostics.push(Diagnostic::error(
