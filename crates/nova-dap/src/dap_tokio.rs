@@ -260,4 +260,22 @@ mod tests {
             other => panic!("expected io error, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn rejects_pathologically_large_content_length_without_attempting_allocation() {
+        // Similar to the sync codec test: this should be rejected by the size
+        // check, not by attempting to allocate the body buffer.
+        let framed = format!("Content-Length: {}\r\n\r\n", usize::MAX);
+
+        let (client, mut server) = tokio::io::duplex(1024);
+        server.write_all(framed.as_bytes()).await.unwrap();
+        drop(server);
+
+        let mut reader = DapReader::new(client);
+        let err = reader.read_value().await.unwrap_err();
+        match err {
+            DapError::Protocol(msg) => assert!(msg.contains("Content-Length")),
+            other => panic!("expected protocol error, got {other:?}"),
+        }
+    }
 }

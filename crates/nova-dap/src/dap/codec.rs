@@ -185,4 +185,16 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("header line exceeds maximum size"));
     }
+
+    #[test]
+    fn rejects_pathologically_large_content_length_without_attempting_allocation() {
+        // `usize::MAX` is intentionally far beyond the maximum. This guards against
+        // regressions where we might try to allocate the body buffer before checking
+        // the limit (which would likely panic or OOM).
+        let framed = format!("Content-Length: {}\r\n\r\n", usize::MAX);
+        let mut cursor = Cursor::new(framed.into_bytes());
+        let err = read_raw_message(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Content-Length"));
+    }
 }
