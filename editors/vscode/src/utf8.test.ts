@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { utf8ByteOffsetToUtf16Offset } from './utf8';
+import { utf8ByteOffsetToUtf16Offset, utf8SpanToUtf16Offsets } from './utf8';
 
 describe('utf8ByteOffsetToUtf16Offset', () => {
   it('maps ASCII byte offsets 1:1', () => {
@@ -54,5 +54,17 @@ describe('utf8ByteOffsetToUtf16Offset', () => {
     expect(utf8ByteOffsetToUtf16Offset(text, -1)).toBe(0);
     expect(utf8ByteOffsetToUtf16Offset(text, Number.NaN)).toBe(0);
     expect(utf8ByteOffsetToUtf16Offset(text, 999)).toBe(text.length);
+  });
+});
+
+describe('utf8SpanToUtf16Offsets', () => {
+  it('converts start/end together and clamps end >= start', () => {
+    const text = 'a😀b';
+
+    // Span that includes only the emoji bytes.
+    expect(utf8SpanToUtf16Offsets(text, { start: 1, end: 5 })).toEqual({ start: 1, end: 3 });
+
+    // End < start should still produce a non-negative range.
+    expect(utf8SpanToUtf16Offsets(text, { start: 5, end: 1 })).toEqual({ start: 3, end: 3 });
   });
 });
