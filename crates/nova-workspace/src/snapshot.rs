@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -47,7 +47,10 @@ impl WorkspaceSnapshot {
         let empty = Arc::new(String::new());
 
         engine.query_db.with_snapshot(|snap| {
-            let salsa_file_ids: HashSet<FileId> = snap.all_file_ids().iter().copied().collect();
+            let salsa_file_ids = snap.all_file_ids();
+            let salsa_file_ids: &[FileId] = salsa_file_ids.as_ref().as_slice();
+            let mut salsa_idx = 0usize;
+
             for file_id in &all_file_ids {
                 let vfs_path = vfs.path_for_id(*file_id);
 
@@ -61,14 +64,6 @@ impl WorkspaceSnapshot {
                     path_to_id.insert(path, *file_id);
                 }
 
-                // Prefer the Salsa input contents (already include open document overlays).
-                // `ra_salsa` panics on uninitialized inputs, so we must be defensive here: file ids
-                // can exist in the VFS registry before the workspace has synced inputs.
-                let exists_in_salsa =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        snap.file_exists(*file_id)
-                    }))
-                    .ok();
                 let fallback_to_vfs = || {
                     vfs_path
                         .as_ref()
@@ -77,11 +72,21 @@ impl WorkspaceSnapshot {
                         .unwrap_or_else(|| empty.clone())
                 };
 
-                let content = match exists_in_salsa {
-                    Some(true) if salsa_file_ids.contains(file_id) => snap.file_content(*file_id),
-                    Some(true) => fallback_to_vfs(),
-                    Some(false) => empty.clone(),
-                    None => fallback_to_vfs(),
+                while salsa_idx < salsa_file_ids.len() && salsa_file_ids[salsa_idx] < *file_id {
+                    salsa_idx += 1;
+                }
+                let has_salsa_content =
+                    salsa_idx < salsa_file_ids.len() && salsa_file_ids[salsa_idx] == *file_id;
+
+                let content = if has_salsa_content {
+                    // Prefer the Salsa input contents (already include open document overlays).
+                    if snap.file_exists(*file_id) {
+                        snap.file_content(*file_id)
+                    } else {
+                        empty.clone()
+                    }
+                } else {
+                    fallback_to_vfs()
                 };
 
                 file_contents.insert(*file_id, content);
