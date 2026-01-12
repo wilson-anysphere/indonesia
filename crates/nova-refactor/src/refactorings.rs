@@ -965,6 +965,7 @@ pub fn inline_variable(
     }
 
     let init_has_side_effects = has_side_effects(init_expr.syntax());
+    let init_is_order_sensitive = initializer_is_order_sensitive(init_expr.syntax());
     let init_replacement = parenthesize_initializer(init_text, &init_expr);
 
     let all_refs = db.find_references(params.symbol);
@@ -1099,6 +1100,15 @@ pub fn inline_variable(
             return Err(RefactorError::InlineNotSupported);
         }
         remove_decl = false;
+    }
+
+    // If we are going to delete the declaration, we are moving evaluation of the initializer from
+    // the declaration site (unconditionally, once) to the usage site. When the initializer is
+    // order-sensitive, reject inlining when this would move evaluation into conditionally- or
+    // repeatedly-evaluated contexts such as `&&`/`||` RHS, `?:` branches, loop conditions, or
+    // `assert`.
+    if remove_decl && init_is_order_sensitive {
+        inline_variable_validate_safe_deletion_contexts(db, &targets)?;
     }
 
     if init_has_side_effects {
@@ -1483,6 +1493,125 @@ fn has_write_to_symbol_between(
     }
 
     Ok(false)
+}
+
+fn inline_variable_validate_safe_deletion_contexts(
+    db: &dyn RefactorDatabase,
+    targets: &[crate::semantic::Reference],
+) -> Result<(), RefactorError> {
+    let mut parses: HashMap<FileId, nova_syntax::JavaParseResult> = HashMap::new();
+
+    for usage in targets {
+        let parsed = match parses.get(&usage.file) {
+            Some(parsed) => parsed,
+            None => {
+                let text = db
+                    .file_text(&usage.file)
+                    .ok_or_else(|| RefactorError::UnknownFile(usage.file.clone()))?;
+                let parsed = parse_java(text);
+                parses.insert(usage.file.clone(), parsed);
+                parses.get(&usage.file).expect("just inserted parse result")
+            }
+        };
+
+        let name_expr = inline_variable_find_name_expr(parsed, usage.range)?;
+        if inline_variable_usage_is_conditionally_or_repeatedly_evaluated(&name_expr) {
+            return Err(RefactorError::InlineNotSupported);
+        }
+    }
+
+    Ok(())
+}
+
+fn inline_variable_find_name_expr(
+    parsed: &nova_syntax::JavaParseResult,
+    range: TextRange,
+) -> Result<ast::NameExpression, RefactorError> {
+    let syntax_range = to_syntax_range(range).ok_or(RefactorError::InlineNotSupported)?;
+    let element = parsed.covering_element(syntax_range);
+
+    let node = match element {
+        nova_syntax::SyntaxElement::Node(node) => node,
+        nova_syntax::SyntaxElement::Token(token) => token
+            .parent()
+            .ok_or(RefactorError::InlineNotSupported)?,
+    };
+
+    node.ancestors()
+        .find_map(ast::NameExpression::cast)
+        .ok_or(RefactorError::InlineNotSupported)
+}
+
+fn inline_variable_usage_is_conditionally_or_repeatedly_evaluated(
+    name_expr: &ast::NameExpression,
+) -> bool {
+    let expr_range = syntax_range(name_expr.syntax());
+
+    for ancestor in name_expr.syntax().ancestors() {
+        if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
+            if let Some(op) = binary_short_circuit_operator_kind(&binary) {
+                if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
+                    if let Some(rhs) = binary.rhs() {
+                        if contains_range(syntax_range(rhs.syntax()), expr_range) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
+            if let Some(then_branch) = cond_expr.then_branch() {
+                if contains_range(syntax_range(then_branch.syntax()), expr_range) {
+                    return true;
+                }
+            }
+            if let Some(else_branch) = cond_expr.else_branch() {
+                if contains_range(syntax_range(else_branch.syntax()), expr_range) {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(while_stmt) = ast::WhileStatement::cast(ancestor.clone()) {
+            if let Some(cond) = while_stmt.condition() {
+                if contains_range(syntax_range(cond.syntax()), expr_range) {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(do_while_stmt) = ast::DoWhileStatement::cast(ancestor.clone()) {
+            if let Some(cond) = do_while_stmt.condition() {
+                if contains_range(syntax_range(cond.syntax()), expr_range) {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(for_stmt) = ast::ForStatement::cast(ancestor.clone()) {
+            if let Some(header) = for_stmt.header() {
+                if for_header_has_unsafe_eval_context(&header, expr_range) {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(assert_stmt) = ast::AssertStatement::cast(ancestor.clone()) {
+            if let Some(cond) = assert_stmt.condition() {
+                if contains_range(syntax_range(cond.syntax()), expr_range) {
+                    return true;
+                }
+            }
+            if let Some(message) = assert_stmt.message() {
+                if contains_range(syntax_range(message.syntax()), expr_range) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 fn inline_variable_has_writes(
@@ -3159,6 +3288,31 @@ fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
     }
 
     // Include ++/-- (both prefix and postfix) as side effects.
+    expr.descendants_with_tokens()
+        .any(|el| matches!(el.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+}
+
+fn initializer_is_order_sensitive(expr: &nova_syntax::SyntaxNode) -> bool {
+    // Order-sensitive expressions (Task 139):
+    // - side effects: calls, `new`, assignments, ++/--
+    // - potentially-throwing: field/array access, casts
+    fn node_is_order_sensitive(node: &nova_syntax::SyntaxNode) -> bool {
+        matches!(
+            node.kind(),
+            SyntaxKind::MethodCallExpression
+                | SyntaxKind::NewExpression
+                | SyntaxKind::AssignmentExpression
+                | SyntaxKind::FieldAccessExpression
+                | SyntaxKind::ArrayAccessExpression
+                | SyntaxKind::CastExpression
+        )
+    }
+
+    if node_is_order_sensitive(expr) || expr.descendants().any(|node| node_is_order_sensitive(&node))
+    {
+        return true;
+    }
+
     expr.descendants_with_tokens()
         .any(|el| matches!(el.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
 }
