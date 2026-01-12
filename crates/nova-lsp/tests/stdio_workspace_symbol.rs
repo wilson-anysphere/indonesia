@@ -3,6 +3,8 @@ use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tempfile::TempDir;
 
 mod support;
@@ -125,6 +127,123 @@ fn stdio_server_supports_workspace_symbol_requests() {
     );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    // Create enough files to ensure `workspace/symbol` spends time indexing so that cancellation
+    // happens while the request is in flight (not just before the handler starts).
+    for i in 0..500 {
+        let file_path = root.join(format!("Foo{i}.java"));
+        std::fs::write(
+            &file_path,
+            format!(
+                r#"
+                    package com.example;
+
+                    public class Foo{i} {{
+                        public void bar{i}() {{}}
+                    }}
+                "#
+            ),
+        )
+        .expect("write java file");
+    }
+
+    let root_uri = uri_for_path(root);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let stdin = child.stdin.take().expect("stdin");
+    let stdin = Arc::new(Mutex::new(stdin));
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    {
+        let mut stdin = stdin.lock().expect("lock stdin");
+        write_jsonrpc_message(
+            &mut *stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "rootUri": root_uri, "capabilities": {} }
+            }),
+        );
+    }
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    {
+        let mut stdin = stdin.lock().expect("lock stdin");
+        write_jsonrpc_message(
+            &mut *stdin,
+            &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        );
+    }
+
+    {
+        let mut stdin = stdin.lock().expect("lock stdin");
+        write_jsonrpc_message(
+            &mut *stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "workspace/symbol",
+                "params": { "query": "Foo" }
+            }),
+        );
+    }
+
+    // Cancel after a short delay to give the request a chance to enter the indexing loop.
+    let cancel_stdin = stdin.clone();
+    let cancel_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(10));
+        let mut stdin = cancel_stdin.lock().expect("lock stdin");
+        write_jsonrpc_message(
+            &mut *stdin,
+            &json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": 2 } }),
+        );
+    });
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let code = resp
+        .get("error")
+        .and_then(|err| err.get("code"))
+        .and_then(|v| v.as_i64());
+    assert_eq!(
+        code,
+        Some(-32800),
+        "expected cancelled workspace/symbol request to return -32800, got: {resp:?}"
+    );
+
+    cancel_thread.join().expect("cancel thread");
+
+    {
+        let mut stdin = stdin.lock().expect("lock stdin");
+        write_jsonrpc_message(
+            &mut *stdin,
+            &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+        );
+    }
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    {
+        let mut stdin = stdin.lock().expect("lock stdin");
+        write_jsonrpc_message(&mut *stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    }
     drop(stdin);
 
     let status = child.wait().expect("wait");
