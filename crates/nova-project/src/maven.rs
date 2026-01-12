@@ -1996,7 +1996,7 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     }
 
     let type_ = dep.type_.as_deref().unwrap_or("jar");
-    if type_ != "jar" {
+    if !type_.eq_ignore_ascii_case("jar") {
         return None;
     }
 
@@ -2409,6 +2409,32 @@ mod tests {
         assert!(
             maven_dependency_jar_path(repo.path(), &dep).is_none(),
             "missing jars should be omitted from the classpath"
+        );
+    }
+
+    #[test]
+    fn maven_dependency_jar_path_accepts_case_insensitive_type() {
+        let repo = tempfile::tempdir().expect("tempdir maven repo");
+
+        let jar_path = repo.path().join("com/example/dep/1.0/dep-1.0.jar");
+        if let Some(parent) = jar_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir version dir");
+        }
+        std::fs::write(&jar_path, b"").expect("write jar placeholder");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0".to_string()),
+            scope: None,
+            classifier: None,
+            type_: Some("JAR".to_string()),
+        };
+
+        assert_eq!(
+            maven_dependency_jar_path(repo.path(), &dep),
+            Some(jar_path),
+            "expected jar dependency types to be matched case-insensitively"
         );
     }
 
