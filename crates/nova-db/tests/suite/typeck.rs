@@ -269,11 +269,15 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "var-poly-expression"),
         "expected cast to provide a target type for method reference/var inference; got {diags:?}"
     );
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "method-ref-without-target"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
         "expected cast to provide a target type for method references; got {diags:?}"
     );
     assert!(
@@ -8278,6 +8282,62 @@ class C {
 }
 
 #[test]
+fn lambda_block_return_without_value_is_error_for_nonvoid_sam() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, Integer> f = s -> { return; };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic for non-void lambda return; got {diags:?}"
+    );
+}
+
+#[test]
+fn lambda_block_return_without_value_is_allowed_for_void_sam() {
+    let src = r#"
+class C {
+    void m() {
+        Runnable r = () -> { return; };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
+        "expected no return-mismatch diagnostic for void lambda return; got {diags:?}"
+    );
+}
+
+#[test]
+fn lambda_expr_body_void_is_error_for_nonvoid_sam() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, Integer> f = s -> System.out.println(s);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic for void expression body; got {diags:?}"
+    );
+}
+
+#[test]
 fn type_of_def_is_signature_only_and_does_not_execute_typeck_body() {
     let src = r#"
 class C {
@@ -9144,7 +9204,9 @@ interface I {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "void-parameter-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "void-parameter-type"),
         "expected void-parameter-type diagnostic; got {diags:?}"
     );
 }
