@@ -4918,6 +4918,308 @@ class C {
 }
 
 #[test]
+fn resolve_method_call_demand_targets_lambda_block_from_call_argument_conditional() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    static void use(Function<String, String> f) { }
+    void m() {
+        use(true ? (s -> { return s.substring(1); }) : (s -> s));
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the `substring` call expression inside the lambda block.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let use_call = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement");
+
+    let conditional_expr = match &body.exprs[use_call] {
+        nova_hir::hir::Expr::Call { args, .. } => args.first().copied().expect("expected arg"),
+        other => panic!("expected call expression statement, got {other:?}"),
+    };
+
+    let lambda_expr = match &body.exprs[conditional_expr] {
+        nova_hir::hir::Expr::Conditional { then_expr, .. } => *then_expr,
+        other => panic!("expected conditional argument, got {other:?}"),
+    };
+
+    let block_stmt = match &body.exprs[lambda_expr] {
+        nova_hir::hir::Expr::Lambda { body, .. } => match body {
+            nova_hir::hir::LambdaBody::Block(stmt) => *stmt,
+            other => panic!("expected block-bodied lambda, got {other:?}"),
+        },
+        other => panic!("expected lambda in conditional branch, got {other:?}"),
+    };
+
+    let call_expr = match &body.stmts[block_stmt] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected return statement in lambda body"),
+        other => panic!("expected lambda body block, got {other:?}"),
+    };
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected lambda return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected method call resolution");
+
+    assert_eq!(resolved.name, "substring");
+
+    // `substring` return type should be `String` (from the minimal-JDK stub env).
+    let types = TypeStore::with_minimal_jdk();
+    assert_eq!(
+        resolved.return_type,
+        Type::class(types.well_known().string, vec![])
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn resolve_method_call_demand_targets_lambda_block_from_constructor_argument() {
+    let src = r#"
+import java.util.function.Function;
+class Holder {
+    Holder(Function<String, String> f) { }
+}
+class C {
+    void m() {
+        new Holder(s -> { return s.substring(1); });
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the `substring` call expression inside the lambda block.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let new_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement");
+
+    let lambda_expr = match &body.exprs[new_expr] {
+        nova_hir::hir::Expr::New { args, .. } => args.first().copied().expect("expected arg"),
+        other => panic!("expected new expression statement, got {other:?}"),
+    };
+
+    let block_stmt = match &body.exprs[lambda_expr] {
+        nova_hir::hir::Expr::Lambda { body, .. } => match body {
+            nova_hir::hir::LambdaBody::Block(stmt) => *stmt,
+            other => panic!("expected block-bodied lambda, got {other:?}"),
+        },
+        other => panic!("expected lambda constructor arg, got {other:?}"),
+    };
+
+    let call_expr = match &body.stmts[block_stmt] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected return statement in lambda body"),
+        other => panic!("expected lambda body block, got {other:?}"),
+    };
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected lambda return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected method call resolution");
+
+    assert_eq!(resolved.name, "substring");
+
+    // `substring` return type should be `String` (from the minimal-JDK stub env).
+    let types = TypeStore::with_minimal_jdk();
+    assert_eq!(
+        resolved.return_type,
+        Type::class(types.well_known().string, vec![])
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn resolve_method_call_demand_targets_lambda_block_from_cast_argument() {
+    let src = r#"
+ class C {
+     interface F {
+         String apply(String s);
+     }
+     static void use(Object f) { }
+     void m() {
+         use((F) s -> { return s.substring(1); });
+     }
+ }
+ "#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the `substring` call expression inside the lambda block.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let use_call = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected expression statement");
+
+    let cast_expr = match &body.exprs[use_call] {
+        nova_hir::hir::Expr::Call { args, .. } => args.first().copied().expect("expected arg"),
+        other => panic!("expected call expression statement, got {other:?}"),
+    };
+
+    let lambda_expr = match &body.exprs[cast_expr] {
+        nova_hir::hir::Expr::Cast { expr, .. } => *expr,
+        other => panic!("expected cast argument, got {other:?}"),
+    };
+
+    let block_stmt = match &body.exprs[lambda_expr] {
+        nova_hir::hir::Expr::Lambda { body, .. } => match body {
+            nova_hir::hir::LambdaBody::Block(stmt) => *stmt,
+            other => panic!("expected block-bodied lambda, got {other:?}"),
+        },
+        other => panic!("expected lambda inside cast, got {other:?}"),
+    };
+
+    let call_expr = match &body.stmts[block_stmt] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected return statement in lambda body"),
+        other => panic!("expected lambda body block, got {other:?}"),
+    };
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected lambda return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected method call resolution");
+
+    assert_eq!(resolved.name, "substring");
+
+    // `substring` return type should be `String` (from the minimal-JDK stub env).
+    let types = TypeStore::with_minimal_jdk();
+    assert_eq!(
+        resolved.return_type,
+        Type::class(types.well_known().string, vec![])
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
 fn resolve_method_call_demand_resolves_static_import_from_other_file() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

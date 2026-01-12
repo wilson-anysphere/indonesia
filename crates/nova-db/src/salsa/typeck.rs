@@ -2227,29 +2227,44 @@ fn resolve_method_call_demand(
                     // / return), so infer the lambda with that expected type.
                     root = lambda_expr;
                     expected = Some(ty);
-                } else if let Some(parent) = parent_expr.get(lambda_expr.idx()).and_then(|p| *p) {
-                    let mut candidate = None;
-                    match &body.exprs[parent] {
-                        HirExpr::Assign {
-                            rhs,
-                            op: AssignOp::Assign,
-                            ..
-                        } if *rhs == lambda_expr => {
-                            // Assignment conversion will pass the LHS type as the expected type for
-                            // the lambda RHS.
-                            candidate = Some(parent);
+                } else {
+                    // Otherwise, try to infer an enclosing expression that will provide a target
+                    // type for the lambda:
+                    // - `(<T>) (lambda)` cast supplies `T` as the expected type for the lambda.
+                    // - `x = lambda` assignment supplies the LHS type as the expected type.
+                    // - `f(lambda)` / `new C(lambda)` supplies the parameter type as the expected
+                    //   type for the argument expression (which may be a conditional/cast/etc that
+                    //   encloses the lambda).
+                    let mut current = lambda_expr;
+                    while let Some(parent) = parent_expr.get(current.idx()).and_then(|p| *p) {
+                        let mut candidate = None;
+                        match &body.exprs[parent] {
+                            HirExpr::Cast { expr: inner, .. } if *inner == current => {
+                                candidate = Some(parent);
+                            }
+                            HirExpr::Assign {
+                                rhs,
+                                op: AssignOp::Assign,
+                                ..
+                            } if *rhs == current => {
+                                candidate = Some(parent);
+                            }
+                            HirExpr::Call { args, .. } if args.iter().any(|a| *a == current) => {
+                                candidate = Some(parent);
+                            }
+                            HirExpr::New { args, .. } if args.iter().any(|a| *a == current) => {
+                                candidate = Some(parent);
+                            }
+                            _ => {}
                         }
-                        HirExpr::Call { args, .. } if args.iter().any(|a| *a == lambda_expr) => {
-                            // Overload resolution will pass the parameter type as the expected type
-                            // for the lambda argument.
-                            candidate = Some(parent);
-                        }
-                        _ => {}
-                    }
 
-                    if let Some(expr) = candidate {
-                        root = expr;
-                        expected = expected_roots.get(expr.idx()).and_then(|t| t.clone());
+                        if let Some(expr) = candidate {
+                            root = expr;
+                            expected = expected_roots.get(expr.idx()).and_then(|t| t.clone());
+                            break;
+                        }
+
+                        current = parent;
                     }
                 }
             }
@@ -7232,6 +7247,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let _ = this.infer_expr(loader, *receiver);
                         Type::Unknown
                     }
+                    HirExpr::Conditional { .. } if this.is_poly_expression(*arg) => Type::Unknown,
                     // Best-effort poly-expression support: certain expressions (notably generic
                     // invocations like `Collections.emptyList()` and diamond class instance
                     // creation like `new ArrayList<>()`) can depend on the *target type* for
@@ -8571,6 +8587,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let _ = this.infer_expr(loader, *receiver);
                         Type::Unknown
                     }
+                    // Conditional expressions are poly expressions when one of their branches is
+                    // target-typed (e.g. `cond ? (s -> s) : (s -> s)`). Avoid inferring them until
+                    // we know the parameter type, so their nested lambdas/method refs see the SAM
+                    // signature via target typing.
+                    HirExpr::Conditional { .. } if this.is_poly_expression(*arg) => Type::Unknown,
                     // Best-effort poly-expression support: certain expressions (notably generic
                     // invocations like `Collections.emptyList()` and diamond class instance
                     // creation like `new ArrayList<>()`) can depend on the *target type* for
