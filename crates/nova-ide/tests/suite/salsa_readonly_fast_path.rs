@@ -98,3 +98,4 @@ fn salsa_fast_path_is_read_only() {
         "flow_diagnostics_for_file should not validate memoized results without any Salsa write"
     );
 }
+
