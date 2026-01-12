@@ -34,6 +34,9 @@ mod gradle_jpms_workspace_model;
 #[path = "cases/gradle_reload_build_files.rs"]
 mod gradle_reload_build_files;
 
+#[path = "cases/gradle_snapshot.rs"]
+mod gradle_snapshot;
+
 #[path = "cases/jpms.rs"]
 mod jpms;
 

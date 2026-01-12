@@ -130,7 +130,11 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     });
     std::fs::write(&snapshot_path, serde_json::to_vec_pretty(&snapshot_json).unwrap()).unwrap();
 
-    let options = LoadOptions::default();
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
     let project = load_project_with_options(workspace_root, &options).expect("load gradle project");
     assert_eq!(project.build_system, BuildSystem::Gradle);
 
@@ -189,4 +193,3 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
         "workspace model classpath should include snapshot jar"
     );
 }
-
