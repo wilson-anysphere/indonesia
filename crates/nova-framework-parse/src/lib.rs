@@ -576,6 +576,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_java_does_not_carry_error_state_between_parses() {
+        let bad = parse_java("class A {").expect("parse bad source");
+        assert!(bad.root_node().has_error());
+
+        let good = parse_java("class B {}").expect("parse good source");
+        assert!(!good.root_node().has_error());
+    }
+
+    #[test]
     fn parses_positional_and_named_args() {
         let ann = parse_annotation_text("@X(\"foo\", name = \"bar\")", Span::new(0, 0))
             .expect("annotation");
