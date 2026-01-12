@@ -3236,8 +3236,8 @@ async fn handle_request_inner(
                 // - an already-instantiated stream value (unsafe to sample: iterating consumes it)
                 // - a stream-producing expression (usually safe to re-evaluate, e.g. Arrays.stream(arr))
                 //
-                // Heuristic: if the source expression contains no call syntax, treat it as a value
-                // and refuse by default.
+                // Heuristic: if the source expression contains no call segments, treat it as a value
+                // and refuse by default (sampling consumes streams).
                 if let nova_stream_debug::StreamSource::ExistingStream { stream_expr } =
                     &analysis.source
                 {

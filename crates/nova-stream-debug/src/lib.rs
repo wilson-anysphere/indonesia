@@ -1245,7 +1245,17 @@ fn split_angle_args(source: &str) -> Result<(&str, &str), StreamAnalysisError> {
     Err(StreamAnalysisError::UnbalancedParens)
 }
 
-fn is_pure_access_expr(expr: &str) -> bool {
+/// Returns `true` if the given expression looks like a pure access path (no call segments).
+///
+/// This is a best-effort heuristic used to distinguish:
+/// - existing stream *values* (`streamVar`, `obj.streamField`, `streams[idx]`) which are unsafe to
+///   sample (iterating consumes them), from
+/// - stream-producing expressions (`Arrays.stream(arr)`, `Stream.of(...)`, `supplier.get()`) which
+///   are usually safe to re-evaluate.
+///
+/// When the expression cannot be parsed confidently, this returns `true` to err on the side of
+/// safety.
+pub fn is_pure_access_expr(expr: &str) -> bool {
     match parse_dotted_expr(expr) {
         Ok(dotted) => dotted
             .segments

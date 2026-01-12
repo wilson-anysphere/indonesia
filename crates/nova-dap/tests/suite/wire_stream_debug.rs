@@ -129,6 +129,44 @@ async fn wire_stream_debug_refuses_existing_stream_values() {
 }
 
 #[tokio::test]
+async fn wire_stream_debug_refuses_existing_stream_values_with_parens_in_index() {
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    let _jdwp = client.attach_mock_jdwp().await;
+
+    let thread_id = client.first_thread_id().await;
+    let frame_id = client.first_frame_id(thread_id).await;
+
+    // `streams[(i)]` is still just an access path to an existing stream value (and therefore
+    // unsafe to sample), even though the expression contains parentheses.
+    let resp = client
+        .request(
+            "nova/streamDebug",
+            json!({
+                "expression": "streams[(i)].filter(x -> x > 0).count()",
+                "frameId": frame_id,
+                "allowTerminalOps": true,
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        resp.get("success").and_then(|v| v.as_bool()),
+        Some(false),
+        "unexpected response: {resp}"
+    );
+    let msg = resp.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        msg.contains("refusing to run stream debug") && msg.contains("existing Stream value"),
+        "unexpected message: {msg}"
+    );
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn wire_stream_debug_allows_arrays_stream_expressions() {
     let (client, server_task) = spawn_wire_server();
 
