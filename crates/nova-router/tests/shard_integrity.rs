@@ -80,16 +80,25 @@ async fn connect_worker(
 #[cfg(unix)]
 async fn expect_disconnect_v3(
     conn: nova_remote_rpc::RpcConnection,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     timeout: Duration,
 ) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
+        if *shutdown_rx.borrow() {
+            break;
+        }
         if tokio::time::Instant::now() >= deadline {
             return Err(anyhow!("timed out waiting for router disconnect"));
         }
-        match conn.notify(Notification::Unknown).await {
-            Ok(()) => tokio::time::sleep(Duration::from_millis(20)).await,
-            Err(_) => break,
+        tokio::select! {
+            _ = shutdown_rx.changed() => {}
+            res = conn.notify(Notification::Unknown) => {
+                if res.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
     }
     let _ = conn.shutdown().await;
@@ -160,8 +169,10 @@ async fn update_file_rejects_cross_shard_index_poisoning() -> Result<()> {
             }
             remote_rpc_util::ConnectedWorker::V3(conn) => {
                 let (handled_tx, mut handled_rx) = tokio::sync::watch::channel(false);
+                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 conn.set_request_handler(move |_ctx, req| {
                     let handled_tx = handled_tx.clone();
+                    let shutdown_tx = shutdown_tx.clone();
                     async move {
                         match req {
                             Request::UpdateFile { revision, .. } => {
@@ -173,7 +184,10 @@ async fn update_file_rejects_cross_shard_index_poisoning() -> Result<()> {
                                     symbols: Vec::new(),
                                 }))
                             }
-                            Request::Shutdown => Ok(Response::Shutdown),
+                            Request::Shutdown => {
+                                let _ = shutdown_tx.send(true);
+                                Ok(Response::Shutdown)
+                            }
                             _ => Ok(Response::Ack),
                         }
                     }
@@ -189,7 +203,7 @@ async fn update_file_rejects_cross_shard_index_poisoning() -> Result<()> {
                 .await
                 .context("timed out waiting for router request")?;
 
-                expect_disconnect_v3(conn, Duration::from_secs(1)).await
+                expect_disconnect_v3(conn, shutdown_rx, Duration::from_secs(1)).await
             }
         }
     });
@@ -276,8 +290,10 @@ async fn worker_stats_rejects_mismatched_shard_id() -> Result<()> {
             }
             remote_rpc_util::ConnectedWorker::V3(conn) => {
                 let (handled_tx, mut handled_rx) = tokio::sync::watch::channel(false);
+                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 conn.set_request_handler(move |_ctx, req| {
                     let handled_tx = handled_tx.clone();
+                    let shutdown_tx = shutdown_tx.clone();
                     async move {
                         match req {
                             Request::GetWorkerStats => {
@@ -289,7 +305,10 @@ async fn worker_stats_rejects_mismatched_shard_id() -> Result<()> {
                                     file_count: 0,
                                 }))
                             }
-                            Request::Shutdown => Ok(Response::Shutdown),
+                            Request::Shutdown => {
+                                let _ = shutdown_tx.send(true);
+                                Ok(Response::Shutdown)
+                            }
                             _ => Ok(Response::Ack),
                         }
                     }
@@ -305,7 +324,7 @@ async fn worker_stats_rejects_mismatched_shard_id() -> Result<()> {
                 .await
                 .context("timed out waiting for router request")?;
 
-                expect_disconnect_v3(conn, Duration::from_secs(1)).await
+                expect_disconnect_v3(conn, shutdown_rx, Duration::from_secs(1)).await
             }
         }
     });
