@@ -529,10 +529,28 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ty: Type::Null,
                 is_type_ref: false,
             },
-            HirExpr::This { .. } | HirExpr::Super { .. } => ExprInfo {
-                ty: Type::Unknown,
+            HirExpr::This { .. } => ExprInfo {
+                ty: self.enclosing_class_type(loader).unwrap_or(Type::Unknown),
                 is_type_ref: false,
             },
+            HirExpr::Super { .. } => {
+                let ty = match self.enclosing_class_type(loader) {
+                    Some(Type::Class(class_ty)) => {
+                        if let Some(def) = loader.store.class(class_ty.def) {
+                            def.super_class
+                                .clone()
+                                .unwrap_or_else(|| Type::class(loader.store.well_known().object, vec![]))
+                        } else {
+                            Type::Unknown
+                        }
+                    }
+                    _ => Type::Unknown,
+                };
+                ExprInfo {
+                    ty,
+                    is_type_ref: false,
+                }
+            }
             HirExpr::Name { name, range } => self.infer_name(loader, expr, name.as_str(), *range),
             HirExpr::FieldAccess { receiver, name, .. } => {
                 self.infer_field_access(loader, *receiver, name.as_str(), expr)
@@ -1173,8 +1191,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
     fn enclosing_class_type(&self, loader: &mut ExternalTypeLoader<'_>) -> Option<Type> {
         let mut scope = Some(self.scope_id);
+        let mut steps = 0u32;
         while let Some(id) = scope {
-            let data = self.scopes.scope(id);
+            // Avoid panics and infinite loops if the scope graph is malformed.
+            let data = self.scopes.scope_opt(id)?;
             if let ScopeKind::Class { item } = data.kind() {
                 let ty_name = self.scopes.type_name(*item)?;
                 let class_id = loader.store.intern_class_id(ty_name.as_str());
@@ -1182,6 +1202,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
 
             scope = data.parent();
+            steps = steps.wrapping_add(1);
+            if steps > 256 {
+                break;
+            }
         }
 
         None

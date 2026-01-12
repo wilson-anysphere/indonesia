@@ -124,6 +124,42 @@ class C {
 }
 
 #[test]
+fn type_at_offset_shows_enclosing_class_for_this() {
+    let src = r#"
+class C {
+    void m() {
+        Object o = this;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("this").expect("snippet should contain `this`") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "C");
+}
+
+#[test]
+fn type_at_offset_shows_object_for_super() {
+    let src = r#"
+class C {
+    void m() {
+        super.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("super").expect("snippet should contain `super`") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Object");
+}
+
+#[test]
 fn differential_javac_type_mismatch() {
     use nova_test_utils::javac::{javac_available, run_javac_snippet};
 

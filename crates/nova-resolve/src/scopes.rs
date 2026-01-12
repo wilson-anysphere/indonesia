@@ -25,6 +25,15 @@ impl ScopeGraph {
         &self.scopes[id]
     }
 
+    /// Best-effort lookup for a scope by id.
+    ///
+    /// This is intended for IDE features and incremental queries that should not panic if a
+    /// stale/invalid `ScopeId` slips through due to parse recovery or mismatched memoization.
+    #[must_use]
+    pub fn scope_opt(&self, id: ScopeId) -> Option<&ScopeData> {
+        self.scopes.get(id)
+    }
+
     #[must_use]
     pub fn type_name(&self, item: ItemId) -> Option<&TypeName> {
         self.type_names.get(&item)
