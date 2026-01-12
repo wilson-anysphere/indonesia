@@ -169,6 +169,43 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_actions_still_offered_when_default_name_field_shadowing_conflicts() {
+    let fixture = r#"
+class C {
+    int extracted = 0;
+    void m() {
+        int x = /*start*/1 + 2/*end*/;
+        System.out.println(extracted);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert_eq!(actions.len(), 2);
+
+    for action in actions {
+        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("expected code action");
+        };
+
+        let data = action.data.expect("extract variable data");
+        let placeholder = data.get("name").and_then(|v| v.as_str()).expect("name");
+        assert_ne!(
+            placeholder,
+            "extracted",
+            "expected Extract Variable to probe a non-conflicting placeholder name, got: {data:?}"
+        );
+    }
+}
+
+#[test]
 fn extract_variable_code_actions_only_offer_var_when_explicit_type_inference_fails() {
     // `x` is a name expression. With only `TextDatabase` available, the parser cannot infer an
     // explicit type for it, but `var` extraction is still applicable.
