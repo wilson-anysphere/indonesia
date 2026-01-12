@@ -84,6 +84,9 @@ Under the hood, `nova-build`:
 
 Implementation: `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot*` helpers).
 
+Schema definition (shared by writer + reader): `crates/nova-build-model/src/gradle_snapshot.rs`
+(`GradleSnapshotFile`, `GRADLE_SNAPSHOT_SCHEMA_VERSION`, `GRADLE_SNAPSHOT_REL_PATH`).
+
 The snapshot is written **atomically** (write to a unique temp file in the same directory, then
 rename over the destination) to avoid leaving partially-written JSON on disk.
 
@@ -109,8 +112,9 @@ Both sides import these from `nova_build_model`:
 - writer: `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot*`)
 - reader: `crates/nova-project/src/gradle.rs` (`load_gradle_snapshot`)
 
-When the schema changes, bump **both** constants in the same change and update the (de)serializer
-structs on both sides.
+When the schema changes, bump the constant in `nova-build-model` and update the shared serde structs
+in the same module. Both `nova-build` (writer) and `nova-project` (reader) consume the shared
+definition.
 
 Compatibility policy is intentionally simple:
 
@@ -345,7 +349,7 @@ Gradle execution is time-bounded by whichever `CommandRunner` is in use:
 
 `nova-project` will ignore `.nova/queries/gradle.json` when:
 
-- `schemaVersion` doesn’t match `GRADLE_SNAPSHOT_SCHEMA_VERSION`, or
+- `schemaVersion` doesn’t match `nova_build_model::GRADLE_SNAPSHOT_SCHEMA_VERSION`, or
 - `buildFingerprint` doesn’t match the current fingerprint of Gradle build inputs, or
 - the JSON can’t be parsed.
 
