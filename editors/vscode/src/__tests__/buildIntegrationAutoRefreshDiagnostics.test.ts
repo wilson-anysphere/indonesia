@@ -7,9 +7,14 @@ import * as ts from 'typescript';
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUILD_INTEGRATION_PATH = path.resolve(TEST_DIR, '..', 'buildIntegration.ts');
 
+let buildIntegrationSourceFile: Promise<ts.SourceFile> | undefined;
+
 async function loadBuildIntegrationSourceFile(): Promise<ts.SourceFile> {
-  const contents = await fs.readFile(BUILD_INTEGRATION_PATH, 'utf8');
-  return ts.createSourceFile(BUILD_INTEGRATION_PATH, contents, ts.ScriptTarget.ESNext, true);
+  buildIntegrationSourceFile ??= (async () => {
+    const contents = await fs.readFile(BUILD_INTEGRATION_PATH, 'utf8');
+    return ts.createSourceFile(BUILD_INTEGRATION_PATH, contents, ts.ScriptTarget.ESNext, true);
+  })();
+  return await buildIntegrationSourceFile;
 }
 
 function unwrapExpression(expr: ts.Expression): ts.Expression {
