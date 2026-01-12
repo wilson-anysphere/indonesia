@@ -553,7 +553,8 @@ impl EffectivePom {
                 .or_else(|| {
                     dependency_management
                         .get(&(dep.group_id.clone(), dep.artifact_id.clone()))
-                        .and_then(|managed| managed.version.clone())
+                        .and_then(|managed| managed.version.as_deref())
+                        .map(|v| resolve_placeholders(v, &properties))
                 });
             dependencies.push(dep);
         }
@@ -818,14 +819,43 @@ fn resolve_placeholders(text: &str, props: &BTreeMap<String, String>) -> String 
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"\$\{([^}]+)\}").expect("valid regex"));
 
-    re.replace_all(text, |caps: &regex::Captures<'_>| {
-        let key = &caps[1];
-        props
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| caps[0].to_string())
-    })
-    .into_owned()
+    // Maven properties can be nested, e.g. `${dep.version}` -> `${revision}` -> `1.2.3`.
+    // Apply placeholder substitution repeatedly until the string stabilizes, or we hit a
+    // small fixed iteration limit to avoid infinite loops/cycles.
+    const MAX_ITERS: usize = 32;
+
+    let mut current = text.to_string();
+    let mut seen = Vec::new();
+
+    for _ in 0..MAX_ITERS {
+        if !current.contains("${") {
+            break;
+        }
+
+        let next = re
+            .replace_all(&current, |caps: &regex::Captures<'_>| {
+                let key = &caps[1];
+                props
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| caps[0].to_string())
+            })
+            .into_owned();
+
+        if next == current {
+            break;
+        }
+
+        // Break on cycles to avoid wasting iterations in oscillating substitutions.
+        if seen.iter().any(|prev| prev == &next) {
+            break;
+        }
+
+        seen.push(current);
+        current = next;
+    }
+
+    current
 }
 
 fn push_source_root(

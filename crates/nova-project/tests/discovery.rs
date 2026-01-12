@@ -116,6 +116,33 @@ fn loads_maven_nested_multi_module_workspace() {
 }
 
 #[test]
+fn resolves_maven_nested_properties() {
+    let root = testdata_path("maven-nested-properties");
+    let config = load_project(&root).expect("load maven project");
+
+    let dep = config
+        .dependencies
+        .iter()
+        .find(|d| d.group_id == "com.example" && d.artifact_id == "managed-dep")
+        .expect("expected managed dependency to be discovered");
+    assert_eq!(dep.version, Some("1.2.3".to_string()));
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+
+    let jar_path = jar_entries
+        .iter()
+        .find(|p| p.contains("com/example/managed-dep"))
+        .expect("expected managed-dep to have a synthesized jar path");
+    assert!(jar_path.contains("/1.2.3/"), "jar path: {jar_path}");
+    assert!(!jar_path.contains("${"), "jar path: {jar_path}");
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace() {
     let root = testdata_path("gradle-multi");
     let config = load_project(&root).expect("load gradle project");
