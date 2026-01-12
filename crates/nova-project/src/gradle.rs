@@ -117,7 +117,7 @@ fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
     if path
         .extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod"))
     {
         return ClasspathEntryKind::Jar;
     }
@@ -459,7 +459,9 @@ pub(crate) fn load_gradle_project(
             kind: if entry
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                })
             {
                 ClasspathEntryKind::Jar
             } else {
@@ -773,7 +775,9 @@ pub(crate) fn load_gradle_workspace_model(
                 kind: if entry
                     .extension()
                     .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                    .is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                    })
                 {
                     ClasspathEntryKind::Jar
                 } else {
@@ -846,7 +850,9 @@ pub(crate) fn load_gradle_workspace_model(
             kind: if entry
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                })
             {
                 ClasspathEntryKind::Jar
             } else {
@@ -2135,7 +2141,9 @@ fn parse_gradle_local_classpath_entries_from_text(
                 if path
                     .extension()
                     .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                    .is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                    })
                 {
                     out.push(ClasspathEntry {
                         kind: ClasspathEntryKind::Jar,
@@ -2176,7 +2184,7 @@ fn parse_gradle_local_classpath_entries_from_text(
             if path
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod"))
             {
                 out.push(ClasspathEntry {
                     kind: ClasspathEntryKind::Jar,

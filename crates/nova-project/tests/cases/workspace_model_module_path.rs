@@ -84,6 +84,43 @@ fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_wor
 }
 
 #[test]
+fn simple_workspace_model_puts_missing_jmod_overrides_on_module_path_for_jpms_workspaces() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    std::fs::create_dir_all(root.join("src/main/java")).expect("mkdir src");
+    std::fs::write(
+        root.join("src/main/java/module-info.java"),
+        "module mod.a { requires mod.b; }",
+    )
+    .expect("write module-info.java");
+
+    // `.jmod` entries should also be treated as archive dependencies for JPMS-enabled workspaces.
+    // Use an uppercase extension to ensure kind detection is case-insensitive.
+    let jmod_path = root.join("deps/mod-b.JMOD");
+
+    let mut options = LoadOptions::default();
+    options.classpath_overrides.push(jmod_path.clone());
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Simple);
+    assert_eq!(model.modules.len(), 1);
+    let module = &model.modules[0];
+
+    assert!(
+        module
+            .module_path
+            .iter()
+            .any(|e| e.path == jmod_path && e.kind == ClasspathEntryKind::Jar),
+        "missing jmod override should be placed on module-path when JPMS is enabled"
+    );
+    assert!(
+        !module.classpath.iter().any(|e| e.path == jmod_path),
+        "missing jmod override should not remain on classpath when JPMS is enabled"
+    );
+}
+
+#[test]
 fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().join("workspace");
