@@ -5783,13 +5783,16 @@ fn collect_switch_contexts(
                 for dim in dim_exprs {
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
                 }
-                if let Some(init) = initializer {
-                    walk_expr(body, *init, owner, scope_result, resolver, item_trees, out);
-                }
-            }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
+                if let Some(initializer) = initializer {
+                    walk_expr(
+                        body,
+                        *initializer,
+                        owner,
+                        scope_result,
+                        resolver,
+                        item_trees,
+                        out,
+                    );
                 }
             }
             hir::Expr::ArrayInitializer { items, .. } => {
@@ -6899,32 +6902,6 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
-        Stmt::Assert(assert_stmt) => {
-            record_lightweight_expr(
-                file,
-                text,
-                &assert_stmt.condition,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            if let Some(message) = &assert_stmt.message {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    message,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Stmt::Return(ret) => {
             if let Some(expr) = &ret.expr {
                 record_lightweight_expr(
@@ -7316,7 +7293,7 @@ fn record_lightweight_expr(
                     spans,
                 );
             }
-            if let Some(initializer) = &array.initializer {
+            if let Some(initializer) = array.initializer.as_deref() {
                 record_lightweight_expr(
                     file,
                     text,
@@ -7330,8 +7307,8 @@ fn record_lightweight_expr(
                 );
             }
         }
-        Expr::ArrayInitializer(array) => {
-            for item in &array.items {
+        Expr::ArrayInitializer(initializer) => {
+            for item in &initializer.items {
                 record_lightweight_expr(
                     file,
                     text,
