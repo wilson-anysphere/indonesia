@@ -654,7 +654,7 @@ pub fn refactoring_code_actions(
     if let Some(expr_range) = db.expression_range_at(file, range) {
         actions.push(CodeAction {
             title: "Extract variable…".into(),
-            kind: CodeActionKind::RefactorExtract,
+            kind: CodeActionKind::REFACTOR_EXTRACT,
             data: Some(json!({
                 "kind": "extractVariable",
                 "exprRange": expr_range,
@@ -668,7 +668,7 @@ pub fn refactoring_code_actions(
         // Extract method available for statements
         actions.push(CodeAction {
             title: "Extract method".into(),
-            kind: CodeActionKind::RefactorExtract,
+            kind: CodeActionKind::REFACTOR_EXTRACT,
             command: Some(command("extract_method", [selection.into()])),
         });
     }
@@ -677,17 +677,17 @@ pub fn refactoring_code_actions(
         // Rename available for any symbol
         actions.push(CodeAction {
             title: "Rename".into(),
-            kind: CodeActionKind::RefactorRename,
+            kind: CodeActionKind::REFACTOR_RENAME,
             command: Some(command("rename", [symbol.into()])),
         });
-        
+         
         // Inline Variable is surfaced as two actions:
         // - inline at cursor (requires a usage selection)
         // - inline all usages
         if let Some(usage_range) = db.local_usage_range_at(file, range.start()) {
             actions.push(CodeAction {
                 title: "Inline variable".into(),
-                kind: CodeActionKind::RefactorInline,
+                kind: CodeActionKind::REFACTOR_INLINE,
                 data: Some(json!({
                     "kind": "inlineVariable",
                     "symbol": symbol,
@@ -698,7 +698,7 @@ pub fn refactoring_code_actions(
             });
             actions.push(CodeAction {
                 title: "Inline variable (all usages)".into(),
-                kind: CodeActionKind::RefactorInline,
+                kind: CodeActionKind::REFACTOR_INLINE,
                 data: Some(json!({
                     "kind": "inlineVariable",
                     "symbol": symbol,
