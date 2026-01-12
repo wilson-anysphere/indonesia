@@ -8,6 +8,8 @@ use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::{declaration, implementation, type_definition};
 use tempfile::TempDir;
 
+use crate::text_fixture::offset_to_position;
+
 struct FileIdFixture {
     _temp_dir: TempDir,
     db: InMemoryFileStore,
@@ -647,37 +649,16 @@ class C implements I {
     let got_third = implementation(&fixture.db, file, pos);
     assert_eq!(got_third.len(), 1);
     assert_eq!(got_third[0].uri, uri_for_path(&c_path));
-    assert_eq!(got_third[0].range.start, offset_to_position(&new_text, new_offset));
+    assert_eq!(
+        got_third[0].range.start,
+        offset_to_position(&new_text, new_offset)
+    );
 }
 
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");
     Uri::from_str(&uri).expect("URI should parse")
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col_utf16,
-    }
 }
 
 fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {

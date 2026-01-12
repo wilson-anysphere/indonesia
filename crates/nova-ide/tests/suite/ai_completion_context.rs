@@ -2,12 +2,13 @@ use nova_db::InMemoryFileStore;
 use nova_ide::multi_token_completion_context;
 use std::path::PathBuf;
 
+use crate::text_fixture::{offset_to_position, CARET};
+
 fn fixture(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
-    let caret = "<|>";
     let caret_offset = text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let text = text_with_caret.replace(caret, "");
+    let text = text_with_caret.replace(CARET, "");
     let pos = offset_to_position(&text, caret_offset);
 
     let mut db = InMemoryFileStore::new();
@@ -15,14 +16,6 @@ fn fixture(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, lsp_ty
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, text);
     (db, file, pos)
-}
-
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let offset = offset.min(text.len());
-    let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
-    let index = nova_core::LineIndex::new(text);
-    let pos = index.position(text, nova_core::TextSize::from(offset_u32));
-    lsp_types::Position::new(pos.line, pos.character)
 }
 
 #[test]

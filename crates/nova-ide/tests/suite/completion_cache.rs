@@ -4,22 +4,8 @@ use std::sync::Arc;
 use nova_db::InMemoryFileStore;
 use nova_ide::{completion_cache, completions};
 
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
-}
+mod text_fixture;
+use text_fixture::{offset_to_position, CARET};
 
 #[test]
 fn completion_env_is_reused_across_completion_requests() {
@@ -38,19 +24,18 @@ public class FooBar { }
         .to_string(),
     );
 
-    let caret = "<|>";
     let file_b_with_caret = r#"
-package p;
-class Main {
-  void m() {
-    Fo<|>
-  }
-}
-"#;
+ package p;
+ class Main {
+   void m() {
+     Fo<|>
+   }
+ }
+ "#;
     let caret_offset = file_b_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain caret marker");
-    let file_b_text = file_b_with_caret.replace(caret, "");
+    let file_b_text = file_b_with_caret.replace(CARET, "");
     let pos = offset_to_position(&file_b_text, caret_offset);
 
     let file_b = db.file_id_for_path(&file_b_path);
@@ -91,6 +76,9 @@ class Main {
 
     let items3 = completions(&db, file_b, pos);
     let labels3: Vec<_> = items3.iter().map(|i| i.label.clone()).collect();
-    assert_eq!(labels1, labels3, "expected deterministic completions after rebuild");
+    assert_eq!(
+        labels1, labels3,
+        "expected deterministic completions after rebuild"
+    );
 }
 

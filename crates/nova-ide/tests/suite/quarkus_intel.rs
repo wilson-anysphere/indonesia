@@ -4,22 +4,7 @@ use nova_ide::{completions, file_diagnostics};
 use nova_types::Severity;
 use tempfile::TempDir;
 
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
-}
+use crate::text_fixture::{offset_to_position, CARET};
 
 fn write_quarkus_pom(root: &std::path::Path) {
     std::fs::create_dir_all(root).unwrap();
@@ -97,11 +82,10 @@ fn quarkus_config_property_completion_uses_application_properties() {
         }
     "#;
 
-    let caret = "<|>";
     let caret_offset = java_text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let java_text = java_text_with_caret.replace(caret, "");
+    let java_text = java_text_with_caret.replace(CARET, "");
     let pos = offset_to_position(&java_text, caret_offset);
 
     let mut db = InMemoryFileStore::new();

@@ -8,12 +8,13 @@ use nova_ide::{
 use nova_types::Severity;
 use std::path::PathBuf;
 
+use crate::text_fixture::{offset_to_position, CARET};
+
 fn fixture(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
-    let caret = "<|>";
     let caret_offset = text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let text = text_with_caret.replace(caret, "");
+    let text = text_with_caret.replace(CARET, "");
     let pos = offset_to_position(&text, caret_offset);
 
     let mut db = InMemoryFileStore::new();
@@ -36,11 +37,10 @@ fn fixture_multi(
     primary_text_with_caret: &str,
     extra_files: Vec<(PathBuf, String)>,
 ) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
-    let caret = "<|>";
     let caret_offset = primary_text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let primary_text = primary_text_with_caret.replace(caret, "");
+    let primary_text = primary_text_with_caret.replace(CARET, "");
     let pos = offset_to_position(&primary_text, caret_offset);
 
     let mut db = InMemoryFileStore::new();
@@ -54,31 +54,13 @@ fn fixture_multi(
     (db, primary_file, pos)
 }
 
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
-}
-
 #[test]
 fn completion_includes_string_members() {
     let (db, file, pos) = fixture(
         r#"
 class A {
   void m() {
-    String s = "";
-    s.<|>
+    String s = "🙂🙂"; s.<|>
   }
 }
 "#,
@@ -653,8 +635,11 @@ fn annotation_attribute_completion_suggests_elements() {
     let anno_text = r#"package p; public @interface MyAnno { String value(); int count(); }"#;
     let java_text = r#"package p; @MyAnno(co<|>) class Main {}"#;
 
-    let (db, file, pos) =
-        fixture_multi(java_path, java_text, vec![(anno_path, anno_text.to_string())]);
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
 
     let items = completions(&db, file, pos);
     let count = items
@@ -676,8 +661,11 @@ fn annotation_attribute_completion_filters_already_present_elements() {
     let anno_text = r#"package p; public @interface MyAnno { String value(); int count(); }"#;
     let java_text = r#"package p; @MyAnno(count = 1, <|>) class Main {}"#;
 
-    let (db, file, pos) =
-        fixture_multi(java_path, java_text, vec![(anno_path, anno_text.to_string())]);
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
 
     let items = completions(&db, file, pos);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
@@ -835,8 +823,7 @@ fn completion_in_package_declaration_uses_workspace_packages_and_replaces_segmen
     let file_a_text = "package com.foo; class A{}".to_string();
     let file_b_text = "package com.f<|>; class B{}";
 
-    let (db, file, pos) =
-        fixture_multi(file_b_path, file_b_text, vec![(file_a_path, file_a_text)]);
+    let (db, file, pos) = fixture_multi(file_b_path, file_b_text, vec![(file_a_path, file_a_text)]);
 
     let without_caret = file_b_text.replace("<|>", "");
     let f_start = without_caret
@@ -1122,10 +1109,7 @@ class A {}
     let (db, file, pos) = fixture(text_with_caret);
 
     let text = text_with_caret.replace("<|>", "");
-    let member_start = text
-        .find("Math.ma")
-        .expect("expected Math.ma in fixture")
-        + "Math.".len();
+    let member_start = text.find("Math.ma").expect("expected Math.ma in fixture") + "Math.".len();
 
     let items = completions(&db, file, pos);
     let item = items

@@ -4,43 +4,20 @@ use lsp_types::{HoverContents, Position, Range};
 use nova_db::InMemoryFileStore;
 use nova_ide::{completions, find_references, hover};
 
+use crate::text_fixture::{offset_to_position, CARET};
+
 fn fixture_utf16(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, Position) {
-    let caret = "<|>";
     let caret_offset = text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let text = text_with_caret.replace(caret, "");
-    let pos = offset_to_position_utf16(&text, caret_offset);
+    let text = text_with_caret.replace(CARET, "");
+    let pos = offset_to_position(&text, caret_offset);
 
     let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, text);
     (db, file, pos)
-}
-
-fn offset_to_position_utf16(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col_utf16,
-    }
 }
 
 #[test]
@@ -108,8 +85,8 @@ class A {
     let expected_ranges: Vec<Range> = x_offsets
         .iter()
         .map(|offset| Range {
-            start: offset_to_position_utf16(&text, *offset),
-            end: offset_to_position_utf16(&text, *offset + 1),
+            start: offset_to_position(&text, *offset),
+            end: offset_to_position(&text, *offset + 1),
         })
         .collect();
 

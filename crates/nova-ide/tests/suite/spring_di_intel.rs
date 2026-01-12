@@ -5,32 +5,16 @@ use nova_framework_spring::{SPRING_AMBIGUOUS_BEAN, SPRING_CIRCULAR_DEP, SPRING_N
 use nova_ide::{completions, file_diagnostics, find_references, goto_definition};
 use nova_types::Severity;
 
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
-}
+use crate::text_fixture::{offset_to_position, CARET};
 
 fn fixture_multi(
     primary_path: PathBuf,
     primary_text_with_caret: &str,
     extra_files: Vec<(PathBuf, String)>,
 ) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
-    let caret = "<|>";
-    let (primary_text, pos) = match primary_text_with_caret.find(caret) {
+    let (primary_text, pos) = match primary_text_with_caret.find(CARET) {
         Some(caret_offset) => {
-            let primary_text = primary_text_with_caret.replace(caret, "");
+            let primary_text = primary_text_with_caret.replace(CARET, "");
             let pos = offset_to_position(&primary_text, caret_offset);
             (primary_text, pos)
         }

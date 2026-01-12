@@ -7,6 +7,8 @@ use nova_ide::{completions, file_diagnostics};
 use tempfile::tempdir;
 use zip::write::FileOptions;
 
+use crate::text_fixture::{offset_to_position, CARET};
+
 fn maven_repo_root() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -40,33 +42,15 @@ fn write_metadata_jar(group: &str, artifact: &str, version: &str, metadata_json:
     jar_path
 }
 
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
-}
-
 fn fixture(
     path: PathBuf,
     text_with_caret: &str,
     extra_files: Vec<(PathBuf, String)>,
 ) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
-    let caret = "<|>";
     let caret_offset = text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let text = text_with_caret.replace(caret, "");
+    let text = text_with_caret.replace(CARET, "");
     let pos = offset_to_position(&text, caret_offset);
 
     let mut db = InMemoryFileStore::new();
