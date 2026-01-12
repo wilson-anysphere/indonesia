@@ -2279,10 +2279,22 @@ fn rewrite_multi_declarator_local_variable_declaration(
     let target_decl_range = syntax_range(target_decl.syntax());
     let last_decl_range = syntax_range(last_decl.syntax());
 
-    // The declarator node may include separator whitespace after the comma. When we split the
-    // declaration into a new statement we want the declarator to start at the identifier/pattern.
-    let after_start = skip_leading_whitespace(source, target_decl_range.start, last_decl_range.end);
-    if expr_range.start < after_start || expr_range.end > last_decl_range.end {
+    // The declarator node range can include separator whitespace/comments after the comma. Use the
+    // identifier/pattern token range as the true start of the declarator so we never produce
+    // invalid output like:
+    //   int // comment
+    //       b = tmp;
+    let target_start = target_decl
+        .name_token()
+        .map(|tok| syntax_token_range(&tok).start)
+        .or_else(|| {
+            target_decl
+                .unnamed_pattern()
+                .map(|pat| syntax_range(pat.syntax()).start)
+        })
+        .unwrap_or(target_decl_range.start);
+
+    if expr_range.start < target_start || expr_range.end > last_decl_range.end {
         return None;
     }
 
@@ -2292,11 +2304,19 @@ fn rewrite_multi_declarator_local_variable_declaration(
     let before_text = source
         .get(first_decl_range.start..prev_decl_range.end)?
         .to_string();
-    let after_text = source.get(after_start..last_decl_range.end)?.to_string();
+    let between_text = source.get(prev_decl_range.end..target_start)?.to_string();
+    let between_trivia = between_text
+        .split_once(',')
+        .map(|(_, after)| after)
+        .unwrap_or(&between_text)
+        .trim()
+        .to_string();
+
+    let after_text = source.get(target_start..last_decl_range.end)?.to_string();
     let stmt_suffix = source.get(last_decl_range.end..stmt_range.end)?.to_string();
 
-    let rel_start = expr_range.start - after_start;
-    let rel_end = expr_range.end - after_start;
+    let rel_start = expr_range.start - target_start;
+    let rel_end = expr_range.end - target_start;
     let after_replaced = format!(
         "{}{}{}",
         &after_text[..rel_start],
@@ -2308,6 +2328,10 @@ fn rewrite_multi_declarator_local_variable_declaration(
     replacement.push_str(&prefix_text);
     replacement.push_str(&before_text);
     replacement.push(';');
+    if !between_trivia.is_empty() {
+        replacement.push(' ');
+        replacement.push_str(&between_trivia);
+    }
     replacement.push_str(newline);
     replacement.push_str(indent);
     replacement.push_str(extracted_ty);
@@ -2323,19 +2347,6 @@ fn rewrite_multi_declarator_local_variable_declaration(
     replacement.push_str(&stmt_suffix);
 
     Some(replacement)
-}
-
-fn skip_leading_whitespace(text: &str, mut start: usize, end: usize) -> usize {
-    let bytes = text.as_bytes();
-    while start < end
-        && bytes
-            .get(start)
-            .copied()
-            .is_some_and(|b| b.is_ascii_whitespace())
-    {
-        start += 1;
-    }
-    start
 }
 
 fn normalize_expr_text(text: &str) -> String {

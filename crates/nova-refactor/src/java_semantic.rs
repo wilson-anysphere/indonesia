@@ -4780,30 +4780,6 @@ fn record_lightweight_expr(
 ) {
     use java_syntax::ast::Expr;
     match expr {
-        Expr::Cast(cast) => {
-            record_type_names_in_range(
-                file,
-                text,
-                TextRange::new(cast.ty.range.start, cast.ty.range.end),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_expr(
-                file,
-                text,
-                &cast.expr,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
         Expr::New(new_expr) => {
             record_type_names_in_range(
                 file,
@@ -4902,6 +4878,30 @@ fn record_lightweight_expr(
             references,
             spans,
         ),
+        Expr::Cast(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &expr.expr,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_type_names_in_range(
+                file,
+                text,
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::Binary(expr) => {
             record_lightweight_expr(
                 file,
