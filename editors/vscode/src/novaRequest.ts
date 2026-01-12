@@ -35,8 +35,11 @@ export function isRequestCancelledError(err: unknown): boolean {
 }
 
 /**
- * Calls a `sendRequest`-shaped client, forwarding an optional cancellation token as the third
- * argument (matching vscode-languageclient's `sendRequest(method, params, token)` overload).
+ * Calls a `sendRequest`-shaped client, forwarding an optional cancellation token.
+ *
+ * When `params` is omitted, the token is passed using the `sendRequest(method, token)` overload.
+ * When `params` is present, the token is passed as the third argument, matching
+ * `sendRequest(method, params, token)`.
  *
  * This helper intentionally has **no** top-level dependency on the `vscode` module so it can be
  * unit tested in plain Node.
@@ -51,8 +54,7 @@ export async function sendRequestWithOptionalToken<R>(
     if (typeof token === 'undefined') {
       return await client.sendRequest<R>(method);
     }
-    // Pass `undefined` explicitly to avoid treating the token as the `params` argument.
-    return await client.sendRequest<R>(method, undefined, token);
+    return await client.sendRequest<R>(method, token);
   }
 
   if (typeof token === 'undefined') {

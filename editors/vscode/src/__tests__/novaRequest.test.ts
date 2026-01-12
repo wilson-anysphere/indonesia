@@ -18,7 +18,7 @@ describe('sendRequestWithOptionalToken', () => {
 
     await sendRequestWithOptionalToken({ sendRequest }, 'nova/test/discover', undefined, token);
 
-    expect(sendRequest).toHaveBeenCalledWith('nova/test/discover', undefined, token);
+    expect(sendRequest).toHaveBeenCalledWith('nova/test/discover', token);
   });
 
   it('omits the token argument when not provided', async () => {
