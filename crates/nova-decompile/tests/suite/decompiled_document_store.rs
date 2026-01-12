@@ -8,7 +8,6 @@ const FOO_CLASS: &[u8] = include_bytes!("../fixtures/com/example/Foo.class");
 const FOO_INTERNAL_NAME: &str = "com/example/Foo";
 
 const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
-
 #[test]
 fn store_and_load_round_trip_for_canonical_uri() {
     let uri = decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME);

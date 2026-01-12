@@ -148,20 +148,12 @@ fn run() -> anyhow::Result<ExitCode> {
             })
         }
         "check-test-layout" => {
-            let opts = parse_check_test_layout_args(args)?;
-            let report = nova_devtools::check_test_layout::check(
-                opts.manifest_path.as_deref(),
-                opts.metadata_path.as_deref(),
-                &opts.allowlist,
-            )
-            .context("check-test-layout failed")?;
+            let opts = parse_common_workspace_args(args, "check-test-layout")?;
+            let report =
+                nova_devtools::check_test_layout::check(opts.manifest_path.as_deref(), opts.metadata_path.as_deref())
+                    .context("check-test-layout failed")?;
 
-            emit_report(
-                "check-test-layout",
-                opts.json,
-                report.ok,
-                report.diagnostics,
-            )?;
+            emit_report("check-test-layout", opts.json, report.ok, report.diagnostics)?;
             Ok(if report.ok {
                 ExitCode::SUCCESS
             } else {
@@ -215,7 +207,6 @@ fn run() -> anyhow::Result<ExitCode> {
             let test_layout = nova_devtools::check_test_layout::check(
                 opts.manifest_path.as_deref(),
                 opts.metadata_path.as_deref(),
-                std::path::Path::new("test-layout-allowlist.txt"),
             )
             .context("check-test-layout failed")?;
             let test_layout_ok = test_layout.ok;
@@ -286,6 +277,13 @@ struct CommonLayerArgs {
     json: bool,
 }
 
+#[derive(Debug)]
+struct CommonWorkspaceArgs {
+    manifest_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    json: bool,
+}
+
 fn parse_common_layer_args<I>(mut args: I, cmd: &str) -> anyhow::Result<CommonLayerArgs>
 where
     I: Iterator<Item = String>,
@@ -330,6 +328,48 @@ where
 
     Ok(CommonLayerArgs {
         config,
+        manifest_path,
+        metadata_path,
+        json,
+    })
+}
+
+fn parse_common_workspace_args<I>(mut args: I, cmd: &str) -> anyhow::Result<CommonWorkspaceArgs>
+where
+    I: Iterator<Item = String>,
+{
+    let mut manifest_path = None;
+    let mut metadata_path = None;
+    let mut json = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--manifest-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
+                manifest_path = Some(PathBuf::from(value));
+            }
+            "--metadata-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
+                metadata_path = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "-h" | "--help" => {
+                print_command_help(cmd);
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown argument {other:?}\n\nRun `nova-devtools {cmd} --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(CommonWorkspaceArgs {
         manifest_path,
         metadata_path,
         json,
@@ -503,64 +543,6 @@ where
 }
 
 #[derive(Debug)]
-struct CheckTestLayoutArgs {
-    manifest_path: Option<PathBuf>,
-    metadata_path: Option<PathBuf>,
-    allowlist: PathBuf,
-    json: bool,
-}
-
-fn parse_check_test_layout_args<I>(mut args: I) -> anyhow::Result<CheckTestLayoutArgs>
-where
-    I: Iterator<Item = String>,
-{
-    let mut manifest_path = None;
-    let mut metadata_path = None;
-    let mut allowlist = PathBuf::from("test-layout-allowlist.txt");
-    let mut json = false;
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--manifest-path" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
-                manifest_path = Some(PathBuf::from(value));
-            }
-            "--metadata-path" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
-                metadata_path = Some(PathBuf::from(value));
-            }
-            "--allowlist" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("--allowlist requires a value"))?;
-                allowlist = PathBuf::from(value);
-            }
-            "--json" => json = true,
-            "-h" | "--help" => {
-                print_command_help("check-test-layout");
-                std::process::exit(0);
-            }
-            other => {
-                return Err(anyhow!(
-                    "unknown argument {other:?}\n\nRun `nova-devtools check-test-layout --help` for usage."
-                ));
-            }
-        }
-    }
-
-    Ok(CheckTestLayoutArgs {
-        manifest_path,
-        metadata_path,
-        allowlist,
-        json,
-    })
-}
-
-#[derive(Debug)]
 struct RepoInvariantsArgs {
     config: PathBuf,
     manifest_path: Option<PathBuf>,
@@ -649,7 +631,7 @@ COMMANDS:
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
   check-architecture-map Validate docs/architecture-map.md coverage for workspace crates
   check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
-  check-test-layout      Validate integration test layout (warn at 2 root `tests/*.rs`, error at >2 unless allowlisted)
+  check-test-layout      Validate integration test layout (avoid multiple root `tests/*.rs` binaries per crate)
   check-repo-invariants  Run all nova-devtools repo invariants (deps, layers, architecture-map --strict, protocol-extensions, test-layout)
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
@@ -730,6 +712,9 @@ OPTIONS:
                 "\
 USAGE:
   nova-devtools check-test-layout [--manifest-path <path>] [--metadata-path <path>] [--json]
+
+This enforces the AGENTS.md integration test layout rule: each workspace crate may have at most
+one `tests/*.rs` file (each file becomes a separate integration-test binary).
 
 OPTIONS:
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against

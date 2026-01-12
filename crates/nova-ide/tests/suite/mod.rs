@@ -48,6 +48,7 @@ mod nav_resolve_inheritance;
 mod nav_resolve_method_references;
 mod organize_imports_code_action;
 mod quarkus_intel;
+mod quickfix_unresolved_reference;
 mod quick_fixes;
 mod salsa_cross_file_imports;
 mod salsa_host_inputs_preserved;

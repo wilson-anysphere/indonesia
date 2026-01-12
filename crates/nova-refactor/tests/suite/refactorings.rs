@@ -8,8 +8,6 @@ use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
-mod suite;
-
 fn strip_selection_markers(src: &str) -> (String, WorkspaceTextRange) {
     let start_marker = "/*select*/";
     let end_marker = "/*end*/";

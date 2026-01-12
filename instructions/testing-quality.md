@@ -123,7 +123,7 @@ fn parse_method_declaration() {
 BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 #
 # Refactor before/after fixtures (`nova-refactor`): writes `crates/nova-refactor/tests/fixtures/**/after/**`
-BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test refactorings move_static_method_updates_call_sites
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test tests move_static_method_updates_call_sites
 #
 # Formatter snapshots (`nova-format`): writes `crates/nova-format/tests/snapshots/*.snap`
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
@@ -437,18 +437,18 @@ bash scripts/cargo_agent.sh test --locked -p nova-core --lib
 # Specific test
 bash scripts/cargo_agent.sh test --locked -p nova-types --lib -- test_name
 
-# With output
-bash scripts/cargo_agent.sh test --locked -p nova-syntax --lib -- --nocapture
-
-# Update snapshots
-BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test refactorings move_static_method_updates_call_sites
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
-
-# Update `nova-testing` schema fixtures
-UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test --locked -p nova-testing --test integration suite::schema_json
-```
+ # With output
+ bash scripts/cargo_agent.sh test --locked -p nova-syntax --lib -- --nocapture
+ 
+ # Update snapshots
+ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test tests move_static_method_updates_call_sites
+ INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+ INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
+ 
+ # Update `nova-testing` schema fixtures
+ UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test --locked -p nova-testing --test integration suite::schema_json
+ ```
 
 **NEVER run:**
 ```bash

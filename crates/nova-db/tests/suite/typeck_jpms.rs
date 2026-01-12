@@ -61,6 +61,82 @@ fn set_file(
 }
 
 #[test]
+fn typeck_reports_unresolved_type_for_unexported_workspace_module_package() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+
+    let mod_a_root = root.join("mod-a");
+    let mod_b_root = root.join("mod-b");
+
+    let src_mod_a = "module a { requires b; }";
+    let src_mod_b = "module b { exports b.api; }";
+
+    let info_a = lower_module_info_source_strict(src_mod_a).unwrap();
+    let info_b = lower_module_info_source_strict(src_mod_b).unwrap();
+
+    let mut cfg = base_project_config(root.clone());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: info_a,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: info_b,
+        },
+    ];
+
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    db.set_project_config(project, Arc::new(cfg));
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file_a = FileId::from_raw(1);
+    let file_b = FileId::from_raw(2);
+
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "mod-a/a/App.java",
+        r#"
+package a;
+class App {
+  void m() {
+    b.internal.Hidden h;
+  }
+}
+"#,
+    );
+
+    set_file(
+        &mut db,
+        project,
+        file_b,
+        "mod-b/b/internal/Hidden.java",
+        r#"
+package b.internal;
+public class Hidden {}
+"#,
+    );
+
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let diags = db.type_diagnostics(file_a);
+    assert!(
+        diags.iter().any(|d| {
+            d.code.as_ref() == "unresolved-type" && d.message.contains("b.internal.Hidden")
+        }),
+        "expected unresolved-type for unexported package, got {diags:?}"
+    );
+}
+
+#[test]
 fn jpms_typeck_requires_is_enforced_for_module_path_automatic_modules() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

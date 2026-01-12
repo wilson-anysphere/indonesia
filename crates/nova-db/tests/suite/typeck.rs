@@ -2667,6 +2667,46 @@ class C {
 }
 
 #[test]
+fn this_in_static_method_emits_static_context_diagnostic() {
+    let src = r#"
+class C {
+  static Object m() {
+    return this;
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "this-in-static-context"),
+        "expected `this` in a static method to produce a static-context diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn super_in_static_method_emits_static_context_diagnostic() {
+    let src = r#"
+class C {
+  static Object m() {
+    return super;
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "super-in-static-context"),
+        "expected `super` in a static method to produce a static-context diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_context_rejects_unqualified_instance_field_access() {
     let src = r#"
 class C {

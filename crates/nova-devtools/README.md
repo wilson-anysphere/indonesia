@@ -65,14 +65,8 @@ cargo run --locked -p nova-devtools -- check-protocol-extensions
 
 Validates integration test layout across the workspace:
 
-- each crate should have **at most two** root-level `tests/*.rs` files (since each one is a separate
+- each crate should have **at most one** root-level `tests/*.rs` file (since each one is a separate
   integration test binary)
-- crates with exactly **two** root-level `tests/*.rs` files emit a warning (prefer consolidation unless
-  there’s a strong reason to keep multiple harness entrypoints)
-- crates with **more than two** root-level `tests/*.rs` files fail the check, unless they are
-  explicitly listed in the repo-root `test-layout-allowlist.txt` (temporary escape hatch)
-- crates listed in `test-layout-allowlist.txt` that now have **0, 1, or 2** root-level `tests/*.rs`
-  files emit a warning (stale allowlist entry)
 
 ```
 cargo run --locked -p nova-devtools -- check-test-layout

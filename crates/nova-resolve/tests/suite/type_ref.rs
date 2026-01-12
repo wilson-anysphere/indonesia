@@ -1248,7 +1248,6 @@ fn type_use_annotations_before_varargs_are_ignored() {
         Type::Array(Box::new(Type::class(string_id, vec![])))
     );
 }
-
 #[test]
 fn type_use_annotations_can_be_adjacent() {
     let mut db = TestDb::default();

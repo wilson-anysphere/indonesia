@@ -828,7 +828,7 @@ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor <your_test_na
 ### Add a new formatter fixture snapshot
 
 1. Add a new input file under `crates/nova-format/tests/fixtures/` (e.g. `my_case.java`).
-2. Add a test to `crates/nova-format/tests/suite/format_fixtures.rs` that loads the input and calls
+2. Add a test to `crates/nova-format/tests/suite/format_fixtures.rs` (compiled by `tests/harness.rs`) that loads the input and calls
    `insta::assert_snapshot!(...)`.
 3. Generate/update the `.snap` file with:
 
