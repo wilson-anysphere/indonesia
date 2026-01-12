@@ -311,6 +311,14 @@ fn find_best_expr_in_stmt(
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
             }
         }
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            if let Some(expr) = message {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
         HirStmt::Return { expr, .. } => {
             if let Some(expr) = expr {
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
@@ -459,11 +467,6 @@ fn find_best_expr_in_expr(
                 find_best_expr_in_expr(body, *item, offset, owner, best);
             }
         }
-        HirExpr::ArrayInitializer { items, .. } => {
-            for item in items {
-                find_best_expr_in_expr(body, *item, offset, owner, best);
-            }
-        }
         HirExpr::Unary { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
         HirExpr::Binary { lhs, rhs, .. } => {
             find_best_expr_in_expr(body, *lhs, offset, owner, best);
@@ -486,11 +489,29 @@ fn find_best_expr_in_expr(
             find_best_expr_in_expr(body, *then_expr, offset, owner, best);
             find_best_expr_in_expr(body, *else_expr, offset, owner, best);
         }
-        HirExpr::Switch {
-            selector, body: b, ..
-        } => {
+        HirExpr::Switch { selector, arms, .. } => {
             find_best_expr_in_expr(body, *selector, offset, owner, best);
-            find_best_expr_in_stmt(body, *b, offset, owner, best);
+            for arm in arms {
+                for label in &arm.labels {
+                    match label {
+                        hir::SwitchLabel::Case { values, .. } => {
+                            for value in values {
+                                find_best_expr_in_expr(body, *value, offset, owner, best);
+                            }
+                        }
+                        hir::SwitchLabel::Default { .. } => {}
+                    }
+                }
+
+                match &arm.body {
+                    hir::SwitchArmBody::Expr(expr) => {
+                        find_best_expr_in_expr(body, *expr, offset, owner, best)
+                    }
+                    hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
+                        find_best_expr_in_stmt(body, *stmt, offset, owner, best)
+                    }
+                }
+            }
         }
         HirExpr::Lambda {
             body: lambda_body, ..

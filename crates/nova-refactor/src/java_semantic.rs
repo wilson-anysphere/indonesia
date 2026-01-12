@@ -5189,14 +5189,6 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 hir::LambdaBody::Expr(expr) => walk_expr(body, *expr, f),
                 hir::LambdaBody::Block(stmt) => walk_stmt(body, *stmt, f),
             },
-            hir::Expr::Switch {
-                selector,
-                body: switch_body,
-                ..
-            } => {
-                walk_expr(body, *selector, f);
-                walk_stmt(body, *switch_body, f);
-            }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, f);
@@ -6067,7 +6059,7 @@ fn collect_switch_contexts(
             }
             hir::Expr::Switch {
                 selector,
-                body: inner,
+                arms,
                 range,
             } => {
                 // Walk the selector expression first so any nested switch constructs are recorded
@@ -6083,7 +6075,23 @@ fn collect_switch_contexts(
                 );
 
                 let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
-                    walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+                    for arm in arms {
+                        for label in &arm.labels {
+                            if let hir::SwitchLabel::Case { values, .. } = label {
+                                for value in values {
+                                    walk_expr(body, *value, owner, scope_result, resolver, item_trees, out);
+                                }
+                            }
+                        }
+                        match &arm.body {
+                            hir::SwitchArmBody::Expr(expr) => {
+                                walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
+                            }
+                            hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
+                                walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
+                            }
+                        }
+                    }
                     return;
                 };
 
@@ -6100,7 +6108,23 @@ fn collect_switch_contexts(
                     scope,
                     selector_enum,
                 });
-                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
+                for arm in arms {
+                    for label in &arm.labels {
+                        if let hir::SwitchLabel::Case { values, .. } = label {
+                            for value in values {
+                                walk_expr(body, *value, owner, scope_result, resolver, item_trees, out);
+                            }
+                        }
+                    }
+                    match &arm.body {
+                        hir::SwitchArmBody::Expr(expr) => {
+                            walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
+                        }
+                        hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
+                            walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
+                        }
+                    }
+                }
             }
             hir::Expr::Unary { expr, .. }
             | hir::Expr::Instanceof { expr, .. }
@@ -7588,17 +7612,62 @@ fn record_lightweight_expr(
                 references,
                 spans,
             );
-            record_lightweight_block(
-                file,
-                text,
-                &expr.body,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
+            for arm in &expr.arms {
+                for label in &arm.labels {
+                    if let java_syntax::ast::SwitchLabel::Case { values, .. } = label {
+                        for value in values {
+                            record_lightweight_expr(
+                                file,
+                                text,
+                                value,
+                                type_scopes,
+                                scope_result,
+                                resolver,
+                                resolution_to_symbol,
+                                references,
+                                spans,
+                            );
+                        }
+                    }
+                }
+
+                match &arm.body {
+                    java_syntax::ast::SwitchArmBody::Expr(expr) => record_lightweight_expr(
+                        file,
+                        text,
+                        expr,
+                        type_scopes,
+                        scope_result,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    ),
+                    java_syntax::ast::SwitchArmBody::Block(block) => record_lightweight_block(
+                        file,
+                        text,
+                        block,
+                        type_scopes,
+                        scope_result,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    ),
+                    java_syntax::ast::SwitchArmBody::Stmt(stmt) => record_lightweight_stmt(
+                        file,
+                        text,
+                        stmt,
+                        type_scopes,
+                        scope_result,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    ),
+                    java_syntax::ast::SwitchArmBody::Missing(_) => {}
+                }
+            }
         }
         Expr::Cast(expr) => {
             record_type_names_in_range(
