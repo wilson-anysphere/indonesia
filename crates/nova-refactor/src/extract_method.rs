@@ -267,8 +267,11 @@ impl ExtractMethod {
         let root = parsed.syntax();
 
         let (method, _method_body) = find_enclosing_method(root.clone(), selection)
-            .ok_or("selection must be inside a method")?;
-        let enclosing_method_is_static = method_is_static(&method);
+            .ok_or("selection must be inside a method or constructor")?;
+        let enclosing_method_is_static = match &method {
+            EnclosingMethod::Method(method) => method_is_static(method),
+            EnclosingMethod::Constructor(_) => false,
+        };
         let class_decl = method
             .syntax()
             .ancestors()
@@ -391,11 +394,34 @@ fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EnclosingMethod {
+    Method(ast::MethodDeclaration),
+    Constructor(ast::ConstructorDeclaration),
+}
+
+impl EnclosingMethod {
+    fn syntax(&self) -> &nova_syntax::SyntaxNode {
+        match self {
+            EnclosingMethod::Method(method) => method.syntax(),
+            EnclosingMethod::Constructor(ctor) => ctor.syntax(),
+        }
+    }
+
+    fn parameter_list(&self) -> Option<ast::ParameterList> {
+        match self {
+            EnclosingMethod::Method(method) => method.parameter_list(),
+            EnclosingMethod::Constructor(ctor) => ctor.parameter_list(),
+        }
+    }
+}
+
 fn find_enclosing_method(
     root: nova_syntax::SyntaxNode,
     selection: TextRange,
-) -> Option<(ast::MethodDeclaration, ast::Block)> {
-    let mut best: Option<(usize, ast::MethodDeclaration, ast::Block)> = None;
+) -> Option<(EnclosingMethod, ast::Block)> {
+    let mut best: Option<(usize, EnclosingMethod, ast::Block)> = None;
+
     for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
         let Some(body) = method.body() else {
             continue;
@@ -407,10 +433,30 @@ fn find_enclosing_method(
                 .as_ref()
                 .is_none_or(|(best_span, _, _)| span < *best_span)
             {
-                best = Some((span, method, body));
+                best = Some((span, EnclosingMethod::Method(method), body));
             }
         }
     }
+
+    for ctor in root
+        .descendants()
+        .filter_map(ast::ConstructorDeclaration::cast)
+    {
+        let Some(body) = ctor.body() else {
+            continue;
+        };
+        let body_range = syntax_range(body.syntax());
+        if body_range.start <= selection.start && selection.end <= body_range.end {
+            let span = body_range.len();
+            if best
+                .as_ref()
+                .is_none_or(|(best_span, _, _)| span < *best_span)
+            {
+                best = Some((span, EnclosingMethod::Constructor(ctor), body));
+            }
+        }
+    }
+
     best.map(|(_, m, b)| (m, b))
 }
 
@@ -504,7 +550,7 @@ fn class_has_method_named(class_decl: &ast::ClassDeclaration, name: &str) -> boo
 
 fn collect_locals_and_params(
     source: &str,
-    method: &ast::MethodDeclaration,
+    method: &EnclosingMethod,
     body: &ast::Block,
     selection: TextRange,
 ) -> (

@@ -193,6 +193,54 @@ class C {
 }
 
 #[test]
+fn extract_method_inside_constructor() {
+    let fixture = r#"
+class C {
+    C(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+    }
+
+    void m() {
+        System.out.println("other");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    C(int a) {
+        int b = 1;
+        extracted(a, b);
+    }
+
+    private void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+
+    void m() {
+        System.out.println("other");
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_rejects_illegal_control_flow() {
     let fixture = r#"
 class C {
