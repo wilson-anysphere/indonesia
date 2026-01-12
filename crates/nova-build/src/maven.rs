@@ -1820,7 +1820,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let main_src_root = tmp.path().join("src/main/java");
         std::fs::create_dir_all(&main_src_root).unwrap();
-        std::fs::write(main_src_root.join("module-info.java"), "module example.mod {}").unwrap();
+        std::fs::write(
+            main_src_root.join("module-info.java"),
+            "module example.mod {}",
+        )
+        .unwrap();
 
         // Simulate a stable module output dir; it should still be excluded because it is the
         // module's own output directory.
@@ -1828,7 +1832,8 @@ mod tests {
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("module-info.class"), b"").unwrap();
 
-        let resolved_compile_classpath = vec![out_dir.clone(), named.clone(), automatic.clone(), dep];
+        let resolved_compile_classpath =
+            vec![out_dir.clone(), named.clone(), automatic.clone(), dep];
         let module_path = infer_module_path_for_compile_config(
             &resolved_compile_classpath,
             &[main_src_root],
@@ -1850,8 +1855,12 @@ mod tests {
         std::fs::create_dir_all(&main_src_root).unwrap();
 
         let resolved_compile_classpath = vec![named, automatic];
-        let module_path =
-            infer_module_path_for_compile_config(&resolved_compile_classpath, &[main_src_root], None, false);
+        let module_path = infer_module_path_for_compile_config(
+            &resolved_compile_classpath,
+            &[main_src_root],
+            None,
+            false,
+        );
 
         assert!(module_path.is_empty());
     }
