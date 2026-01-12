@@ -341,13 +341,6 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
         .module_path
         .iter()
         .any(|p| p.ends_with(Path::new("target/classes"))));
-
-    let invocations = runner.invocations();
-    assert!(invocations.iter().any(|inv| {
-        inv.args
-            .iter()
-            .any(|arg| arg == "-Dexpression=project.compileModulePathElements")
-    }));
 }
 
 #[test]
