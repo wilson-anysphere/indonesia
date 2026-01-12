@@ -1,5 +1,8 @@
 use crate::doc::{self, Doc, PrintConfig};
-use crate::{ends_with_line_break, FormatConfig, JavaComments, NewlineStyle, TokenKey};
+use crate::{
+    ends_with_line_break, split_lines_inclusive, FormatConfig, IndentStyle, JavaComments,
+    NewlineStyle, TokenKey,
+};
 use nova_syntax::{ast, AstNode, JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
 
 mod decl;
@@ -55,6 +58,9 @@ impl<'a> JavaPrettyFormatter<'a> {
             },
         );
         finalize_output(&mut out, self.config, input_has_final_newline, self.newline);
+        if self.config.indent_style == IndentStyle::Tabs {
+            out = tabs_for_indentation(&out, self.config.indent_width);
+        }
         out
     }
 
@@ -127,6 +133,44 @@ impl<'a> JavaPrettyFormatter<'a> {
         let leading = self.comments.take_leading_doc(TokenKey::from(&first), 0);
         let trailing = self.comments.take_trailing_doc(TokenKey::from(&last), 0);
         Doc::concat([leading, fallback::node(self.source, node), trailing])
+    }
+}
+
+fn tabs_for_indentation(text: &str, indent_width: usize) -> String {
+    if indent_width == 0 {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for line in split_lines_inclusive(text) {
+        let (content, suffix) = strip_line_ending(line);
+
+        let space_count = content.as_bytes().iter().take_while(|b| **b == b' ').count();
+        let tabs = space_count / indent_width;
+        let spaces = space_count % indent_width;
+
+        for _ in 0..tabs {
+            out.push('\t');
+        }
+        for _ in 0..spaces {
+            out.push(' ');
+        }
+        out.push_str(&content[space_count..]);
+        out.push_str(suffix);
+    }
+
+    out
+}
+
+fn strip_line_ending(line: &str) -> (&str, &str) {
+    if let Some(prefix) = line.strip_suffix("\r\n") {
+        (prefix, "\r\n")
+    } else if let Some(prefix) = line.strip_suffix('\n') {
+        (prefix, "\n")
+    } else if let Some(prefix) = line.strip_suffix('\r') {
+        (prefix, "\r")
+    } else {
+        (line, "")
     }
 }
 
