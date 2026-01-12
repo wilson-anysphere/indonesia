@@ -73,6 +73,18 @@ fn resolves_field_from_loaded_stub_class() {
             descriptor: "()V".to_string(),
             signature: None,
             access_flags: 0,
+        },
+        MethodStub {
+            name: "greet".to_string(),
+            descriptor: "(I)Ljava/lang/String;".to_string(),
+            signature: None,
+            access_flags: 0,
+        },
+        MethodStub {
+            name: "util".to_string(),
+            descriptor: "()I".to_string(),
+            signature: None,
+            access_flags: ACC_STATIC,
         }],
     });
 
@@ -105,6 +117,32 @@ fn resolves_field_from_loaded_stub_class() {
 
     // But instance field access through a static receiver should fail.
     assert!(resolve_field(&env, &receiver, "instanceField", CallKind::Static).is_none());
+
+    // Basic method stub translation (descriptor-based, no Signature attribute).
+    let foo_def = env.class(foo).expect("Foo should be defined");
+
+    let greet = foo_def
+        .methods
+        .iter()
+        .find(|m| m.name == "greet")
+        .expect("greet method should be loaded");
+    assert_eq!(greet.params, vec![Type::int()]);
+    assert_eq!(
+        greet.return_type,
+        Type::class(env.well_known().string, vec![])
+    );
+    assert!(!greet.is_static);
+    assert!(!greet.is_varargs);
+    assert!(!greet.is_abstract);
+
+    let util = foo_def
+        .methods
+        .iter()
+        .find(|m| m.name == "util")
+        .expect("util method should be loaded");
+    assert_eq!(util.params, vec![]);
+    assert_eq!(util.return_type, Type::int());
+    assert!(util.is_static);
 }
 
 #[test]
