@@ -1767,6 +1767,26 @@ mod bsp_config_tests {
     }
 
     #[test]
+    fn dot_bsp_discovery_skips_invalid_candidates_missing_argv() {
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+
+        // Missing argv should be ignored even if it advertises java.
+        std::fs::write(
+            bsp_dir.join("a.json"),
+            r#"{"languages":["java"],"name":"no argv"}"#,
+        )
+        .unwrap();
+        std::fs::write(bsp_dir.join("b.json"), r#"{"argv":["ok"]}"#).unwrap();
+
+        let config =
+            crate::bsp_config::discover_bsp_server_config_from_dot_bsp(root.path()).unwrap();
+        assert_eq!(config.program, "ok");
+        assert!(config.args.is_empty());
+    }
+
+    #[test]
     fn env_overrides_win_over_dot_bsp_discovery() {
         let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
 
