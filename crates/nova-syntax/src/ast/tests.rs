@@ -1883,3 +1883,57 @@ fn string_template_expression_accessors_qualified_processor() {
         .expect("expected interpolation expression");
     assert_eq!(interpolation_expr.syntax().text().to_string(), "name");
 }
+
+#[test]
+fn string_template_expression_accessors_method_call_processor() {
+    let src = r#"
+        class Foo {
+          Object processor() { return null; }
+
+          void m(String name) {
+            String s = processor()."Hello \{name}!";
+          }
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let template_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+
+    let processor = template_expr.processor().expect("expected processor expression");
+    let call = match processor {
+        Expression::MethodCallExpression(call) => call,
+        other => panic!("expected processor MethodCallExpression, got {other:?}"),
+    };
+
+    let callee = call.callee().expect("expected call callee");
+    match callee {
+        Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "processor"),
+        other => panic!("expected call callee NameExpression, got {other:?}"),
+    }
+
+    let args = call.arguments().expect("expected argument list");
+    assert_eq!(args.arguments().count(), 0);
+
+    let template = template_expr.template().expect("expected string template");
+    let text_segments: Vec<_> = template
+        .syntax()
+        .children_with_tokens()
+        .filter(|el| el.kind() == SyntaxKind::StringTemplateText)
+        .filter_map(|el| el.into_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+    assert_eq!(text_segments, vec!["Hello ", "!"]);
+
+    let interpolation_expr = template
+        .parts()
+        .next()
+        .expect("expected interpolation")
+        .expression()
+        .expect("expected interpolation expression");
+    assert_eq!(interpolation_expr.syntax().text().to_string(), "name");
+}
