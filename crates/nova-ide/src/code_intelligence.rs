@@ -1553,108 +1553,7 @@ pub fn core_file_diagnostics(
             // `type_diagnostics` is primarily driven by type-checking bodies, which means unresolved
             // types in fields/method signatures might not surface when there are no bodies in the
             // file.
-            let project = snap.file_project(file);
-            let jdk = snap.jdk_index(project);
-            let resolver = nova_resolve::Resolver::new(&*jdk);
-
-            let scopes = snap.scope_graph(file);
-            let parse = snap.java_parse(file);
-            let unit = parse.compilation_unit();
-            let env = TypeStore::with_minimal_jdk();
-            let type_vars: HashMap<String, TypeVarId> = HashMap::new();
-
-            fn push_type_ref_diags<'idx>(
-                resolver: &nova_resolve::Resolver<'idx>,
-                scopes: &nova_resolve::ScopeGraph,
-                scope: nova_resolve::ScopeId,
-                env: &dyn TypeEnv,
-                type_vars: &HashMap<String, TypeVarId>,
-                ty: &nova_syntax::java::ast::TypeRef,
-                out: &mut Vec<Diagnostic>,
-            ) {
-                let resolved = nova_resolve::type_ref::resolve_type_ref_text(
-                    resolver,
-                    scopes,
-                    scope,
-                    env,
-                    type_vars,
-                    ty.text.as_str(),
-                    Some(ty.range),
-                );
-                out.extend(resolved.diagnostics);
-            }
-
-            fn visit_member<'idx>(
-                resolver: &nova_resolve::Resolver<'idx>,
-                scopes: &nova_resolve::ScopeGraph,
-                scope: nova_resolve::ScopeId,
-                env: &dyn TypeEnv,
-                type_vars: &HashMap<String, TypeVarId>,
-                member: &nova_syntax::java::ast::MemberDecl,
-                out: &mut Vec<Diagnostic>,
-            ) {
-                use nova_syntax::java::ast::MemberDecl;
-                match member {
-                    MemberDecl::Field(field) => {
-                        push_type_ref_diags(
-                            resolver, scopes, scope, env, type_vars, &field.ty, out,
-                        );
-                    }
-                    MemberDecl::Method(method) => {
-                        push_type_ref_diags(
-                            resolver,
-                            scopes,
-                            scope,
-                            env,
-                            type_vars,
-                            &method.return_ty,
-                            out,
-                        );
-                        for param in &method.params {
-                            push_type_ref_diags(
-                                resolver, scopes, scope, env, type_vars, &param.ty, out,
-                            );
-                        }
-                    }
-                    MemberDecl::Constructor(cons) => {
-                        for param in &cons.params {
-                            push_type_ref_diags(
-                                resolver, scopes, scope, env, type_vars, &param.ty, out,
-                            );
-                        }
-                    }
-                    MemberDecl::Initializer(_) => {}
-                    MemberDecl::Type(ty) => {
-                        visit_type_decl(resolver, scopes, scope, env, type_vars, ty, out);
-                    }
-                }
-            }
-
-            fn visit_type_decl<'idx>(
-                resolver: &nova_resolve::Resolver<'idx>,
-                scopes: &nova_resolve::ScopeGraph,
-                scope: nova_resolve::ScopeId,
-                env: &dyn TypeEnv,
-                type_vars: &HashMap<String, TypeVarId>,
-                ty: &nova_syntax::java::ast::TypeDecl,
-                out: &mut Vec<Diagnostic>,
-            ) {
-                for member in ty.members() {
-                    visit_member(resolver, scopes, scope, env, type_vars, member, out);
-                }
-            }
-
-            for ty in &unit.types {
-                visit_type_decl(
-                    &resolver,
-                    &scopes.scopes,
-                    scopes.file_scope,
-                    &env,
-                    &type_vars,
-                    ty,
-                    &mut diagnostics,
-                );
-            }
+            extend_type_ref_diagnostics_outside_bodies(snap, file, &mut diagnostics);
             diagnostics.extend(snap.type_diagnostics(file));
             if cancel.is_cancelled() {
                 return;
@@ -1687,6 +1586,117 @@ pub fn core_file_diagnostics(
     }
     sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+fn extend_type_ref_diagnostics_outside_bodies(
+    snap: &nova_db::Snapshot,
+    file: FileId,
+    out: &mut Vec<Diagnostic>,
+) {
+    let project = snap.file_project(file);
+    let jdk = snap.jdk_index(project);
+    let resolver = nova_resolve::Resolver::new(&*jdk);
+
+    let scopes = snap.scope_graph(file);
+    let parse = snap.java_parse(file);
+    let unit = parse.compilation_unit();
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars: HashMap<String, TypeVarId> = HashMap::new();
+
+    fn push_type_ref_diags<'idx>(
+        resolver: &nova_resolve::Resolver<'idx>,
+        scopes: &nova_resolve::ScopeGraph,
+        scope: nova_resolve::ScopeId,
+        env: &dyn TypeEnv,
+        type_vars: &HashMap<String, TypeVarId>,
+        ty: &nova_syntax::java::ast::TypeRef,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        let resolved = nova_resolve::type_ref::resolve_type_ref_text(
+            resolver,
+            scopes,
+            scope,
+            env,
+            type_vars,
+            ty.text.as_str(),
+            Some(ty.range),
+        );
+        out.extend(resolved.diagnostics);
+    }
+
+    fn visit_member<'idx>(
+        resolver: &nova_resolve::Resolver<'idx>,
+        scopes: &nova_resolve::ScopeGraph,
+        scope: nova_resolve::ScopeId,
+        env: &dyn TypeEnv,
+        type_vars: &HashMap<String, TypeVarId>,
+        member: &nova_syntax::java::ast::MemberDecl,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        use nova_syntax::java::ast::MemberDecl;
+        match member {
+            MemberDecl::Field(field) => {
+                push_type_ref_diags(resolver, scopes, scope, env, type_vars, &field.ty, out);
+            }
+            MemberDecl::Method(method) => {
+                push_type_ref_diags(
+                    resolver,
+                    scopes,
+                    scope,
+                    env,
+                    type_vars,
+                    &method.return_ty,
+                    out,
+                );
+                for param in &method.params {
+                    push_type_ref_diags(resolver, scopes, scope, env, type_vars, &param.ty, out);
+                }
+            }
+            MemberDecl::Constructor(cons) => {
+                for param in &cons.params {
+                    push_type_ref_diags(resolver, scopes, scope, env, type_vars, &param.ty, out);
+                }
+            }
+            MemberDecl::Initializer(_) => {}
+            MemberDecl::Type(ty) => {
+                visit_type_decl(resolver, scopes, scope, env, type_vars, ty, out);
+            }
+        }
+    }
+
+    fn visit_type_decl<'idx>(
+        resolver: &nova_resolve::Resolver<'idx>,
+        scopes: &nova_resolve::ScopeGraph,
+        scope: nova_resolve::ScopeId,
+        env: &dyn TypeEnv,
+        type_vars: &HashMap<String, TypeVarId>,
+        ty: &nova_syntax::java::ast::TypeDecl,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        use nova_syntax::java::ast::TypeDecl;
+
+        if let TypeDecl::Record(record) = ty {
+            for component in &record.components {
+                push_type_ref_diags(resolver, scopes, scope, env, type_vars, &component.ty, out);
+            }
+        }
+
+        for member in ty.members() {
+            visit_member(resolver, scopes, scope, env, type_vars, member, out);
+        }
+    }
+
+    for ty in &unit.types {
+        visit_type_decl(
+            &resolver,
+            &scopes.scopes,
+            scopes.file_scope,
+            &env,
+            &type_vars,
+            ty,
+            out,
+        );
+    }
 }
 
 pub(crate) fn core_file_diagnostics_cancelable(
@@ -1768,6 +1778,10 @@ pub(crate) fn core_file_diagnostics_cancelable(
         }
         with_salsa_snapshot_for_single_file(db, file, text, |snap| {
             diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
+            if cancel.is_cancelled() {
+                return;
+            }
+            extend_type_ref_diagnostics_outside_bodies(snap, file, &mut diagnostics);
             if cancel.is_cancelled() {
                 return;
             }
@@ -1872,6 +1886,7 @@ pub(crate) fn diagnostics_for_quick_fixes(
         if cancel.is_cancelled() {
             return;
         }
+        extend_type_ref_diagnostics_outside_bodies(snap, file, &mut diagnostics);
         diagnostics.extend(snap.type_diagnostics(file));
         if cancel.is_cancelled() {
             return;
@@ -6220,6 +6235,29 @@ class A {
         assert_eq!(
             expected, actual,
             "cancelable diagnostics should match core_file_diagnostics"
+        );
+    }
+
+    #[test]
+    fn core_file_diagnostics_cancelable_matches_core_file_diagnostics_for_bodyless_unresolved_type() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        db.set_file_text(file, "class A { MissingType f; }".to_string());
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        let mut expected = core_file_diagnostics(&db, file, &cancel);
+        let mut actual = core_file_diagnostics_cancelable(&db, file, &cancel);
+
+        sort_and_dedupe_diagnostics(&mut expected);
+        sort_and_dedupe_diagnostics(&mut actual);
+
+        assert_eq!(
+            expected, actual,
+            "cancelable diagnostics should match core_file_diagnostics even for bodyless files"
+        );
+        assert!(
+            expected.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+            "expected an unresolved-type diagnostic in core diagnostics; got {expected:?}"
         );
     }
 
