@@ -1862,6 +1862,9 @@ impl WorkspaceEngine {
                 self.query_db.unpin_java_parse_tree(id_to);
                 self.query_db.unpin_item_tree(id_to);
                 self.query_db.set_file_exists(id_to, false);
+                if !open_docs.is_open(id_to) {
+                    self.query_db.set_file_content(id_to, empty_file_content());
+                }
                 self.update_project_files_membership(&to_vfs, id_to, false);
             }
         }
@@ -1876,6 +1879,10 @@ impl WorkspaceEngine {
                 self.query_db.unpin_java_parse_tree(id_from);
                 self.query_db.unpin_item_tree(id_from);
                 self.query_db.set_file_exists(id_from, false);
+                if !open_docs.is_open(id_from) {
+                    self.query_db
+                        .set_file_content(id_from, empty_file_content());
+                }
                 self.update_project_files_membership(&from_vfs, id_from, false);
             } else {
                 // Update membership for the moved id (handles leaving the Java set / root).
@@ -4450,6 +4457,12 @@ mod tests {
             .get_id(&vfs_b)
             .expect("expected B to have a file id");
         assert!(engine.vfs.open_documents().is_open(id_b));
+
+        // Orphaned ids should release their Salsa file contents to avoid retaining large buffers.
+        engine.query_db.with_snapshot(|snap| {
+            assert!(!snap.file_exists(id_a));
+            assert_eq!(snap.file_content(id_a).as_str(), "");
+        });
     }
 
     #[test]
@@ -4879,6 +4892,10 @@ mod tests {
 
         let id_a = engine.vfs.get_id(&VfsPath::local(file_a.clone())).unwrap();
         let id_b = engine.vfs.get_id(&VfsPath::local(file_b.clone())).unwrap();
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_content(id_a).as_str(), "class A {}");
+            assert_eq!(snap.file_content(id_b).as_str(), "class B {}");
+        });
 
         // Make the destination path "known" but removable on all platforms: delete it before the
         // rename, without informing the workspace yet.
@@ -4898,6 +4915,7 @@ mod tests {
 
         engine.query_db.with_snapshot(|snap| {
             assert!(!snap.file_exists(id_a));
+            assert_eq!(snap.file_content(id_a).as_str(), "");
             assert!(snap.file_exists(id_b));
             assert_eq!(snap.file_rel_path(id_b).as_str(), "src/B.java");
             assert_eq!(snap.file_content(id_b).as_str(), "class A {}");
@@ -4957,6 +4975,7 @@ mod tests {
 
         engine.query_db.with_snapshot(|snap| {
             assert!(!snap.file_exists(id_a));
+            assert_eq!(snap.file_content(id_a).as_str(), "");
             assert!(snap.file_exists(id_b));
             assert_eq!(snap.file_rel_path(id_b).as_str(), "src/B.java");
             assert_eq!(snap.file_content(id_b).as_str(), "class A { overlay }");
