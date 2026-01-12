@@ -35,7 +35,11 @@ The dashboard surfaces framework-derived navigation targets, including:
 
 ### Navigation
 
-Click an item to open the underlying source location.
+Click an item to open the underlying source location (best-effort).
+
+Some framework items may not include a file/line location (for example, when the server cannot
+determine the handler source file). In that case, Nova still lists the item but disables navigation
+and shows “location unavailable”.
 
 For quick navigation (including Micronaut endpoints and beans), you can also run **Nova: Search Framework Items…** (`nova.frameworks.search`).
 
