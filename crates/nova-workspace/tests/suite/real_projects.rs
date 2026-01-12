@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{MutexGuard, OnceLock};
 
 use nova_project::load_project;
+use nova_test_utils::EnvVarGuard;
 use nova_workspace::{Workspace, WorkspaceSymbol};
+
+type EnvLockGuard = MutexGuard<'static, ()>;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -51,7 +54,9 @@ fn should_run_fixture(name: &str) -> bool {
     !any_filter
 }
 
-fn init_cache_dir() {
+fn init_cache_dir() -> (EnvLockGuard, EnvVarGuard) {
+    let env_lock = nova_test_utils::env_lock();
+
     // These tests are ignored and run on-demand. Still, keep Nova's cache writes out
     // of the user's home directory and ensure each run starts from a clean slate so
     // `files_indexed > 0` remains a stable assertion.
@@ -63,7 +68,9 @@ fn init_cache_dir() {
         std::mem::forget(dir);
         path
     });
-    std::env::set_var("NOVA_CACHE_DIR", cache_root);
+    let cache_dir = EnvVarGuard::set("NOVA_CACHE_DIR", cache_root.as_path());
+
+    (env_lock, cache_dir)
 }
 
 fn assert_symbols_contain_file(symbols: &[WorkspaceSymbol], expected_file: &str) {
@@ -113,10 +120,10 @@ fn assert_diagnostics(ws: &Workspace, file: &Path) {
 #[test]
 #[ignore]
 fn spring_petclinic_smoke() {
-    init_cache_dir();
     if !should_run_fixture("spring-petclinic") {
         return;
     }
+    let (_env_lock, _cache_dir) = init_cache_dir();
 
     let root = require_fixture("spring-petclinic");
     let ws = Workspace::open(&root).expect("open workspace");
@@ -149,10 +156,10 @@ fn spring_petclinic_smoke() {
 #[test]
 #[ignore]
 fn guava_smoke() {
-    init_cache_dir();
     if !should_run_fixture("guava") {
         return;
     }
+    let (_env_lock, _cache_dir) = init_cache_dir();
 
     // The top-level Guava checkout is a Maven multi-module workspace. Index only the
     // core `guava/` module so this test stays bounded.
@@ -192,10 +199,10 @@ fn guava_smoke() {
 #[test]
 #[ignore]
 fn maven_resolver_smoke() {
-    init_cache_dir();
     if !should_run_fixture("maven-resolver") {
         return;
     }
+    let (_env_lock, _cache_dir) = init_cache_dir();
 
     // Index the smallest module that still contains `RepositorySystem`.
     let root = require_fixture("maven-resolver").join("maven-resolver-api");
