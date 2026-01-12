@@ -1194,7 +1194,7 @@ fn format_stream_eval_compile_failure(
         .filter(|s| !s.trim().is_empty());
 
     let mut out = String::new();
-    out.push_str("stream debug helper compilation failed\n");
+    out.push_str("stream eval helper compilation failed\n");
     if let Some(user_expr) = user_expr {
         out.push_str(&format!("User expression: `{user_expr}`\n"));
     }
@@ -1636,6 +1636,10 @@ mod tests {
             &javac_err,
         );
 
+        assert!(
+            message.contains("stream eval helper compilation failed"),
+            "expected stream-eval header in message:\n{message}"
+        );
         assert!(
             message.contains("Stage: source sample"),
             "expected stage context in message:\n{message}"
