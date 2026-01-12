@@ -1025,6 +1025,96 @@ class C {
 }
 
 #[test]
+fn extract_method_rejects_reference_to_local_interface_declared_in_enclosing_body() {
+    let fixture = r#"
+class C {
+    void m() {
+        interface Local {}
+        /*start*/Local x = null;/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection");
+    assert!(
+        err.contains("ReferencesLocalType"),
+        "unexpected error: {err}"
+    );
+    assert!(err.contains("Local"), "unexpected error: {err}");
+}
+
+#[test]
+fn extract_method_rejects_reference_to_local_annotation_type_declared_in_enclosing_body() {
+    let fixture = r#"
+class C {
+    void m() {
+        @interface Local {}
+        /*start*/@Local int x = 1;/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection");
+    assert!(
+        err.contains("ReferencesLocalType"),
+        "unexpected error: {err}"
+    );
+    assert!(err.contains("Local"), "unexpected error: {err}");
+}
+
+#[test]
+fn extract_method_rejects_expression_selection_referencing_local_type_declared_in_enclosing_body() {
+    let fixture = r#"
+class C {
+    void m() {
+        class Local {}
+        System.out.println(/*start*/new Local()/*end*/);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection");
+    assert!(
+        err.contains("ReferencesLocalType"),
+        "unexpected error: {err}"
+    );
+    assert!(err.contains("Local"), "unexpected error: {err}");
+}
+
+#[test]
 fn extract_method_rejects_void_return_statement() {
     let fixture = r#"
 class C {
