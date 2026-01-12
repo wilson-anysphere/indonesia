@@ -3952,6 +3952,7 @@ dependencies = [
  "nova-scheduler",
  "nova-syntax",
  "nova-types",
+ "nova-types-bridge",
  "once_cell",
  "ra_ap_salsa",
  "regex",

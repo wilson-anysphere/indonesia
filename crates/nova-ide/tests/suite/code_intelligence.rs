@@ -7,6 +7,29 @@ use nova_ide::{
 };
 use nova_types::Severity;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use tempfile::TempDir;
+
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn with_temp_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+    let _guard = ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("env lock poisoned");
+
+    let prior_home = std::env::var_os("HOME");
+    let temp = tempfile::tempdir().expect("temp HOME");
+    std::env::set_var("HOME", temp.path());
+
+    let out = f(temp.path());
+
+    match prior_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+    out
+}
 
 use crate::framework_harness::{offset_to_position, CARET};
 
@@ -341,8 +364,8 @@ class B extends A {
 fn completion_in_incomplete_import_is_non_empty() {
     let (db, file, pos) = fixture(
         r#"
-import java.util.<|>
-class A {}
+ import java.util.<|>
+ class A {}
 "#,
     );
 
@@ -620,6 +643,89 @@ class A { void m(Foo foo){ foo.<|> } }
         labels.contains(&"x"),
         "expected completion list to contain Foo.x when completing on param receiver; got {labels:?}"
     );
+}
+
+#[test]
+fn completion_in_import_includes_classpath_dependency_types() {
+    with_temp_home(|home| {
+        // 1) Create a Maven-ish workspace on disk.
+        let ws = TempDir::new().expect("temp workspace");
+        let root = ws.path();
+
+        let pom = r#"<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>app</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#;
+        std::fs::write(root.join("pom.xml"), pom).expect("write pom.xml");
+
+        // 2) Populate ~/.m2 with the dependency jar.
+        let jar_path = home.join(".m2/repository/com/example/dep/1.0/dep-1.0.jar");
+        std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("create m2 dirs");
+        let fixture_jar =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar");
+        std::fs::copy(fixture_jar, &jar_path).expect("copy dep jar");
+
+        // 3) Create src file on disk.
+        let java_path = root.join("src/main/java/A.java");
+        std::fs::create_dir_all(java_path.parent().expect("java parent")).expect("create src dir");
+
+        // Import completion.
+        let import_text_with_caret = "import com.example.dep.Fo<|>;\nclass A {}\n";
+        let caret_offset = import_text_with_caret
+            .find(CARET)
+            .expect("fixture must contain <|> caret marker");
+        let import_text = import_text_with_caret.replace(CARET, "");
+        std::fs::write(&java_path, &import_text).expect("write java file");
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(&java_path);
+        db.set_file_text(file, import_text.clone());
+
+        let pos = offset_to_position(&import_text, caret_offset);
+        let items = completions(&db, file, pos);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Foo"),
+            "expected import completion list to contain Foo; got {labels:?}"
+        );
+
+        // Member completion for dependency type.
+        let member_text_with_caret = r#"
+import com.example.dep.Foo;
+class A {
+  void m() {
+    Foo foo = new Foo();
+    foo.<|>
+  }
+}
+"#;
+        let caret_offset = member_text_with_caret
+            .find(CARET)
+            .expect("fixture must contain <|> caret marker");
+        let member_text = member_text_with_caret.replace(CARET, "");
+        std::fs::write(&java_path, &member_text).expect("write java file");
+        db.set_file_text(file, member_text.clone());
+
+        let pos = offset_to_position(&member_text, caret_offset);
+        let items = completions(&db, file, pos);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"strings"),
+            "expected member completion list to contain Foo.strings; got {labels:?}"
+        );
+    });
 }
 
 #[test]

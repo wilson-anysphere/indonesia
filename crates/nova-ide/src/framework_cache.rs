@@ -104,6 +104,18 @@ pub fn project_config(root: &Path) -> Option<Arc<nova_project::ProjectConfig>> {
     WORKSPACE_CACHE.project_config(root)
 }
 
+/// Load and cache a [`nova_classpath::ClasspathIndex`] for `root`.
+///
+/// The index is derived from the build-derived [`nova_project::ProjectConfig`] classpath +
+/// module-path entries, and cached per (canonicalized) workspace root. The cache is invalidated
+/// when build marker fingerprints change (see module-level docs).
+///
+/// This is best-effort and never panics; failures result in `None`.
+#[must_use]
+pub fn classpath_index(root: &Path) -> Option<Arc<nova_classpath::ClasspathIndex>> {
+    WORKSPACE_CACHE.classpath_index(root)
+}
+
 /// Convert a `nova_project` classpath entry into a `nova_classpath` entry.
 #[must_use]
 pub fn to_classpath_entry(
@@ -469,6 +481,7 @@ pub fn framework_completions<DB: ?Sized + Database>(
 #[derive(Debug)]
 pub struct FrameworkWorkspaceCache {
     project_configs: Mutex<LruCache<PathBuf, CachedProjectConfig>>,
+    classpath_indexes: Mutex<LruCache<PathBuf, CachedClasspathIndex>>,
     spring_metadata: Mutex<LruCache<PathBuf, CachedMetadataIndex>>,
     spring_workspace: Mutex<LruCache<DbRootKey, CachedSpringWorkspace>>,
     quarkus: Mutex<LruCache<DbRootKey, CachedQuarkusWorkspace>>,
@@ -478,6 +491,12 @@ pub struct FrameworkWorkspaceCache {
 struct CachedProjectConfig {
     fingerprint: u64,
     value: Option<Arc<nova_project::ProjectConfig>>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedClasspathIndex {
+    fingerprint: u64,
+    value: Option<Arc<nova_classpath::ClasspathIndex>>,
 }
 
 #[derive(Clone, Debug)]
@@ -512,6 +531,7 @@ impl FrameworkWorkspaceCache {
     pub fn new() -> Self {
         Self {
             project_configs: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
+            classpath_indexes: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
             spring_metadata: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
             spring_workspace: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
             quarkus: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
@@ -542,6 +562,47 @@ impl FrameworkWorkspaceCache {
         };
         let mut cache = lock_unpoison(&self.project_configs);
         cache.insert(root, entry);
+
+        value
+    }
+
+    fn classpath_index(&self, root: &Path) -> Option<Arc<nova_classpath::ClasspathIndex>> {
+        let root = canonicalize_root(root)?;
+        let fingerprint = build_marker_fingerprint(&root);
+
+        {
+            let mut cache = lock_unpoison(&self.classpath_indexes);
+            if let Some(entry) = cache.get_cloned(&root) {
+                if entry.fingerprint == fingerprint {
+                    return entry.value;
+                }
+            }
+        }
+
+        let value = self.project_config(&root).and_then(|config| {
+            let entries: Vec<_> = config
+                .classpath
+                .iter()
+                .chain(config.module_path.iter())
+                .filter(|entry| match entry.kind {
+                    nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
+                    nova_project::ClasspathEntryKind::Jar => entry.path.is_file(),
+                    #[allow(unreachable_patterns)]
+                    _ => false,
+                })
+                .filter_map(to_classpath_entry)
+                .collect();
+
+            nova_classpath::ClasspathIndex::build(&entries, None)
+                .ok()
+                .map(Arc::new)
+        });
+
+        let entry = CachedClasspathIndex {
+            fingerprint,
+            value: value.clone(),
+        };
+        lock_unpoison(&self.classpath_indexes).insert(root, entry);
 
         value
     }

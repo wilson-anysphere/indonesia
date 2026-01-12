@@ -26,6 +26,7 @@ nova-hir = { path = "../nova-hir" }
 nova-resolve = { path = "../nova-resolve" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
+nova-types-bridge = { path = "../nova-types-bridge" }
 nova-jdk = { path = "../nova-jdk" }
 nova-refactor = { path = "../nova-refactor" }
 lsp-types = "0.97"

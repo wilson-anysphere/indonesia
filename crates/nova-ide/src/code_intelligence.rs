@@ -4,12 +4,10 @@
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
 use std::borrow::Cow;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
@@ -32,10 +30,11 @@ use nova_hir::item_tree;
 use nova_jdk::JdkIndex;
 use nova_resolve::{ImportMap, Resolver as ImportResolver};
 use nova_types::{
-    CallKind, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution,
-    PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeProvider,
-    TypeStore, TypeVarId,
+    CallKind, ChainTypeProvider, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodDef,
+    MethodResolution, PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv,
+    TypeProvider, TypeStore, TypeVarId,
 };
+use nova_types_bridge::ExternalTypeLoader;
 use once_cell::sync::Lazy;
 use serde_json::json;
 
@@ -3005,6 +3004,18 @@ fn parse_java_imports(text: &str) -> JavaImportInfo {
     out
 }
 
+fn classpath_index_for_file(
+    db: &dyn Database,
+    file: FileId,
+) -> Option<Arc<nova_classpath::ClasspathIndex>> {
+    let path = db.file_path(file)?;
+    if !path.exists() {
+        return None;
+    }
+    let root = framework_cache::project_root_for_path(path);
+    framework_cache::classpath_index(&root)
+}
+
 fn java_type_needs_import(imports: &JavaImportInfo, ty: &str) -> bool {
     let Some((pkg, _simple)) = ty.rsplit_once('.') else {
         return false;
@@ -3242,77 +3253,6 @@ fn child_package_segment(package: &str, parent: &str) -> Option<String> {
         return None;
     }
     Some(rest.split('.').next().unwrap_or(rest).to_string())
-}
-
-#[derive(Clone)]
-struct CachedClasspathIndex {
-    fingerprint: u64,
-    index: Arc<nova_classpath::ClasspathIndex>,
-}
-
-static CLASSPATH_INDEX_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedClasspathIndex>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-fn classpath_index_for_file(
-    db: &dyn Database,
-    file: FileId,
-) -> Option<Arc<nova_classpath::ClasspathIndex>> {
-    let path = db.file_path(file)?;
-    if !path.exists() {
-        return None;
-    }
-
-    let root = framework_cache::project_root_for_path(path);
-    let config = framework_cache::project_config(&root)?;
-
-    let mut hasher = DefaultHasher::new();
-    for entry in config.classpath.iter().chain(config.module_path.iter()) {
-        entry.path.hash(&mut hasher);
-        std::mem::discriminant(&entry.kind).hash(&mut hasher);
-    }
-    for dir in &config.output_dirs {
-        dir.path.hash(&mut hasher);
-    }
-    let fingerprint = hasher.finish();
-
-    let mut cache = CLASSPATH_INDEX_CACHE.lock().ok()?;
-    if let Some(cached) = cache.get(&root) {
-        if cached.fingerprint == fingerprint {
-            return Some(cached.index.clone());
-        }
-    }
-
-    let mut entries: Vec<nova_classpath::ClasspathEntry> = config
-        .classpath
-        .iter()
-        .chain(config.module_path.iter())
-        .filter(|entry| match entry.kind {
-            nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
-            nova_project::ClasspathEntryKind::Jar => entry.path.is_file() || entry.path.is_dir(),
-            #[allow(unreachable_patterns)]
-            _ => false,
-        })
-        .filter_map(framework_cache::to_classpath_entry)
-        .collect();
-
-    for output_dir in &config.output_dirs {
-        if output_dir.path.is_dir() {
-            entries.push(nova_classpath::ClasspathEntry::ClassDir(
-                output_dir.path.clone(),
-            ));
-        }
-    }
-
-    let index = nova_classpath::ClasspathIndex::build(&entries, None).ok()?;
-    let index = Arc::new(index);
-    cache.insert(
-        root,
-        CachedClasspathIndex {
-            fingerprint,
-            index: index.clone(),
-        },
-    );
-    Some(index)
 }
 
 fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) -> bool {
@@ -3579,6 +3519,7 @@ fn new_expression_type_completions(
     let analysis = analyze(text);
     let imports = parse_java_imports(text);
     let completion_env = completion_cache::completion_env_for_file(db, file);
+    let classpath = classpath_index_for_file(db, file);
 
     let jdk = JDK_INDEX
         .as_ref()
@@ -3695,6 +3636,42 @@ fn new_expression_type_completions(
             }
             items.push(item);
             added_for_pkg += 1;
+        }
+
+        if let Some(classpath) = classpath.as_deref() {
+            for name in classpath.class_names_with_prefix(&pkg_prefix) {
+                if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
+                    break;
+                }
+
+                if !name.starts_with(&pkg_prefix) {
+                    continue;
+                }
+
+                let rest = &name[pkg_prefix.len()..];
+                // Star-imports only expose direct package members (no subpackages).
+                if rest.contains('.') {
+                    continue;
+                }
+
+                // Avoid nested (`$`) types for now; they require different syntax (`Outer.Inner`).
+                if rest.contains('$') {
+                    continue;
+                }
+
+                let simple = rest.to_string();
+                if !seen_labels.insert(simple.clone()) {
+                    continue;
+                }
+
+                let mut item = constructor_completion_item(simple, Some(name.clone()));
+                if java_type_needs_import(&imports, &name) {
+                    item.additional_text_edits =
+                        Some(vec![java_import_text_edit(text, text_index, &name)]);
+                }
+                items.push(item);
+                added_for_pkg += 1;
+            }
         }
     }
 
@@ -4071,6 +4048,7 @@ fn import_completions(
     ctx: &ImportContext,
 ) -> Vec<CompletionItem> {
     const MAX_ITEMS: usize = 400;
+    const CLASSPATH_LIMIT: usize = 200;
 
     let replace_range = Range::new(
         text_index.offset_to_position(ctx.replace_start),
@@ -4116,6 +4094,19 @@ fn import_completions(
         .all_binary_class_names()
         .or_else(|_| fallback_jdk.all_binary_class_names())
         .unwrap_or(&[]);
+    let mut classpath_classes: Vec<String> = Vec::new();
+    let mut classpath_packages: Vec<String> = Vec::new();
+
+    // Avoid querying the project classpath for the empty prefix (`import <cursor>`) to prevent
+    // generating extremely large result lists.
+    if !prefix.is_empty() {
+        if let Some(classpath) = classpath_index_for_file(db, file) {
+            classpath_packages = classpath.packages_with_prefix(prefix.as_ref());
+            classpath_packages.truncate(CLASSPATH_LIMIT);
+            classpath_classes = classpath.class_names_with_prefix(prefix.as_ref());
+            classpath_classes.truncate(CLASSPATH_LIMIT);
+        }
+    }
 
     // If the already-complete portion of the import path resolves to a type, treat this import as
     // completing nested types (source syntax uses `.`, but binary names use `$`).
@@ -4182,6 +4173,34 @@ fn import_completions(
         mark_workspace_completion_item(&mut item);
         items.push(item);
     }
+
+    // Dependency/classpath package segment completions.
+    for pkg in &classpath_packages {
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+        if !pkg.starts_with(base_prefix.as_ref()) {
+            continue;
+        }
+        let rest = &pkg[base_prefix.len()..];
+        let segment = rest.split('.').next().unwrap_or("");
+        if segment.is_empty() {
+            continue;
+        }
+        if !seen_pkgs.insert(segment.to_string()) {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: segment.to_string(),
+            kind: Some(CompletionItemKind::MODULE),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: format!("{segment}."),
+            })),
+            ..Default::default()
+        });
+    }
+
     let start = packages.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
     for pkg in &packages[start..] {
         if items.len() >= MAX_ITEMS {
@@ -4293,6 +4312,38 @@ fn import_completions(
             }
         }
     }
+
+    // Dependency/classpath type completions.
+    for name in &classpath_classes {
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+
+        let name = name.as_str();
+        if !name.starts_with(base_prefix.as_ref()) {
+            continue;
+        }
+        let mut remainder = name[base_prefix.len()..].to_string();
+        if remainder.is_empty() {
+            continue;
+        }
+        remainder = remainder.replace('$', ".");
+        if !seen_types.insert(remainder.clone()) {
+            continue;
+        }
+
+        items.push(CompletionItem {
+            label: remainder.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(name.to_string()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: remainder,
+            })),
+            ..Default::default()
+        });
+    }
+
     'types: for query_prefix in nested_binary_prefixes(prefix.as_ref()) {
         let start = class_names.partition_point(|name| name.as_str() < query_prefix.as_str());
         for binary in &class_names[start..] {
@@ -4700,6 +4751,7 @@ fn package_decl_completions(
     };
 
     let mut candidates: HashMap<String, bool> = HashMap::new();
+    const MAX_CLASSPATH_PACKAGES: usize = 2048;
 
     // 1) Workspace packages (primary).
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
@@ -4717,7 +4769,6 @@ fn package_decl_completions(
     }
 
     // 2) Classpath packages (optional, when a Salsa-backed DB provides a classpath index).
-    const MAX_CLASSPATH_PACKAGES: usize = 2048;
     if !ctx.dotted_prefix.is_empty() {
         if let Some(salsa) = db.salsa_db() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4783,6 +4834,24 @@ fn package_decl_completions(
                 &parent_segments,
                 &ctx.segment_prefix,
             );
+        }
+    }
+
+    // 4) Project classpath/module-path packages (bounded).
+    if !ctx.dotted_prefix.is_empty() {
+        if let Some(classpath) = classpath_index_for_file(db, file) {
+            for pkg in classpath
+                .packages_with_prefix(&ctx.dotted_prefix)
+                .into_iter()
+                .take(MAX_CLASSPATH_PACKAGES)
+            {
+                add_package_segment_candidates(
+                    &mut candidates,
+                    &pkg,
+                    &parent_segments,
+                    &ctx.segment_prefix,
+                );
+            }
         }
     }
 
@@ -5960,7 +6029,7 @@ pub(crate) fn core_completions(
             &text_index,
             prefix_start,
             offset,
-            annotation_type_completions(db, file, &prefix),
+            annotation_type_completions(db, file, text, &prefix),
         );
     }
 
@@ -6624,7 +6693,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             &text_index,
             prefix_start,
             offset,
-            annotation_type_completions(db, file, &prefix),
+            annotation_type_completions(db, file, text, &prefix),
         );
     }
 
@@ -8154,43 +8223,149 @@ fn line_text_at_offset(text: &str, offset: usize) -> String {
 fn annotation_type_completions(
     db: &dyn Database,
     file: FileId,
+    text: &str,
     prefix: &str,
 ) -> Vec<CompletionItem> {
     const WORKSPACE_LIMIT: usize = 200;
     const JDK_LIMIT: usize = 200;
+    const CLASSPATH_LIMIT: usize = 200;
     const TOTAL_LIMIT: usize = 200;
+
+    let imports = parse_java_imports(text);
+    let classpath = classpath_index_for_file(db, file);
 
     let mut items = Vec::new();
     let mut seen = HashSet::new();
+    // 0) Explicit imports (including dependency types) are the most likely annotation candidates.
+    for ty in &imports.explicit_types {
+        let mut simple = ty.rsplit('.').next().unwrap_or(ty).to_string();
+        simple = simple.replace('$', ".");
+        if !prefix.is_empty() && !simple.starts_with(prefix) {
+            continue;
+        }
+        if !seen.insert(simple.clone()) {
+            continue;
+        }
 
-    // Prefer the cached workspace type index (fast path).
-    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
-        for ty in env.workspace_index().types_with_prefix(prefix) {
-            if !seen.insert(ty.simple.clone()) {
-                continue;
-            }
-            items.push(CompletionItem {
-                label: ty.simple.clone(),
-                kind: Some(CompletionItemKind::CLASS),
-                detail: Some(ty.qualified.clone()),
-                insert_text: Some(ty.simple.clone()),
-                ..Default::default()
-            });
-            if items.len() >= WORKSPACE_LIMIT {
+        items.push(CompletionItem {
+            label: simple.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(ty.clone()),
+            insert_text: Some(simple),
+            ..Default::default()
+        });
+
+        if items.len() >= TOTAL_LIMIT {
+            break;
+        }
+    }
+
+    // 1) Star-import packages (best-effort, bounded).
+    if !prefix.is_empty() && items.len() < TOTAL_LIMIT {
+        let jdk = JDK_INDEX
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
+        let mut packages = imports.star_packages.clone();
+        packages.push("java.lang".to_string());
+        packages.push("java.lang.annotation".to_string());
+        packages.sort();
+        packages.dedup();
+
+        const MAX_TYPES_PER_STAR_PKG: usize = 64;
+        for pkg in packages {
+            if items.len() >= TOTAL_LIMIT {
                 break;
             }
+            let query_prefix = format!("{pkg}.{prefix}");
+
+            let jdk_names = jdk
+                .class_names_with_prefix(&query_prefix)
+                .or_else(|_| JdkIndex::new().class_names_with_prefix(&query_prefix))
+                .unwrap_or_default();
+            for binary in jdk_names.into_iter().take(MAX_TYPES_PER_STAR_PKG) {
+                if items.len() >= TOTAL_LIMIT {
+                    break;
+                }
+                let simple = simple_name_from_binary(&binary);
+                if !seen.insert(simple.clone()) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: simple.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(binary),
+                    insert_text: Some(simple),
+                    ..Default::default()
+                });
+            }
+
+            if let Some(classpath) = classpath.as_deref() {
+                for binary in classpath
+                    .class_names_with_prefix(&query_prefix)
+                    .into_iter()
+                    .take(MAX_TYPES_PER_STAR_PKG)
+                {
+                    if items.len() >= TOTAL_LIMIT {
+                        break;
+                    }
+                    let simple = simple_name_from_binary(&binary);
+                    if !seen.insert(simple.clone()) {
+                        continue;
+                    }
+                    items.push(CompletionItem {
+                        label: simple.clone(),
+                        kind: Some(CompletionItemKind::CLASS),
+                        detail: Some(binary),
+                        insert_text: Some(simple),
+                        ..Default::default()
+                    });
+                }
+            }
         }
-    } else {
-        // Fallback for virtual buffers without a root: scan all Java files.
-        items.extend(workspace_type_completions(
-            db,
-            prefix,
-            &mut seen,
-            WORKSPACE_LIMIT,
-        ));
+    }
+
+    // 2) Workspace types.
+    if items.len() < TOTAL_LIMIT {
+        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+            let mut added = 0usize;
+            for ty in env.workspace_index().types_with_prefix(prefix) {
+                if items.len() >= TOTAL_LIMIT || added >= WORKSPACE_LIMIT {
+                    break;
+                }
+                if !seen.insert(ty.simple.clone()) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: ty.simple.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: (!ty.package.is_empty()).then(|| ty.package.clone()),
+                    insert_text: Some(ty.simple.clone()),
+                    ..Default::default()
+                });
+                added += 1;
+            }
+        } else {
+            // Fallback for virtual buffers without a root: scan all Java files.
+            items.extend(workspace_type_completions(
+                db,
+                prefix,
+                &mut seen,
+                WORKSPACE_LIMIT,
+            ));
+        }
     }
 
     items.extend(jdk_type_completions(prefix, &mut seen, JDK_LIMIT));
+
+    if let Some(classpath) = classpath.as_deref() {
+        items.extend(classpath_type_completions(
+            classpath,
+            prefix,
+            &mut seen,
+            CLASSPATH_LIMIT,
+        ));
+    }
 
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
@@ -8297,6 +8472,53 @@ fn jdk_type_completions(
                 label: simple.clone(),
                 kind: Some(CompletionItemKind::CLASS),
                 detail: Some(binary.to_string()),
+                insert_text: Some(simple),
+                ..Default::default()
+            });
+
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+
+    out
+}
+
+fn classpath_type_completions(
+    classpath: &nova_classpath::ClasspathIndex,
+    prefix: &str,
+    seen: &mut HashSet<String>,
+    limit: usize,
+) -> Vec<CompletionItem> {
+    // Mirror the package bias used by `jdk_type_completions`, but source candidates from the
+    // project classpath/module-path. This enables common dependency-provided annotations like
+    // `javax.inject.Inject` / `jakarta.inject.Inject`.
+    let packages = [
+        "java.lang.",
+        "java.lang.annotation.",
+        "javax.annotation.",
+        "javax.inject.",
+        "jakarta.inject.",
+    ];
+
+    let mut out = Vec::new();
+
+    for pkg in packages {
+        let query_prefix = format!("{pkg}{prefix}");
+        for binary in classpath.class_names_with_prefix(&query_prefix) {
+            let simple = simple_name_from_binary(&binary);
+            if !prefix.is_empty() && !simple.starts_with(prefix) {
+                continue;
+            }
+            if !seen.insert(simple.clone()) {
+                continue;
+            }
+
+            out.push(CompletionItem {
+                label: simple.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(binary),
                 insert_text: Some(simple),
                 ..Default::default()
             });
@@ -8463,12 +8685,27 @@ impl CompletionResolveCtx {
         if name.is_empty() {
             return Type::Unknown;
         }
-        for candidate in self.type_name_candidates(name) {
-            if let Some(id) = ensure_class_id(types, &candidate) {
+        let candidates = self.type_name_candidates(name);
+        for candidate in &candidates {
+            if let Some(id) = ensure_class_id(types, candidate) {
                 return Type::class(id, vec![]);
             }
         }
-        Type::Named(canonical_to_binary_name(name))
+        // We couldn't resolve the name to a known `ClassId` (JDK/workspace types). Still preserve a
+        // useful name for downstream semantic completion:
+        // - prefer a non-`java.lang.*` qualified candidate (explicit import / same package / star
+        //   import) so dependency types can be loaded later via the classpath index.
+        // - otherwise fall back to the raw simple name (important for in-memory fixtures where
+        //   workspace types haven't been loaded yet).
+        let fallback = candidates
+            .iter()
+            .find(|cand| {
+                (cand.contains('.') || cand.contains('$')) && !cand.starts_with("java.lang.")
+            })
+            .cloned()
+            .or_else(|| candidates.last().cloned())
+            .unwrap_or_else(|| canonical_to_binary_name(name));
+        Type::Named(fallback)
     }
 
     fn resolve_type_name(&self, raw: &str) -> String {
@@ -8700,6 +8937,54 @@ fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
     store
 }
 
+fn maybe_load_external_type_for_member_completion(
+    db: &dyn Database,
+    file: FileId,
+    types: &mut TypeStore,
+    file_ctx: &CompletionResolveCtx,
+    ty: Type,
+) -> Type {
+    let Type::Named(name) = &ty else {
+        return ty;
+    };
+
+    let candidates = file_ctx.type_name_candidates(name);
+    if candidates.is_empty() {
+        return ty;
+    }
+
+    // First, try to resolve using the existing JDK/workspace environment. This keeps the common
+    // case fast and avoids rebuilding a type-provider chain when the type is already known.
+    for cand in &candidates {
+        if let Some(id) = ensure_class_id(types, cand) {
+            return Type::class(id, vec![]);
+        }
+    }
+
+    // No JDK/workspace match; attempt to load from the project classpath/module-path.
+    let Some(classpath) = classpath_index_for_file(db, file) else {
+        return ty;
+    };
+
+    let jdk: &JdkIndex = JDK_INDEX
+        .as_ref()
+        .map(|arc| arc.as_ref())
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.as_ref());
+
+    let mut providers: Vec<&dyn TypeProvider> = Vec::new();
+    providers.push(classpath.as_ref());
+    providers.push(jdk);
+    let provider = ChainTypeProvider::new(providers);
+    let mut loader = ExternalTypeLoader::new(types, &provider);
+
+    for cand in candidates {
+        if let Some(id) = loader.ensure_class(&cand) {
+            return Type::class(id, vec![]);
+        }
+    }
+
+    ty
+}
 fn member_completions(
     db: &dyn Database,
     file: FileId,
@@ -8746,6 +9031,9 @@ fn member_completions(
         }
         return Vec::new();
     }
+
+    let receiver_ty =
+        maybe_load_external_type_for_member_completion(db, file, &mut types, &file_ctx, receiver_ty);
 
     let mut items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
     if call_kind == CallKind::Static {
@@ -8816,6 +9104,7 @@ fn member_completions(
     deduplicate_completion_items(&mut items);
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
+    items.truncate(400);
     items
 }
 
@@ -9127,6 +9416,14 @@ fn member_completions_for_receiver_type(
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return Vec::new();
     }
+
+    let receiver_ty = maybe_load_external_type_for_member_completion(
+        db,
+        file,
+        &mut types,
+        &file_ctx,
+        receiver_ty,
+    );
 
     let mut items = semantic_member_completions(&mut types, &receiver_ty, CallKind::Instance);
 
