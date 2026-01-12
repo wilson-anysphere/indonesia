@@ -7519,28 +7519,38 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                 }
-                if self.is_static_context() && !is_static {
-                    self.diagnostics.push(Diagnostic::error(
-                        "static-context",
-                        format!(
-                            "cannot reference instance field `{}` from a static context",
-                            field_def.name
-                        ),
-                        Some(range),
-                    ));
-                    ExprInfo {
-                        ty: Type::Error,
-                        is_type_ref: false,
-                    }
-                } else {
-                    ExprInfo {
-                        ty: self
-                            .field_types
+                if !is_static {
+                    // Unqualified field references implicitly use `this` (or an enclosing
+                    // `Outer.this`). If there is no suitable implicit instance receiver, reject the
+                    // reference with the standard static-context diagnostic.
+                    let invalid = self.is_static_context()
+                        || self
+                            .field_owners
                             .get(&field)
-                            .cloned()
-                            .unwrap_or(Type::Unknown),
-                        is_type_ref: false,
+                            .is_some_and(|owner| !self.has_enclosing_instance_of(owner));
+                    if invalid {
+                        self.diagnostics.push(Diagnostic::error(
+                            "static-context",
+                            format!(
+                                "cannot reference instance field `{}` from a static context",
+                                field_def.name
+                            ),
+                            Some(range),
+                        ));
+                        return ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        };
                     }
+                }
+
+                ExprInfo {
+                    ty: self
+                        .field_types
+                        .get(&field)
+                        .cloned()
+                        .unwrap_or(Type::Unknown),
+                    is_type_ref: false,
                 }
             }
             Resolution::Methods(_) | Resolution::Constructors(_) => ExprInfo {
@@ -9047,6 +9057,87 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             DefWithBodyId::Method(m) => self.tree.method(m).modifiers.raw & Modifiers::STATIC != 0,
             DefWithBodyId::Constructor(_) => false,
             DefWithBodyId::Initializer(i) => self.tree.initializer(i).is_static,
+        }
+    }
+
+    /// Determine whether `owner` has an implicit enclosing instance available at this body site.
+    ///
+    /// This is primarily used to reject unqualified references to instance members declared on an
+    /// enclosing type when the current type is a `static`/implicitly-static member type.
+    fn has_enclosing_instance_of(&self, owner: &str) -> bool {
+        if self.is_static_context() {
+            // Static bodies have no implicit `this`, and therefore no enclosing instances.
+            return false;
+        }
+
+        let class_items = self.enclosing_class_items();
+        if class_items.is_empty() {
+            return false;
+        }
+
+        for idx in 0..class_items.len() {
+            if let Some(name) = self.scopes.type_name(class_items[idx]) {
+                if name.as_str() == owner {
+                    return true;
+                }
+            }
+
+            let Some(next) = class_items.get(idx + 1).copied() else {
+                break;
+            };
+            if self.member_type_is_static(class_items[idx], next) {
+                break;
+            }
+        }
+
+        false
+    }
+
+    fn enclosing_class_items(&self) -> Vec<nova_hir::ids::ItemId> {
+        let mut items = Vec::new();
+        let mut scope = Some(self.scope_id);
+        let mut steps = 0u32;
+        while let Some(id) = scope {
+            // Avoid panics and infinite loops if the scope graph is malformed.
+            let Some(data) = self.scopes.scope_opt(id) else {
+                break;
+            };
+            if let ScopeKind::Class { item } = data.kind() {
+                items.push(*item);
+            }
+
+            scope = data.parent();
+            steps = steps.wrapping_add(1);
+            if steps > 256 {
+                break;
+            }
+        }
+        items
+    }
+
+    /// Returns `true` if `item` is a member type that is `static` (or implicitly static) with
+    /// respect to its enclosing type `enclosing`.
+    fn member_type_is_static(
+        &self,
+        item: nova_hir::ids::ItemId,
+        enclosing: nova_hir::ids::ItemId,
+    ) -> bool {
+        use nova_hir::ids::ItemId::*;
+
+        // Interfaces, annotations, enums, and records are implicitly static member types.
+        if matches!(item, Interface(_) | Annotation(_) | Enum(_) | Record(_)) {
+            return true;
+        }
+
+        // Any member type declared in an interface/annotation is implicitly static.
+        if matches!(enclosing, Interface(_) | Annotation(_)) {
+            return true;
+        }
+
+        match item {
+            Class(id) => self.tree.class(id).modifiers.raw & Modifiers::STATIC != 0,
+            // Covered above, but keep a catch-all for future variants.
+            _ => false,
         }
     }
 

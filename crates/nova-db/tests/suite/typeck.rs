@@ -5776,6 +5776,79 @@ class Outer {
 }
 
 #[test]
+fn inner_class_can_access_enclosing_instance_field_unqualified() {
+    let src = r#"
+class Outer {
+    int x;
+    class Inner {
+        int m() {
+            return x;
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected inner class to allow unqualified enclosing instance field access; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-name"),
+        "expected unqualified field access to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_member_class_rejects_enclosing_instance_field_unqualified() {
+    let src = r#"
+class Outer {
+    int x;
+    static class Inner {
+        int m() {
+            return x;
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
+        "expected static member class to reject unqualified enclosing instance field access; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_member_class_allows_enclosing_static_field_unqualified() {
+    let src = r#"
+class Outer {
+    static int X = 1;
+    static class Inner {
+        int m() {
+            return X;
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected static member class to allow unqualified enclosing static field access; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-name"),
+        "expected unqualified static field access to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn super_types_as_declared_superclass() {
     let src = r#"
 class Base { void foo() {} }
