@@ -43,6 +43,8 @@ pub enum InlineMethodError {
     ArgumentCountMismatch,
     #[error("void methods are not supported for inlining yet")]
     VoidMethodNotSupported,
+    #[error(transparent)]
+    Edit(#[from] crate::edit::EditError),
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +127,9 @@ pub fn inline_method(
         edits.push(TextEdit::delete(file_id.clone(), decl_range));
     }
 
-    Ok(WorkspaceEdit::new(edits))
+    let mut edit = WorkspaceEdit::new(edits);
+    edit.normalize()?;
+    Ok(edit)
 }
 
 fn validate_receiver(receiver: Option<&jast::Expr>, source: &str) -> Result<(), InlineMethodError> {

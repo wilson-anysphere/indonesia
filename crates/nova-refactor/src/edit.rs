@@ -376,7 +376,7 @@ impl WorkspaceEdit {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum EditError {
     #[error("invalid text range {range:?} in {file:?}")]
     InvalidRange { file: FileId, range: TextRange },

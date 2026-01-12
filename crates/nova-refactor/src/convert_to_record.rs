@@ -51,6 +51,8 @@ pub enum ConvertToRecordError {
     NonCanonicalConstructor,
     #[error("method `{method}` conflicts with the record accessor for component `{component}`")]
     AccessorConflict { method: String, component: String },
+    #[error(transparent)]
+    Edit(#[from] crate::edit::EditError),
 }
 
 #[derive(Debug, Clone)]
@@ -116,11 +118,13 @@ pub fn convert_to_record(
         .ok_or(ConvertToRecordError::NoClassAtPosition)?;
     let analysis = analyze_class(&class, &options)?;
     let replacement = maybe_nova_format(&generate_record(&analysis));
-    Ok(WorkspaceEdit::new(vec![TextEdit::replace(
+    let mut edit = WorkspaceEdit::new(vec![TextEdit::replace(
         FileId::new(file.to_string()),
         analysis.range,
         replacement,
-    )]))
+    )]);
+    edit.normalize()?;
+    Ok(edit)
 }
 
 fn maybe_nova_format(text: &str) -> String {

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use nova_refactor::{
-    apply_workspace_edit, extract_constant, extract_field, ExtractError, ExtractOptions, FileId,
-    TextRange,
+    apply_workspace_edit, extract_constant, extract_field, generate_preview, ExtractError,
+    ExtractOptions, FileId, TextDatabase, TextRange,
 };
 use pretty_assertions::assert_eq;
 
@@ -144,3 +144,38 @@ class A {
 "#
     );
 }
+
+#[test]
+fn extract_constant_generates_preview() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        int x = /*[*/1 + 2/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let db = TextDatabase::new([(FileId::new("A.java"), code)]);
+    let preview = generate_preview(&db, &outcome.edit).unwrap();
+
+    assert_eq!(preview.total_files, 1);
+    assert_eq!(preview.total_edits, outcome.edit.text_edits.len());
+    assert_eq!(
+        preview.files[0].modified,
+        r#"
+class A {
+    private static final int VALUE = 1 + 2;
+
+    void m() {
+        int x = VALUE;
+    }
+}
+"#
+    );
+    assert!(preview.files[0].unified_diff.contains("private static final int VALUE"));
+}
+

@@ -97,6 +97,50 @@ class A {
 }
 
 #[test]
+fn safe_delete_detects_usage_on_new_expression_in_other_file() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+class A {
+    public void used() {
+    }
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "B.java".to_string(),
+        r#"
+class B {
+    public void entry() {
+        new A().used();
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index.find_method("A", "used").expect("method exists").id;
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert_eq!(report.usages.len(), 1);
+    assert_eq!(report.usages[0].file, "B.java");
+    assert_eq!(report.usages[0].kind, UsageKind::Call);
+}
+
+#[test]
 fn safe_delete_delete_anyway_removes_overrides() {
     let mut files = BTreeMap::new();
     files.insert(
