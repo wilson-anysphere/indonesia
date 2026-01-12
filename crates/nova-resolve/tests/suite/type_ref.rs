@@ -1148,3 +1148,32 @@ fn type_use_annotations_between_multiple_array_dims_are_ignored() {
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 }
+
+#[test]
+fn type_use_annotations_before_primitives_are_ignored() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int", None);
+    let annotated = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[]", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint[]", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+
+    // Varargs is encoded as one array dimension in `nova_types::Type`.
+    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int...", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint...", None);
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(annotated.diagnostics, Vec::new());
+    assert_eq!(annotated.ty, plain.ty);
+}
