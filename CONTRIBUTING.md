@@ -67,7 +67,7 @@ Nova’s formatter tests use `insta` snapshots. To update snapshots:
 
 ```bash
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 #### `javac` differential tests (ignored)
@@ -81,11 +81,11 @@ INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test forma
 #### Real-project tests (ignored; requires `test-projects/` fixtures)
 
  ```bash
- ./scripts/run-real-project-tests.sh
- 
- # or run directly after cloning fixtures:
+  ./scripts/run-real-project-tests.sh
+  
+  # or run directly after cloning fixtures:
  cargo test -p nova-project --test harness -- --ignored real_projects::
- cargo test -p nova-cli --test real_projects -- --ignored
+ cargo test -p nova-cli --test cli -- --ignored real_projects::
  ```
 
 ### Format & lint
