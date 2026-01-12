@@ -5,6 +5,7 @@ use lsp_types::{CodeActionOrCommand, DiagnosticSeverity, NumberOrString, Positio
 use nova_config::NovaConfig;
 use nova_db::{InMemoryFileStore, SalsaDbView};
 use nova_ext::{ProjectId, Span};
+use nova_ide::code_action::diagnostic_quick_fixes;
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
@@ -623,4 +624,84 @@ fn unresolved_name_offers_jdk_static_member_quick_fixes() {
     let qualify =
         find_code_action(&actions, "Qualify with Math").expect("missing qualify quick fix");
     assert_eq!(first_text_edit(qualify).new_text, "Math.PI");
+}
+
+#[test]
+fn diagnostic_quick_fixes_offer_create_variable_and_field_for_unresolved_name() {
+    let source = "class A {\n  void m() {\n    int x = y;\n  }\n}\n";
+    let uri: lsp_types::Uri = "file:///test.java".parse().expect("valid uri");
+
+    let y_offset = source.find("y;").expect("expected `y` in fixture");
+    let range = Range::new(
+        offset_to_position(source, y_offset),
+        offset_to_position(source, y_offset + 1),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-name".to_string())),
+        message: "unresolved reference `y`".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diag]);
+    let local = actions
+        .iter()
+        .find(|action| action.title == "Create local variable 'y'")
+        .expect("expected Create local variable quick fix");
+    let field = actions
+        .iter()
+        .find(|action| action.title == "Create field 'y'")
+        .expect("expected Create field quick fix");
+
+    let updated = apply_workspace_edit(source, local.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("    Object y = null;\n    int x = y;"),
+        "expected local-variable stub before statement; got:\n{updated}"
+    );
+    assert_eq!(first_text_edit(local).range.start, Position::new(2, 0));
+
+    let updated = apply_workspace_edit(source, field.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("  private Object y;\n}"),
+        "expected field stub before final brace; got:\n{updated}"
+    );
+    assert_eq!(first_text_edit(field).range.start, Position::new(4, 0));
+}
+
+#[test]
+fn diagnostic_quick_fixes_create_field_in_single_line_file_inserts_before_final_brace() {
+    let source = "class A { void m() { int x = y; } }";
+    let uri: lsp_types::Uri = "file:///test.java".parse().expect("valid uri");
+
+    let y_offset = source.find("y;").expect("expected `y` in fixture");
+    let range = Range::new(
+        offset_to_position(source, y_offset),
+        offset_to_position(source, y_offset + 1),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-name".to_string())),
+        message: "unresolved reference `y`".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diag]);
+    let field = actions
+        .iter()
+        .find(|action| action.title == "Create field 'y'")
+        .expect("expected Create field quick fix");
+
+    let updated = apply_workspace_edit(source, field.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("private Object y;"),
+        "expected inserted field; got:\n{updated}"
+    );
+    assert!(
+        updated.ends_with("\n}"),
+        "expected inserted field to end with closing brace on its own line; got:\n{updated}"
+    );
 }
