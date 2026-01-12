@@ -5018,6 +5018,52 @@ mode = "off"
     }
 
     #[test]
+    fn watch_roots_normalize_workspace_root_before_watching() {
+        let workspace_root = PathBuf::from("/ws/root/..");
+        let config = WatchConfig::new(workspace_root.clone());
+
+        let roots = compute_watch_roots(&workspace_root, &config);
+        assert!(
+            roots.contains(&(PathBuf::from("/ws"), WatchMode::Recursive)),
+            "expected workspace root to be normalized; roots={roots:?}"
+        );
+        assert!(
+            !roots.contains(&(workspace_root, WatchMode::Recursive)),
+            "expected un-normalized workspace root not to be watched; roots={roots:?}"
+        );
+    }
+
+    #[test]
+    fn watch_roots_normalize_external_roots_before_workspace_prefix_check() {
+        let workspace_root = PathBuf::from("/ws");
+        let mut config = WatchConfig::new(workspace_root.clone());
+
+        // Lexically starts with the workspace root, but normalizes outside of it.
+        config.module_roots = vec![workspace_root.join("..").join("external")];
+
+        let roots = compute_watch_roots(&workspace_root, &config);
+        assert!(
+            roots.contains(&(PathBuf::from("/external"), WatchMode::Recursive)),
+            "expected external root to be watched after normalization; roots={roots:?}"
+        );
+    }
+
+    #[test]
+    fn watch_roots_normalize_config_path_before_workspace_prefix_check() {
+        let workspace_root = PathBuf::from("/ws");
+        let mut config = WatchConfig::new(workspace_root.clone());
+
+        // Lexically starts with the workspace root, but normalizes outside of it.
+        config.nova_config_path = Some(workspace_root.join("..").join("config.toml"));
+
+        let roots = compute_watch_roots(&workspace_root, &config);
+        assert!(
+            roots.contains(&(PathBuf::from("/config.toml"), WatchMode::NonRecursive)),
+            "expected external config path to be watched after normalization; roots={roots:?}"
+        );
+    }
+
+    #[test]
     fn watch_roots_under_workspace_root_are_never_added_explicitly() {
         let workspace_root = PathBuf::from("/ws");
         let workspace_src = workspace_root.join("src");
