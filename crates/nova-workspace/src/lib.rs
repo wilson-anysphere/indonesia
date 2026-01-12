@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_db::{FileId, NovaIndexing, SalsaDatabase};
-#[cfg(test)]
-use nova_index::SymbolLocation;
 use nova_index::{
     load_sharded_index_view_lazy_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, IndexedSymbol, ProjectIndexes, SearchStats, SearchSymbol,
@@ -1146,6 +1144,7 @@ impl Workspace {
     }
 }
 
+#[cfg(test)]
 fn fuzzy_rank_workspace_symbols(
     searcher: &WorkspaceSymbolSearcher,
     symbols: &nova_index::SymbolIndex,
