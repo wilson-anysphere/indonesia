@@ -205,7 +205,7 @@ bash scripts/cargo_agent.sh +nightly fuzz run fuzz_classfile -- -max_total_time=
 # Parse JUnit XML reports.
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 
-# Read archives (ZIP/JAR + directory mode).
+# Read archives (ZIP/JAR/JMOD + directory mode).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_archive_read -- -max_total_time=60 -max_len=262144
 
 # Optional targets
