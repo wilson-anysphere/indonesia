@@ -242,7 +242,10 @@ fn collect_affected_methods(
     let mut out = Vec::new();
     out.push(target.clone());
 
-    let target_param_types: Vec<String> = target.params.iter().map(|p| p.ty.clone()).collect();
+    let target_param_types: Vec<String> = index
+        .method_param_types(SymbolId(target.method_id.0))
+        .map(|tys| tys.to_vec())
+        .unwrap_or_else(|| target.params.iter().map(|p| p.ty.clone()).collect());
 
     if propagation.include_overridden() {
         let mut cur = index.class_extends(target_class);
@@ -272,7 +275,18 @@ fn collect_affected_methods(
                 continue;
             }
 
-            let parsed = match parse_method(index, sym, MethodId(sym.id.0)) {
+            let id = MethodId(sym.id.0);
+            if let Some(sig_types) = index.method_param_types(sym.id) {
+                if sig_types != target_param_types.as_slice() {
+                    continue;
+                }
+                if let Ok(parsed) = parse_method(index, sym, id) {
+                    out.push(parsed);
+                }
+                continue;
+            }
+
+            let parsed = match parse_method(index, sym, id) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -322,7 +336,19 @@ fn find_methods_by_signature(
         if sym.container.as_deref() != Some(class) {
             continue;
         }
-        let parsed = match parse_method(index, sym, MethodId(sym.id.0)) {
+
+        let id = MethodId(sym.id.0);
+        if let Some(sig_types) = index.method_param_types(sym.id) {
+            if sig_types != param_types {
+                continue;
+            }
+            if let Ok(parsed) = parse_method(index, sym, id) {
+                out.push(parsed);
+            }
+            continue;
+        }
+
+        let parsed = match parse_method(index, sym, id) {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -468,11 +494,25 @@ fn detect_overload_collisions(
         if affected.contains(&other_id) {
             continue;
         }
+        if sym.name != new_sig.name {
+            continue;
+        }
+
+        if let Some(other_types) = index.method_param_types(sym.id) {
+            if other_types == new_param_types.as_slice() {
+                conflicts.push(ChangeSignatureConflict::OverloadCollision {
+                    method: method.method_id,
+                    collides_with: other_id,
+                });
+            }
+            continue;
+        }
+
         let Ok(other) = parse_method(index, sym, other_id) else {
             continue;
         };
         let other_types: Vec<String> = other.params.iter().map(|p| p.ty.clone()).collect();
-        if other.name == new_sig.name && other_types == new_param_types {
+        if other_types == new_param_types {
             conflicts.push(ChangeSignatureConflict::OverloadCollision {
                 method: method.method_id,
                 collides_with: other_id,
@@ -627,22 +667,31 @@ fn overload_candidates_after_change(
                 continue;
             }
             let id = MethodId(sym.id.0);
+            if affected.contains(&id) {
+                if new_param_types.len() == new_param_count {
+                    by_sig.entry(new_param_types.to_vec()).or_insert(id);
+                }
+                continue;
+            }
+
+            if sym.name != new_name {
+                continue;
+            }
+
+            if let Some(sig_types) = index.method_param_types(sym.id) {
+                if sig_types.len() == new_param_count {
+                    by_sig.entry(sig_types.to_vec()).or_insert(id);
+                }
+                continue;
+            }
+
             let parsed = match parse_method(index, sym, id) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-
-            let (name, param_types) = if affected.contains(&id) {
-                (new_name, new_param_types.to_vec())
-            } else {
-                (
-                    parsed.name.as_str(),
-                    parsed.params.iter().map(|p| p.ty.clone()).collect(),
-                )
-            };
-
-            if name == new_name && param_types.len() == new_param_count {
-                by_sig.entry(param_types).or_insert(id);
+            let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
+            if parsed_types.len() == new_param_count {
+                by_sig.entry(parsed_types).or_insert(id);
             }
         }
         cur = index.class_extends(class);
@@ -734,7 +783,18 @@ fn resolve_method_in_hierarchy(
                 continue;
             }
             let id = MethodId(sym.id.0);
-            let parsed = parse_method(index, sym, id).ok()?;
+
+            if let Some(sig_types) = index.method_param_types(sym.id) {
+                if sig_types == param_types {
+                    return Some(id);
+                }
+                continue;
+            }
+
+            let parsed = match parse_method(index, sym, id) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
             let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
             if parsed_types == param_types {
                 return Some(id);
@@ -1116,7 +1176,7 @@ fn parse_params(params: &str) -> Vec<ParamDecl> {
     if params.is_empty() {
         return out;
     }
-    for part in split_top_level(params, ',') {
+    for part in split_top_level_types(params, ',') {
         let p = part.trim();
         if p.is_empty() {
             continue;
@@ -1129,6 +1189,63 @@ fn parse_params(params: &str) -> Vec<ParamDecl> {
         let ty = tokens[..tokens.len() - 1].join(" ");
         out.push(ParamDecl { ty, name });
     }
+    out
+}
+
+fn split_top_level_types(text: &str, sep: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth_paren = 0i32;
+    let mut depth_brack = 0i32;
+    let mut depth_brace = 0i32;
+    let mut depth_angle = 0i32;
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if in_string || in_char {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if in_string && ch == '"' {
+                in_string = false;
+            } else if in_char && ch == '\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '\'' => in_char = true,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            '[' => depth_brack += 1,
+            ']' => depth_brack -= 1,
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            '<' => depth_angle += 1,
+            '>' => depth_angle -= 1,
+            _ => {}
+        }
+
+        if ch == sep
+            && depth_paren == 0
+            && depth_brack == 0
+            && depth_brace == 0
+            && depth_angle == 0
+        {
+            out.push(text[start..i].to_string());
+            start = i + 1;
+        }
+        i += 1;
+    }
+    out.push(text[start..].to_string());
     out
 }
 

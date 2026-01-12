@@ -36,129 +36,14 @@ fn method_id(index: &Index, class: &str, name: &str, param_types: &[&str]) -> Me
         if sym.name != name {
             continue;
         }
-        let parsed = parse_param_types(index, sym);
-        if parsed == wanted {
+        let Some(sig_types) = index.method_param_types(sym.id) else {
+            continue;
+        };
+        if sig_types == wanted.as_slice() {
             return MethodId(sym.id.0);
         }
     }
     panic!("method not found: {class}.{name}({wanted:?})");
-}
-
-fn parse_param_types(index: &Index, sym: &nova_index::Symbol) -> Vec<String> {
-    let text = index.file_text(&sym.file).expect("file text");
-    let bytes = text.as_bytes();
-    let mut open = sym.name_range.end;
-    while open < bytes.len() && bytes[open].is_ascii_whitespace() {
-        open += 1;
-    }
-    assert_eq!(
-        bytes.get(open),
-        Some(&b'('),
-        "expected `(` after method name"
-    );
-    let close = find_matching_paren(text, open).expect("matching paren");
-    let params_src = &text[open + 1..close - 1];
-    parse_params(params_src)
-}
-
-fn parse_params(params: &str) -> Vec<String> {
-    let params = params.trim();
-    if params.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for part in split_top_level(params, ',') {
-        let p = part.trim();
-        if p.is_empty() {
-            continue;
-        }
-        let tokens: Vec<&str> = p.split_whitespace().collect();
-        if tokens.len() < 2 {
-            continue;
-        }
-        let ty = tokens[..tokens.len() - 1].join(" ");
-        out.push(ty);
-    }
-    out
-}
-
-fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open_paren;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => depth += 1,
-            b')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            b'"' => {
-                // Skip strings
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-fn split_top_level(text: &str, sep: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth_paren = 0i32;
-    let mut depth_brack = 0i32;
-    let mut depth_brace = 0i32;
-    let mut start = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '[' => depth_brack += 1,
-            ']' => depth_brack -= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -= 1,
-            _ => {}
-        }
-
-        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
-            out.push(text[start..i].to_string());
-            start = i + 1;
-        }
-        i += 1;
-    }
-    out.push(text[start..].to_string());
-    out
 }
 
 #[test]
@@ -338,6 +223,62 @@ fn rename_method_updates_overrides_and_calls() {
         r#"class Main {
     void test() {
         new B().bar(1);
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn generic_param_types_do_not_split_and_resolve_overloads() {
+    let (index, mut files) = build_index(vec![(
+        "file:///A.java",
+        r#"class A {
+    void foo(Map<String, Integer> m) {
+    }
+
+    void foo(int a, int b) {
+    }
+
+    void test() {
+        Map<String, Integer> m = null;
+        foo(m);
+        foo(1, 2);
+    }
+}
+"#,
+    )]);
+
+    let target = method_id(&index, "A", "foo", &["Map<String, Integer>"]);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("bar".to_string()),
+        parameters: vec![ParameterOperation::Existing {
+            old_index: 0,
+            new_name: None,
+            new_type: None,
+        }],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::None,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///A.java").unwrap(),
+        r#"class A {
+    void bar(Map<String, Integer> m) {
+    }
+
+    void foo(int a, int b) {
+    }
+
+    void test() {
+        Map<String, Integer> m = null;
+        bar(m);
+        foo(1, 2);
     }
 }
 "#
