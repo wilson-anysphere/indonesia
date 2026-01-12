@@ -2052,6 +2052,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{EventModifier, JdwpClient, JdwpClientConfig};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
     use crate::wire::mock::{
         DelayedReply, MockEventRequestModifier, MockJdwpServer, MockJdwpServerConfig,
         NESTED_THREAD_GROUP_ID, THREAD_ID, TOP_LEVEL_THREAD_GROUP_ID, TOP_LEVEL_THREAD_GROUP_NAME,
@@ -2074,6 +2077,63 @@ mod tests {
         caps[6] = true; // canGetMonitorInfo
         caps[21] = true; // canGetOwnedMonitorStackDepthInfo
         caps
+    }
+
+    #[tokio::test]
+    async fn connect_aborts_on_oversized_packet_length_prefix() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            // JDWP handshake.
+            let mut hs = [0u8; crate::wire::codec::HANDSHAKE.len()];
+            socket.read_exact(&mut hs).await.unwrap();
+            socket.write_all(crate::wire::codec::HANDSHAKE).await.unwrap();
+
+            // Read the first command packet from the debugger (VirtualMachine.IDSizes).
+            // This ensures the client has a pending request before we inject the oversized
+            // packet that should terminate the read loop.
+            let mut len_buf = [0u8; 4];
+            socket.read_exact(&mut len_buf).await.unwrap();
+            let length = u32::from_be_bytes(len_buf) as usize;
+            if length >= 4 {
+                let mut rest = vec![0u8; length - 4];
+                socket.read_exact(&mut rest).await.unwrap();
+            }
+
+            // Inject an oversized JDWP packet header.
+            let oversize = (crate::MAX_JDWP_PACKET_BYTES + 1) as u32;
+            let mut header = [0u8; crate::wire::codec::HEADER_LEN];
+            header[0..4].copy_from_slice(&oversize.to_be_bytes());
+            socket.write_all(&header).await.unwrap();
+        });
+
+        let config = JdwpClientConfig {
+            // Keep the test fast even if something regresses.
+            reply_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+
+        let res = tokio::time::timeout(
+            Duration::from_secs(2),
+            JdwpClient::connect_with_config(addr, config),
+        )
+        .await
+        .expect("connect should not hang");
+
+        let err = match res {
+            Ok(_client) => panic!("expected connect to fail"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(
+                err,
+                JdwpError::Cancelled | JdwpError::ConnectionClosed | JdwpError::Protocol(_)
+            ),
+            "unexpected connect error: {err:?}"
+        );
     }
 
     #[tokio::test]
