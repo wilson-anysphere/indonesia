@@ -5772,9 +5772,19 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 Type::Error
                             }
                         }
+                        // One side is a primitive/boxed-primitive and the other isn't. For `null`
+                        // and other reference types, Java uses reference equality instead of
+                        // unboxing/numeric comparison, so treat this as a boolean-typed expression
+                        // (JLS 15.21).
                         _ => {
-                            type_mismatch(self);
-                            Type::Error
+                            let lhs_ref = lhs_ty.is_reference() || matches!(lhs_ty, Type::Null);
+                            let rhs_ref = rhs_ty.is_reference() || matches!(rhs_ty, Type::Null);
+                            if lhs_ref && rhs_ref {
+                                Type::boolean()
+                            } else {
+                                type_mismatch(self);
+                                Type::Error
+                            }
                         }
                     }
                 } else {

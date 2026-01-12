@@ -1017,6 +1017,30 @@ class C {
 }
 
 #[test]
+fn boxed_primitive_equality_with_null_is_boolean() {
+    let src = r#"
+class C {
+    boolean m(Integer i) {
+        return i == null;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+
+    let offset = src.find("==").expect("snippet should contain ==");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
 fn type_at_offset_shows_boolean_for_logical_and() {
     let src = r#"
 class C {
