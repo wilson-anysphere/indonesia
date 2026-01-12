@@ -16,6 +16,10 @@ pub enum ExtractError {
     InvalidSelection,
     #[error("expression has side effects and cannot be extracted safely")]
     SideEffectfulExpression,
+    #[error("expression depends on method-local variables or parameters")]
+    DependsOnLocal,
+    #[error("expression is not safe to extract to a static context")]
+    NotStaticSafe,
     #[error("expression is not contained in a class body")]
     NotInClass,
 }
@@ -105,6 +109,13 @@ fn extract_impl(
         .ancestors()
         .find_map(ast::ClassBody::cast)
         .ok_or(ExtractError::NotInClass)?;
+
+    if depends_on_local(&expr) {
+        return Err(ExtractError::DependsOnLocal);
+    }
+    if kind == ExtractKind::Constant && !is_static_safe(&expr, &class_body) {
+        return Err(ExtractError::NotStaticSafe);
+    }
 
     let expr_range = syntax_range(expr.syntax());
     let expr_text = source[expr_range.start..expr_range.end].to_string();
@@ -198,14 +209,250 @@ fn find_expression(root: nova_syntax::SyntaxNode, selection: TextRange) -> Optio
 }
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
-    expr.descendants().any(|node| {
+    // Expression nodes which are inherently side-effectful or order-dependent.
+    if expr.descendants().any(|node| {
         matches!(
             node.kind(),
             SyntaxKind::MethodCallExpression
                 | SyntaxKind::NewExpression
+                | SyntaxKind::ClassInstanceCreationExpression
+                | SyntaxKind::ArrayCreationExpression
                 | SyntaxKind::AssignmentExpression
         )
+    }) {
+        return true;
+    }
+
+    // `++i` / `i++` / `--i` / `i--`.
+    //
+    // The parser's concrete node shapes around increment/decrement have evolved over time, so we
+    // detect the tokens directly to stay robust.
+    expr.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|tok| matches!(tok.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+}
+
+fn depends_on_local(expr: &ast::Expression) -> bool {
+    let Some(container) = enclosing_executable_container(expr.syntax()) else {
+        return false;
+    };
+    let local_names = collect_local_names(&container);
+    if local_names.is_empty() {
+        return false;
+    }
+    expr_uses_any_name(expr.syntax(), &local_names)
+}
+
+fn enclosing_executable_container(
+    node: &nova_syntax::SyntaxNode,
+) -> Option<nova_syntax::SyntaxNode> {
+    node.ancestors().find(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::MethodDeclaration
+                | SyntaxKind::ConstructorDeclaration
+                | SyntaxKind::CompactConstructorDeclaration
+                | SyntaxKind::InitializerBlock
+        )
     })
+}
+
+fn collect_local_names(container: &nova_syntax::SyntaxNode) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    for param in container.descendants().filter_map(ast::Parameter::cast) {
+        if let Some(name) = param.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+
+    for param in container
+        .descendants()
+        .filter_map(ast::LambdaParameter::cast)
+    {
+        if let Some(name) = param.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+
+    for var in container
+        .descendants()
+        .filter_map(ast::VariableDeclarator::cast)
+    {
+        if let Some(name) = var.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+
+    // Pattern variables (e.g. `if (x instanceof Foo f)`).
+    for pat in container.descendants().filter_map(ast::TypePattern::cast) {
+        if let Some(name) = pat.name_token() {
+            out.insert(name.text().to_string());
+        }
+    }
+
+    out
+}
+
+fn expr_uses_any_name(expr: &nova_syntax::SyntaxNode, local_names: &HashSet<String>) -> bool {
+    // Any name expression rooted in a local/parameter indicates we can't move the expression
+    // to a class-level initializer without breaking compilation.
+    expr.descendants()
+        .filter_map(ast::NameExpression::cast)
+        .any(|name_expr| {
+            let Some(head) = head_name_segment(name_expr.syntax()) else {
+                return false;
+            };
+            local_names.contains(&head)
+        })
+}
+
+fn head_name_segment(name_expr: &nova_syntax::SyntaxNode) -> Option<String> {
+    name_expr
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| tok.kind().is_identifier_like())
+        .map(|tok| tok.text().to_string())
+}
+
+fn is_static_safe(expr: &ast::Expression, class_body: &ast::ClassBody) -> bool {
+    // `this` / `super` (or anything rooted in them) cannot appear in a `static` field initializer.
+    if expr.syntax().descendants().any(|node| {
+        matches!(
+            node.kind(),
+            SyntaxKind::ThisExpression | SyntaxKind::SuperExpression
+        )
+    }) {
+        return false;
+    }
+
+    let instance_fields = collect_instance_field_names(class_body);
+    if instance_fields.is_empty() {
+        // Continue; we still want to apply the heuristic below for member accesses.
+    }
+
+    // Reject unqualified references to instance fields (e.g. `foo + 1` where `foo` is an
+    // instance field), and also qualified references rooted in an instance field (e.g. `foo.bar`)
+    // which would likewise be illegal in a static context.
+    if expr
+        .syntax()
+        .descendants()
+        .filter_map(ast::NameExpression::cast)
+        .any(|name_expr| {
+            let Some(head) = head_name_segment(name_expr.syntax()) else {
+                return false;
+            };
+            instance_fields.contains(&head)
+        })
+    {
+        return false;
+    }
+
+    // Optional conservative heuristic: allow `Type.CONST`-style references (e.g. `Math.PI`) but
+    // reject member accesses rooted in a lowercase identifier (likely a local or an instance
+    // field from an outer scope that we can't reliably detect).
+    if expr_has_lowercase_receiver_member_access(expr.syntax()) {
+        return false;
+    }
+
+    true
+}
+
+fn collect_instance_field_names(body: &ast::ClassBody) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for member in body.members() {
+        let ast::ClassMember::FieldDeclaration(field) = member else {
+            continue;
+        };
+        let is_static = field
+            .modifiers()
+            .map(|mods| {
+                mods.keywords()
+                    .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+            })
+            .unwrap_or(false);
+        if is_static {
+            continue;
+        }
+        let Some(list) = field.declarator_list() else {
+            continue;
+        };
+        for decl in list.declarators() {
+            if let Some(name) = decl.name_token() {
+                out.insert(name.text().to_string());
+            }
+        }
+    }
+    out
+}
+
+fn expr_has_lowercase_receiver_member_access(expr: &nova_syntax::SyntaxNode) -> bool {
+    // Check both qualified names (`NameExpression` containing a `Name` with dots)
+    // and field-access expressions (`FieldAccessExpression`).
+
+    // Qualified names like `java.lang.Math.PI`.
+    if expr
+        .descendants()
+        .filter_map(ast::NameExpression::cast)
+        .any(|name_expr| {
+            let idents: Vec<_> = name_expr
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind().is_identifier_like())
+                .map(|tok| tok.text().to_string())
+                .collect();
+            if idents.len() < 2 {
+                return false;
+            }
+            let receiver = &idents[idents.len() - 2];
+            receiver
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_lowercase())
+        })
+    {
+        return true;
+    }
+
+    // Field-access chains like `a.b` where `a` is an expression.
+    expr.descendants()
+        .filter_map(ast::FieldAccessExpression::cast)
+        .any(|field_access| {
+            let Some(receiver) = field_access.expression() else {
+                return false;
+            };
+            let Some(receiver_name) = receiver_head_name(&receiver) else {
+                return false;
+            };
+            receiver_name
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_lowercase())
+        })
+}
+
+fn receiver_head_name(receiver: &ast::Expression) -> Option<String> {
+    match receiver {
+        ast::Expression::NameExpression(name_expr) => {
+            let mut last: Option<String> = None;
+            for tok in name_expr
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind().is_identifier_like())
+            {
+                last = Some(tok.text().to_string());
+            }
+            last
+        }
+        ast::Expression::FieldAccessExpression(field_access) => {
+            // For nested field accesses, keep walking left.
+            let inner = field_access.expression()?;
+            receiver_head_name(&inner)
+        }
+        _ => None,
+    }
 }
 
 fn infer_expr_type(source: &str, expr: &ast::Expression) -> Option<String> {

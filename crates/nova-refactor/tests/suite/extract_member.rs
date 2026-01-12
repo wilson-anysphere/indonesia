@@ -180,3 +180,134 @@ class A {
         .unified_diff
         .contains("private static final int VALUE"));
 }
+
+#[test]
+fn extract_field_rejects_local_dependency() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        int x = 1;
+        int y = /*[*/x + 1/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::DependsOnLocal);
+}
+
+#[test]
+fn extract_constant_rejects_instance_dependency() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    int foo = 1;
+
+    void m() {
+        int x = /*[*/this.foo/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::NotStaticSafe);
+}
+
+#[test]
+fn extract_field_allows_instance_dependency() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    int foo = 1;
+
+    void m() {
+        int x = /*[*/this.foo + 1/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private final int value = this.foo + 1;
+
+    int foo = 1;
+
+    void m() {
+        int x = value;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_rejects_increment_expressions() {
+    for fixture in [
+        r#"
+class A {
+    void m() {
+        int i = 0;
+        int x = /*[*/i++/*]*/;
+    }
+}
+"#,
+        r#"
+class A {
+    void m() {
+        int i = 0;
+        int x = /*[*/++i/*]*/;
+    }
+}
+"#,
+    ] {
+        let (code, range) = fixture_range(fixture);
+        let err = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+        assert_eq!(err, ExtractError::SideEffectfulExpression);
+    }
+}
+
+#[test]
+fn extract_constant_allows_static_member_constant() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        Object x = /*[*/Math.PI/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final Object VALUE = Math.PI;
+
+    void m() {
+        Object x = VALUE;
+    }
+}
+"#
+    );
+}
