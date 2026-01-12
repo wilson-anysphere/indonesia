@@ -46,7 +46,6 @@ use nova_framework::{
 };
 use nova_scheduler::CancellationToken;
 use nova_hir::framework::ClassData;
-use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic};
 use nova_vfs::FileId;
 
