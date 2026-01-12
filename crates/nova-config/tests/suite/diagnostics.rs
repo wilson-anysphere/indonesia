@@ -38,6 +38,22 @@ timeuot_ms = 1000
 }
 
 #[test]
+fn reports_unknown_keys_in_build_tool_sections() {
+    let text = r#"
+[build]
+enabled = true
+
+[build.maven]
+enabeld = true
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(diagnostics.unknown_keys, vec!["build.maven.enabeld"]);
+}
+
+#[test]
 fn reports_deprecated_keys() {
     let text = r#"
 [jdk]
