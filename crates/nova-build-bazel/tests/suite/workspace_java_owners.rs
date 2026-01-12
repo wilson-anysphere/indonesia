@@ -1040,3 +1040,20 @@ fn bazelignore_prefix_matching_is_component_based() {
         .unwrap();
     assert_eq!(label.as_deref(), Some("//ignored2:Foo.java"));
 }
+
+#[test]
+fn bazelignore_ignores_invalid_entries_that_escape_workspace() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join(".bazelignore"), "../escape\nignored\n").unwrap();
+
+    write_file(&dir.path().join("ignored/BUILD"), "# ignored package\n");
+    create_file(&dir.path().join("ignored/Foo.java"));
+
+    // Still applies valid entries and does not error due to invalid ones.
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("ignored/Foo.java"))
+        .unwrap();
+    assert_eq!(label, None);
+}
