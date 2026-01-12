@@ -77,8 +77,9 @@ fn build_cache_store_is_safe_under_concurrent_writers() {
         handle.join().unwrap().unwrap();
     }
 
+    let project_root_for_hash = std::fs::canonicalize(&project_root).unwrap_or(project_root);
     let mut hasher = Sha256::new();
-    hasher.update(project_root.to_string_lossy().as_bytes());
+    hasher.update(project_root_for_hash.to_string_lossy().as_bytes());
     let project_hash = hex::encode(hasher.finalize());
     let dest = base_dir
         .join(project_hash)

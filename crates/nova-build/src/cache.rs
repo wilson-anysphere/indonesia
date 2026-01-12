@@ -323,6 +323,13 @@ impl BuildCache {
     }
 
     fn project_dir(&self, project_root: &Path) -> PathBuf {
+        // Best-effort canonicalization to keep cache keys stable when callers mix canonical and
+        // non-canonical workspace roots (e.g. macOS `/var` vs `/private/var`, or symlinked roots).
+        //
+        // This mirrors the canonicalization approach used by `nova-build-model::BuildFileFingerprint`.
+        let project_root = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.to_path_buf());
         let mut hasher = Sha256::new();
         hasher.update(project_root.to_string_lossy().as_bytes());
         let digest = hex::encode(hasher.finalize());
