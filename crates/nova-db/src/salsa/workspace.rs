@@ -329,7 +329,15 @@ impl WorkspaceLoader {
         // Collect type binary names deterministically:
         // - Files are already provided in stable order (sorted by `file_rel_path`).
         // - Within each file, sort type names lexicographically.
-        let names: Vec<String> = db.with_snapshot(|snap| {
+        //
+        // Additionally, include external classpath types from the already-built `ClasspathIndex`
+        // (if any) for this project.
+        //
+        // NOTE(JPMS): `NovaInputs::classpath_index` is a legacy, non-module-aware index that may
+        // contain both `--class-path` and `--module-path` entries (see `apply_classpath_index`).
+        // The `project_class_ids` registry is an *identity map* and does not enforce module
+        // readability/exports, so we include all names present in the index.
+        let source_names: Vec<String> = db.with_snapshot(|snap| {
             let mut names = Vec::new();
 
             for &file in files {
@@ -346,7 +354,59 @@ impl WorkspaceLoader {
             names
         });
 
-        for name in names {
+        let classpath_names: Vec<String> = self
+            .classpath_indexes
+            .get(&project)
+            .and_then(|index| index.as_deref())
+            .map(|index| {
+                index
+                    .iter_binary_names()
+                    .filter(|name| !name.starts_with("java."))
+                    .map(|name| name.to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Optional: seed a small, stable set of JDK names that are guaranteed to exist in
+        // `TypeStore::with_minimal_jdk()` so semantic consumers can always obtain a `ClassId` for
+        // core JDK types.
+        //
+        // We intentionally avoid enumerating all JDK classes here: real JDKs can contain tens of
+        // thousands of types, and the host-managed registry is monotonic across the process
+        // lifetime.
+        const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
+            // java.lang
+            "java.lang.Object",
+            "java.lang.String",
+            "java.lang.Integer",
+            "java.lang.Number",
+            "java.lang.Boolean",
+            "java.lang.Byte",
+            "java.lang.Short",
+            "java.lang.Character",
+            "java.lang.Long",
+            "java.lang.Float",
+            "java.lang.Double",
+            "java.lang.Cloneable",
+            "java.lang.Iterable",
+            "java.lang.Class",
+            // java.io
+            "java.io.Serializable",
+            // java.util
+            "java.util.List",
+            "java.util.ArrayList",
+            "java.util.Collections",
+            "java.util.Map",
+            "java.util.Map$Entry",
+            // java.util.function
+            "java.util.function.Function",
+        ];
+
+        for name in source_names
+            .into_iter()
+            .chain(classpath_names)
+            .chain(MINIMAL_JDK_BINARY_NAMES.iter().copied().map(String::from))
+        {
             let key = (project, name);
             if self.class_ids.contains_key(&key) {
                 continue;

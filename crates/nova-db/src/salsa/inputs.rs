@@ -91,10 +91,16 @@ pub trait NovaInputs: ra_salsa::Database {
     #[ra_salsa::input]
     fn classpath_index(&self, project: ProjectId) -> Option<ArcEq<ClasspathIndex>>;
 
-    /// Stable mapping of source type binary names to globally unique [`ClassId`]s for `project`.
+    /// Stable mapping of Java binary names to globally unique [`ClassId`]s for `project`.
     ///
     /// This mapping is **host-managed** (typically by [`crate::salsa::WorkspaceLoader`]) to keep
     /// `ClassId`s stable across Salsa memo eviction and across workspace reloads.
+    ///
+    /// The registry covers:
+    /// - workspace/source types discovered from `def_map` (e.g. `com.example.Foo$Inner`),
+    /// - external classpath types present in the project's [`ClasspathIndex`] (skipping `java.*`
+    ///   entries to mirror name-resolution semantics), and
+    /// - a small stable set of core JDK types (see `WorkspaceLoader::apply_project_class_ids`).
     ///
     /// Entries must be supplied in a deterministic order (sorted by `binary_name`) so that:
     /// - Salsa snapshots observe deterministic results.
@@ -113,7 +119,11 @@ pub trait NovaInputs: ra_salsa::Database {
     fn class_name_for_id(&self, project: ProjectId, id: ClassId) -> Option<Arc<str>>;
 }
 
-fn class_id_for_name(db: &dyn NovaInputs, project: ProjectId, binary_name: Arc<str>) -> Option<ClassId> {
+fn class_id_for_name(
+    db: &dyn NovaInputs,
+    project: ProjectId,
+    binary_name: Arc<str>,
+) -> Option<ClassId> {
     let mapping = db.project_class_ids(project);
     mapping
         .binary_search_by(|(name, _)| name.as_ref().cmp(binary_name.as_ref()))
