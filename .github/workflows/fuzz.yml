@@ -18,6 +18,7 @@ jobs:
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
 
       - uses: dtolnay/rust-toolchain@nightly
         timeout-minutes: 10
@@ -25,6 +26,7 @@ jobs:
           components: llvm-tools-preview, rust-src
 
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
         with:
           workspaces: |
             . -> target
@@ -52,6 +54,7 @@ jobs:
 
       - name: format_java (idempotence)
         run: cargo +nightly fuzz run --codegen-units 16 format_java -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
 
       - name: fuzz_classfile
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_classfile -- -max_total_time=60 -max_len=262144
@@ -63,22 +66,27 @@ jobs:
 
       - name: refactor_smoke (best-effort; --features refactor)
         run: cargo +nightly fuzz run --codegen-units 16 --features refactor refactor_smoke -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 30
 
       - name: nova-remote-proto/decode_framed_message
         working-directory: crates/nova-remote-proto
         run: cargo +nightly fuzz run --codegen-units 16 decode_framed_message -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
 
       - name: nova-remote-proto/decode_v3_wire_frame
         working-directory: crates/nova-remote-proto
         run: cargo +nightly fuzz run --codegen-units 16 decode_v3_wire_frame -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
 
       - name: nova-remote-proto/decode_v3_rpc_payload
         working-directory: crates/nova-remote-proto
         run: cargo +nightly fuzz run --codegen-units 16 decode_v3_rpc_payload -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
 
       - name: nova-remote-rpc/v3_framed_transport
         working-directory: crates/nova-remote-rpc
         run: cargo +nightly fuzz run --codegen-units 16 v3_framed_transport -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
 
       - name: Upload fuzz artifacts
         if: failure()
