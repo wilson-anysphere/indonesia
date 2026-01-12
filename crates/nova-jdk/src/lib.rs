@@ -189,13 +189,22 @@ impl JdkIndex {
         let cache_dir = policy.as_ref().map(|p| p.dir.as_path());
         let allow_write = policy.as_ref().is_some_and(|p| p.allow_write);
 
+        let requested_release = requested_release.filter(|release| *release >= 1);
+        let effective_api_release = requested_release.or_else(|| {
+            config
+                .and_then(|cfg| cfg.release)
+                .filter(|release| *release >= 1)
+        });
+
         let install = JdkInstallation::discover_for_release(config, requested_release)?;
-        Self::from_jdk_root_with_cache_and_stats_policy(
+        let mut index = Self::from_jdk_root_with_cache_and_stats_policy(
             install.root(),
             cache_dir,
             allow_write,
             None,
-        )
+        )?;
+        index.info.api_release = effective_api_release;
+        Ok(index)
     }
 
     /// Build an index backed by a JDK installation's platform containers and an optional persisted cache.
@@ -401,7 +410,9 @@ impl JdkIndex {
             } else {
                 JdkIndexBacking::BootJars
             },
-            api_release: None,
+            api_release: config
+                .and_then(|cfg| cfg.release)
+                .filter(|release| *release >= 1),
             src_zip: discovery::src_zip_from_root(&root),
         };
 

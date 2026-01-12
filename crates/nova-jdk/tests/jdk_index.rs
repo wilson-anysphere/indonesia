@@ -429,6 +429,27 @@ fn jdk_index_discover_for_release_prefers_requested_toolchain(
         index.module_graph().is_none(),
         "requested legacy release should pick jar-backed toolchain"
     );
+    assert_eq!(index.info().api_release, Some(8));
+    assert!(index.lookup_type("java.lang.String")?.is_some());
+
+    Ok(())
+}
+
+#[test]
+fn jdk_index_discover_sets_api_release_from_config() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let cfg = JdkConfig {
+        home: Some(fake_jdk_root()),
+        release: Some(8),
+        toolchains: vec![nova_core::JdkToolchain {
+            release: 8,
+            home: fake_jdk8_root(),
+        }],
+    };
+
+    let index = JdkIndex::discover(Some(&cfg))?;
+    assert_eq!(index.info().api_release, Some(8));
     assert!(index.lookup_type("java.lang.String")?.is_some());
 
     Ok(())
