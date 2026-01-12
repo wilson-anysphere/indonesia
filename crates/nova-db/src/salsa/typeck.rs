@@ -742,13 +742,30 @@ fn type_of_expr_demand_result(
 
     let ty = if expr.expr.idx() < body.exprs.len() {
         let target_expr = expr.expr;
-        match expected_ty.as_ref() {
-            Some(expected) => {
-                checker
-                    .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
-                    .ty
+        let is_target_typed = matches!(
+            body.exprs[target_expr],
+            HirExpr::Lambda { .. }
+                | HirExpr::MethodReference { .. }
+                | HirExpr::ConstructorReference { .. }
+        );
+
+        // Target-typed expressions like lambdas and method references can pick up their type from
+        // a call argument position. In the demand-driven query we don't type-check the whole body,
+        // but we can still infer the immediate enclosing call to recover the parameter target type.
+        if expected_ty.is_none() && is_target_typed {
+            let mut best_call: Option<(HirExprId, usize)> = None;
+            find_enclosing_call_with_arg_in_stmt(&body, body.root, target_expr, &mut best_call);
+            if let Some((call_expr, _)) = best_call {
+                let _ = checker.infer_expr(&mut loader, call_expr);
             }
-            None => checker.infer_expr(&mut loader, target_expr).ty,
+            checker.infer_expr(&mut loader, target_expr).ty
+        } else {
+            match expected_ty.as_ref() {
+                Some(expected) => checker
+                    .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
+                    .ty,
+                None => checker.infer_expr(&mut loader, target_expr).ty,
+            }
         }
     } else {
         Type::Unknown
@@ -5632,6 +5649,34 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         expr: HirExprId,
         expected: Option<&Type>,
     ) -> ExprInfo {
+        let arg_types = |this: &mut Self, loader: &mut ExternalTypeLoader<'_>| -> Vec<Type> {
+            args.iter()
+                .map(|arg| match &this.body.exprs[*arg] {
+                    // Lambda/method refs are target-typed. Avoid inferring them without a target
+                    // type to prevent spurious diagnostics; we can revisit once the callee is
+                    // resolved and we know the parameter types.
+                    HirExpr::Lambda { .. } => Type::Unknown,
+                    HirExpr::MethodReference { receiver, .. }
+                    | HirExpr::ConstructorReference { receiver, .. } => {
+                        let _ = this.infer_expr(loader, *receiver);
+                        Type::Unknown
+                    }
+                    _ => this.infer_expr(loader, *arg).ty,
+                })
+                .collect()
+        };
+
+        let apply_arg_targets =
+            |this: &mut Self, loader: &mut ExternalTypeLoader<'_>, method: &ResolvedMethod| {
+                for (arg, param_ty) in args.iter().zip(method.params.iter()) {
+                    // Target-typed expressions like lambdas and method references may need the full
+                    // functional interface definition (SAM) available. Ensure the parameter type is
+                    // loaded before attempting target typing.
+                    this.ensure_type_loaded(loader, param_ty);
+                    let _ = this.infer_expr_with_expected(loader, *arg, Some(param_ty));
+                }
+            };
+
         match &self.body.exprs[callee] {
             HirExpr::FieldAccess { receiver, name, .. } => {
                 let recv_info = self.infer_expr(loader, *receiver);
@@ -5650,11 +5695,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let recv_ty = recv_info.ty.clone();
                 self.ensure_type_loaded(loader, &recv_ty);
 
-                let arg_types = args
-                    .iter()
-                    .map(|arg| self.infer_expr(loader, *arg).ty)
-                    .collect::<Vec<_>>();
-
+                let arg_types = arg_types(self, loader);
                 let call = MethodCall {
                     receiver: recv_ty,
                     call_kind,
@@ -5670,6 +5711,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     MethodResolution::Found(method) => {
                         self.emit_method_warnings(&method, self.body.exprs[expr].range());
                         self.call_resolutions[expr.idx()] = Some(method.clone());
+                        apply_arg_targets(self, loader, &method);
                         ExprInfo {
                             ty: method.return_type,
                             is_type_ref: false,
@@ -5684,6 +5726,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         ));
                         if let Some(first) = amb.candidates.first() {
                             self.call_resolutions[expr.idx()] = Some(first.clone());
+                            apply_arg_targets(self, loader, first);
                             ExprInfo {
                                 ty: first.return_type.clone(),
                                 is_type_ref: false,
@@ -5740,10 +5783,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirExpr::Name { name, range } => {
-                let arg_types = args
-                    .iter()
-                    .map(|arg| self.infer_expr(loader, *arg).ty)
-                    .collect::<Vec<_>>();
+                let arg_types = arg_types(self, loader);
 
                 // Unqualified calls like `foo()` are usually shorthand for `this.foo()`.
                 // Resolve them against the enclosing class first (using the right
@@ -5774,6 +5814,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         MethodResolution::Found(method) => {
                             self.emit_method_warnings(&method, self.body.exprs[expr].range());
                             self.call_resolutions[expr.idx()] = Some(method.clone());
+                            apply_arg_targets(self, loader, &method);
                             return ExprInfo {
                                 ty: method.return_type,
                                 is_type_ref: false,
@@ -5788,6 +5829,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             ));
                             if let Some(first) = amb.candidates.first() {
                                 self.call_resolutions[expr.idx()] = Some(first.clone());
+                                apply_arg_targets(self, loader, first);
                                 return ExprInfo {
                                     ty: first.return_type.clone(),
                                     is_type_ref: false,
@@ -5871,6 +5913,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             MethodResolution::Found(method) => {
                                 self.emit_method_warnings(&method, self.body.exprs[expr].range());
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
+                                apply_arg_targets(self, loader, &method);
                                 ExprInfo {
                                     ty: method.return_type,
                                     is_type_ref: false,
@@ -5885,6 +5928,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 ));
                                 if let Some(first) = amb.candidates.first() {
                                     self.call_resolutions[expr.idx()] = Some(first.clone());
+                                    apply_arg_targets(self, loader, first);
                                     ExprInfo {
                                         ty: first.return_type.clone(),
                                         is_type_ref: false,
@@ -5945,6 +5989,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             MethodResolution::Found(method) => {
                                 self.emit_method_warnings(&method, self.body.exprs[expr].range());
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
+                                apply_arg_targets(self, loader, &method);
                                 ExprInfo {
                                     ty: method.return_type,
                                     is_type_ref: false,
@@ -5959,6 +6004,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 ));
                                 if let Some(first) = amb.candidates.first() {
                                     self.call_resolutions[expr.idx()] = Some(first.clone());
+                                    apply_arg_targets(self, loader, first);
                                     ExprInfo {
                                         ty: first.return_type.clone(),
                                         is_type_ref: false,
@@ -7652,6 +7698,229 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
         | HirExpr::This { .. }
         | HirExpr::Super { .. }
         | HirExpr::Missing { .. } => false,
+    }
+}
+
+fn find_enclosing_call_with_arg_in_stmt(
+    body: &HirBody,
+    stmt: nova_hir::hir::StmtId,
+    target: HirExprId,
+    best: &mut Option<(HirExprId, usize)>,
+) {
+    let target_range = body.exprs[target].range();
+    find_enclosing_call_with_arg_in_stmt_inner(body, stmt, target, target_range, best);
+}
+
+fn find_enclosing_call_with_arg_in_stmt_inner(
+    body: &HirBody,
+    stmt: nova_hir::hir::StmtId,
+    target: HirExprId,
+    target_range: Span,
+    best: &mut Option<(HirExprId, usize)>,
+) {
+    let stmt_range = match &body.stmts[stmt] {
+        HirStmt::Block { range, .. }
+        | HirStmt::Let { range, .. }
+        | HirStmt::Expr { range, .. }
+        | HirStmt::Return { range, .. }
+        | HirStmt::If { range, .. }
+        | HirStmt::While { range, .. }
+        | HirStmt::For { range, .. }
+        | HirStmt::ForEach { range, .. }
+        | HirStmt::Switch { range, .. }
+        | HirStmt::Try { range, .. }
+        | HirStmt::Throw { range, .. }
+        | HirStmt::Break { range, .. }
+        | HirStmt::Continue { range, .. }
+        | HirStmt::Empty { range, .. } => *range,
+    };
+    let may_contain = stmt_range.start <= target_range.start && target_range.end <= stmt_range.end;
+    if !may_contain {
+        return;
+    }
+
+    match &body.stmts[stmt] {
+        HirStmt::Block { statements, .. } => {
+            for stmt in statements {
+                find_enclosing_call_with_arg_in_stmt_inner(body, *stmt, target, target_range, best);
+            }
+        }
+        HirStmt::Let { initializer, .. } => {
+            if let Some(expr) = initializer {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::Expr { expr, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
+        HirStmt::Return { expr, .. } => {
+            if let Some(expr) = expr {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *condition, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(body, *then_branch, target, target_range, best);
+            if let Some(branch) = else_branch {
+                find_enclosing_call_with_arg_in_stmt_inner(body, *branch, target, target_range, best);
+            }
+        }
+        HirStmt::While {
+            condition, body: b, ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *condition, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::For {
+            init,
+            condition,
+            update,
+            body: b,
+            ..
+        } => {
+            for stmt in init {
+                find_enclosing_call_with_arg_in_stmt_inner(body, *stmt, target, target_range, best);
+            }
+            if let Some(expr) = condition {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
+            for expr in update {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
+            find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::ForEach {
+            iterable, body: b, ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *iterable, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::Switch {
+            selector, body: b, ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *selector, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::Try {
+            body: b,
+            catches,
+            finally,
+            ..
+        } => {
+            find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
+            for catch in catches {
+                find_enclosing_call_with_arg_in_stmt_inner(body, catch.body, target, target_range, best);
+            }
+            if let Some(finally) = finally {
+                find_enclosing_call_with_arg_in_stmt_inner(
+                    body,
+                    *finally,
+                    target,
+                    target_range,
+                    best,
+                );
+            }
+        }
+        HirStmt::Throw { expr, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
+        HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
+    }
+}
+
+fn find_enclosing_call_with_arg_in_expr(
+    body: &HirBody,
+    expr: HirExprId,
+    target: HirExprId,
+    target_range: Span,
+    best: &mut Option<(HirExprId, usize)>,
+) {
+    let range = body.exprs[expr].range();
+    let may_contain = range.start <= target_range.start && target_range.end <= range.end;
+    if !may_contain {
+        return;
+    }
+
+    match &body.exprs[expr] {
+        HirExpr::FieldAccess { receiver, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *receiver, target, target_range, best);
+        }
+        HirExpr::ArrayAccess { array, index, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *array, target, target_range, best);
+            find_enclosing_call_with_arg_in_expr(body, *index, target, target_range, best);
+        }
+        HirExpr::MethodReference { receiver, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *receiver, target, target_range, best);
+        }
+        HirExpr::ConstructorReference { receiver, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *receiver, target, target_range, best);
+        }
+        HirExpr::ClassLiteral { ty, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *ty, target, target_range, best);
+        }
+        HirExpr::Call { callee, args, .. } => {
+            if args.iter().any(|arg| *arg == target) {
+                let len = range.len();
+                let replace = best.map(|(_, best_len)| len < best_len).unwrap_or(true);
+                if replace {
+                    *best = Some((expr, len));
+                }
+            }
+
+            find_enclosing_call_with_arg_in_expr(body, *callee, target, target_range, best);
+            for arg in args {
+                find_enclosing_call_with_arg_in_expr(body, *arg, target, target_range, best);
+            }
+        }
+        HirExpr::New { args, .. } => {
+            for arg in args {
+                find_enclosing_call_with_arg_in_expr(body, *arg, target, target_range, best);
+            }
+        }
+        HirExpr::Unary { expr, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
+        HirExpr::Binary { lhs, rhs, .. } | HirExpr::Assign { lhs, rhs, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *lhs, target, target_range, best);
+            find_enclosing_call_with_arg_in_expr(body, *rhs, target, target_range, best);
+        }
+        HirExpr::Instanceof { expr, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+        }
+        HirExpr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *condition, target, target_range, best);
+            find_enclosing_call_with_arg_in_expr(body, *then_expr, target, target_range, best);
+            find_enclosing_call_with_arg_in_expr(body, *else_expr, target, target_range, best);
+        }
+        HirExpr::Lambda { body: b, .. } => match b {
+            LambdaBody::Expr(expr) => {
+                find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+            }
+            LambdaBody::Block(stmt) => {
+                find_enclosing_call_with_arg_in_stmt_inner(body, *stmt, target, target_range, best);
+            }
+        },
+        HirExpr::Invalid { children, .. } => {
+            for child in children {
+                find_enclosing_call_with_arg_in_expr(body, *child, target, target_range, best);
+            }
+        }
+        HirExpr::Name { .. }
+        | HirExpr::Literal { .. }
+        | HirExpr::Null { .. }
+        | HirExpr::This { .. }
+        | HirExpr::Super { .. }
+        | HirExpr::Missing { .. } => {}
     }
 }
 

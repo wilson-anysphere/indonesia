@@ -1314,6 +1314,29 @@ class C {
 }
 
 #[test]
+fn method_reference_is_typed_from_call_argument_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    static void take(Function<String, Integer> f) {}
+    void m() {
+        C.take(String::length);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String::length")
+        .expect("snippet should contain method reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Function<String, Integer>");
+}
+
+#[test]
 fn class_literal_is_typed_as_java_lang_class() {
     let src = r#"
 class C { void m(){ Object x = String.class; } }
