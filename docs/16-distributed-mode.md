@@ -323,7 +323,7 @@ To debug router↔worker connections, enable `tracing` logs via `RUST_LOG`:
 
 Look for messages like:
 
-- `timed out waiting for Hello`
+- `timed out waiting for worker handshake`
 - `tls accept timed out`
 - `dropping incoming … connection: too many pending handshakes`
 - `timed out writing request to worker …`
