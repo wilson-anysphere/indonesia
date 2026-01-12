@@ -563,3 +563,49 @@ class Foo {
         "expected `T` to resolve as a constructor type parameter, got {diags:?}"
     );
 }
+
+#[test]
+fn lambda_param_type_is_inferred_from_function_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, Integer> f = s -> s.length();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected lambda body method call to resolve after parameter inference, got {diags:?}"
+    );
+
+    let offset = src
+        .find("s.length")
+        .expect("snippet should contain lambda parameter usage");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn lambda_block_return_checked_against_sam() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, Integer> f = s -> { return s.length(); };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
+        "expected lambda return checking to use the SAM return type, got {diags:?}"
+    );
+}

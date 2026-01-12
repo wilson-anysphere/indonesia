@@ -441,8 +441,13 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             if let Some(class_id) = self.lookup_non_placeholder_class(&java_lang) {
                 return Type::class(class_id, args_for_class(class_id));
             }
-        } else if let Some(class_id) = self.lookup_non_placeholder_class(&dotted) {
-            return Type::class(class_id, args_for_class(class_id));
+        } else if dotted.starts_with("java.")
+            || dotted.starts_with("javax.")
+            || dotted.starts_with("jdk.")
+        {
+            if let Some(class_id) = self.lookup_non_placeholder_class(&dotted) {
+                return Type::class(class_id, args_for_class(class_id));
+            }
         }
 
         // Best-effort: if the first segment resolves to a type in the current
@@ -467,8 +472,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
         // If we successfully guessed a binary nested name, try resolving it in the environment
         // before reporting an unresolved-type diagnostic.
-        if let Some(class_id) = self.lookup_non_placeholder_class(&best_guess) {
-            return Type::class(class_id, args_for_class(class_id));
+        if best_guess != dotted {
+            if let Some(class_id) = self.lookup_non_placeholder_class(&best_guess) {
+                return Type::class(class_id, args_for_class(class_id));
+            }
         }
 
         self.diagnostics.push(Diagnostic::error(

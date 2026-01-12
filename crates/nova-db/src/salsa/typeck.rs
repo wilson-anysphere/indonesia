@@ -639,7 +639,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     }
 
     fn check_body(&mut self, loader: &mut ExternalTypeLoader<'_>) {
-        self.check_stmt(loader, self.body.root);
+        let expected_return = self.expected_return.clone();
+        self.check_stmt(loader, self.body.root, &expected_return);
     }
 
     fn ensure_workspace_class(
@@ -851,12 +852,17 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
-    fn check_stmt(&mut self, loader: &mut ExternalTypeLoader<'_>, stmt: nova_hir::hir::StmtId) {
+    fn check_stmt(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        stmt: nova_hir::hir::StmtId,
+        expected_return: &Type,
+    ) {
         self.tick();
         match &self.body.stmts[stmt] {
             HirStmt::Block { statements, .. } => {
                 for &stmt in statements {
-                    self.check_stmt(loader, stmt);
+                    self.check_stmt(loader, stmt, expected_return);
                 }
             }
             HirStmt::Let {
@@ -907,16 +913,26 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::Expr { expr, .. } => {
                 let _ = self.infer_expr(loader, *expr);
             }
-            HirStmt::Return { expr, .. } => {
+            HirStmt::Return { expr, range } => {
                 let Some(expr) = expr else {
+                    if *expected_return == Type::Void || expected_return.is_errorish() {
+                        return;
+                    }
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    let expected = format_type(env_ro, expected_return);
+                    self.diagnostics.push(Diagnostic::error(
+                        "return-mismatch",
+                        format!("return type mismatch: expected {expected}, found void"),
+                        Some(*range),
+                    ));
                     return;
                 };
-                let expected = (!self.expected_return.is_errorish())
-                    .then_some(self.expected_return.clone());
+
+                let expected = (!expected_return.is_errorish()).then_some(expected_return.clone());
                 let expr_ty = self
                     .infer_expr_with_expected(loader, *expr, expected.as_ref())
                     .ty;
-                if self.expected_return == Type::Void {
+                if *expected_return == Type::Void {
                     self.diagnostics.push(Diagnostic::error(
                         "return-mismatch",
                         "cannot return a value from a `void` method",
@@ -925,13 +941,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     return;
                 }
 
-                if expr_ty.is_errorish() || self.expected_return.is_errorish() {
+                if expr_ty.is_errorish() || expected_return.is_errorish() {
                     return;
                 }
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                if assignment_conversion(env_ro, &expr_ty, &self.expected_return).is_none() {
-                    let expected = format_type(env_ro, &self.expected_return);
+                if assignment_conversion(env_ro, &expr_ty, expected_return).is_none() {
+                    let expected = format_type(env_ro, expected_return);
                     let found = format_type(env_ro, &expr_ty);
                     self.diagnostics.push(Diagnostic::error(
                         "return-mismatch",
@@ -954,9 +970,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         Some(self.body.exprs[*condition].range()),
                     ));
                 }
-                self.check_stmt(loader, *then_branch);
+                self.check_stmt(loader, *then_branch, expected_return);
                 if let Some(else_branch) = else_branch {
-                    self.check_stmt(loader, *else_branch);
+                    self.check_stmt(loader, *else_branch, expected_return);
                 }
             }
             HirStmt::While {
@@ -970,7 +986,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         Some(self.body.exprs[*condition].range()),
                     ));
                 }
-                self.check_stmt(loader, *body);
+                self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::For {
                 init,
@@ -980,7 +996,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ..
             } => {
                 for stmt in init {
-                    self.check_stmt(loader, *stmt);
+                    self.check_stmt(loader, *stmt, expected_return);
                 }
                 if let Some(condition) = condition {
                     let condition_ty = self.infer_expr(loader, *condition).ty;
@@ -995,7 +1011,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 for expr in update {
                     let _ = self.infer_expr(loader, *expr);
                 }
-                self.check_stmt(loader, *body);
+                self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::ForEach {
                 local,
@@ -1014,11 +1030,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 let _ = self.infer_expr(loader, *iterable);
-                self.check_stmt(loader, *body);
+                self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::Switch { selector, body, .. } => {
                 let _ = self.infer_expr(loader, *selector);
-                self.check_stmt(loader, *body);
+                self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::Try {
                 body,
@@ -1026,7 +1042,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 finally,
                 ..
             } => {
-                self.check_stmt(loader, *body);
+                self.check_stmt(loader, *body, expected_return);
                 for catch in catches {
                     let data = &self.body.locals[catch.param];
                     if data.ty_text.trim() != "var" {
@@ -1037,10 +1053,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         );
                         self.local_types[catch.param.idx()] = catch_ty;
                     }
-                    self.check_stmt(loader, catch.body);
+                    self.check_stmt(loader, catch.body, expected_return);
                 }
                 if let Some(finally) = finally {
-                    self.check_stmt(loader, *finally);
+                    self.check_stmt(loader, *finally, expected_return);
                 }
             }
             HirStmt::Throw { expr, .. } => {
@@ -1061,8 +1077,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         expr: HirExprId,
         expected: Option<&Type>,
     ) -> ExprInfo {
+        // Lambda expressions are target-typed: their type (and, importantly, the types of their
+        // parameters) can depend on the surrounding context. If we previously inferred a lambda
+        // without an expected target type, allow re-inference once a target type becomes known.
         if let Some(info) = self.expr_info[expr.idx()].clone() {
-            return info;
+            let is_lambda = matches!(self.body.exprs[expr], HirExpr::Lambda { .. });
+            if expected.is_none() || !is_lambda || info.ty != Type::Unknown {
+                return info;
+            }
         }
         self.tick();
 
@@ -1299,17 +1321,68 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Lambda { body, .. } => {
+            HirExpr::Lambda { params, body, .. } => {
+                let mut sam_return = Type::Unknown;
+                let ty = if let Some(target) = expected {
+                    // Best-effort: the lambda expression itself is typed as its target functional
+                    // interface.
+                    self.ensure_type_loaded(loader, target);
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if let Some(sig) = nova_types::infer_lambda_sam_signature(env_ro, target) {
+                        sam_return = sig.return_type;
+                        if sig.params.len() != params.len() {
+                            self.diagnostics.push(Diagnostic::error(
+                                "lambda-arity-mismatch",
+                                format!(
+                                    "lambda arity mismatch: expected {}, found {}",
+                                    sig.params.len(),
+                                    params.len()
+                                ),
+                                Some(self.body.exprs[expr].range()),
+                            ));
+                        }
+                        for (param, ty) in params.iter().zip(sig.params.into_iter()) {
+                            self.local_types[param.local.idx()] = ty;
+                        }
+                    }
+                    target.clone()
+                } else {
+                    Type::Unknown
+                };
+
                 match body {
-                    LambdaBody::Expr(expr) => {
-                        let _ = self.infer_expr(loader, *expr);
+                    LambdaBody::Expr(expr_id) => {
+                        let body_info = if sam_return.is_errorish() {
+                            self.infer_expr(loader, *expr_id)
+                        } else {
+                            self.infer_expr_with_expected(loader, *expr_id, Some(&sam_return))
+                        };
+
+                        if sam_return != Type::Void
+                            && !sam_return.is_errorish()
+                            && !body_info.ty.is_errorish()
+                        {
+                            let env_ro: &dyn TypeEnv = &*loader.store;
+                            if assignment_conversion(env_ro, &body_info.ty, &sam_return).is_none() {
+                                let expected = format_type(env_ro, &sam_return);
+                                let found = format_type(env_ro, &body_info.ty);
+                                self.diagnostics.push(Diagnostic::error(
+                                    "return-mismatch",
+                                    format!(
+                                        "return type mismatch: expected {expected}, found {found}"
+                                    ),
+                                    Some(self.body.exprs[*expr_id].range()),
+                                ));
+                            }
+                        }
                     }
                     LambdaBody::Block(stmt) => {
-                        self.check_stmt(loader, *stmt);
+                        let expected_return = sam_return.clone();
+                        self.check_stmt(loader, *stmt, &expected_return);
                     }
                 }
                 ExprInfo {
-                    ty: Type::Unknown,
+                    ty,
                     is_type_ref: false,
                 }
             }
