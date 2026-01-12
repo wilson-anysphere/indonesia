@@ -2263,17 +2263,9 @@ fn module_info_module_name_candidates(db: &dyn Database, file: FileId) -> BTreeS
 }
 
 fn dotted_qualifier(text: &str, segment_start: usize) -> (usize, String) {
-    let bytes = text.as_bytes();
-    let mut start = segment_start.min(bytes.len());
-    while start > 0 {
-        let ch = bytes[start - 1] as char;
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
-            start -= 1;
-        } else {
-            break;
-        }
-    }
-    (start, text[start..segment_start].to_string())
+    // Module-info completions benefit from the same tolerant dotted-qualifier parsing used by type
+    // completions (e.g. `requires java . ba<cursor>`).
+    dotted_qualifier_prefix(text, segment_start)
 }
 
 fn module_info_module_name_completions(
@@ -2627,7 +2619,7 @@ fn module_info_completion_items(
                 }
                 continue;
             }
-            if matches!(ch, ',' | ';' | '{' | '}' | '@') {
+            if matches!(ch, ',' | ';' | '{' | '}' | '@' | '.') {
                 out.push(Tok {
                     kind: TokKind::Symbol(ch),
                     span: Span::new(base + i, base + i + 1),
@@ -2660,15 +2652,43 @@ fn module_info_completion_items(
             let mut module_span: Option<Span> = None;
             for tok in &tokens {
                 match tok.kind {
-                    TokKind::Ident("requires") => after_requires = true,
-                    TokKind::Ident("static") if after_requires => has_static = true,
-                    TokKind::Ident("transitive") if after_requires => has_transitive = true,
-                    TokKind::Ident(name) if after_requires && module_span.is_none() => {
-                        if !matches!(name, "requires" | "static" | "transitive") {
-                            module_span = Some(tok.span);
-                        }
+                    TokKind::Ident("requires") => {
+                        after_requires = true;
+                        continue;
+                    }
+                    TokKind::Ident("static") if after_requires && module_span.is_none() => {
+                        has_static = true;
+                        continue;
+                    }
+                    TokKind::Ident("transitive") if after_requires && module_span.is_none() => {
+                        has_transitive = true;
+                        continue;
                     }
                     _ => {}
+                }
+
+                if !after_requires {
+                    continue;
+                }
+
+                if module_span.is_none() {
+                    let TokKind::Ident(name) = tok.kind else {
+                        continue;
+                    };
+                    if matches!(name, "requires" | "static" | "transitive") {
+                        continue;
+                    }
+                    module_span = Some(tok.span);
+                    continue;
+                }
+
+                // Extend across dotted module names, including `java . base` with whitespace.
+                match tok.kind {
+                    TokKind::Ident(_) | TokKind::Symbol('.') => {
+                        let span = module_span.expect("span must exist");
+                        module_span = Some(Span::new(span.start, tok.span.end));
+                    }
+                    _ => break,
                 }
             }
 
@@ -2677,7 +2697,11 @@ fn module_info_completion_items(
                 // `requires` accepts exactly one module name. If the cursor is already after the
                 // module token, there is no valid continuation besides `;`.
                 if offset > span.end {
-                    return Vec::new();
+                    // Treat whitespace after a dot as still being within the module name.
+                    let before = skip_whitespace_backwards(text, offset);
+                    if before == 0 || text.as_bytes().get(before - 1) != Some(&b'.') {
+                        return Vec::new();
+                    }
                 }
 
                 // Avoid suggesting modifiers while the user is typing the module name; inserting
@@ -2719,19 +2743,47 @@ fn module_info_completion_items(
                 match tok.kind {
                     TokKind::Ident(d) if d == directive => {
                         saw_directive = true;
-                    }
-                    TokKind::Ident(name) if saw_directive && package_span.is_none() => {
-                        if name != "to" {
-                            package_span = Some(tok.span);
-                        }
+                        continue;
                     }
                     _ => {}
+                }
+
+                if !saw_directive {
+                    continue;
+                }
+
+                if package_span.is_none() {
+                    let TokKind::Ident(name) = tok.kind else {
+                        continue;
+                    };
+                    if name == "to" {
+                        continue;
+                    }
+                    package_span = Some(tok.span);
+                    continue;
+                }
+
+                // Extend across dotted package names, including `com . example . api` with
+                // whitespace around dots.
+                match tok.kind {
+                    TokKind::Ident("to") => break,
+                    TokKind::Ident(_) | TokKind::Symbol('.') => {
+                        let span = package_span.expect("span must exist");
+                        package_span = Some(Span::new(span.start, tok.span.end));
+                    }
+                    _ => break,
                 }
             }
 
             if !has_to {
-                let completing_package =
-                    package_span.is_none() || package_span.is_some_and(|span| offset <= span.end);
+                let completing_package = package_span.is_none()
+                    || package_span.is_some_and(|span| {
+                        if offset <= span.end {
+                            return true;
+                        }
+                        let before = skip_whitespace_backwards(text, offset);
+                        before > 0 && text.as_bytes().get(before - 1) == Some(&b'.')
+                    });
                 if completing_package {
                     let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
                     return module_info_package_segment_completions(db, file, &qualifier, prefix);
@@ -2750,19 +2802,42 @@ fn module_info_completion_items(
                 match tok.kind {
                     TokKind::Ident("uses") => {
                         saw_uses = true;
-                    }
-                    TokKind::Ident(name) if saw_uses && service_span.is_none() => {
-                        if name != "uses" {
-                            service_span = Some(tok.span);
-                        }
+                        continue;
                     }
                     _ => {}
+                }
+
+                if !saw_uses {
+                    continue;
+                }
+
+                if service_span.is_none() {
+                    let TokKind::Ident(name) = tok.kind else {
+                        continue;
+                    };
+                    if name == "uses" {
+                        continue;
+                    }
+                    service_span = Some(tok.span);
+                    continue;
+                }
+
+                // Extend across dotted type names, including whitespace around dots.
+                match tok.kind {
+                    TokKind::Ident(_) | TokKind::Symbol('.') => {
+                        let span = service_span.expect("span must exist");
+                        service_span = Some(Span::new(span.start, tok.span.end));
+                    }
+                    _ => break,
                 }
             }
 
             if let Some(service) = service_span {
                 if offset > service.end {
-                    return Vec::new();
+                    let before = skip_whitespace_backwards(text, offset);
+                    if before == 0 || text.as_bytes().get(before - 1) != Some(&b'.') {
+                        return Vec::new();
+                    }
                 }
             }
 
@@ -2785,19 +2860,43 @@ fn module_info_completion_items(
                 match tok.kind {
                     TokKind::Ident("provides") => {
                         saw_provides = true;
-                    }
-                    TokKind::Ident(name) if saw_provides && service_span.is_none() => {
-                        if name != "with" {
-                            service_span = Some(tok.span);
-                        }
+                        continue;
                     }
                     _ => {}
+                }
+
+                if !saw_provides {
+                    continue;
+                }
+
+                if service_span.is_none() {
+                    let TokKind::Ident(name) = tok.kind else {
+                        continue;
+                    };
+                    if name == "with" {
+                        continue;
+                    }
+                    service_span = Some(tok.span);
+                    continue;
+                }
+
+                // Extend across dotted type names, including whitespace around dots.
+                match tok.kind {
+                    TokKind::Ident("with") => break,
+                    TokKind::Ident(_) | TokKind::Symbol('.') => {
+                        let span = service_span.expect("span must exist");
+                        service_span = Some(Span::new(span.start, tok.span.end));
+                    }
+                    _ => break,
                 }
             }
 
             if let Some(service) = service_span {
                 if offset > service.end {
-                    return vec![module_info_keyword_item("with")];
+                    let before = skip_whitespace_backwards(text, offset);
+                    if before == 0 || text.as_bytes().get(before - 1) != Some(&b'.') {
+                        return vec![module_info_keyword_item("with")];
+                    }
                 }
             }
 
