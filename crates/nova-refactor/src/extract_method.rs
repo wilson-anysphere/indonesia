@@ -541,6 +541,14 @@ impl ExtractMethod {
             issues.push(ExtractMethodIssue::ReferencesLocalType { name });
         }
 
+        let mut hazards = Vec::new();
+        collect_control_flow_hazards_in_syntax(
+            selected_expr.syntax(),
+            selection,
+            &mut hazards,
+            &mut issues,
+        );
+
         if expression_has_local_mutation(&selected_expr) {
             issues.push(ExtractMethodIssue::InvalidSelection);
             return Ok(ExtractMethodAnalysis {
@@ -549,7 +557,7 @@ impl ExtractMethod {
                 return_value: None,
                 return_ty: "Object".to_string(),
                 thrown_exceptions: Vec::new(),
-                hazards: Vec::new(),
+                hazards,
                 issues,
             });
         }
@@ -568,7 +576,7 @@ impl ExtractMethod {
                 return_value: None,
                 return_ty: "Object".to_string(),
                 thrown_exceptions: Vec::new(),
-                hazards: Vec::new(),
+                hazards,
                 issues,
             });
         };
@@ -654,7 +662,7 @@ impl ExtractMethod {
             return_value: None,
             return_ty: return_ty.unwrap_or_else(|| "Object".to_string()),
             thrown_exceptions: Vec::new(),
-            hazards: Vec::new(),
+            hazards,
             issues,
         })
     }
@@ -1372,92 +1380,88 @@ fn collect_control_flow_hazards(
     hazards: &mut Vec<ControlFlowHazard>,
     issues: &mut Vec<ExtractMethodIssue>,
 ) {
-    fn walk(
-        node: &nova_syntax::SyntaxNode,
-        selection: TextRange,
-        hazards: &mut Vec<ControlFlowHazard>,
-        issues: &mut Vec<ExtractMethodIssue>,
-    ) {
-        // Returns/break/continue/etc inside lambdas return from / target the lambda body, not the
-        // enclosing method. Skip descending into lambda bodies so statements that *contain* a
-        // lambda (e.g. `Runnable r = () -> { return; };`) don't get rejected.
-        if ast::LambdaExpression::can_cast(node.kind()) {
-            return;
-        }
+    for stmt in selection_statements {
+        collect_control_flow_hazards_in_syntax(stmt.syntax(), selection, hazards, issues);
+    }
+}
 
-        if let Some(stmt) = ast::Statement::cast(node.clone()) {
-            match stmt {
-                ast::Statement::ReturnStatement(_) => {
-                    push_hazard(hazards, ControlFlowHazard::Return);
-                    issues.push(ExtractMethodIssue::IllegalControlFlow {
-                        hazard: ControlFlowHazard::Return,
-                    });
-                }
-                ast::Statement::YieldStatement(_) => {
-                    push_hazard(hazards, ControlFlowHazard::Yield);
-                    issues.push(ExtractMethodIssue::IllegalControlFlow {
-                        hazard: ControlFlowHazard::Yield,
-                    });
-                }
-                ast::Statement::ThrowStatement(_) => {
-                    // Allowed (best-effort): would be modeled as `throws` in the future.
-                    push_hazard(hazards, ControlFlowHazard::Throw);
-                }
-                ast::Statement::BreakStatement(brk) => {
-                    push_hazard(hazards, ControlFlowHazard::Break);
+fn collect_control_flow_hazards_in_syntax(
+    node: &nova_syntax::SyntaxNode,
+    selection: TextRange,
+    hazards: &mut Vec<ControlFlowHazard>,
+    issues: &mut Vec<ExtractMethodIssue>,
+) {
+    // Returns/break/continue/etc inside lambdas return from / target the lambda body, not the
+    // enclosing method. Skip descending into lambda bodies so statements that *contain* a
+    // lambda (e.g. `Runnable r = () -> { return; };`) don't get rejected.
+    if ast::LambdaExpression::can_cast(node.kind()) {
+        return;
+    }
 
-                    if brk.label_token().is_some() {
-                        issues.push(ExtractMethodIssue::IllegalControlFlow {
-                            hazard: ControlFlowHazard::Break,
-                        });
-                    } else if let Some(target) = nearest_break_target(brk.syntax()) {
-                        let target_range = syntax_range(target.syntax());
-                        if !(selection.start <= target_range.start
-                            && target_range.end <= selection.end)
-                        {
-                            issues.push(ExtractMethodIssue::IllegalControlFlow {
-                                hazard: ControlFlowHazard::Break,
-                            });
-                        }
-                    } else {
-                        issues.push(ExtractMethodIssue::IllegalControlFlow {
-                            hazard: ControlFlowHazard::Break,
-                        });
-                    }
-                }
-                ast::Statement::ContinueStatement(cont) => {
-                    push_hazard(hazards, ControlFlowHazard::Continue);
-
-                    if cont.label_token().is_some() {
-                        issues.push(ExtractMethodIssue::IllegalControlFlow {
-                            hazard: ControlFlowHazard::Continue,
-                        });
-                    } else if let Some(target) = nearest_continue_target(cont.syntax()) {
-                        let target_range = syntax_range(target.syntax());
-                        if !(selection.start <= target_range.start
-                            && target_range.end <= selection.end)
-                        {
-                            issues.push(ExtractMethodIssue::IllegalControlFlow {
-                                hazard: ControlFlowHazard::Continue,
-                            });
-                        }
-                    } else {
-                        issues.push(ExtractMethodIssue::IllegalControlFlow {
-                            hazard: ControlFlowHazard::Continue,
-                        });
-                    }
-                }
-                _ => {}
+    if let Some(stmt) = ast::Statement::cast(node.clone()) {
+        match stmt {
+            ast::Statement::ReturnStatement(_) => {
+                push_hazard(hazards, ControlFlowHazard::Return);
+                issues.push(ExtractMethodIssue::IllegalControlFlow {
+                    hazard: ControlFlowHazard::Return,
+                });
             }
-        }
+            ast::Statement::YieldStatement(_) => {
+                push_hazard(hazards, ControlFlowHazard::Yield);
+                issues.push(ExtractMethodIssue::IllegalControlFlow {
+                    hazard: ControlFlowHazard::Yield,
+                });
+            }
+            ast::Statement::ThrowStatement(_) => {
+                // Allowed (best-effort): would be modeled as `throws` in the future.
+                push_hazard(hazards, ControlFlowHazard::Throw);
+            }
+            ast::Statement::BreakStatement(brk) => {
+                push_hazard(hazards, ControlFlowHazard::Break);
 
-        for child in node.children() {
-            walk(&child, selection, hazards, issues);
+                if brk.label_token().is_some() {
+                    issues.push(ExtractMethodIssue::IllegalControlFlow {
+                        hazard: ControlFlowHazard::Break,
+                    });
+                } else if let Some(target) = nearest_break_target(brk.syntax()) {
+                    let target_range = syntax_range(target.syntax());
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Break,
+                        });
+                    }
+                } else {
+                    issues.push(ExtractMethodIssue::IllegalControlFlow {
+                        hazard: ControlFlowHazard::Break,
+                    });
+                }
+            }
+            ast::Statement::ContinueStatement(cont) => {
+                push_hazard(hazards, ControlFlowHazard::Continue);
+
+                if cont.label_token().is_some() {
+                    issues.push(ExtractMethodIssue::IllegalControlFlow {
+                        hazard: ControlFlowHazard::Continue,
+                    });
+                } else if let Some(target) = nearest_continue_target(cont.syntax()) {
+                    let target_range = syntax_range(target.syntax());
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                        issues.push(ExtractMethodIssue::IllegalControlFlow {
+                            hazard: ControlFlowHazard::Continue,
+                        });
+                    }
+                } else {
+                    issues.push(ExtractMethodIssue::IllegalControlFlow {
+                        hazard: ControlFlowHazard::Continue,
+                    });
+                }
+            }
+            _ => {}
         }
     }
 
-    for stmt in selection_statements {
-        walk(stmt.syntax(), selection, hazards, issues);
+    for child in node.children() {
+        collect_control_flow_hazards_in_syntax(&child, selection, hazards, issues);
     }
 }
 

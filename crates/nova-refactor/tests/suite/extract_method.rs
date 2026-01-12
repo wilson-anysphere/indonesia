@@ -1380,6 +1380,37 @@ class C {
 }
 
 #[test]
+fn extract_method_rejects_yield_in_expression_selection() {
+    let fixture = r#"
+class C {
+  int m(int x) {
+    return /*start*/switch (x) {
+      case 0 -> {
+        yield 1;
+      }
+      default -> 2;
+    }/*end*/;
+  }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "bad".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject yield in expression selection");
+    assert!(err.contains("IllegalControlFlow"));
+    assert!(err.contains("Yield"));
+}
+
+#[test]
 fn edits_are_non_overlapping() {
     // Construct a selection whose replacement and insertion could overlap if offsets
     // were computed incorrectly.
