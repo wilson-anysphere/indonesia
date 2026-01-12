@@ -13915,6 +13915,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn method_reference_double_colon_offset_does_not_underflow_on_short_prefix() {
+        // Regression test: `bool::then_some(before - 2)` eagerly evaluated `before - 2` even when
+        // the preceding condition was false, causing `usize` underflow panics for small
+        // `prefix_start` values.
+        assert_eq!(method_reference_double_colon_offset("", 0), None);
+        assert_eq!(method_reference_double_colon_offset(" ", 0), None);
+        assert_eq!(method_reference_double_colon_offset("::", 0), None);
+        assert_eq!(method_reference_double_colon_offset("import", 0), None);
+    }
+
+    #[test]
     fn semantic_tokens_classifies_decls_and_is_sorted() {
         let java = r#"
 class Foo {
