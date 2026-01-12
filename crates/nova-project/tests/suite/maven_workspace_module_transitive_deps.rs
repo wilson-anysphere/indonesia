@@ -152,6 +152,138 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
 }
 
 #[test]
+fn maven_workspace_model_does_not_propagate_test_deps_of_workspace_module_deps() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    let maven_repo = root.join("m2");
+    fs::create_dir_all(&maven_repo).expect("mkdir m2");
+
+    // Create placeholder jars so this test is deterministic and doesn't rely on the host
+    // machine's `~/.m2/repository`.
+    let guava_jar = repo_jar_path(&maven_repo, "com.google.guava", "guava", "33.0.0-jre");
+    fs::create_dir_all(guava_jar.parent().expect("guava jar parent"))
+        .expect("mkdir guava jar parent");
+    fs::write(&guava_jar, b"").expect("write guava jar placeholder");
+
+    let junit_jar = repo_jar_path(
+        &maven_repo,
+        "org.junit.jupiter",
+        "junit-jupiter-api",
+        "5.10.0",
+    );
+    fs::create_dir_all(junit_jar.parent().expect("junit jar parent"))
+        .expect("mkdir junit jar parent");
+    fs::write(&junit_jar, b"").expect("write junit jar placeholder");
+
+    write_file(
+        &root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <modules>
+    <module>lib</module>
+    <module>app</module>
+  </modules>
+</project>
+"#,
+    );
+
+    // `lib` has a compile dependency (Guava) and a test dependency (JUnit).
+    write_file(
+        &root.join("lib/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>lib</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <version>5.10.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    // `app` depends on `lib` only (no direct Guava/JUnit deps).
+    write_file(
+        &root.join("app/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+ </project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    let app_module = model
+        .modules
+        .iter()
+        .find(|m| m.name == "app")
+        .expect("app module");
+
+    let jar_entries: Vec<String> = app_module
+        .module_path
+        .iter()
+        .chain(app_module.classpath.iter())
+        .filter(|e| e.kind == ClasspathEntryKind::Jar)
+        .map(|e| e.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    assert!(
+        jar_entries
+            .iter()
+            .any(|p| p.contains("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar")),
+        "expected Guava jar (lib compile dep) to be present on app classpath/module-path; got: {jar_entries:?}"
+    );
+    assert!(
+        !jar_entries.iter().any(|p| p
+            .contains("org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.jar")),
+        "expected JUnit jar (lib test dep) to NOT be present on app classpath/module-path; got: {jar_entries:?}"
+    );
+
+    // Determinism.
+    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
+    assert_eq!(model.modules, model2.modules);
+    assert_eq!(model.jpms_modules, model2.jpms_modules);
+}
+
+#[test]
 fn maven_workspace_model_includes_transitive_external_closure_of_workspace_module_deps() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();

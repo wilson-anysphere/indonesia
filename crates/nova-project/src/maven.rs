@@ -460,6 +460,16 @@ pub(crate) fn load_maven_workspace_model(
             // Best-effort: if the dependency module POM couldn't be parsed (or had no
             // dependencies), this list will be empty and we just won't expand further.
             for child in &info.dependencies {
+                // Maven `test` dependencies are not transitive: they are only used to build/test
+                // the declaring module.
+                if child
+                    .scope
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("test"))
+                {
+                    continue;
+                }
+
                 // Optional dependencies do not propagate transitively.
                 if child.optional {
                     continue;
@@ -1462,6 +1472,16 @@ impl MavenResolver {
 
             for child in &effective.dependencies {
                 if child.group_id.is_empty() || child.artifact_id.is_empty() {
+                    continue;
+                }
+
+                // Maven `test` dependencies are not transitive: they are only used to build/test
+                // the declaring module.
+                if child
+                    .scope
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("test"))
+                {
                     continue;
                 }
 
