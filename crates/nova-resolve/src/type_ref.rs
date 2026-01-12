@@ -352,9 +352,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
                 .resolve_type_name_detailed(self.scopes, self.scope, &ident)
             {
                 TypeNameResolution::Resolved(resolution) => {
-                    if let Some(type_name) =
-                        self.resolver
-                            .type_name_for_resolution(self.scopes, &resolution)
+                    if let Some(type_name) = self
+                        .resolver
+                        .type_name_for_resolution(self.scopes, &resolution)
                     {
                         let resolved_name = type_name.as_str();
                         if let Some(class_id) = self.env.lookup_class(resolved_name) {
@@ -436,6 +436,11 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // fall back to the `TypeEnv` for a couple of common cases:
         // - fully-qualified names (`java.io.Serializable`)
         // - implicit `java.lang.*` for simple names (`Cloneable`)
+        //
+        // Note: `TypeStore::intern_class_id` inserts a placeholder `ClassDef` that is visible
+        // through `TypeEnv::lookup_class`. We intentionally ignore those placeholders here so
+        // pre-interning external types does not bypass name-resolution rules (e.g. JPMS
+        // readability / exports checks enforced by the resolver).
         if segments.len() == 1 {
             let java_lang = format!("java.lang.{}", segments[0]);
             if let Some(class_id) = self.lookup_non_placeholder_class(&java_lang) {

@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nova_classpath::{ClasspathEntry as CpEntry, ClasspathIndex};
-use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_classpath::{ClasspathEntry as CpEntry, ClasspathIndex, ModuleNameKind};
+use nova_db::{
+    ArcEq, FileId, NovaInputs, NovaResolve, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
+};
 use nova_hir::module_info::lower_module_info_source_strict;
 use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
@@ -106,8 +108,10 @@ class Use {
 
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-type"
-            && d.message.contains("com.example.dep.Foo")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type"
+                && d.message.contains("com.example.dep.Foo")),
         "expected unresolved-type diagnostic for com.example.dep.Foo, got {diags:?}"
     );
 }
@@ -279,3 +283,87 @@ class Use {
     );
 }
 
+#[test]
+fn jpms_typeck_does_not_allow_classpath_types_from_named_modules() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // Simulate WorkspaceLoader flattening: the legacy classpath index contains dep.jar,
+    // but in JPMS mode it should be treated as the unnamed module (not readable by
+    // workspace modules).
+    let classpath = ClasspathIndex::build(&[CpEntry::Jar(test_dep_jar())], None).unwrap();
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_src = "module workspace.a { }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![JpmsModuleRoot {
+        name: ModuleName::new("workspace.a"),
+        root: mod_a_root.clone(),
+        module_info: mod_a_root.join("module-info.java"),
+        info: mod_a_info,
+    }];
+    cfg.classpath = vec![ProjectClasspathEntry {
+        kind: ClasspathEntryKind::Jar,
+        path: test_dep_jar(),
+    }];
+    db.set_project_config(project, Arc::new(cfg));
+
+    // Ensure JPMS compilation env is active (this test relies on JPMS-aware typeck).
+    let env = db
+        .jpms_compilation_env(project)
+        .expect("expected JPMS compilation env to be built");
+    assert!(
+        !env.env
+            .graph
+            .can_read(&ModuleName::new("workspace.a"), &ModuleName::unnamed()),
+        "workspace.a should not read the unnamed module"
+    );
+    assert!(
+        env.classpath.module_of("com.example.dep.Foo").is_none(),
+        "classpath types should not have module metadata"
+    );
+    assert!(
+        env.classpath
+            .types
+            .lookup_binary("com.example.dep.Foo")
+            .is_some(),
+        "expected com.example.dep.Foo to be present in the module-aware classpath index"
+    );
+    assert_eq!(
+        env.classpath.module_kind_of("com.example.dep.Foo"),
+        ModuleNameKind::None
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+
+class Use {
+    void m() {
+        com.example.dep.Foo f = null;
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type"
+                && d.message.contains("com.example.dep.Foo")),
+        "expected unresolved-type diagnostic for com.example.dep.Foo, got {diags:?}"
+    );
+}
