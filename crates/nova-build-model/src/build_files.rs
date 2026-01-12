@@ -187,12 +187,12 @@ fn project_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>
         let has_parent_dir = Path::new(&dir_rel)
             .components()
             .any(|c| c == std::path::Component::ParentDir);
-        let is_symlink_dir = !has_parent_dir
-            && fs::symlink_metadata(&candidate)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
 
-        if has_parent_dir || is_symlink_dir {
+        // Directory symlinks are skipped by the main recursive scan to avoid cycles. If any
+        // component of this project directory path is a symlink, we need to explicitly scan it.
+        let has_symlink_component = !has_parent_dir && dir_rel_has_symlink_component(workspace_root, &dir_rel);
+
+        if has_parent_dir || has_symlink_component {
             roots.push(candidate);
         }
     }
@@ -200,6 +200,23 @@ fn project_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>
     roots.sort();
     roots.dedup();
     Ok(roots)
+}
+
+fn dir_rel_has_symlink_component(workspace_root: &Path, dir_rel: &str) -> bool {
+    let mut cursor = workspace_root.to_path_buf();
+    for component in Path::new(dir_rel).components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        cursor.push(name);
+        if fs::symlink_metadata(&cursor)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_gradle_settings_project_dirs(contents: &str) -> Vec<String> {
@@ -1551,6 +1568,36 @@ mod tests {
         assert!(
             files.contains(&expected),
             "expected symlinked project build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_gradle_build_files_includes_build_files_from_projects_under_symlinked_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let real_sub = dir.path().join("real-sub");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(real_sub.join("module")).unwrap();
+
+        write_file(&root.join("settings.gradle"), b"include ':sub:module'\n");
+        write_file(
+            &real_sub.join("module/build.gradle"),
+            b"plugins { id 'java' }\n",
+        );
+
+        // The `sub/` directory itself is a symlink, but the Gradle project root lives under it.
+        // The build file collector should still pick up build scripts for the declared project.
+        symlink(&real_sub, root.join("sub")).unwrap();
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("sub").join("module").join("build.gradle");
+        assert!(
+            files.contains(&expected),
+            "expected build.gradle under symlinked ancestor dir to be included in build file collection; got: {files:?}"
         );
     }
 
