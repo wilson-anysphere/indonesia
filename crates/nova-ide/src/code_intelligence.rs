@@ -1093,7 +1093,14 @@ fn ensure_salsa_inputs_for_single_file(
 ///
 /// Framework diagnostics (Spring/JPA/Micronaut/Quarkus/Dagger) are provided via the unified
 /// `nova-ext` framework providers and `crate::framework_cache::framework_diagnostics`.
-pub fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+pub fn core_file_diagnostics(
+    db: &dyn Database,
+    file: FileId,
+    cancel: &nova_scheduler::CancellationToken,
+) -> Vec<Diagnostic> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     // Avoid emitting Java-centric token diagnostics for application config files; those are handled
     // by the framework layer.
     if let Some(path) = db.file_path(file) {
@@ -1124,6 +1131,9 @@ pub fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic>
         )
     }));
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     let java_parse = is_java.then(|| nova_syntax::parse_java(text));
     if let Some(parse) = java_parse.as_ref() {
         diagnostics.extend(parse.errors.iter().map(|e| {
@@ -1137,6 +1147,9 @@ pub fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic>
 
     // 2) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
     if is_java {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         with_salsa_snapshot_for_single_file(db, file, text, |snap| {
             diagnostics.extend(snap.type_diagnostics(file));
             diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
@@ -1144,6 +1157,9 @@ pub fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic>
     }
 
     // 3) Unresolved references (best-effort).
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     let analysis = analyze(text);
     for call in &analysis.calls {
         if call.receiver.is_some() {
@@ -2211,7 +2227,11 @@ pub(crate) fn core_completions(
     db: &dyn Database,
     file: FileId,
     position: Position,
+    cancel: &nova_scheduler::CancellationToken,
 ) -> Vec<CompletionItem> {
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) != Some("java"))
@@ -2326,6 +2346,67 @@ pub(crate) fn core_completions(
         offset,
         general_completions(db, file, offset, prefix_start, &prefix),
     )
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use nova_db::InMemoryFileStore;
+    use std::path::PathBuf;
+
+    #[test]
+    fn core_file_diagnostics_returns_empty_when_cancelled() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        db.set_file_text(
+            file,
+            r#"
+class A {
+  void m() {
+    baz();
+  }
+}
+"#
+            .to_string(),
+        );
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        cancel.cancel();
+        assert!(core_file_diagnostics(&db, file, &cancel).is_empty());
+
+        // Sanity check: non-cancelled requests should still produce diagnostics.
+        let not_cancelled = nova_scheduler::CancellationToken::new();
+        assert!(!core_file_diagnostics(&db, file, &not_cancelled).is_empty());
+    }
+
+    #[test]
+    fn core_completions_returns_empty_when_cancelled() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        let source = r#"
+class A {
+  void m() {
+    String s = "";
+    s.
+  }
+}
+"#;
+        db.set_file_text(file, source.to_string());
+
+        let offset = source
+            .find("s.")
+            .expect("expected `s.` in fixture")
+            + "s.".len();
+        let position = crate::text::offset_to_position(source, offset);
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        cancel.cancel();
+        assert!(core_completions(&db, file, position, &cancel).is_empty());
+
+        // Sanity check: non-cancelled requests should still produce completions.
+        let not_cancelled = nova_scheduler::CancellationToken::new();
+        assert!(!core_completions(&db, file, position, &not_cancelled).is_empty());
+    }
 }
 
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {

@@ -6823,7 +6823,8 @@ mod tests {
 
         analysis.salsa.clear_query_stats();
 
-        let _ = nova_ide::core_file_diagnostics(&analysis, file_id);
+        let cancel = CancellationToken::new();
+        let _ = nova_ide::core_file_diagnostics(&analysis, file_id, &cancel);
         let after_first = analysis.salsa.query_stats();
         let first = after_first
             .by_query
@@ -6839,7 +6840,7 @@ mod tests {
             ra_salsa::Database::synthetic_write(db, ra_salsa::Durability::LOW);
         });
 
-        let _ = nova_ide::core_file_diagnostics(&analysis, file_id);
+        let _ = nova_ide::core_file_diagnostics(&analysis, file_id, &cancel);
         let after_second = analysis.salsa.query_stats();
         let second = after_second
             .by_query

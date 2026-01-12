@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use nova_db::{Database as LegacyDatabase, FileId, ProjectId, QueryStat, SalsaDatabase};
 use nova_jdk::JdkIndex;
+use nova_scheduler::CancellationToken;
 
 fn stat(db: &SalsaDatabase, query: &str) -> QueryStat {
     db.query_stats()
@@ -68,7 +69,8 @@ class A {
         salsa: salsa.clone(),
     };
 
-    let _ = nova_ide::core_file_diagnostics(&db, file);
+    let cancel = CancellationToken::new();
+    let _ = nova_ide::core_file_diagnostics(&db, file, &cancel);
     let type_before = stat(&salsa, "type_diagnostics");
     let flow_before = stat(&salsa, "flow_diagnostics_for_file");
     assert!(
@@ -82,7 +84,7 @@ class A {
 
     salsa.with_write(|db| ra_salsa::Database::synthetic_write(db, ra_salsa::Durability::LOW));
 
-    let _ = nova_ide::core_file_diagnostics(&db, file);
+    let _ = nova_ide::core_file_diagnostics(&db, file, &cancel);
     let type_after = stat(&salsa, "type_diagnostics");
     let flow_after = stat(&salsa, "flow_diagnostics_for_file");
 
@@ -106,4 +108,3 @@ class A {
         "expected flow_diagnostics_for_file to validate memoized results on subsequent calls"
     );
 }
-

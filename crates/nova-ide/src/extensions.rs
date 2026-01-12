@@ -680,6 +680,7 @@ where
         let mut diagnostics = crate::code_intelligence::core_file_diagnostics(
             self.db.as_ref().as_dyn_nova_db(),
             file,
+            &cancel,
         );
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
@@ -696,6 +697,7 @@ where
             self.db.as_ref().as_dyn_nova_db(),
             file,
             position,
+            &cancel,
         );
         let text = self.db.file_content(file);
         let text_index = TextIndex::new(text);
