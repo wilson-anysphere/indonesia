@@ -4043,6 +4043,7 @@ dependencies = [
  "nova-decompile",
  "nova-ext",
  "nova-format",
+ "nova-framework",
  "nova-framework-micronaut",
  "nova-framework-web",
  "nova-ide",

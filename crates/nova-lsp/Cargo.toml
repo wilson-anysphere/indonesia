@@ -83,6 +83,7 @@ pretty_assertions = "1.4"
 tempfile = "3.10.1"
 nova-test-utils = { path = "../nova-test-utils" }
 nova-types = { path = "../nova-types" }
+nova-framework = { path = "../nova-framework" }
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 
