@@ -339,29 +339,31 @@ impl MavenBuild {
             "maven.compiler.target",
         )?;
 
-        let enable_preview = self.evaluate_contains_best_effort(
+        let compiler_args_raw = self.evaluate_raw_best_effort(
             project_root,
             module_relative,
             "maven.compiler.compilerArgs",
-            "--enable-preview",
-        )? || self.evaluate_contains_best_effort(
-            project_root,
-            module_relative,
-            "maven.compiler.compilerArgument",
-            "--enable-preview",
         )?;
+        let mut enable_preview = compiler_args_raw
+            .as_deref()
+            .is_some_and(|output| output.contains("--enable-preview"));
+        let mut compiler_args_looks_like_jpms = compiler_args_raw
+            .as_deref()
+            .is_some_and(|output| MAVEN_JPMS_FLAG_NEEDLES.iter().any(|needle| output.contains(needle)));
 
-        let compiler_args_looks_like_jpms = self.evaluate_contains_any_best_effort(
-            project_root,
-            module_relative,
-            "maven.compiler.compilerArgs",
-            &MAVEN_JPMS_FLAG_NEEDLES,
-        )? || self.evaluate_contains_any_best_effort(
-            project_root,
-            module_relative,
-            "maven.compiler.compilerArgument",
-            &MAVEN_JPMS_FLAG_NEEDLES,
-        )?;
+        if !(enable_preview && compiler_args_looks_like_jpms) {
+            let compiler_argument_raw = self.evaluate_raw_best_effort(
+                project_root,
+                module_relative,
+                "maven.compiler.compilerArgument",
+            )?;
+            enable_preview |= compiler_argument_raw
+                .as_deref()
+                .is_some_and(|output| output.contains("--enable-preview"));
+            compiler_args_looks_like_jpms |= compiler_argument_raw
+                .as_deref()
+                .is_some_and(|output| MAVEN_JPMS_FLAG_NEEDLES.iter().any(|needle| output.contains(needle)));
+        }
 
         // Best-effort: ensure output dirs are represented on the appropriate classpaths.
         if let Some(out_dir) = &main_output_dir {
@@ -702,30 +704,15 @@ impl MavenBuild {
         }
     }
 
-    fn evaluate_contains_best_effort(
+    fn evaluate_raw_best_effort(
         &self,
         project_root: &Path,
         module_relative: Option<&Path>,
         expression: &str,
-        needle: &str,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         match self.run_help_evaluate_raw(project_root, module_relative, expression) {
-            Ok(output) => Ok(output.contains(needle)),
-            Err(BuildError::CommandFailed { .. }) => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-
-    fn evaluate_contains_any_best_effort(
-        &self,
-        project_root: &Path,
-        module_relative: Option<&Path>,
-        expression: &str,
-        needles: &[&str],
-    ) -> Result<bool> {
-        match self.run_help_evaluate_raw(project_root, module_relative, expression) {
-            Ok(output) => Ok(needles.iter().any(|needle| output.contains(needle))),
-            Err(BuildError::CommandFailed { .. }) => Ok(false),
+            Ok(output) => Ok(Some(output)),
+            Err(BuildError::CommandFailed { .. }) => Ok(None),
             Err(err) => Err(err),
         }
     }
