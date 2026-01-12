@@ -987,5 +987,17 @@ fn is_bazel_build_definition_file(path: &Path) -> bool {
         return false;
     };
 
-    name == "BUILD" || name == "BUILD.bazel" || name.ends_with(".bzl")
+    matches!(
+        name,
+        "BUILD"
+            | "BUILD.bazel"
+            | "WORKSPACE"
+            | "WORKSPACE.bazel"
+            | "MODULE.bazel"
+            | "MODULE.bazel.lock"
+            | "bazelisk.rc"
+            | ".bazelrc"
+            | ".bazelversion"
+    ) || name.starts_with(".bazelrc.")
+        || name.ends_with(".bzl")
 }
