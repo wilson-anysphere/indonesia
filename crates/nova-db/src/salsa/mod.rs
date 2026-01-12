@@ -2349,7 +2349,7 @@ impl Database {
     }
 
     /// Subscribe to memory pressure events and request Salsa cancellation when the
-    /// process enters `High` or `Critical` pressure.
+    /// process is under `High` or `Critical` pressure.
     ///
     /// This is best-effort and deliberately avoids deadlocking if memory
     /// enforcement is invoked while holding the database write lock: we only
@@ -2361,6 +2361,7 @@ impl Database {
         }
 
         let db = Arc::downgrade(&self.inner);
+        let db_for_initial_check = db.clone();
         manager.subscribe(Arc::new(move |event: nova_memory::MemoryEvent| {
             // Request cancellation whenever we're under High/Critical pressure.
             if !matches!(event.pressure, MemoryPressure::High | MemoryPressure::Critical) {
@@ -2378,6 +2379,17 @@ impl Database {
                 guard.request_cancellation();
             };
         }));
+
+        // Best-effort: if we register this listener while the process is already under high
+        // pressure, we may not see another MemoryEvent until pressure changes. Trigger a
+        // cancellation request eagerly in that case.
+        if matches!(manager.pressure(), MemoryPressure::High | MemoryPressure::Critical) {
+            if let Some(db) = db_for_initial_check.upgrade() {
+                if let Some(mut guard) = db.try_lock() {
+                    guard.request_cancellation();
+                }
+            }
+        }
     }
 
     pub fn persist_project_indexes(
@@ -3229,6 +3241,58 @@ class Foo {
         assert_query_is_cancelled_by_memory_pressure(manager, db, move |snap| {
             snap.interruptible_work(file, 5_000_000)
         });
+    }
+
+    #[test]
+    fn registering_under_existing_high_pressure_requests_salsa_cancellation() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        const ENTER_TIMEOUT: Duration = Duration::from_secs(5);
+        const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+
+        // Put the manager under critical pressure *before* registering the listener. We do not
+        // call `enforce()`, so no MemoryEvent will be emitted unless the registration code checks
+        // current pressure eagerly.
+        let manager = MemoryManager::new(MemoryBudget::from_total(8 * GB));
+        let registration = manager.register_tracker("pressure_test", MemoryCategory::Other);
+        registration
+            .tracker()
+            .set_bytes(manager.budget().total.saturating_mul(2));
+
+        let db = Database::new();
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "class Foo {}");
+
+        let snap = db.snapshot();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _guard =
+                cancellation::test_support::install_entered_long_running_region_sender(entered_tx);
+            catch_cancelled(|| snap.interruptible_work(file, 5_000_000))
+        });
+
+        entered_rx
+            .recv_timeout(ENTER_TIMEOUT)
+            .expect("interruptible_work did not reach a cancellation checkpoint");
+
+        // Registering should request cancellation immediately since pressure is already critical.
+        db.register_salsa_cancellation_on_memory_pressure(&manager);
+
+        let deadline = Instant::now() + CANCEL_TIMEOUT;
+        while !worker.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            worker.is_finished(),
+            "query did not unwind within {CANCEL_TIMEOUT:?} after registering under high pressure"
+        );
+
+        let result = worker.join().expect("worker thread panicked");
+        assert!(
+            result.is_err(),
+            "expected salsa query to unwind with Cancelled when registering under high pressure"
+        );
     }
 
     #[test]
