@@ -33,7 +33,8 @@ use nova_jdk::JdkIndex;
 use nova_resolve::{ImportMap, Resolver as ImportResolver};
 use nova_types::{
     CallKind, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution,
-    PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeStore, TypeVarId,
+    PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeProvider,
+    TypeStore, TypeVarId,
 };
 use once_cell::sync::Lazy;
 use serde_json::json;
@@ -5799,7 +5800,7 @@ pub(crate) fn core_completions(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-    let items = general_completions(db, file, offset, prefix_start, &prefix);
+    let items = general_completions(db, file, text, &text_index, offset, prefix_start, &prefix);
     if cancel.is_cancelled() {
         return Vec::new();
     }
@@ -6385,7 +6386,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         &text_index,
         prefix_start,
         offset,
-        general_completions(db, file, offset, prefix_start, &prefix),
+        general_completions(db, file, text, &text_index, offset, prefix_start, &prefix),
     )
 }
 
@@ -10530,14 +10531,352 @@ fn semantic_member_completions(
 
     items
 }
+
+fn expression_type_name_completions(
+    db: &dyn Database,
+    file: FileId,
+    analysis: &Analysis,
+    text: &str,
+    text_index: &TextIndex<'_>,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    // Avoid flooding completion lists with hundreds of type names when the user hasn't typed
+    // anything yet. Once a prefix exists (even a single character), type-name completions are
+    // useful for static member access (`Math.max`, `Collections.emptyList`, ...).
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+
+    let imports = parse_java_imports(text);
+    let env = completion_cache::completion_env_for_file(db, file);
+    let classpath = classpath_index_for_file(db, file);
+
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
+
+    // Avoid allocating/cloning a potentially large `Vec<String>` for each package via
+    // `class_names_with_prefix`. Instead, scan the stable sorted name list and stop once we've
+    // produced enough items.
+    let jdk_class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| EMPTY_JDK_INDEX.all_binary_class_names())
+        .unwrap_or(&[]);
+
+    const MAX_TYPE_ITEMS: usize = 256;
+    const MAX_JDK_PER_PACKAGE: usize = 64;
+    const MAX_CLASSPATH_PER_PACKAGE: usize = 64;
+
+    let mut items = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut added = 0usize;
+
+    let push_type = |simple: String,
+                     kind: CompletionItemKind,
+                     fqn: String,
+                     workspace_local: bool,
+                     items: &mut Vec<CompletionItem>,
+                     seen: &mut HashSet<String>,
+                     added: &mut usize| {
+        if *added >= MAX_TYPE_ITEMS {
+            return;
+        }
+        if !seen.insert(simple.clone()) {
+            return;
+        }
+
+        // Types in the default package cannot be referenced from a named package.
+        if !imports.current_package.is_empty() && !fqn.contains('.') {
+            return;
+        }
+
+        let mut item = CompletionItem {
+            label: simple,
+            kind: Some(kind),
+            detail: Some(fqn.clone()),
+            ..Default::default()
+        };
+        if workspace_local {
+            mark_workspace_completion_item(&mut item);
+        }
+        if java_type_needs_import(&imports, &fqn) {
+            item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &fqn)]);
+        }
+        items.push(item);
+        *added += 1;
+    };
+
+    // 1) Types declared in this file.
+    for class in &analysis.classes {
+        if !class.name.starts_with(prefix) {
+            continue;
+        }
+        let fqn = if imports.current_package.is_empty() {
+            class.name.clone()
+        } else {
+            format!("{}.{}", imports.current_package, class.name)
+        };
+        push_type(
+            class.name.clone(),
+            CompletionItemKind::CLASS,
+            fqn,
+            true,
+            &mut items,
+            &mut seen,
+            &mut added,
+        );
+    }
+
+    // 2) Explicit imports.
+    for fqn in &imports.explicit_types {
+        let simple = fqn.rsplit('.').next().unwrap_or(fqn).to_string();
+        if !simple.starts_with(prefix) {
+            continue;
+        }
+
+        let mut kind = CompletionItemKind::CLASS;
+        if let Some(env) = env.as_ref() {
+            if let Some(id) = env.types().class_id(fqn) {
+                if let Some(class_def) = env.types().class(id) {
+                    if class_def.kind == ClassKind::Interface {
+                        kind = CompletionItemKind::INTERFACE;
+                    }
+                }
+            }
+        } else if let Some(stub) = jdk.lookup_type(fqn).ok().flatten() {
+            if stub.access_flags & ACC_INTERFACE != 0 {
+                kind = CompletionItemKind::INTERFACE;
+            } else if stub.access_flags & ACC_ENUM != 0 {
+                kind = CompletionItemKind::ENUM;
+            }
+        } else if let Some(classpath) = classpath.as_ref() {
+            if let Some(stub) = classpath.lookup_type(fqn) {
+                if stub.access_flags & ACC_INTERFACE != 0 {
+                    kind = CompletionItemKind::INTERFACE;
+                } else if stub.access_flags & ACC_ENUM != 0 {
+                    kind = CompletionItemKind::ENUM;
+                }
+            }
+        }
+
+        push_type(
+            simple,
+            kind,
+            fqn.clone(),
+            false,
+            &mut items,
+            &mut seen,
+            &mut added,
+        );
+    }
+
+    // 3) Workspace types from the current package + any star-imported packages (in-scope types).
+    if let Some(env) = env.as_ref() {
+        let mut packages = imports.star_packages.clone();
+        packages.push(imports.current_package.clone());
+        packages.sort();
+        packages.dedup();
+        let package_set: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+
+        let types = env.workspace_index().types();
+        let start = types.partition_point(|ty| ty.simple.as_str() < prefix);
+        for ty in &types[start..] {
+            if added >= MAX_TYPE_ITEMS {
+                break;
+            }
+            if !ty.simple.starts_with(prefix) {
+                break;
+            }
+            if ty.package.starts_with("java.") || ty.package.starts_with("javax.") {
+                continue;
+            }
+            if !package_set.contains(ty.package.as_str()) {
+                continue;
+            }
+
+            let mut kind = CompletionItemKind::CLASS;
+            if let Some(id) = env.types().class_id(&ty.qualified) {
+                if let Some(class_def) = env.types().class(id) {
+                    if class_def.kind == ClassKind::Interface {
+                        kind = CompletionItemKind::INTERFACE;
+                    }
+                }
+            }
+            push_type(
+                ty.simple.clone(),
+                kind,
+                ty.qualified.clone(),
+                true,
+                &mut items,
+                &mut seen,
+                &mut added,
+            );
+        }
+    }
+
+    // 4) JDK types from `java.lang.*` + `java.util.*` + wildcard imports.
+    let mut packages = imports.star_packages.clone();
+    packages.push("java.lang".to_string()); // implicitly imported.
+    packages.push("java.util".to_string()); // common package (mirrors `new` completions).
+    packages.sort();
+    packages.dedup();
+
+    for pkg in packages {
+        if added >= MAX_TYPE_ITEMS {
+            break;
+        }
+
+        let pkg_prefix = format!("{pkg}.");
+        let query = format!("{pkg_prefix}{prefix}");
+        let start = jdk_class_names.partition_point(|name| name.as_str() < query.as_str());
+
+        let mut added_for_pkg = 0usize;
+        for binary in &jdk_class_names[start..] {
+            if added >= MAX_TYPE_ITEMS || added_for_pkg >= MAX_JDK_PER_PACKAGE {
+                break;
+            }
+            if !binary.starts_with(query.as_str()) {
+                break;
+            }
+
+            let rest = &binary[pkg_prefix.len()..];
+            // Star-imports only expose direct package members (no subpackages).
+            if rest.contains('.') || rest.contains('$') {
+                continue;
+            }
+
+            let kind = jdk
+                .lookup_type(binary.as_str())
+                .ok()
+                .flatten()
+                .map(|stub| {
+                    if stub.access_flags & ACC_INTERFACE != 0 {
+                        CompletionItemKind::INTERFACE
+                    } else if stub.access_flags & ACC_ENUM != 0 {
+                        CompletionItemKind::ENUM
+                    } else {
+                        CompletionItemKind::CLASS
+                    }
+                })
+                .unwrap_or(CompletionItemKind::CLASS);
+
+            push_type(
+                rest.to_string(),
+                kind,
+                binary.clone(),
+                false,
+                &mut items,
+                &mut seen,
+                &mut added,
+            );
+            added_for_pkg += 1;
+        }
+    }
+
+    // 5) Dependency classpath types from wildcard import packages.
+    if let Some(classpath) = classpath.as_ref() {
+        let cp_names = classpath.binary_class_names();
+        for pkg in &imports.star_packages {
+            if added >= MAX_TYPE_ITEMS {
+                break;
+            }
+
+            let pkg_prefix = format!("{pkg}.");
+            let query = format!("{pkg_prefix}{prefix}");
+            let start = cp_names.partition_point(|name| name.as_str() < query.as_str());
+
+            let mut added_for_pkg = 0usize;
+            for binary in &cp_names[start..] {
+                if added >= MAX_TYPE_ITEMS || added_for_pkg >= MAX_CLASSPATH_PER_PACKAGE {
+                    break;
+                }
+                if !binary.starts_with(query.as_str()) {
+                    break;
+                }
+
+                let rest = &binary[pkg_prefix.len()..];
+                if rest.contains('.') || rest.contains('$') {
+                    continue;
+                }
+
+                let kind = classpath
+                    .lookup_type(binary.as_str())
+                    .map(|stub| {
+                        if stub.access_flags & ACC_INTERFACE != 0 {
+                            CompletionItemKind::INTERFACE
+                        } else if stub.access_flags & ACC_ENUM != 0 {
+                            CompletionItemKind::ENUM
+                        } else {
+                            CompletionItemKind::CLASS
+                        }
+                    })
+                    .unwrap_or(CompletionItemKind::CLASS);
+
+                push_type(
+                    rest.to_string(),
+                    kind,
+                    binary.clone(),
+                    false,
+                    &mut items,
+                    &mut seen,
+                    &mut added,
+                );
+                added_for_pkg += 1;
+            }
+        }
+    }
+
+    // 6) Workspace-wide type index fallback (distant types with auto-import).
+    if let Some(env) = env.as_ref() {
+        let types = env.workspace_index().types();
+        let start = types.partition_point(|ty| ty.simple.as_str() < prefix);
+        for ty in &types[start..] {
+            if added >= MAX_TYPE_ITEMS {
+                break;
+            }
+            if !ty.simple.starts_with(prefix) {
+                break;
+            }
+            if ty.package.starts_with("java.") || ty.package.starts_with("javax.") {
+                continue;
+            }
+            if !imports.current_package.is_empty() && ty.package.is_empty() {
+                continue;
+            }
+
+            let mut kind = CompletionItemKind::CLASS;
+            if let Some(id) = env.types().class_id(&ty.qualified) {
+                if let Some(class_def) = env.types().class(id) {
+                    if class_def.kind == ClassKind::Interface {
+                        kind = CompletionItemKind::INTERFACE;
+                    }
+                }
+            }
+
+            push_type(
+                ty.simple.clone(),
+                kind,
+                ty.qualified.clone(),
+                true,
+                &mut items,
+                &mut seen,
+                &mut added,
+            );
+        }
+    }
+
+    items
+}
 fn general_completions(
     db: &dyn Database,
     file: FileId,
+    text: &str,
+    text_index: &TextIndex<'_>,
     offset: usize,
     prefix_start: usize,
     prefix: &str,
 ) -> Vec<CompletionItem> {
-    let text = db.file_content(file);
     let analysis = analyze(text);
     let mut types = TypeStore::with_minimal_jdk();
     let expected_arg_ty =
@@ -10761,40 +11100,14 @@ fn general_completions(
             }),
         }
     }
-
-    // Best-effort type name completions from the cached workspace index.
+    // Best-effort type-name completions in expression/statement contexts, including JDK/workspace
+    // symbols with auto-import edits where appropriate.
     //
-    // We intentionally guard on a non-empty prefix: large workspaces can contain tens of thousands
-    // of types, and returning them all for an empty prefix would be both slow and noisy.
+    // Guard on a prefix to avoid producing huge completion lists (type indexes can be very large).
     if prefix.len() >= 2 {
-        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
-            let mut last_simple: Option<&str> = None;
-            // Keep the list bounded to avoid producing enormous completion payloads.
-            let mut added = 0usize;
-            const MAX_TYPE_ITEMS: usize = 256;
-
-            for ty in env.workspace_index().types_with_prefix(prefix) {
-                if added >= MAX_TYPE_ITEMS {
-                    break;
-                }
-
-                // The index can contain multiple FQNs for the same simple name; only include a
-                // single item per simple name to keep results deterministic and avoid duplicate
-                // labels (which can make sorting non-deterministic).
-                if last_simple == Some(ty.simple.as_str()) {
-                    continue;
-                }
-                last_simple = Some(ty.simple.as_str());
-
-                items.push(CompletionItem {
-                    label: ty.simple.clone(),
-                    kind: Some(CompletionItemKind::CLASS),
-                    detail: Some(ty.qualified.clone()),
-                    ..Default::default()
-                });
-                added += 1;
-            }
-        }
+        items.extend(expression_type_name_completions(
+            db, file, &analysis, text, text_index, prefix,
+        ));
     }
 
     // Common Java literals/keywords that should always be available in expression
@@ -12037,6 +12350,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         i32,
         i32,
         i32,
+        i32,
         String,
     )> = items
         .drain(..)
@@ -12048,11 +12362,25 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 .unwrap_or(&item.label);
             let score = matcher.score(match_target)?;
 
+            let is_type_name = matches!(
+                item.kind,
+                Some(
+                    CompletionItemKind::CLASS
+                        | CompletionItemKind::INTERFACE
+                        | CompletionItemKind::ENUM
+                        | CompletionItemKind::STRUCT
+                )
+            );
+
             // `detail` is usually used for type information in this completion
             // layer (e.g. var/field type or method return type). For statically
             // imported members we use `detail` to display the owner type, so
             // don't treat it as a type for expected-type ranking.
-            let expected_bonus: i32 = if static_import_bonus(&item) > 0 {
+            //
+            // Expected-type ranking is intended for value completions (variables, methods, etc.).
+            // Type-name completions are typically used for static member access, and boosting them
+            // can cause them to outrank in-scope locals for short prefixes.
+            let expected_bonus: i32 = if static_import_bonus(&item) > 0 || is_type_name {
                 0
             } else {
                 match (expected_ty.as_ref(), item.kind, item.detail.as_deref()) {
@@ -12112,6 +12440,17 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
 
             let scope = scope_bonus(item.kind);
             let recency = ctx.last_used_offsets.get(&item.label).copied();
+            // Prefer already-imported / same-package types over ones that would require an import.
+            let import_bonus = if is_type_name
+                && item
+                    .additional_text_edits
+                    .as_ref()
+                    .is_none_or(|edits| edits.is_empty())
+            {
+                1
+            } else {
+                0
+            };
             let workspace = workspace_completion_bonus(&item);
             let weight = kind_weight(item.kind, &item.label) + static_import_bonus(&item);
 
@@ -12136,6 +12475,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 expected_bonus,
                 scope,
                 recency,
+                import_bonus,
                 workspace,
                 weight,
                 member_origin,
@@ -12151,6 +12491,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             a_expected,
             a_scope,
             a_recency,
+            a_import,
             a_workspace,
             a_weight,
             a_origin,
@@ -12162,6 +12503,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             b_expected,
             b_scope,
             b_recency,
+            b_import,
             b_workspace,
             b_weight,
             b_origin,
@@ -12173,6 +12515,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 .then_with(|| b_expected.cmp(a_expected))
                 .then_with(|| b_scope.cmp(a_scope))
                 .then_with(|| b_recency.cmp(a_recency))
+                .then_with(|| b_import.cmp(a_import))
                 .then_with(|| b_workspace.cmp(a_workspace))
                 .then_with(|| b_weight.cmp(a_weight))
                 .then_with(|| b_origin.cmp(a_origin))
@@ -12182,11 +12525,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         },
     );
 
-    items.extend(
-        scored
-            .into_iter()
-            .map(|(item, _, _, _, _, _, _, _, _)| item),
-    );
+    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _, _, _, _)| item));
 }
 
 fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {
@@ -15348,6 +15687,7 @@ const ACC_FINAL: u16 = 0x0010;
 const ACC_VARARGS: u16 = 0x0080;
 const ACC_INTERFACE: u16 = 0x0200;
 const ACC_ABSTRACT: u16 = 0x0400;
+const ACC_ENUM: u16 = 0x4000;
 
 fn add_builtin_string_methods(types: &mut TypeStore, string: ClassId) {
     let Some(class_def) = types.class_mut(string) else {

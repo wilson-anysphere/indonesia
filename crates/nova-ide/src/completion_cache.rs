@@ -205,7 +205,14 @@ impl CompletionEnvCache {
             fingerprint,
             env: Arc::clone(&env),
         };
-        lock_unpoison(&self.entries).insert(key, entry);
+        lock_unpoison(&self.entries).insert_with_evict_predicate(key, entry, |cached| {
+            // Avoid evicting entries that are currently in use by other callers.
+            //
+            // Integration tests run in parallel and may build completion envs for many distinct
+            // roots, causing a global LRU to churn. `Arc::ptr_eq` assertions expect the env for a
+            // root to remain cached at least while a caller is actively holding onto it.
+            Arc::strong_count(&cached.env) == 1
+        });
         env
     }
 }
@@ -457,10 +464,20 @@ where
         Some(value)
     }
 
+    #[allow(dead_code)]
     fn insert(&mut self, key: K, value: V) {
         self.map.insert(key.clone(), value);
         self.touch(&key);
         self.evict_if_needed();
+    }
+
+    fn insert_with_evict_predicate<F>(&mut self, key: K, value: V, can_evict: F)
+    where
+        F: Fn(&V) -> bool,
+    {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed_with(can_evict);
     }
 
     fn touch(&mut self, key: &K) {
@@ -470,6 +487,7 @@ where
         self.order.push_back(key.clone());
     }
 
+    #[allow(dead_code)]
     fn evict_if_needed(&mut self) {
         let mut scanned = 0usize;
         while self.map.len() > self.capacity && !self.order.is_empty() {
@@ -493,6 +511,37 @@ where
                 if scanned >= self.order.len() {
                     break;
                 }
+            }
+        }
+    }
+
+    fn evict_if_needed_with<F>(&mut self, can_evict: F)
+    where
+        F: Fn(&V) -> bool,
+    {
+        while self.map.len() > self.capacity {
+            let mut evicted = false;
+            // Iterate the full LRU list once to find something evictable.
+            let attempts = self.order.len();
+            for _ in 0..attempts {
+                let Some(key) = self.order.pop_front() else {
+                    break;
+                };
+                let Some(value) = self.map.get(&key) else {
+                    // Stale key; drop it.
+                    evicted = true;
+                    break;
+                };
+                if can_evict(value) {
+                    self.map.remove(&key);
+                    evicted = true;
+                    break;
+                }
+                // Not evictable; rotate it to the back.
+                self.order.push_back(key);
+            }
+            if !evicted {
+                break;
             }
         }
     }

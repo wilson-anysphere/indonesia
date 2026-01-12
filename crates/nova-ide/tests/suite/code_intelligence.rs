@@ -1295,6 +1295,47 @@ class A {
 }
 
 #[test]
+fn completion_includes_jdk_type_names_in_expression_context() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Ma<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Math"),
+        "expected completion list to contain Math; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_explicitly_imported_type_names_in_expression_context() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.List;
+class A {
+  void m() {
+    Li<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"List"),
+        "expected completion list to contain List; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_filters_incompatible_items_in_string_initializer() {
     let (db, file, pos) = fixture(
         r#"
