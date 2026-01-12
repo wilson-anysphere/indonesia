@@ -938,6 +938,51 @@ class C {
 }
 
 #[test]
+fn diamond_inference_uses_target_type_from_return() {
+    let src = r#"
+import java.util.*;
+class C {
+    List<String> m() {
+        return new ArrayList<>();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("ArrayList<>")
+        .expect("snippet should contain ArrayList diamond")
+        + "ArrayList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "ArrayList<String>");
+}
+
+#[test]
+fn diamond_inference_for_var_defaults_to_object() {
+    let src = r#"
+import java.util.*;
+class C {
+    void m() {
+        var xs = new ArrayList<>();
+        xs.add("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("xs.add")
+        .expect("snippet should contain xs.add")
+        + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "ArrayList<Object>");
+}
+
+#[test]
 fn unresolved_method_diagnostic_includes_candidates_and_arity() {
     let src = r#"
 import java.util.*;

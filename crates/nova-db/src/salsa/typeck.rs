@@ -16,11 +16,11 @@ use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution
 use nova_syntax::JavaLanguageLevel;
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
-    cast_conversion, format_resolved_method, format_type, is_subtype, CallKind, ClassDef, ClassId,
-    ClassKind, ConstValue, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
-    MethodDef, MethodNotFound, MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext,
-    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId, TypeWarning, UncheckedReason,
-    WildcardBound,
+    cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
+    CallKind, ClassDef, ClassId, ClassKind, ConstValue, Diagnostic, FieldDef, MethodCall,
+    MethodCandidateFailureReason, MethodDef, MethodNotFound, MethodResolution, PrimitiveType,
+    ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore,
+    TypeVarId, TypeWarning, UncheckedReason, WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -2563,8 +2563,20 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let _ = self.infer_expr(loader, *arg);
                 }
 
-                let mut ty =
-                    self.resolve_source_type(loader, class.as_str(), Some(*class_range));
+                let mut ty = self.resolve_source_type(loader, class.as_str(), Some(*class_range));
+                if is_diamond_type_ref_text(class.as_str()) {
+                    let class_id = match &ty {
+                        Type::Class(nova_types::ClassType { def, args }) if args.is_empty() => {
+                            Some(*def)
+                        }
+                        _ => None,
+                    };
+                    if let Some(class_id) = class_id {
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        let inferred = infer_diamond_type_args(env_ro, class_id, expected);
+                        ty = Type::class(class_id, inferred);
+                    }
+                }
 
                 // Best-effort: recover array-ness for `new T[0]` expressions when the lowered type
                 // text only contains the base element type.
@@ -5379,4 +5391,17 @@ fn parse_java_int_literal(text: &str) -> Option<i64> {
     };
 
     i64::from_str_radix(digits, radix).ok()
+}
+
+fn is_diamond_type_ref_text(text: &str) -> bool {
+    let text = text.trim();
+    if !text.ends_with('>') {
+        return false;
+    }
+
+    let Some(lt) = text.rfind('<') else {
+        return false;
+    };
+
+    text[lt + 1..text.len().saturating_sub(1)].trim().is_empty()
 }
