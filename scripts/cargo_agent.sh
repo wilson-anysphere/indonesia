@@ -118,6 +118,21 @@ run_cargo() {
     return 2
   fi
 
+  # When running under the default 4G RLIMIT_AS ceiling, large crates (notably `nova-lsp`)
+  # can hit link-time OOM with lld. Both GNU ld and lld support `--no-keep-memory`, which
+  # trades some additional disk I/O for lower peak address-space usage during linking.
+  #
+  # Only enable this under Linux and only when an address-space cap is active; this keeps
+  # local/dev builds fast while making constrained CI/agent builds reliable.
+  if [[ "$(uname -s)" == "Linux" ]] \
+    && [[ -n "${limit_as}" && "${limit_as}" != "0" && "${limit_as}" != "off" && "${limit_as}" != "unlimited" ]] \
+    && [[ -z "${NOVA_CARGO_NO_LINK_NO_KEEP_MEMORY:-}" ]]
+  then
+    if ! [[ "${RUSTFLAGS:-}" =~ no-keep-memory ]]; then
+      export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--no-keep-memory"
+    fi
+  fi
+
   # Handle toolchain spec (+nightly, etc.)
   if [[ "$1" == +* ]]; then
     toolchain_arg="$1"
