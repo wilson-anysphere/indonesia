@@ -1240,6 +1240,46 @@ class C { int m(int[] a, boolean b){ return a[b]; } }
 }
 
 #[test]
+fn assignment_to_array_access_is_allowed() {
+    let src = r#"
+class C { void m(int[] a){ a[0] = 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-assignment-target"),
+        "expected no invalid-assignment-target diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn assignment_to_array_access_checks_element_type() {
+    let src = r#"
+class C { void m(int[] a){ a[0] = "no"; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected type-mismatch diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-assignment-target"),
+        "expected no invalid-assignment-target diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn qualified_type_receiver_resolves_for_static_call() {
     let src = r#"
 class C {

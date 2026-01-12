@@ -4964,6 +4964,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             }
                         }
                         HirExpr::FieldAccess { .. } => true,
+                        HirExpr::ArrayAccess { .. } => true,
                         _ => false,
                     };
 
