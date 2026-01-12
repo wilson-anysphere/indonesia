@@ -870,7 +870,7 @@ where
                 source,
                 selection.start,
             ));
- 
+
             actions.extend(type_mismatch_quick_fixes(
                 self.db.as_ref().as_dyn_nova_db(),
                 file,
