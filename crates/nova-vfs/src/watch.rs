@@ -408,6 +408,18 @@ mod notify_impl {
             self.gc_pending(now)
         }
 
+        /// Flushes **all** pending rename-from events, treating them as deletions.
+        ///
+        /// This is used when shutting down the watcher (or when the notify callback disconnects)
+        /// to ensure we never silently drop unmatched `RenameMode::From` events.
+        pub fn flush_all_pending_renames_as_deleted(&mut self) -> Vec<FileChange> {
+            let mut out = Vec::new();
+            while let Some((_, path)) = self.pending_renames.pop_front() {
+                out.push(FileChange::Deleted { path });
+            }
+            out
+        }
+
         fn gc_pending(&mut self, now: Instant) -> Vec<FileChange> {
             let mut out = Vec::new();
 
@@ -548,9 +560,7 @@ mod notify_impl {
                 recv(stop_rx) -> _ => {
                     // Flush any pending rename-froms so they aren't silently dropped when
                     // shutting down the watcher.
-                    let changes = normalizer.flush(
-                        Instant::now() + EventNormalizer::MAX_AGE + Duration::from_millis(1),
-                    );
+                    let changes = normalizer.flush_all_pending_renames_as_deleted();
                     if !changes.is_empty() {
                         let _ = events_tx.try_send(Ok(WatchEvent::Changes { changes }));
                     }
@@ -560,9 +570,7 @@ mod notify_impl {
                     let Ok(res) = msg else {
                         // The notify callback is gone (usually because the watcher is shutting down
                         // unexpectedly). Ensure we don't silently drop any pending rename-froms.
-                        let changes = normalizer.flush(
-                            Instant::now() + EventNormalizer::MAX_AGE + Duration::from_millis(1),
-                        );
+                        let changes = normalizer.flush_all_pending_renames_as_deleted();
                         if !changes.is_empty() {
                             let _ = events_tx.try_send(Ok(WatchEvent::Changes { changes }));
                         }
