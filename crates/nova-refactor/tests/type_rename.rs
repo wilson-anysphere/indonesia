@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use nova_refactor::{
-    apply_workspace_edit, rename, FileId, FileOp, JavaSymbolKind, RefactorJavaDatabase,
-    RenameParams,
+    apply_workspace_edit, rename, Conflict, FileId, FileOp, JavaSymbolKind, RefactorJavaDatabase,
+    RenameParams, SemanticRefactorError,
 };
 
 #[test]
@@ -101,5 +101,76 @@ fn rename_type_does_not_rename_local_variable_named_same() {
     assert!(
         use_after.contains("println(Foo);"),
         "expected local variable usage to remain unchanged: {use_after}"
+    );
+}
+
+#[test]
+fn rename_type_conflict_name_collision_in_same_package() {
+    let foo_file = FileId::new("p/Foo.java");
+    let other_file = FileId::new("p/Other.java");
+
+    let foo_src = "package p; public class Foo {}";
+    let other_src = "package p; class Bar {}";
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), foo_src.to_string()),
+        (other_file.clone(), other_src.to_string()),
+    ]);
+
+    let offset = foo_src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&foo_file, offset).expect("type symbol at Foo");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflict error, got: {err:?}");
+    };
+    assert!(
+        conflicts.iter().any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "Bar")),
+        "expected NameCollision conflict, got: {conflicts:?}"
+    );
+}
+
+#[test]
+fn rename_type_conflict_destination_file_exists() {
+    let foo_file = FileId::new("p/Foo.java");
+    let bar_file = FileId::new("p/Bar.java");
+
+    let foo_src = "package p; public class Foo {}";
+    // Destination file exists but does not define `Bar`, so we only hit the file collision check.
+    let bar_src = "package p; class Baz {}";
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), foo_src.to_string()),
+        (bar_file.clone(), bar_src.to_string()),
+    ]);
+
+    let offset = foo_src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&foo_file, offset).expect("type symbol at Foo");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflict error, got: {err:?}");
+    };
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::FileAlreadyExists { file } if file == &bar_file)),
+        "expected FileAlreadyExists conflict, got: {conflicts:?}"
     );
 }
