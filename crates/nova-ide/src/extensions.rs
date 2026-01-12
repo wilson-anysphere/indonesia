@@ -1365,7 +1365,6 @@ fn type_mismatch_quick_fixes(
 
 fn type_mismatch_quick_fixes_from_context(
     source: &str,
-    cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     cancel: &CancellationToken,
     selection: Span,
