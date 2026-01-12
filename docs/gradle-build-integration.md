@@ -72,6 +72,9 @@ build tool (`nova-build`) and persisting the results for later reloads.
 - `GradleBuild::projects(...)` populates `projects` (Gradle project path → `projectDir`)
 - `GradleBuild::java_compile_config(..., project_path=Some(":app"), ...)` populates
   `javaCompileConfigs[":app"]` with resolved compilation inputs
+- `GradleBuild::java_compile_config(..., project_path=None, ...)` populates the root entry
+  `javaCompileConfigs[":"]` (used by single-project Gradle workspaces, and by workspace-level queries
+  that want a unified classpath)
 - `GradleBuild::java_compile_config(..., project_path=Some(":__buildSrc" | ":__buildSrc:subproject"), ...)`
   populates `javaCompileConfigs[...]` for Gradle’s special nested `buildSrc/` build by running Gradle
   with `--project-dir buildSrc`.
