@@ -103,7 +103,7 @@ Cons:
 Positive:
 - enforces the intended architecture (protocol → IDE → semantic → syntax),
 - allows parallel work with minimal merge conflicts,
-- makes it feasible to reuse `nova-semantic`/`nova-ide` in other tools (CLI, batch analysis).
+- makes it feasible to reuse the semantic layer (spread across crates like `nova-types`, `nova-resolve`, `nova-hir`, `nova-flow`) and `nova-ide` in other tools (CLI, batch analysis).
 
 Negative:
 - requires discipline to keep APIs clean and avoid “just add a helper” cross-layer leakage,
