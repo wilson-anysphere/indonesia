@@ -254,9 +254,15 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   registerFrameworkDashboardCommands(context);
-  const frameworksView: NovaFrameworksViewController = registerNovaFrameworksView(context, (method, params) =>
-    sendNovaRequest(method, params, { allowMethodFallback: true }),
-  );
+  const frameworksView: NovaFrameworksViewController = registerNovaFrameworksView(context, async (method, params) => {
+    // The Frameworks view should not auto-start the language server (or trigger install prompts)
+    // just to populate its tree. If nova-lsp isn't already running, keep the view in its welcome
+    // state with inline guidance instead.
+    if (!client) {
+      throw new Error('language client is not running');
+    }
+    return await sendNovaRequest(method, params, { allowMethodFallback: true });
+  });
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.frameworks.refresh', () => {
       frameworksView.refresh();
