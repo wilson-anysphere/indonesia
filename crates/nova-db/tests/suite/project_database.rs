@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use nova_core::ProjectDatabase;
 use nova_cache::CacheConfig;
+use nova_core::ProjectDatabase;
 use nova_db::{AnalysisDatabase, FileId, InMemoryFileStore, SalsaDatabase, SalsaDbView};
 use tempfile::TempDir;
 
@@ -65,7 +65,10 @@ fn analysis_database_implements_project_database() {
     db.set_file_content("src/B.java", "class B {}");
 
     let files = ProjectDatabase::project_files(&db);
-    assert_eq!(files, vec![PathBuf::from("src/A.java"), PathBuf::from("src/B.java")]);
+    assert_eq!(
+        files,
+        vec![PathBuf::from("src/A.java"), PathBuf::from("src/B.java")]
+    );
 
     let text = ProjectDatabase::file_text(&db, &files[0]).expect("file text");
     assert_eq!(text, "class A {}");

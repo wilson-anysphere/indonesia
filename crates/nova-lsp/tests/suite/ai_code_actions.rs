@@ -12,7 +12,8 @@ use nova_lsp::text_pos::TextPos;
 use tempfile::TempDir;
 
 use crate::support::{
-    drain_notifications_until_id, read_jsonrpc_message, read_response_with_id, write_jsonrpc_message,
+    drain_notifications_until_id, read_jsonrpc_message, read_response_with_id,
+    write_jsonrpc_message,
 };
 
 fn find_apply_edit_request(messages: &[serde_json::Value]) -> serde_json::Value {
@@ -216,7 +217,9 @@ local_only = false
         .and_then(|m| m.as_str())
         .expect("expected executeCommand to return an error");
     assert!(
-        err_msg.contains("AI code edits are disabled when identifier anonymization is enabled in cloud mode"),
+        err_msg.contains(
+            "AI code edits are disabled when identifier anonymization is enabled in cloud mode"
+        ),
         "expected CodeEditPolicyError in error message, got: {err_msg}"
     );
     assert_eq!(
@@ -1399,7 +1402,10 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
-        .env("NOVA_AI_ENDPOINT", format!("{}/complete", ai_server.base_url()))
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", ai_server.base_url()),
+        )
         .env("NOVA_AI_MODEL", "default")
         .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
         .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
@@ -1518,7 +1524,9 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
     let uri: Uri = file_uri.parse().expect("uri");
     let edits = changes.get(&uri).expect("edits for file uri");
     assert!(
-        edits.iter().any(|edit| edit.new_text.contains("return 42;")),
+        edits
+            .iter()
+            .any(|edit| edit.new_text.contains("return 42;")),
         "expected edit to contain return statement, got: {edits:?}"
     );
 
@@ -1535,7 +1543,10 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
     ai_server.assert_hits(1);
 
     // shutdown + exit
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -1585,7 +1596,10 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
-        .env("NOVA_AI_ENDPOINT", format!("{}/complete", ai_server.base_url()))
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", ai_server.base_url()),
+        )
         .env("NOVA_AI_MODEL", "default")
         .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
         .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
@@ -1736,7 +1750,10 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
 
     ai_server.assert_hits(1);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);

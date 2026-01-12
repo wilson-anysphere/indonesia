@@ -11,9 +11,8 @@ fn resolves_gradle_dependency_jars_from_local_cache() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = tmp.path().join("gradle-home");
-    let cache_dir = gradle_home.join(
-        "caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890",
-    );
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("foo-1.2.3.jar");
@@ -46,7 +45,10 @@ fn resolves_gradle_dependency_jars_from_local_cache() {
         "resolved jar should appear on the project classpath"
     );
     assert!(
-        !config.classpath.iter().any(|entry| entry.path == sources_path),
+        !config
+            .classpath
+            .iter()
+            .any(|entry| entry.path == sources_path),
         "sources jar should be excluded"
     );
 }
@@ -57,9 +59,8 @@ fn resolves_gradle_dependency_jars_onto_module_path_for_jpms_workspace_model() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = tmp.path().join("gradle-home");
-    let cache_dir = gradle_home.join(
-        "caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890",
-    );
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("foo-1.2.3.jar");
@@ -104,10 +105,12 @@ fn resolves_gradle_dependency_jars_onto_module_path_for_jpms_workspace_model() {
 
     // Output directories should remain on the classpath.
     assert!(module.classpath.iter().any(|entry| {
-        entry.kind == ClasspathEntryKind::Directory && entry.path.ends_with("build/classes/java/main")
+        entry.kind == ClasspathEntryKind::Directory
+            && entry.path.ends_with("build/classes/java/main")
     }));
     assert!(module.classpath.iter().any(|entry| {
-        entry.kind == ClasspathEntryKind::Directory && entry.path.ends_with("build/classes/java/test")
+        entry.kind == ClasspathEntryKind::Directory
+            && entry.path.ends_with("build/classes/java/test")
     }));
 }
 
@@ -117,9 +120,8 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_map_notation() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = tmp.path().join("gradle-home");
-    let cache_dir = gradle_home.join(
-        "caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890",
-    );
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("foo-1.2.3.jar");
@@ -155,9 +157,8 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_kotlin_named_args() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = tmp.path().join("gradle-home");
-    let cache_dir = gradle_home.join(
-        "caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890",
-    );
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("foo-1.2.3.jar");
@@ -193,7 +194,8 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = tmp.path().join("gradle-home");
-    let cache_dir = gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("foo-1.2.3.jar");
@@ -241,9 +243,8 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog_get() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = tmp.path().join("gradle-home");
-    let cache_dir = gradle_home.join(
-        "caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.12/abcdef1234567890",
-    );
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.12/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("slf4j-api-2.0.12.jar");

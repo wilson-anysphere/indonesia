@@ -162,7 +162,10 @@ fn registry_completes_config_property_names_from_application_properties() {
         .iter()
         .find(|c| c.label == "server.port")
         .expect("expected server.port completion item");
-    assert_eq!(item.replace_span, Some(nova_types::Span::new(cursor_base, cursor_base + 3)));
+    assert_eq!(
+        item.replace_span,
+        Some(nova_types::Span::new(cursor_base, cursor_base + 3))
+    );
 }
 
 #[test]
@@ -549,7 +552,10 @@ fn registry_completes_config_property_names_when_java_file_has_no_path() {
         .iter()
         .find(|c| c.label == "quarkus.http.port")
         .expect("expected quarkus.http.port completion item");
-    assert_eq!(item.replace_span, Some(nova_types::Span::new(cursor_base, cursor_base + 2)));
+    assert_eq!(
+        item.replace_span,
+        Some(nova_types::Span::new(cursor_base, cursor_base + 2))
+    );
 }
 
 #[test]

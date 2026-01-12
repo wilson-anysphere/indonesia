@@ -115,4 +115,3 @@ class A {
     assert_eq!(sym.kind, SymbolKind::Field);
     assert_eq!(sym.name, "b");
 }
-

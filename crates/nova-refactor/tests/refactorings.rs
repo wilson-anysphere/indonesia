@@ -2106,7 +2106,10 @@ fn rename_type_from_constructor_declaration_renames_constructors() {
     let symbol = db
         .symbol_at(&file, offset)
         .expect("symbol at constructor name");
-    assert_eq!(db.symbol_kind(symbol), Some(nova_refactor::JavaSymbolKind::Type));
+    assert_eq!(
+        db.symbol_kind(symbol),
+        Some(nova_refactor::JavaSymbolKind::Type)
+    );
 
     let edit = rename(
         &db,

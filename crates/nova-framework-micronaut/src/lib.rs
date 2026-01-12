@@ -404,7 +404,8 @@ fn project_fingerprint(db: &dyn Database, file_ids: &[FileId]) -> u64 {
         let Some(path) = db.file_path(file) else {
             continue;
         };
-        if path.extension().and_then(|e| e.to_str()) != Some("java") && config_file_kind(path).is_none()
+        if path.extension().and_then(|e| e.to_str()) != Some("java")
+            && config_file_kind(path).is_none()
         {
             continue;
         }

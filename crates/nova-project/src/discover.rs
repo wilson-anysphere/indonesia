@@ -516,7 +516,7 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
                 "maven-wrapper.properties" => {
                     path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
-                },
+                }
                 "maven-wrapper.jar" => path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.jar")),
                 _ => false,
             }
@@ -548,8 +548,8 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                     || c.as_os_str() == std::ffi::OsStr::new(".idea")
             });
             let is_gradle_version_catalog = !in_ignored_dir && name.ends_with(".versions.toml");
-            let is_gradle_script_plugin = !in_ignored_dir
-                && (name.ends_with(".gradle") || name.ends_with(".gradle.kts"));
+            let is_gradle_script_plugin =
+                !in_ignored_dir && (name.ends_with(".gradle") || name.ends_with(".gradle.kts"));
             let is_gradle_dependency_lockfile = !in_ignored_dir
                 && (name == "gradle.lockfile"
                     || (name.ends_with(".lockfile")
@@ -681,12 +681,18 @@ mod tests {
         // Starting inside `inner/` should resolve to the inner marker.
         let start_inner = inner.join("deep");
         let expected_inner = Some(inner.clone());
-        assert_eq!(nova_build_model::bazel_workspace_root(&start_inner), expected_inner);
+        assert_eq!(
+            nova_build_model::bazel_workspace_root(&start_inner),
+            expected_inner
+        );
         assert_eq!(bazel_workspace_root(&start_inner), Some(inner.clone()));
 
         // Starting outside `inner/` should resolve to the outer marker, ignoring the deeper one.
         let expected_outer = Some(outer.to_path_buf());
-        assert_eq!(nova_build_model::bazel_workspace_root(&sibling), expected_outer);
+        assert_eq!(
+            nova_build_model::bazel_workspace_root(&sibling),
+            expected_outer
+        );
         assert_eq!(bazel_workspace_root(&sibling), Some(outer.to_path_buf()));
 
         #[cfg(feature = "bazel")]
@@ -782,7 +788,9 @@ mod tests {
         let snapshot_src = workspace_root.join("snapshot-src");
         std::fs::create_dir_all(&snapshot_src).expect("mkdir snapshot-src");
         assert!(
-            !cfg.source_roots.iter().any(|root| root.path == snapshot_src),
+            !cfg.source_roots
+                .iter()
+                .any(|root| root.path == snapshot_src),
             "snapshot root should not be present before creating the gradle snapshot"
         );
 
@@ -804,15 +812,20 @@ mod tests {
                 }
             }
         });
-        std::fs::write(&snapshot_path, serde_json::to_vec(&snapshot).expect("snapshot json"))
-            .expect("write gradle snapshot");
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("snapshot json"),
+        )
+        .expect("write gradle snapshot");
 
         let mut options_reload = options.clone();
         let cfg = reload_project(&cfg, &mut options_reload, &[snapshot_path.clone()])
             .expect("reload with gradle snapshot change");
 
         assert!(
-            cfg.source_roots.iter().any(|root| root.path == snapshot_src),
+            cfg.source_roots
+                .iter()
+                .any(|root| root.path == snapshot_src),
             "expected Gradle snapshot source root to be present after reload"
         );
     }

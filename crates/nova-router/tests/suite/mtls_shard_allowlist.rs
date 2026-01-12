@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context};
 use crate::remote_rpc_util;
+use anyhow::{anyhow, Context};
 use nova_remote_proto::ShardId;
 use nova_router::{
     tls::TlsServerConfig, DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot,

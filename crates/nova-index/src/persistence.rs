@@ -1,6 +1,6 @@
 use crate::indexes::{
-    AnnotationIndex, AnnotationLocation, ArchivedAnnotationLocation, ArchivedReferenceLocation,
-    ArchivedIndexedSymbol, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
+    AnnotationIndex, AnnotationLocation, ArchivedAnnotationLocation, ArchivedIndexedSymbol,
+    ArchivedReferenceLocation, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
     SymbolIndex, SymbolLocation,
 };
 use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
@@ -2814,12 +2814,7 @@ impl LazyShardedIndexView {
             let Some(shard) = self.shard(shard_id) else {
                 continue;
             };
-            if let Some(locations) = shard
-                .annotations
-                .archived()
-                .annotations
-                .get(annotation)
-            {
+            if let Some(locations) = shard.annotations.archived().annotations.get(annotation) {
                 lists.push(locations);
             }
         }

@@ -13,7 +13,9 @@ use std::sync::Mutex;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>, nova_cache::CacheError> {
@@ -50,13 +52,11 @@ fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>, nova_cache::CacheErr
                 continue;
             }
 
-            let rel =
-                entry
-                    .path()
-                    .strip_prefix(root)
-                    .map_err(|_| nova_cache::CacheError::InvalidArchivePath {
-                        path: entry.path().to_path_buf(),
-                    })?;
+            let rel = entry.path().strip_prefix(root).map_err(|_| {
+                nova_cache::CacheError::InvalidArchivePath {
+                    path: entry.path().to_path_buf(),
+                }
+            })?;
             files.push(rel.to_path_buf());
         }
     }

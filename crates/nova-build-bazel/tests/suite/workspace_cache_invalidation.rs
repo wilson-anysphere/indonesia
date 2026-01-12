@@ -230,7 +230,11 @@ fn bazelrc_import_digest_invalidation_triggers_aquery() {
     assert_eq!(runner.count_subcommand("aquery"), 1);
 
     // Editing an imported `.bazelrc` file should invalidate the compile-info cache key.
-    fs::write(root.join("tools/bazel.rc"), "build --javacopt=-Xlint:unchecked").unwrap();
+    fs::write(
+        root.join("tools/bazel.rc"),
+        "build --javacopt=-Xlint:unchecked",
+    )
+    .unwrap();
     let _ = workspace.target_compile_info("//:hello").unwrap();
     assert_eq!(runner.count_subcommand("aquery"), 2);
 }
@@ -256,7 +260,11 @@ fn bazelrc_import_with_quoted_path_is_tracked() {
     assert_eq!(runner.count_subcommand("aquery"), 1);
 
     // Editing an imported `.bazelrc` file should invalidate the compile-info cache key.
-    fs::write(root.join("tools/bazel rc"), "build --javacopt=-Xlint:unchecked").unwrap();
+    fs::write(
+        root.join("tools/bazel rc"),
+        "build --javacopt=-Xlint:unchecked",
+    )
+    .unwrap();
     let _ = workspace.target_compile_info("//:hello").unwrap();
     assert_eq!(runner.count_subcommand("aquery"), 2);
 }
@@ -267,7 +275,11 @@ fn bazelrc_import_with_workspace_placeholder_is_tracked() {
     let root = dir.path();
 
     fs::write(root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
-    fs::write(root.join(".bazelrc"), "try-import %workspace%/tools/bazel.rc").unwrap();
+    fs::write(
+        root.join(".bazelrc"),
+        "try-import %workspace%/tools/bazel.rc",
+    )
+    .unwrap();
     fs::create_dir_all(root.join("tools")).unwrap();
     fs::write(root.join("tools/bazel.rc"), "build --javacopt=-Xlint").unwrap();
 
@@ -282,7 +294,11 @@ fn bazelrc_import_with_workspace_placeholder_is_tracked() {
     assert_eq!(runner.count_subcommand("aquery"), 1);
 
     // Editing the imported file should invalidate the cache.
-    fs::write(root.join("tools/bazel.rc"), "build --javacopt=-Xlint:unchecked").unwrap();
+    fs::write(
+        root.join("tools/bazel.rc"),
+        "build --javacopt=-Xlint:unchecked",
+    )
+    .unwrap();
     let _ = workspace.target_compile_info("//:hello").unwrap();
     assert_eq!(runner.count_subcommand("aquery"), 2);
 }
@@ -296,7 +312,11 @@ fn bazelrc_import_with_absolute_path_is_tracked() {
     fs::create_dir_all(root.join("tools")).unwrap();
     let imported = root.join("tools/bazel.rc");
     fs::write(&imported, "build --javacopt=-Xlint").unwrap();
-    fs::write(root.join(".bazelrc"), format!("try-import {}", imported.display())).unwrap();
+    fs::write(
+        root.join(".bazelrc"),
+        format!("try-import {}", imported.display()),
+    )
+    .unwrap();
 
     let runner = RecordingRunner::default();
     let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner.clone()).unwrap();
@@ -403,7 +423,11 @@ fn invalidate_changed_files_drops_cache_entries_for_bazelrc_imports_when_root_is
     fs::write(real_root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
     fs::write(real_root.join(".bazelrc"), "try-import tools/bazelconfig\n").unwrap();
     fs::create_dir_all(real_root.join("tools")).unwrap();
-    fs::write(real_root.join("tools/bazelconfig"), "build --javacopt=-Xlint\n").unwrap();
+    fs::write(
+        real_root.join("tools/bazelconfig"),
+        "build --javacopt=-Xlint\n",
+    )
+    .unwrap();
 
     let link_parent = tempdir().unwrap();
     let link_root = link_parent.path().join("ws");
@@ -439,7 +463,11 @@ fn invalidate_changed_files_drops_cache_entries_for_bazelrc_imports_when_changed
     fs::write(real_root.join("BUILD"), r#"java_library(name = "hello")"#).unwrap();
     fs::write(real_root.join(".bazelrc"), "try-import tools/bazelconfig\n").unwrap();
     fs::create_dir_all(real_root.join("tools")).unwrap();
-    fs::write(real_root.join("tools/bazelconfig"), "build --javacopt=-Xlint\n").unwrap();
+    fs::write(
+        real_root.join("tools/bazelconfig"),
+        "build --javacopt=-Xlint\n",
+    )
+    .unwrap();
 
     let link_parent = tempdir().unwrap();
     let link_root = link_parent.path().join("ws");

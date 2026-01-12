@@ -429,7 +429,10 @@ dependencies {
     assert_eq!(config.build_system, BuildSystemKind::Gradle);
     assert_eq!(config.java.source, 11);
     assert_eq!(config.java.target, 11);
-    assert_eq!(config.workspace_root, canonical_root.to_string_lossy().to_string());
+    assert_eq!(
+        config.workspace_root,
+        canonical_root.to_string_lossy().to_string()
+    );
 
     // Assert scopes are populated for Gradle dependencies.
     let scopes: BTreeMap<(String, String, Option<String>), Option<String>> = config
@@ -443,15 +446,18 @@ dependencies {
         })
         .collect();
 
-    let assert_scope =
-        |group: &str, artifact: &str, version: &str, expected: &str| {
-            let key = (group.to_string(), artifact.to_string(), Some(version.to_string()));
-            assert_eq!(
-                scopes.get(&key).and_then(|s| s.as_deref()),
-                Some(expected),
-                "scope for {group}:{artifact}:{version}"
-            );
-        };
+    let assert_scope = |group: &str, artifact: &str, version: &str, expected: &str| {
+        let key = (
+            group.to_string(),
+            artifact.to_string(),
+            Some(version.to_string()),
+        );
+        assert_eq!(
+            scopes.get(&key).and_then(|s| s.as_deref()),
+            Some(expected),
+            "scope for {group}:{artifact}:{version}"
+        );
+    };
 
     assert_scope("org.slf4j", "slf4j-api", "1.7.36", "compile");
     assert_scope("ch.qos.logback", "logback-classic", "1.4.11", "runtime");

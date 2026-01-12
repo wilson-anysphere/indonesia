@@ -84,7 +84,10 @@ impl Drop for KillOnDrop {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = StdCommand::new("kill").arg("-9").arg(pid.to_string()).status();
+            let _ = StdCommand::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .status();
         }
     }
 }
@@ -110,7 +113,8 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);

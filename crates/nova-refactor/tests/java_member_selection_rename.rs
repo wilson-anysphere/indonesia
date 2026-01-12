@@ -252,7 +252,9 @@ class Use {
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
     let offset = src.find("static void foo").unwrap() + "static void ".len() + 1;
-    let symbol = db.symbol_at(&file, offset).expect("symbol at Foo.foo method");
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at Foo.foo method");
 
     let edit = rename(
         &db,

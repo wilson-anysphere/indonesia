@@ -212,7 +212,8 @@ fn ast_formatting_treats_string_templates_as_opaque() {
 
 #[test]
 fn ast_formatter_does_not_reindent_after_braces_inside_interpolation() {
-    let input = "class Foo{void m(){String s=STR.\"Lambda: \\{() -> { return 1; }}\";int after=1;}}\n";
+    let input =
+        "class Foo{void m(){String s=STR.\"Lambda: \\{() -> { return 1; }}\";int after=1;}}\n";
     let parse = parse_java(input);
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
@@ -1136,8 +1137,7 @@ fn range_formatting_is_noop_inside_text_blocks() {
 
 #[test]
 fn range_formatting_is_noop_inside_string_templates() {
-    let input =
-        "class Foo {\n    void m() {\n        String t = STR.\"foo(1,2);\";\n    }\n}\n";
+    let input = "class Foo {\n    void m() {\n        String t = STR.\"foo(1,2);\";\n    }\n}\n";
     let tree = parse(input);
     let index = LineIndex::new(input);
 
@@ -1322,11 +1322,8 @@ import static java.util.Collections.emptyList; // empty
 class Foo{}
 "#;
     let config = FormatConfig::default();
-    let edits = edits_for_document_formatting_with_strategy(
-        input,
-        &config,
-        FormatStrategy::JavaPrettyAst,
-    );
+    let edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::JavaPrettyAst);
     let formatted = apply_text_edits(input, &edits).unwrap();
 
     let edits_again = edits_for_document_formatting_with_strategy(
@@ -1372,11 +1369,8 @@ fn pretty_document_formatting_is_idempotent_on_module_directives_with_blank_line
         "}\n",
     );
     let config = FormatConfig::default();
-    let edits = edits_for_document_formatting_with_strategy(
-        input,
-        &config,
-        FormatStrategy::JavaPrettyAst,
-    );
+    let edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::JavaPrettyAst);
     let formatted = apply_text_edits(input, &edits).unwrap();
     assert_eq!(
         formatted,
@@ -1410,11 +1404,8 @@ fn pretty_document_formatting_is_idempotent_on_members_with_blank_line_comment()
         "}\n",
     );
     let config = FormatConfig::default();
-    let edits = edits_for_document_formatting_with_strategy(
-        input,
-        &config,
-        FormatStrategy::JavaPrettyAst,
-    );
+    let edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::JavaPrettyAst);
     let formatted = apply_text_edits(input, &edits).unwrap();
     assert_eq!(
         formatted,
@@ -1441,11 +1432,8 @@ fn pretty_document_formatting_is_idempotent_on_members_with_blank_line_comment()
 fn pretty_document_formatting_is_idempotent_on_eof_comment_after_package() {
     let input = "package foo;\n// c\n";
     let config = FormatConfig::default();
-    let edits = edits_for_document_formatting_with_strategy(
-        input,
-        &config,
-        FormatStrategy::JavaPrettyAst,
-    );
+    let edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::JavaPrettyAst);
     let formatted = apply_text_edits(input, &edits).unwrap();
     assert_eq!(formatted, "package foo;\n\n// c\n");
 
@@ -1462,11 +1450,8 @@ fn pretty_document_formatting_is_idempotent_on_eof_comment_after_package() {
 fn pretty_document_formatting_is_idempotent_on_eof_comment_after_imports() {
     let input = "import java.util.List;\n// c\n";
     let config = FormatConfig::default();
-    let edits = edits_for_document_formatting_with_strategy(
-        input,
-        &config,
-        FormatStrategy::JavaPrettyAst,
-    );
+    let edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::JavaPrettyAst);
     let formatted = apply_text_edits(input, &edits).unwrap();
     assert_eq!(formatted, "import java.util.List;\n// c\n");
 

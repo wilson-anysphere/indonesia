@@ -86,14 +86,12 @@ fn load_config(cli_path: Option<PathBuf>) -> (nova_config::NovaConfig, Option<St
 
     match nova_config::NovaConfig::load_from_path(&path) {
         Ok(config) => (config, None),
-        Err(err) => {
-            (
-                nova_config::NovaConfig::default(),
-                Some(format!(
-                    "nova-dap: failed to load config from {}: {err}; continuing with defaults",
-                    path.display()
-                )),
-            )
-        }
+        Err(err) => (
+            nova_config::NovaConfig::default(),
+            Some(format!(
+                "nova-dap: failed to load config from {}: {err}; continuing with defaults",
+                path.display()
+            )),
+        ),
     }
 }

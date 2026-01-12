@@ -234,7 +234,9 @@ fn bazel_walkdir_filter_entry(
         return true;
     };
 
-    !ignored_prefixes.iter().any(|prefix| rel.starts_with(prefix))
+    !ignored_prefixes
+        .iter()
+        .any(|prefix| rel.starts_with(prefix))
 }
 
 fn discover_bazel_source_roots_heuristic(workspace_root: &Path) -> Vec<SourceRoot> {

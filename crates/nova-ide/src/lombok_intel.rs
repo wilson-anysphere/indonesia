@@ -410,7 +410,9 @@ fn source_uses_lombok(source: &str, classes: &[ClassData]) -> bool {
         return true;
     }
 
-    classes.iter().any(|class| class_uses_lombok_annotations(class))
+    classes
+        .iter()
+        .any(|class| class_uses_lombok_annotations(class))
 }
 
 fn class_uses_lombok_annotations(class: &ClassData) -> bool {

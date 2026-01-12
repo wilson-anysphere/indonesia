@@ -171,7 +171,8 @@ impl<'a> JavaPrettyFormatter<'a> {
             }
 
             Doc::concat(parts)
-        } else if let Some(inner) = self.print_verbatim_tokens(body, inner_start, inner_end, false) {
+        } else if let Some(inner) = self.print_verbatim_tokens(body, inner_start, inner_end, false)
+        {
             self.comments.consume_in_range(TextRange::new(
                 TextSize::from(inner_start),
                 TextSize::from(inner_end),

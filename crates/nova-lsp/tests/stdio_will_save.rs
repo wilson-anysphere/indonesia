@@ -99,4 +99,3 @@ fn stdio_server_handles_will_save_notification() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

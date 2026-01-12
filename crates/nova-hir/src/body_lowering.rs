@@ -766,7 +766,9 @@ impl<'a> FlowBodyLower<'a> {
                     let init_expr = decl
                         .initializer()
                         .map(|expr| self.lower_expr(expr))
-                        .unwrap_or_else(|| self.alloc_invalid_expr(span_of_node(resource.syntax())));
+                        .unwrap_or_else(|| {
+                            self.alloc_invalid_expr(span_of_node(resource.syntax()))
+                        });
 
                     block_stmts.push(self.builder.stmt_with_span(
                         StmtKind::Let {
@@ -779,10 +781,13 @@ impl<'a> FlowBodyLower<'a> {
             }
 
             let body_block = try_stmt.body();
-            let body = body_block.as_ref().map(|block| self.lower_block(block)).unwrap_or_else(|| {
-                self.builder
-                    .stmt_with_span(StmtKind::Nop, span_of_node(try_stmt.syntax()))
-            });
+            let body = body_block
+                .as_ref()
+                .map(|block| self.lower_block(block))
+                .unwrap_or_else(|| {
+                    self.builder
+                        .stmt_with_span(StmtKind::Nop, span_of_node(try_stmt.syntax()))
+                });
 
             let mut catches = Vec::new();
             for catch in try_stmt.catches() {
@@ -815,7 +820,9 @@ impl<'a> FlowBodyLower<'a> {
 
             self.pop_scope();
 
-            return vec![self.builder.stmt_with_span(StmtKind::Block(block_stmts), span)];
+            return vec![self
+                .builder
+                .stmt_with_span(StmtKind::Block(block_stmts), span)];
         }
 
         let body_block = try_stmt.body();

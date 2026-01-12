@@ -464,7 +464,10 @@ mod tests {
         let config = WatchConfig::new(root.clone());
         let module_info = root.join("src/main/java/module-info.java");
         let event = NormalizedEvent::Modified(module_info);
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Build));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Build)
+        );
     }
 
     #[test]
@@ -556,14 +559,20 @@ mod tests {
         );
 
         let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/gen/A.java"));
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[test]
     fn workspace_root_with_dotdot_segments_matches_event_path_when_no_configured_roots() {
         let config = WatchConfig::new(PathBuf::from("/tmp/ws/module/.."));
         let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/A.java"));
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[cfg(windows)]
@@ -577,7 +586,10 @@ mod tests {
 
         // Intentionally use the opposite drive-letter case from the configured root.
         let event = NormalizedEvent::Modified(PathBuf::from(r"C:\ws\src\A.java"));
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[test]
@@ -590,12 +602,18 @@ mod tests {
         let config = WatchConfig::new(root.clone());
 
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Modified(root.join("dependencies.gradle"))),
+            categorize_event(
+                &config,
+                &NormalizedEvent::Modified(root.join("dependencies.gradle"))
+            ),
             Some(ChangeCategory::Build),
             "root-level Gradle script plugins should be treated as build changes"
         );
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Modified(root.join("libs.versions.toml"))),
+            categorize_event(
+                &config,
+                &NormalizedEvent::Modified(root.join("libs.versions.toml"))
+            ),
             Some(ChangeCategory::Build),
             "root-level version catalogs should be treated as build changes"
         );

@@ -6,10 +6,18 @@ use pretty_assertions::assert_eq;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-fn apply_edit(files: &BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) -> BTreeMap<PathBuf, String> {
+fn apply_edit(
+    files: &BTreeMap<PathBuf, String>,
+    edit: &WorkspaceEdit,
+) -> BTreeMap<PathBuf, String> {
     let by_id: BTreeMap<FileId, String> = files
         .iter()
-        .map(|(path, text)| (FileId::new(path.to_string_lossy().into_owned()), text.clone()))
+        .map(|(path, text)| {
+            (
+                FileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        })
         .collect();
 
     let updated = apply_workspace_edit(&by_id, edit).expect("workspace edit applies cleanly");

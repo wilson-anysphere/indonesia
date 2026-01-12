@@ -265,4 +265,3 @@ fn strip_generic_args(raw: &str) -> String {
     }
     out
 }
-

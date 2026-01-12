@@ -138,10 +138,7 @@ class Foo {
     let field = tree.fields.values().next().expect("field");
     assert_eq!(field.name, "field");
     assert_eq!(field.ty, "int");
-    assert_eq!(
-        &source[field.ty_range.start..field.ty_range.end],
-        field.ty
-    );
+    assert_eq!(&source[field.ty_range.start..field.ty_range.end], field.ty);
     assert!(tree.methods.values().any(|method| method.name == "value"));
     assert!(tree
         .methods
@@ -437,7 +434,10 @@ class Foo {
         .values()
         .find(|method| method.name == "m")
         .expect("m method");
-    assert_eq!(method.throws, vec!["java.io.IOException", "RuntimeException"]);
+    assert_eq!(
+        method.throws,
+        vec!["java.io.IOException", "RuntimeException"]
+    );
     assert_eq!(method.throws_ranges.len(), method.throws.len());
     assert_eq!(
         &source[method.throws_ranges[0].start..method.throws_ranges[0].end],
@@ -641,7 +641,10 @@ record R(java.util.Map<String, java.util.List<Integer>> m) {
     assert_eq!(tree.constructors.len(), 1);
     let ctor = tree.constructors.values().next().expect("constructor");
     assert_eq!(ctor.params.len(), 1);
-    assert_eq!(ctor.params[0].ty, "java.util.Map<String,java.util.List<Integer>>");
+    assert_eq!(
+        ctor.params[0].ty,
+        "java.util.Map<String,java.util.List<Integer>>"
+    );
     assert_eq!(ctor.params[0].name, "m");
 }
 
@@ -845,8 +848,14 @@ fn record_component_ids_are_stable_under_whitespace_only_edits() {
         file,
     );
 
-    assert_eq!(field_id_by_name(&tree1, file, "x"), field_id_by_name(&tree2, file, "x"));
-    assert_eq!(field_id_by_name(&tree1, file, "y"), field_id_by_name(&tree2, file, "y"));
+    assert_eq!(
+        field_id_by_name(&tree1, file, "x"),
+        field_id_by_name(&tree2, file, "x")
+    );
+    assert_eq!(
+        field_id_by_name(&tree1, file, "y"),
+        field_id_by_name(&tree2, file, "y")
+    );
 }
 
 #[test]
@@ -998,18 +1007,17 @@ sealed class A<T extends java.lang.Cloneable & java.io.Serializable> extends B i
     );
     assert_eq!(class.extends, vec!["B".to_string()]);
     assert_eq!(
-        class.extends_ranges
+        class
+            .extends_ranges
             .iter()
             .map(|r| &source[r.start..r.end])
             .collect::<Vec<_>>(),
         vec!["B"]
     );
+    assert_eq!(class.implements, vec!["I1".to_string(), "I2".to_string()]);
     assert_eq!(
-        class.implements,
-        vec!["I1".to_string(), "I2".to_string()]
-    );
-    assert_eq!(
-        class.implements_ranges
+        class
+            .implements_ranges
             .iter()
             .map(|r| &source[r.start..r.end])
             .collect::<Vec<_>>(),
@@ -1017,7 +1025,8 @@ sealed class A<T extends java.lang.Cloneable & java.io.Serializable> extends B i
     );
     assert_eq!(class.permits, vec!["C".to_string(), "D".to_string()]);
     assert_eq!(
-        class.permits_ranges
+        class
+            .permits_ranges
             .iter()
             .map(|r| &source[r.start..r.end])
             .collect::<Vec<_>>(),

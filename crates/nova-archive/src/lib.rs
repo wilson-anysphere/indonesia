@@ -178,8 +178,7 @@ mod tests {
                 continue;
             }
 
-            let file_name_len =
-                u16::from_le_bytes([zip_bytes[i + 28], zip_bytes[i + 29]]) as usize;
+            let file_name_len = u16::from_le_bytes([zip_bytes[i + 28], zip_bytes[i + 29]]) as usize;
             let extra_len = u16::from_le_bytes([zip_bytes[i + 30], zip_bytes[i + 31]]) as usize;
             let comment_len = u16::from_le_bytes([zip_bytes[i + 32], zip_bytes[i + 33]]) as usize;
 
@@ -232,8 +231,8 @@ mod tests {
         {
             let file = std::fs::File::create(&jar_path).unwrap();
             let mut zip = zip::ZipWriter::new(file);
-            let options = FileOptions::<()>::default()
-                .compression_method(zip::CompressionMethod::Stored);
+            let options =
+                FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored);
 
             zip.start_file(name, options).unwrap();
             zip.write_all(b"{}").unwrap();
@@ -243,11 +242,7 @@ mod tests {
         // Patch the declared uncompressed size to MAX+1 without writing an actual
         // MAX+1 byte payload.
         let mut bytes = std::fs::read(&jar_path).unwrap();
-        patch_zip_entry_uncompressed_size(
-            &mut bytes,
-            name,
-            (MAX_ARCHIVE_ENTRY_BYTES as u32) + 1,
-        );
+        patch_zip_entry_uncompressed_size(&mut bytes, name, (MAX_ARCHIVE_ENTRY_BYTES as u32) + 1);
         std::fs::write(&jar_path, bytes).unwrap();
 
         let archive = Archive::new(&jar_path);

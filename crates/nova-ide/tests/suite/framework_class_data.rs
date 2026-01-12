@@ -108,4 +108,3 @@ public class Foo {
         Type::Named("java.lang.String".to_string())
     );
 }
-

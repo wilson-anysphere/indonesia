@@ -765,9 +765,11 @@ fn expr_ends_with_member_call_named(expr: &str, method: &str) -> bool {
     };
     let before_paren = &expr[..open_paren];
 
-    let Some(method_end) = before_paren.char_indices().rev().find_map(|(idx, ch)| {
-        (!ch.is_whitespace()).then_some(idx + ch.len_utf8())
-    }) else {
+    let Some(method_end) = before_paren
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx + ch.len_utf8()))
+    else {
         return false;
     };
 
@@ -849,7 +851,8 @@ fn format_stream_eval_compile_failure(
 ) -> String {
     let diagnostics = javac_error.to_string();
 
-    let (stage, expr) = stream_eval_stage_and_expression(source, stage_exprs, terminal_expr, &diagnostics);
+    let (stage, expr) =
+        stream_eval_stage_and_expression(source, stage_exprs, terminal_expr, &diagnostics);
     let user_expr = terminal_expr
         .or_else(|| stage_exprs.last().map(|s| s.as_str()))
         .filter(|s| !s.trim().is_empty());
@@ -861,7 +864,9 @@ fn format_stream_eval_compile_failure(
     }
     out.push_str(&format!("Generated source: {}\n", source_path.display()));
     out.push_str(&match stage {
-        StreamEvalStage::IntermediateOp { stage } => format!("Stage: intermediate op (stage{stage})\n"),
+        StreamEvalStage::IntermediateOp { stage } => {
+            format!("Stage: intermediate op (stage{stage})\n")
+        }
         other => format!("Stage: {}\n", other.label()),
     });
     if let Some(expr) = expr {
@@ -893,7 +898,10 @@ fn stream_eval_stage_and_expression<'a>(
 
     match stage_decl_for_source_line(source, line) {
         StageDecl::Terminal => (StreamEvalStage::Terminal, terminal_expr),
-        StageDecl::Stage(0) => (StreamEvalStage::SourceSample, stage_exprs.get(0).map(|s| s.as_str())),
+        StageDecl::Stage(0) => (
+            StreamEvalStage::SourceSample,
+            stage_exprs.get(0).map(|s| s.as_str()),
+        ),
         StageDecl::Stage(stage) => (
             StreamEvalStage::IntermediateOp { stage },
             stage_exprs.get(stage).map(|s| s.as_str()),
@@ -957,7 +965,10 @@ fn parse_stage_decl_line(line: &str) -> Option<StageDecl> {
         return None;
     }
 
-    if trimmed.contains(" terminal(") || trimmed.contains("\tterminal(") || trimmed.contains(" terminal (") {
+    if trimmed.contains(" terminal(")
+        || trimmed.contains("\tterminal(")
+        || trimmed.contains(" terminal (")
+    {
         return Some(StageDecl::Terminal);
     }
 
@@ -1097,7 +1108,8 @@ mod tests {
     }
 
     #[test]
-    fn render_eval_source_uses_void_return_type_for_foreach_terminal_when_analysis_has_no_terminal() {
+    fn render_eval_source_uses_void_return_type_for_foreach_terminal_when_analysis_has_no_terminal()
+    {
         // `mapToInt` is not currently modeled by the stream analyzer. Ensure we still treat the
         // overall expression as void when it ends with `forEach`.
         let src = render_eval_source(
@@ -1209,4 +1221,4 @@ mod tests {
             "expected stage attribution despite colon in message:\n{message}"
         );
     }
-} 
+}

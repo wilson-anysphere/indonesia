@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use nova_jdwp::wire::JdwpClient;
 use nova_jdwp::wire::types::{
     FieldId, FieldInfoWithGeneric, FrameId, JdwpError, JdwpValue, Location, ObjectId,
     ReferenceTypeId, ThreadId, VariableInfo, VariableInfoWithGeneric,
 };
+use nova_jdwp::wire::JdwpClient;
 
 use super::java_gen::sanitize_java_param_name;
 use super::java_types::java_type_from_signatures;
@@ -86,7 +86,10 @@ pub async fn build_frame_bindings(
 ) -> Result<StreamEvalFrameBindings, JdwpError> {
     let this_id = jdwp.stack_frame_this_object(thread, frame_id).await?;
     let (this_java_type, this_value) = if this_id == 0 {
-        ("java.lang.Object".to_string(), JdwpValue::Object { tag: b'L', id: 0 })
+        (
+            "java.lang.Object".to_string(),
+            JdwpValue::Object { tag: b'L', id: 0 },
+        )
     } else {
         let (_tag, type_id) = jdwp.object_reference_reference_type(this_id).await?;
         let sig = jdwp.reference_type_signature(type_id).await?;
@@ -162,10 +165,7 @@ async fn collect_in_scope_locals(
     let mut vars: Vec<VarInfo> = by_name.into_values().collect();
     vars.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let slots: Vec<(u32, String)> = vars
-        .iter()
-        .map(|v| (v.slot, v.signature.clone()))
-        .collect();
+    let slots: Vec<(u32, String)> = vars.iter().map(|v| (v.slot, v.signature.clone())).collect();
     let values = jdwp
         .stack_frame_get_values(thread, frame_id, &slots)
         .await?;
@@ -289,7 +289,9 @@ async fn collect_instance_fields(
 
     let mut values_by_id: HashMap<FieldId, JdwpValue> = HashMap::new();
     for (_type_id, field_ids) in per_type {
-        let values = jdwp.object_reference_get_values(this_id, &field_ids).await?;
+        let values = jdwp
+            .object_reference_get_values(this_id, &field_ids)
+            .await?;
         for (field_id, value) in field_ids.into_iter().zip(values.into_iter()) {
             values_by_id.insert(field_id, value);
         }
@@ -300,7 +302,8 @@ async fn collect_instance_fields(
         let Some(value) = values_by_id.get(&field.field_id).cloned() else {
             continue;
         };
-        let java_type = java_type_from_signatures(&field.signature, field.generic_signature.as_deref());
+        let java_type =
+            java_type_from_signatures(&field.signature, field.generic_signature.as_deref());
         out.push(StreamEvalBinding {
             name: field.name,
             java_type,

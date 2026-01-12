@@ -74,7 +74,10 @@ impl fmt::Debug for ExtensionRegistryOptions {
                 "max_navigation_targets_per_provider",
                 &self.max_navigation_targets_per_provider,
             )
-            .field("max_inlay_hints_per_provider", &self.max_inlay_hints_per_provider)
+            .field(
+                "max_inlay_hints_per_provider",
+                &self.max_inlay_hints_per_provider,
+            )
             .field(
                 "metrics",
                 &self.metrics.as_ref().map(|_| "<ExtensionMetricsSink>"),

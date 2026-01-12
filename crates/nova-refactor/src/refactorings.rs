@@ -65,7 +65,9 @@ pub fn rename(
             // Best-effort: conflict checking is currently scope-based and tuned for local/parameter
             // renames. Allow member/type renames without additional validation for now.
         }
-        Some(JavaSymbolKind::Package) | None => return Err(RefactorError::RenameNotSupported { kind }),
+        Some(JavaSymbolKind::Package) | None => {
+            return Err(RefactorError::RenameNotSupported { kind })
+        }
     }
 
     let changes = vec![SemanticChange::Rename {
@@ -174,7 +176,8 @@ pub fn extract_variable(
     }
 
     let root = parsed.syntax();
-    let expr = find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
+    let expr =
+        find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
 
     // Extracting expressions from `assert` statements is unsafe: Java assertions may be disabled
     // at runtime, and hoisting the expression into a preceding local variable would force it to be
@@ -275,7 +278,8 @@ pub fn extract_variable(
     // before it, producing uncompilable code.
     if matches!(stmt, ast::Statement::ExplicitConstructorInvocation(_)) {
         return Err(RefactorError::ExtractNotSupported {
-            reason: "cannot extract from explicit constructor invocation (`this(...)` / `super(...)`)",
+            reason:
+                "cannot extract from explicit constructor invocation (`this(...)` / `super(...)`)",
         });
     }
     reject_unsafe_extract_variable_context(&expr, &stmt)?;
@@ -417,15 +421,7 @@ pub fn extract_variable(
     //   int b = tmp;
     if let ast::Statement::LocalVariableDeclarationStatement(local) = &stmt {
         if let Some(replacement) = rewrite_multi_declarator_local_variable_declaration(
-            text,
-            local,
-            stmt_range,
-            expr_range,
-            &expr_text,
-            &name,
-            &ty,
-            &indent,
-            newline,
+            text, local, stmt_range, expr_range, &expr_text, &name, &ty, &indent, newline,
         ) {
             let mut edit = WorkspaceEdit::new(vec![TextEdit::replace(
                 params.file.clone(),
@@ -704,7 +700,6 @@ pub fn inline_variable(
     Ok(edit)
 }
 
-
 fn ensure_inline_variable_value_stable(
     db: &dyn RefactorDatabase,
     parsed: &nova_syntax::JavaParseResult,
@@ -731,7 +726,10 @@ fn ensure_inline_variable_value_stable(
             continue;
         };
 
-        if !matches!(db.symbol_kind(sym), Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)) {
+        if !matches!(
+            db.symbol_kind(sym),
+            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+        ) {
             continue;
         }
 
@@ -840,9 +838,9 @@ fn reference_is_write(
 
     let node = match element {
         nova_syntax::SyntaxElement::Node(node) => node,
-        nova_syntax::SyntaxElement::Token(token) => token
-            .parent()
-            .ok_or(RefactorError::InlineNotSupported)?,
+        nova_syntax::SyntaxElement::Token(token) => {
+            token.parent().ok_or(RefactorError::InlineNotSupported)?
+        }
     };
 
     for ancestor in node.ancestors() {
@@ -1189,9 +1187,7 @@ fn check_extract_variable_name_conflicts(
                 .filter_map(|p| p.name_token().map(|t| t.text().to_string()))
                 .any(|n| n == name);
         } else if let Some(param) = params.parameter() {
-            has_conflict = param
-                .name_token()
-                .is_some_and(|t| t.text() == name);
+            has_conflict = param.name_token().is_some_and(|t| t.text() == name);
         }
 
         if has_conflict {
@@ -1228,13 +1224,16 @@ impl EnclosingBodyOwner {
 
     fn has_parameter_named(&self, name: &str) -> bool {
         match self {
-            EnclosingBodyOwner::Method(method, _) => method
-                .parameter_list()
-                .is_some_and(|list| list.parameters().any(|p| p.name_token().is_some_and(|t| t.text() == name))),
-            EnclosingBodyOwner::Constructor(ctor, _) => ctor
-                .parameter_list()
-                .is_some_and(|list| list.parameters().any(|p| p.name_token().is_some_and(|t| t.text() == name))),
-            EnclosingBodyOwner::CompactConstructor(_, _) | EnclosingBodyOwner::Initializer(_, _) => false,
+            EnclosingBodyOwner::Method(method, _) => method.parameter_list().is_some_and(|list| {
+                list.parameters()
+                    .any(|p| p.name_token().is_some_and(|t| t.text() == name))
+            }),
+            EnclosingBodyOwner::Constructor(ctor, _) => ctor.parameter_list().is_some_and(|list| {
+                list.parameters()
+                    .any(|p| p.name_token().is_some_and(|t| t.text() == name))
+            }),
+            EnclosingBodyOwner::CompactConstructor(_, _)
+            | EnclosingBodyOwner::Initializer(_, _) => false,
         }
     }
 }
@@ -1261,7 +1260,10 @@ fn find_enclosing_body_owner(stmt: &ast::Statement) -> Option<EnclosingBodyOwner
     None
 }
 
-fn is_within_nested_type(node: &nova_syntax::SyntaxNode, stop_at: &nova_syntax::SyntaxNode) -> bool {
+fn is_within_nested_type(
+    node: &nova_syntax::SyntaxNode,
+    stop_at: &nova_syntax::SyntaxNode,
+) -> bool {
     for anc in node.ancestors() {
         if &anc == stop_at {
             break;
@@ -1302,7 +1304,11 @@ fn catch_parameter_name(catch_clause: &ast::CatchClause) -> Option<String> {
 fn local_binding_scope_range(decl: &ast::VariableDeclarator) -> Option<TextRange> {
     let decl_range = syntax_range(decl.syntax());
 
-    for for_stmt in decl.syntax().ancestors().filter_map(ast::ForStatement::cast) {
+    for for_stmt in decl
+        .syntax()
+        .ancestors()
+        .filter_map(ast::ForStatement::cast)
+    {
         let header = for_stmt.header()?;
         let header_range = syntax_range(header.syntax());
         if contains_range(header_range, decl_range) {
@@ -1310,7 +1316,11 @@ fn local_binding_scope_range(decl: &ast::VariableDeclarator) -> Option<TextRange
         }
     }
 
-    for try_stmt in decl.syntax().ancestors().filter_map(ast::TryStatement::cast) {
+    for try_stmt in decl
+        .syntax()
+        .ancestors()
+        .filter_map(ast::TryStatement::cast)
+    {
         let resources = try_stmt.resources()?;
         let resources_range = syntax_range(resources.syntax());
         if contains_range(resources_range, decl_range) {
@@ -1396,8 +1406,12 @@ fn rewrite_multi_declarator_local_variable_declaration(
         return None;
     }
 
-    let prefix_text = source.get(stmt_range.start..first_decl_range.start)?.to_string();
-    let before_text = source.get(first_decl_range.start..prev_decl_range.end)?.to_string();
+    let prefix_text = source
+        .get(stmt_range.start..first_decl_range.start)?
+        .to_string();
+    let before_text = source
+        .get(first_decl_range.start..prev_decl_range.end)?
+        .to_string();
     let after_text = source.get(after_start..last_decl_range.end)?.to_string();
     let stmt_suffix = source.get(last_decl_range.end..stmt_range.end)?.to_string();
 
@@ -1433,7 +1447,12 @@ fn rewrite_multi_declarator_local_variable_declaration(
 
 fn skip_leading_whitespace(text: &str, mut start: usize, end: usize) -> usize {
     let bytes = text.as_bytes();
-    while start < end && bytes.get(start).copied().is_some_and(|b| b.is_ascii_whitespace()) {
+    while start < end
+        && bytes
+            .get(start)
+            .copied()
+            .is_some_and(|b| b.is_ascii_whitespace())
+    {
         start += 1;
     }
     start
@@ -1489,19 +1508,15 @@ fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option
         // Reject when inside a switch *expression* rule body that is not a block, since extracting
         // would either lift evaluation out of the selected case arm or require block/yield
         // conversion (not implemented yet).
-        let container = rule
-            .syntax()
-            .ancestors()
-            .skip(1)
-            .find_map(|node| {
-                if ast::SwitchExpression::cast(node.clone()).is_some() {
-                    Some(true)
-                } else if ast::SwitchStatement::cast(node).is_some() {
-                    Some(false)
-                } else {
-                    None
-                }
-            });
+        let container = rule.syntax().ancestors().skip(1).find_map(|node| {
+            if ast::SwitchExpression::cast(node.clone()).is_some() {
+                Some(true)
+            } else if ast::SwitchStatement::cast(node).is_some() {
+                Some(false)
+            } else {
+                None
+            }
+        });
         if container == Some(true) {
             return Some("cannot extract from switch expression rule body");
         }
@@ -1768,8 +1783,7 @@ fn infer_type_from_binary_expr(binary: &ast::BinaryExpression) -> String {
                 return "boolean".to_string();
             }
 
-            let (Some(lhs_rank), Some(rhs_rank)) =
-                (integral_rank(&lhs_ty), integral_rank(&rhs_ty))
+            let (Some(lhs_rank), Some(rhs_rank)) = (integral_rank(&lhs_ty), integral_rank(&rhs_ty))
             else {
                 return "Object".to_string();
             };
@@ -1894,11 +1908,7 @@ fn best_type_at_range_display(
         let ty = ty.trim();
         // Filter out non-types that can show up in best-effort typeck display strings.
         // These are not valid Java types for variable declarations.
-        if ty.is_empty()
-            || ty == "<?>"
-            || ty == "<error>"
-            || ty.eq_ignore_ascii_case("null")
-        {
+        if ty.is_empty() || ty == "<?>" || ty == "<error>" || ty.eq_ignore_ascii_case("null") {
             continue;
         }
         return Some(ty.to_string());

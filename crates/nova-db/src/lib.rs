@@ -213,7 +213,9 @@ impl nova_core::ProjectDatabase for AnalysisDatabase {
 
     fn file_text(&self, path: &Path) -> Option<String> {
         let key = path.to_str()?;
-        self.files.get(key).map(|data| data.text.as_ref().to_string())
+        self.files
+            .get(key)
+            .map(|data| data.text.as_ref().to_string())
     }
 }
 
@@ -456,9 +458,9 @@ pub mod salsa;
 
 pub use salsa::{
     catch_cancelled, ArcEq, ClassIdInterner, ClassKey, Database as SalsaDatabase, HasClassInterner,
-    NovaDatabase, NovaDiagnostics, NovaFlow, NovaHir, NovaIde, NovaIndexing, NovaInputs, NovaResolve,
-    NovaSemantic, NovaSyntax, NovaTypeck, QueryStat, QueryStatReport, QueryStats, QueryStatsReport,
-    RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree, WorkspaceClassIdMap,
+    NovaDatabase, NovaDiagnostics, NovaFlow, NovaHir, NovaIde, NovaIndexing, NovaInputs,
+    NovaResolve, NovaSemantic, NovaSyntax, NovaTypeck, QueryStat, QueryStatReport, QueryStats,
+    QueryStatsReport, RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree, WorkspaceClassIdMap,
 };
 
 pub use persistence::{

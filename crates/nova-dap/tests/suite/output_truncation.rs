@@ -38,20 +38,16 @@ async fn launch_truncates_very_long_stdout_lines() {
     );
 
     let output_evt = client
-        .wait_for_event_matching(
-            "output(truncated stdout)",
-            Duration::from_secs(5),
-            |msg| {
-                msg.get("type").and_then(|v| v.as_str()) == Some("event")
-                    && msg.get("event").and_then(|v| v.as_str()) == Some("output")
-                    && msg.pointer("/body/category").and_then(|v| v.as_str()) == Some("stdout")
-                    && msg
-                        .pointer("/body/output")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.contains("<output truncated>"))
-                        .unwrap_or(false)
-            },
-        )
+        .wait_for_event_matching("output(truncated stdout)", Duration::from_secs(5), |msg| {
+            msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                && msg.get("event").and_then(|v| v.as_str()) == Some("output")
+                && msg.pointer("/body/category").and_then(|v| v.as_str()) == Some("stdout")
+                && msg
+                    .pointer("/body/output")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.contains("<output truncated>"))
+                    .unwrap_or(false)
+        })
         .await;
 
     let output = output_evt

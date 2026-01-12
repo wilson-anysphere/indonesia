@@ -52,4 +52,3 @@ mod tests {
         assert_eq!(config.release.as_deref(), Some("21"));
     }
 }
-

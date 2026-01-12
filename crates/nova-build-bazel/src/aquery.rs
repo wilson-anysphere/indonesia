@@ -1085,7 +1085,8 @@ mod tests {
         }
         "#;
 
-        let info: JavaCompileInfo = serde_json::from_str(json).expect("deserialize JavaCompileInfo");
+        let info: JavaCompileInfo =
+            serde_json::from_str(json).expect("deserialize JavaCompileInfo");
         assert_eq!(info.output_dir.as_deref(), Some("out/classes"));
         assert!(info.preview);
     }
@@ -1097,10 +1098,7 @@ mod tests {
         apt.generated_sources_dir = Some(std::path::PathBuf::from("gen"));
         apt.processor_path = vec![std::path::PathBuf::from("proc.jar")];
         apt.processors = vec!["com.example.Proc".to_string()];
-        apt.options = std::collections::BTreeMap::from([(
-            "key".to_string(),
-            "value".to_string(),
-        )]);
+        apt.options = std::collections::BTreeMap::from([("key".to_string(), "value".to_string())]);
         apt.compiler_args = vec![
             "-processorpath".to_string(),
             "proc.jar".to_string(),

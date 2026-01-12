@@ -2,7 +2,9 @@ use std::cmp::Ordering;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nova_db::{ArcEq, FileId, NovaDiagnostics, NovaInputs, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_db::{
+    ArcEq, FileId, NovaDiagnostics, NovaInputs, ProjectId, SalsaRootDatabase, SourceRootId,
+};
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
 use nova_types::Diagnostic;
@@ -63,7 +65,8 @@ class C {
     let diags = db.diagnostics(file);
 
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "JAVA_FEATURE_VAR_LOCAL_INFERENCE"),
         "expected syntax feature diagnostic (var under Java 8), got: {diags:?}"
     );
@@ -105,7 +108,9 @@ class C { void m(){ throw "x"; } }
     let (db, file) = setup_db(src);
     let diags = db.diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "throw-non-throwable"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "throw-non-throwable"),
         "expected throw-non-throwable diagnostic; got: {diags:?}"
     );
 }
@@ -119,7 +124,9 @@ class C { void m(){ try {} catch (String e) {} } }
     let (db, file) = setup_db(src);
     let diags = db.diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "catch-non-throwable"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "catch-non-throwable"),
         "expected catch-non-throwable diagnostic; got: {diags:?}"
     );
 }

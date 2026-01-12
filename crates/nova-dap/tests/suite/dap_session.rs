@@ -4,8 +4,8 @@ use std::{
     time::Duration,
 };
 
-use base64::{engine::general_purpose, Engine as _};
 use crate::harness::spawn_wire_server;
+use base64::{engine::general_purpose, Engine as _};
 use nova_dap::object_registry::{OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;
@@ -683,10 +683,9 @@ async fn dap_can_hot_swap_multiple_classes_per_file() {
         .and_then(|v| v.as_array())
         .expect("expected classes array");
     assert_eq!(classes.len(), 2);
-    assert!(classes.iter().all(|entry| entry
-        .get("status")
-        .and_then(|v| v.as_str())
-        == Some("success")));
+    assert!(classes
+        .iter()
+        .all(|entry| entry.get("status").and_then(|v| v.as_str()) == Some("success")));
 
     let names: std::collections::BTreeSet<_> = classes
         .iter()

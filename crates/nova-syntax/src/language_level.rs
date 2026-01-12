@@ -253,7 +253,9 @@ impl JavaFeature {
         match self {
             JavaFeature::Modules => "modules",
             JavaFeature::VarLocalInference => "local variable type inference (`var`)",
-            JavaFeature::VarLambdaParameters => "local-variable syntax for lambda parameters (`var`)",
+            JavaFeature::VarLambdaParameters => {
+                "local-variable syntax for lambda parameters (`var`)"
+            }
             JavaFeature::SwitchExpressions => "switch expressions",
             JavaFeature::TextBlocks => "text blocks",
             JavaFeature::PatternMatchingInstanceof => "pattern matching for `instanceof`",

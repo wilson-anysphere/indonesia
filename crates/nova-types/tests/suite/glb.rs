@@ -280,8 +280,16 @@ fn infer_upper_bound_intersection_normalizes_equivalent_intersection_bounds() {
     let comparable = Type::class(comparable, vec![]);
 
     // Equivalent intersections but in different, non-canonical orders.
-    let i1 = Type::Intersection(vec![cloneable.clone(), serializable.clone(), comparable.clone()]);
-    let i2 = Type::Intersection(vec![comparable.clone(), serializable.clone(), cloneable.clone()]);
+    let i1 = Type::Intersection(vec![
+        cloneable.clone(),
+        serializable.clone(),
+        comparable.clone(),
+    ]);
+    let i2 = Type::Intersection(vec![
+        comparable.clone(),
+        serializable.clone(),
+        cloneable.clone(),
+    ]);
 
     // Same bounds, but listed in opposite order.
     let t1 = env.add_type_param("T1", vec![i1.clone(), i2.clone()]);

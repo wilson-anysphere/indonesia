@@ -598,8 +598,7 @@ fn classify_arg(arg: &str) -> ArgCategory {
         return ArgCategory::PrimitiveLiteral;
     }
 
-    if s
-        .as_bytes()
+    if s.as_bytes()
         .first()
         .is_some_and(|b| b.is_ascii_digit() || *b == b'-')
     {

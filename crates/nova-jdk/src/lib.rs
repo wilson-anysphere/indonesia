@@ -200,7 +200,8 @@ impl JdkIndex {
 
         let mut bytes = 0u64;
 
-        bytes = bytes.saturating_add((self.types.capacity() * size_of::<(String, TypeName)>()) as u64);
+        bytes =
+            bytes.saturating_add((self.types.capacity() * size_of::<(String, TypeName)>()) as u64);
         for (k, v) in &self.types {
             bytes = bytes.saturating_add(k.capacity() as u64);
             // `TypeName` does not expose its backing `String` capacity, so we

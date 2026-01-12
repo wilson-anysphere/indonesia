@@ -128,7 +128,10 @@ fn unreachable_code_quick_fix_removes_statement() {
 
     assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
 
-    let edit = action.edit.clone().expect("expected quickfix workspace edit");
+    let edit = action
+        .edit
+        .clone()
+        .expect("expected quickfix workspace edit");
     let changes = edit.changes.expect("expected `changes` workspace edit");
 
     let edits = changes.get(&uri).expect("expected edits for file uri");
@@ -220,7 +223,10 @@ fn flow_unassigned_quick_fix_initializes_variable_with_primitive_default() {
         .expect("expected Initialize 'x' quickfix");
     assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
 
-    let edit = action.edit.clone().expect("expected quickfix workspace edit");
+    let edit = action
+        .edit
+        .clone()
+        .expect("expected quickfix workspace edit");
     let changes = edit.changes.expect("expected `changes` workspace edit");
     let edits = changes.get(&uri).expect("expected edits for file uri");
     assert_eq!(edits.len(), 1, "expected single text edit; got {edits:#?}");

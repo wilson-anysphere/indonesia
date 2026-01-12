@@ -35,11 +35,7 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     let foo_uri = uri_for_path(&foo_path);
     let main_uri = uri_for_path(&main_path);
 
-    let foo_text = concat!(
-        "public class Foo {\n",
-        "    public void bar() {}\n",
-        "}\n",
-    );
+    let foo_text = concat!("public class Foo {\n", "    public void bar() {}\n", "}\n",);
 
     let main_text = concat!(
         "public class Main {\n",
@@ -125,7 +121,8 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
             loc.get("uri").and_then(|v| v.as_str()) == Some(main_uri.as_str())
                 && loc.pointer("/range/start/line").and_then(|v| v.as_u64())
                     == Some(foo_usage_pos.line as u64)
-                && loc.pointer("/range/start/character")
+                && loc
+                    .pointer("/range/start/character")
                     .and_then(|v| v.as_u64())
                     == Some(foo_usage_pos.character as u64)
         }),
@@ -137,7 +134,8 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
             loc.get("uri").and_then(|v| v.as_str()) == Some(foo_uri.as_str())
                 && loc.pointer("/range/start/line").and_then(|v| v.as_u64())
                     == Some(foo_def_pos.line as u64)
-                && loc.pointer("/range/start/character")
+                && loc
+                    .pointer("/range/start/character")
                     .and_then(|v| v.as_u64())
                     == Some(foo_def_pos.character as u64)
         }),
@@ -168,7 +166,8 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
             loc.get("uri").and_then(|v| v.as_str()) == Some(foo_uri.as_str())
                 && loc.pointer("/range/start/line").and_then(|v| v.as_u64())
                     == Some(foo_def_pos.line as u64)
-                && loc.pointer("/range/start/character")
+                && loc
+                    .pointer("/range/start/character")
                     .and_then(|v| v.as_u64())
                     == Some(foo_def_pos.character as u64)
         }),
@@ -187,4 +186,3 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

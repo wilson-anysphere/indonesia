@@ -1279,7 +1279,8 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                         // Prefer fetching all Gradle module configs in a single Gradle invocation
                         // for multi-module workspaces. Fall back to per-module queries when the
                         // batch task fails (e.g. older Gradle versions).
-                        let mut gradle_configs_by_path = HashMap::<String, JavaCompileConfig>::new();
+                        let mut gradle_configs_by_path =
+                            HashMap::<String, JavaCompileConfig>::new();
                         if config.modules.len() > 1 {
                             if let Ok(configs) =
                                 manager.java_compile_configs_all_gradle(&project_root)

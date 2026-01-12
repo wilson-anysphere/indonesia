@@ -34,7 +34,10 @@ async fn stream_debug_internal_eval_does_not_stop_or_mutate_hit_counts() {
         )
         .await;
     assert!(
-        bp_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+        bp_resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         "setBreakpoints was not successful: {bp_resp}"
     );
 
@@ -55,10 +58,8 @@ async fn stream_debug_internal_eval_does_not_stop_or_mutate_hit_counts() {
         )
         .await;
 
-    let mut resp_fut = Box::pin(client.wait_for_response_with_timeout(
-        stream_req,
-        Duration::from_secs(2),
-    ));
+    let mut resp_fut =
+        Box::pin(client.wait_for_response_with_timeout(stream_req, Duration::from_secs(2)));
 
     let stream_resp = loop {
         tokio::select! {
@@ -88,8 +89,8 @@ async fn stream_debug_internal_eval_does_not_stop_or_mutate_hit_counts() {
     let (_cont_resp, _continued) = client.continue_with_thread_id(Some(thread_id)).await;
     assert_eq!(jdwp.breakpoint_suspend_policy().await, Some(1));
 
-    let stopped = tokio::time::timeout(Duration::from_millis(200), client.wait_for_event("stopped"))
-        .await;
+    let stopped =
+        tokio::time::timeout(Duration::from_millis(200), client.wait_for_event("stopped")).await;
     assert!(
         stopped.is_err(),
         "hit-count breakpoint should not stop after streamDebug internal eval"
@@ -98,4 +99,3 @@ async fn stream_debug_internal_eval_does_not_stop_or_mutate_hit_counts() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

@@ -981,7 +981,10 @@ fn salsa_inputs_for_single_file(
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .filter(|s| !s.is_empty())
-        .or_else(|| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
         .unwrap_or_else(|| format!("/virtual/file_{}.java", file.to_raw()));
 
     let config = root
@@ -1178,11 +1181,7 @@ fn sort_and_dedupe_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.dedup();
 }
 
-fn salsa_semantic_file_diagnostics(
-    db: &Snapshot,
-    file: FileId,
-    is_java: bool,
-) -> Vec<Diagnostic> {
+fn salsa_semantic_file_diagnostics(db: &Snapshot, file: FileId, is_java: bool) -> Vec<Diagnostic> {
     if !is_java {
         return Vec::new();
     }
@@ -1662,7 +1661,11 @@ fn module_info_directive_snippets(prefix: &str) -> Vec<CompletionItem> {
             "requires ${1:module};$0",
             "JPMS requires directive",
         ),
-        ("exports", "exports ${1:package};$0", "JPMS exports directive"),
+        (
+            "exports",
+            "exports ${1:package};$0",
+            "JPMS exports directive",
+        ),
         ("opens", "opens ${1:package};$0", "JPMS opens directive"),
         ("uses", "uses ${1:service};$0", "JPMS uses directive"),
         (
@@ -1787,12 +1790,7 @@ fn module_info_package_segment_completions(
     let mut candidates: HashMap<String, bool> = HashMap::new();
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
         for pkg in env.workspace_index().packages() {
-            add_package_segment_candidates(
-                &mut candidates,
-                pkg,
-                &parent_segments,
-                segment_prefix,
-            );
+            add_package_segment_candidates(&mut candidates, pkg, &parent_segments, segment_prefix);
         }
     }
 
@@ -1927,7 +1925,11 @@ fn module_info_completion_items(
 
             let candidates = module_info_module_name_candidates(db, file);
             let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
-            items.extend(module_info_module_name_completions(&candidates, &qualifier, prefix));
+            items.extend(module_info_module_name_completions(
+                &candidates,
+                &qualifier,
+                prefix,
+            ));
             items
         }
         "exports" | "opens" => {
@@ -1952,8 +1954,8 @@ fn module_info_completion_items(
             }
 
             if !has_to {
-                let completing_package = package_span.is_none()
-                    || package_span.is_some_and(|span| offset <= span.end);
+                let completing_package =
+                    package_span.is_none() || package_span.is_some_and(|span| offset <= span.end);
                 if completing_package {
                     let (_dotted_start, qualifier) = dotted_qualifier(text, prefix_start);
                     return module_info_package_segment_completions(db, file, &qualifier, prefix);
@@ -2501,10 +2503,7 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
     let before = text.get(..offset).unwrap_or("");
     let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let after = text.get(offset..).unwrap_or("");
-    let line_end = after
-        .find('\n')
-        .map(|i| offset + i)
-        .unwrap_or(text.len());
+    let line_end = after.find('\n').map(|i| offset + i).unwrap_or(text.len());
 
     let line = text.get(line_start..line_end)?;
     let non_ws = line.find(|c: char| !c.is_ascii_whitespace())?;
@@ -2633,13 +2632,10 @@ fn import_completions(
     // completing nested types (source syntax uses `.`, but binary names use `$`).
     //
     // Example: `import java.util.Map.E<cursor>;` should suggest `Entry`.
-    let nested_type_owner = ctx
-        .base_prefix
-        .strip_suffix('.')
-        .and_then(|owner| {
-            resolve_static_import_owner(jdk.as_ref(), owner)
-                .or_else(|| resolve_static_import_owner(&fallback_jdk, owner))
-        });
+    let nested_type_owner = ctx.base_prefix.strip_suffix('.').and_then(|owner| {
+        resolve_static_import_owner(jdk.as_ref(), owner)
+            .or_else(|| resolve_static_import_owner(&fallback_jdk, owner))
+    });
 
     let mut items = Vec::new();
 
@@ -3527,10 +3523,7 @@ class A {
 "#;
         db.set_file_text(file, source.to_string());
 
-        let offset = source
-            .find("s.")
-            .expect("expected `s.` in fixture")
-            + "s.".len();
+        let offset = source.find("s.").expect("expected `s.` in fixture") + "s.".len();
         let position = crate::text::offset_to_position(source, offset);
 
         let cancel = nova_scheduler::CancellationToken::new();
@@ -3778,7 +3771,8 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     {
         if let Some(path) = db.file_path(file) {
             let root = crate::framework_cache::project_root_for_path(path);
-            if let Ok(items) = nova_framework_mapstruct::completions_for_file(&root, path, text, offset)
+            if let Ok(items) =
+                nova_framework_mapstruct::completions_for_file(&root, path, text, offset)
             {
                 if !items.is_empty() {
                     let items = items
@@ -4988,13 +4982,17 @@ fn member_completions_for_receiver_type(
         }
 
         let (kind, insert_text, format) = match member.kind {
-            lombok_intel::MemberKind::Field => (CompletionItemKind::FIELD, member.label.clone(), None),
+            lombok_intel::MemberKind::Field => {
+                (CompletionItemKind::FIELD, member.label.clone(), None)
+            }
             lombok_intel::MemberKind::Method => (
                 CompletionItemKind::METHOD,
                 format!("{}($0)", member.label),
                 Some(InsertTextFormat::SNIPPET),
             ),
-            lombok_intel::MemberKind::Class => (CompletionItemKind::CLASS, member.label.clone(), None),
+            lombok_intel::MemberKind::Class => {
+                (CompletionItemKind::CLASS, member.label.clone(), None)
+            }
         };
 
         items.push(CompletionItem {
@@ -5133,7 +5131,11 @@ fn find_matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usiz
     None
 }
 
-fn unwrap_paren_expr(bytes: &[u8], open_paren: usize, close_paren: usize) -> Option<(usize, usize)> {
+fn unwrap_paren_expr(
+    bytes: &[u8],
+    open_paren: usize,
+    close_paren: usize,
+) -> Option<(usize, usize)> {
     if bytes.get(open_paren) != Some(&b'(') || bytes.get(close_paren) != Some(&b')') {
         return None;
     }
@@ -5163,7 +5165,11 @@ fn unwrap_paren_expr(bytes: &[u8], open_paren: usize, close_paren: usize) -> Opt
     Some((start, end))
 }
 
-fn scan_call_expr_ending_at(text: &str, analysis: &Analysis, close_paren_end: usize) -> Option<CallExpr> {
+fn scan_call_expr_ending_at(
+    text: &str,
+    analysis: &Analysis,
+    close_paren_end: usize,
+) -> Option<CallExpr> {
     if close_paren_end == 0 || close_paren_end > text.len() {
         return None;
     }
@@ -5273,7 +5279,8 @@ fn infer_call_return_type(
         return Some(nova_types::format_type(&types, &ty));
     }
 
-    let (receiver_ty, call_kind) = infer_call_receiver_lexical(&mut types, analysis, &file_ctx, text, call);
+    let (receiver_ty, call_kind) =
+        infer_call_receiver_lexical(&mut types, analysis, &file_ctx, text, call);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return fallback_receiver_type_for_call(call.name.as_str());
     }
@@ -5832,7 +5839,10 @@ fn parse_import_path(tokens: &[Token], start: usize) -> Option<(String, usize, b
             }
             TokenKind::Symbol('.') => {
                 // Could be `.*` next.
-                if tokens.get(i + 1).is_some_and(|t| t.kind == TokenKind::Symbol('*')) {
+                if tokens
+                    .get(i + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Symbol('*'))
+                {
                     is_wildcard = true;
                     i += 2;
                 } else {
@@ -6010,7 +6020,8 @@ fn general_completions(
     let text = db.file_content(file);
     let analysis = analyze(text);
     let mut types = TypeStore::with_minimal_jdk();
-    let expected_arg_ty = expected_argument_type_for_completion(&mut types, &analysis, text, offset);
+    let expected_arg_ty =
+        expected_argument_type_for_completion(&mut types, &analysis, text, offset);
     let mut items = Vec::new();
 
     maybe_add_lambda_snippet_completion(&mut items, text, &analysis, prefix_start, offset, prefix);
@@ -6070,7 +6081,8 @@ fn general_completions(
             if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
                 continue;
             }
-            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start) {
+            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start)
+            {
                 if offset >= scope_end {
                     continue;
                 }
@@ -6762,14 +6774,14 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             b_score
                 .rank_key()
                 .cmp(&a_score.rank_key())
-            .then_with(|| b_expected.cmp(a_expected))
-            .then_with(|| b_scope.cmp(a_scope))
-            .then_with(|| b_recency.cmp(a_recency))
-            .then_with(|| b_workspace.cmp(a_workspace))
-            .then_with(|| b_weight.cmp(a_weight))
-            .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
-            .then_with(|| a_item.label.cmp(&b_item.label))
-            .then_with(|| a_kind.cmp(b_kind))
+                .then_with(|| b_expected.cmp(a_expected))
+                .then_with(|| b_scope.cmp(a_scope))
+                .then_with(|| b_recency.cmp(a_recency))
+                .then_with(|| b_workspace.cmp(a_workspace))
+                .then_with(|| b_weight.cmp(a_weight))
+                .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+                .then_with(|| a_item.label.cmp(&b_item.label))
+                .then_with(|| a_kind.cmp(b_kind))
         },
     );
 
@@ -6814,7 +6826,8 @@ fn in_scope_types(
             if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
                 continue;
             }
-            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start) {
+            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start)
+            {
                 if offset >= scope_end {
                     continue;
                 }
@@ -6851,7 +6864,12 @@ fn infer_expected_type(
                 .arg_starts
                 .iter()
                 .position(|start| *start == prefix_start)
-                .unwrap_or_else(|| call.arg_starts.iter().filter(|s| **s < prefix_start).count());
+                .unwrap_or_else(|| {
+                    call.arg_starts
+                        .iter()
+                        .filter(|s| **s < prefix_start)
+                        .count()
+                });
             if let Some(method) = analysis.methods.iter().find(|m| m.name == call.name) {
                 if let Some(param) = method.params.get(arg_idx) {
                     return Some(param.ty.clone());
@@ -6956,7 +6974,9 @@ fn infer_expected_type(
 
         // Skip `<=` / `>=`, but keep shift-assignments like `<<=` / `>>=` / `>>>=`.
         if let Some(prev) = analysis.tokens.get(idx.wrapping_sub(1)) {
-            if adjacent(prev, tok) && matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol('>')) {
+            if adjacent(prev, tok)
+                && matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol('>'))
+            {
                 let is_shift = analysis
                     .tokens
                     .get(idx.wrapping_sub(2))
@@ -7010,7 +7030,11 @@ fn token_index_at_offset(tokens: &[Token], offset: usize) -> Option<usize> {
     tokens
         .iter()
         .position(|t| t.span.start == offset)
-        .or_else(|| tokens.iter().position(|t| t.span.start <= offset && offset < t.span.end))
+        .or_else(|| {
+            tokens
+                .iter()
+                .position(|t| t.span.start <= offset && offset < t.span.end)
+        })
 }
 
 fn enclosing_paren_open_index(tokens: &[Token], idx: usize) -> Option<usize> {
@@ -7181,12 +7205,18 @@ fn switch_statement_end_offset(tokens: &[Token], switch_idx: usize) -> Option<us
 
 fn try_statement_end_offset(tokens: &[Token], try_idx: usize) -> Option<usize> {
     let mut idx = try_idx + 1;
-    if tokens.get(idx).is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+    if tokens
+        .get(idx)
+        .is_some_and(|t| t.kind == TokenKind::Symbol('('))
+    {
         let (close_paren_idx, _) = find_matching_paren(tokens, idx)?;
         idx = close_paren_idx + 1;
     }
 
-    if tokens.get(idx).map_or(true, |t| t.kind != TokenKind::Symbol('{')) {
+    if tokens
+        .get(idx)
+        .map_or(true, |t| t.kind != TokenKind::Symbol('{'))
+    {
         return None;
     }
     let (mut end_idx, mut span) = find_matching_brace(tokens, idx)?;
@@ -7285,9 +7315,9 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         if let Some(path) = db.file_path(file) {
             if path.extension().and_then(|e| e.to_str()) == Some("java") {
                 let root = crate::framework_cache::project_root_for_path(path);
-                if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
-                    &root, path, text, offset,
-                ) {
+                if let Ok(targets) =
+                    nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset)
+                {
                     if let Some(target) = targets.first() {
                         if let Some(loc) =
                             location_from_path_and_span(db, &target.file, target.span)
@@ -7728,7 +7758,11 @@ pub fn prepare_call_hierarchy(
 
     // Next try call sites (prefer resolving the *called* method when the cursor
     // is on a call name, even across files).
-    if let Some(call) = analysis.calls.iter().find(|c| span_contains(c.name_span, offset)) {
+    if let Some(call) = analysis
+        .calls
+        .iter()
+        .find(|c| span_contains(c.name_span, offset))
+    {
         // Fast-path: receiverless calls can often be resolved within the file.
         if call.receiver.is_none() {
             if let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) {
@@ -9123,7 +9157,11 @@ fn call_expr_for_argument_list<'a>(
 
     Some((call, active_parameter))
 }
-fn ensure_local_class_receiver(types: &mut TypeStore, analysis: &Analysis, receiver_ty: Type) -> Type {
+fn ensure_local_class_receiver(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    receiver_ty: Type,
+) -> Type {
     let name = match &receiver_ty {
         Type::Named(name) => Some(name.as_str()),
         Type::Class(nova_types::ClassType { def, .. }) => {
@@ -9545,7 +9583,9 @@ pub fn semantic_tokens(db: &dyn Database, file: FileId) -> Vec<SemanticToken> {
 
     let mut decls: HashMap<Span, (&str, u32)> = HashMap::new();
     for c in &analysis.classes {
-        decls.entry(c.name_span).or_insert((c.name.as_str(), class_idx));
+        decls
+            .entry(c.name_span)
+            .or_insert((c.name.as_str(), class_idx));
     }
     for m in &analysis.methods {
         decls
@@ -10576,10 +10616,7 @@ pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
             break;
         }
     }
-    (
-        start,
-        text.get(start..offset).unwrap_or("").to_string(),
-    )
+    (start, text.get(start..offset).unwrap_or("").to_string())
 }
 
 pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {
@@ -10594,7 +10631,11 @@ pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
     let bytes = text.as_bytes();
     let mut end = dot_offset.min(bytes.len());
-    while end > 0 && bytes.get(end - 1).is_some_and(|b| (*b as char).is_ascii_whitespace()) {
+    while end > 0
+        && bytes
+            .get(end - 1)
+            .is_some_and(|b| (*b as char).is_ascii_whitespace())
+    {
         end -= 1;
     }
     let mut start = end;
@@ -10679,9 +10720,18 @@ class Foo {
 
         assert!(seen_class, "expected at least one CLASS semantic token");
         assert!(seen_method, "expected at least one METHOD semantic token");
-        assert!(seen_property, "expected at least one PROPERTY semantic token");
-        assert!(seen_variable, "expected at least one VARIABLE semantic token");
-        assert!(seen_parameter, "expected at least one PARAMETER semantic token");
+        assert!(
+            seen_property,
+            "expected at least one PROPERTY semantic token"
+        );
+        assert!(
+            seen_variable,
+            "expected at least one VARIABLE semantic token"
+        );
+        assert!(
+            seen_parameter,
+            "expected at least one PARAMETER semantic token"
+        );
     }
 
     #[test]

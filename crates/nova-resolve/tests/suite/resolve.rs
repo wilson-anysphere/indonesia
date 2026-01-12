@@ -8,11 +8,11 @@ use nova_hir::hir;
 use nova_hir::item_tree::{Item, Member};
 use nova_hir::queries::{self, HirDatabase};
 use nova_jdk::JdkIndex;
-use nova_types::Severity;
 use nova_resolve::{
     build_scopes, BodyOwner, ImportMap, LocalRef, NameResolution, Resolution, Resolver,
     TypeResolution,
 };
+use nova_types::Severity;
 
 fn test_dep_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
@@ -440,10 +440,7 @@ fn same_package_lookup_resolves_root_package_type() {
     let resolver = Resolver::new(&jdk).with_classpath(&index);
 
     let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Foo"));
-    assert_eq!(
-        res,
-        Some(Resolution::Type(TypeResolution::External(foo)))
-    );
+    assert_eq!(res, Some(Resolution::Type(TypeResolution::External(foo))));
 }
 
 #[test]
@@ -524,8 +521,9 @@ class C {}
     let diags = resolver.diagnose_imports(&imports);
 
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
-            && d.message.contains("java.util.Map.*")),
+        !diags.iter().any(
+            |d| d.code.as_ref() == "unresolved-import" && d.message.contains("java.util.Map.*")
+        ),
         "expected no unresolved-import for `java.util.Map.*`, got {diags:#?}"
     );
 }
@@ -652,8 +650,9 @@ class C { Deep d; }
     let imports = ImportMap::from_item_tree(&tree);
     let diags = resolver.diagnose_imports(&imports);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
-            && d.message.contains("p.Outer.Inner.*")),
+        !diags.iter().any(
+            |d| d.code.as_ref() == "unresolved-import" && d.message.contains("p.Outer.Inner.*")
+        ),
         "expected no unresolved-import for `p.Outer.Inner.*`, got {diags:#?}"
     );
 }
@@ -810,7 +809,11 @@ class C { Entry e; }
 
     let scopes = build_scopes(&db, file);
     let resolver = Resolver::new(&index);
-    let resolved = resolver.resolve_type_name_detailed(&scopes.scopes, scopes.file_scope, &Name::from("Entry"));
+    let resolved = resolver.resolve_type_name_detailed(
+        &scopes.scopes,
+        scopes.file_scope,
+        &Name::from("Entry"),
+    );
     assert!(
         matches!(resolved, nova_resolve::TypeNameResolution::Resolved(TypeResolution::External(ref ty)) if ty == &entry),
         "expected Entry to resolve to {entry:?}, got {resolved:?}"
@@ -835,7 +838,11 @@ class C { Entry e; }
 
     let scopes = build_scopes(&db, file);
     let resolver = Resolver::new(&index);
-    let resolved = resolver.resolve_type_name_detailed(&scopes.scopes, scopes.file_scope, &Name::from("Entry"));
+    let resolved = resolver.resolve_type_name_detailed(
+        &scopes.scopes,
+        scopes.file_scope,
+        &Name::from("Entry"),
+    );
     assert!(
         matches!(resolved, nova_resolve::TypeNameResolution::Resolved(TypeResolution::External(ref ty)) if ty == &entry),
         "expected Entry to resolve to {entry:?}, got {resolved:?}"
@@ -895,8 +902,9 @@ class Use {}
     let resolver = Resolver::new(&index);
     let diags = resolver.diagnose_imports(&imports);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
-            && d.message.contains("static p.B.C")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-import" && d.message.contains("static p.B.C")),
         "expected unresolved-import for `static p.B.C`, got {diags:#?}"
     );
 }
@@ -1115,8 +1123,9 @@ class C {}
         "expected no ambiguous-import, got {diags:?}"
     );
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "duplicate-import"
-            && d.severity == Severity::Warning),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
         "expected duplicate-import warning, got {diags:?}"
     );
 }
@@ -1176,8 +1185,9 @@ class C {}
         "expected no ambiguous-import, got {diags:?}"
     );
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "duplicate-import"
-            && d.severity == Severity::Warning),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
         "expected duplicate-import warning, got {diags:?}"
     );
 }
@@ -1443,8 +1453,10 @@ class C { }
     let imports = nova_resolve::ImportMap::from_item_tree(&tree_use);
     let diags = resolver.diagnose_imports(&imports);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
-            && d.message.contains("static p.Util.foo")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-import"
+                && d.message.contains("static p.Util.foo")),
         "expected unresolved-import diagnostic for `foo`, got {diags:#?}"
     );
 }

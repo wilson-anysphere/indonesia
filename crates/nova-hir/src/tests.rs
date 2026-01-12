@@ -88,10 +88,9 @@ fn token_item_tree_rkyv_archive_roundtrip() {
     let sample = (item_tree, symbol_summary);
 
     let bytes = rkyv::to_bytes::<_, 256>(&sample).expect("rkyv serialization should succeed");
-    let archived = rkyv::check_archived_root::<(TokenItemTree, Option<TokenSymbolSummary>)>(
-        bytes.as_ref(),
-    )
-    .expect("rkyv validation should succeed");
+    let archived =
+        rkyv::check_archived_root::<(TokenItemTree, Option<TokenSymbolSummary>)>(bytes.as_ref())
+            .expect("rkyv validation should succeed");
 
     let mut deserializer = rkyv::de::deserializers::SharedDeserializeMap::default();
     let roundtrip: (TokenItemTree, Option<TokenSymbolSummary>) = archived

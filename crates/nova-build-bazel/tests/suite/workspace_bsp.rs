@@ -5,13 +5,15 @@ use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileProvider, InitializeBuildResult, JavacOptionsItem,
     JavacProvider, ServerCapabilities,
 };
-use nova_build_bazel::{BazelWorkspace, BspServerConfig, BspWorkspace, CommandOutput, CommandRunner};
+use nova_build_bazel::test_support::EnvVarGuard;
+use nova_build_bazel::{
+    BazelWorkspace, BspServerConfig, BspWorkspace, CommandOutput, CommandRunner,
+};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
 use tempfile::tempdir;
-use nova_build_bazel::test_support::EnvVarGuard;
 
 #[derive(Clone, Debug, Default)]
 struct RecordingRunner {
@@ -367,7 +369,9 @@ fn bazel_workspace_target_compile_info_cache_is_invalidated_by_bazelrc_imports()
         server
             .requests()
             .iter()
-            .filter(|msg| msg.get("method").and_then(|v| v.as_str()) == Some("buildTarget/javacOptions"))
+            .filter(|msg| {
+                msg.get("method").and_then(|v| v.as_str()) == Some("buildTarget/javacOptions")
+            })
             .count()
     };
 

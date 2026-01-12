@@ -266,7 +266,8 @@ fn compile_info_for_file_resolves_owner_returns_compile_info_and_caches_aquery()
     );
 
     // Second call should hit both the owning-target cache and the compile-info cache.
-    let info2 = workspace.compile_info_for_file(PathBuf::from("java/Hello.java"))
+    let info2 = workspace
+        .compile_info_for_file(PathBuf::from("java/Hello.java"))
         .unwrap()
         .unwrap();
     assert_eq!(info2, info1);
@@ -331,7 +332,14 @@ fn compile_info_for_file_in_run_target_closure_uses_scoped_rdeps_and_caches() {
     let scoped_owner_queries: Vec<Vec<String>> = calls
         .iter()
         .cloned()
-        .filter(|args| args.as_slice() == ["query", "rdeps(deps(//app:run), (//java:Hello.java), 1)", "--output=label_kind"])
+        .filter(|args| {
+            args.as_slice()
+                == [
+                    "query",
+                    "rdeps(deps(//app:run), (//java:Hello.java), 1)",
+                    "--output=label_kind",
+                ]
+        })
         .collect();
     assert_eq!(
         scoped_owner_queries.len(),

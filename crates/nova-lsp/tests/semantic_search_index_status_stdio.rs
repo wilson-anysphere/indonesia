@@ -75,7 +75,10 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
     let result = resp.get("result").cloned().expect("result");
 
     assert!(
-        result.get("currentRunId").and_then(|v| v.as_u64()).is_some(),
+        result
+            .get("currentRunId")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "expected result.currentRunId to be a number; got {result:#}"
     );
     assert!(
@@ -90,11 +93,17 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
         "expected result.done to be a bool; got {result:#}"
     );
     assert!(
-        result.get("indexedFiles").and_then(|v| v.as_u64()).is_some(),
+        result
+            .get("indexedFiles")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "expected result.indexedFiles to be a number; got {result:#}"
     );
     assert!(
-        result.get("indexedBytes").and_then(|v| v.as_u64()).is_some(),
+        result
+            .get("indexedBytes")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "expected result.indexedBytes to be a number; got {result:#}"
     );
 
@@ -109,4 +118,3 @@ fn stdio_server_advertises_and_handles_semantic_search_index_status_request() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

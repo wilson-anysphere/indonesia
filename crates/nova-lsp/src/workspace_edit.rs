@@ -79,11 +79,11 @@ pub fn workspace_edit_from_refactor_workspace_edit(
 
     if can_create(capabilities) && can_delete(capabilities) {
         if let Some(rewritten) = rewrite_renames_as_create_delete(db, edit) {
-            if let Ok(edit) = workspace_edit_to_lsp_document_changes_with_uri_mapper(
-                db,
-                &rewritten,
-                |file| Ok(join_uri(root_uri, Path::new(&file.0))),
-            ) {
+            if let Ok(edit) =
+                workspace_edit_to_lsp_document_changes_with_uri_mapper(db, &rewritten, |file| {
+                    Ok(join_uri(root_uri, Path::new(&file.0)))
+                })
+            {
                 return edit;
             }
         }
@@ -130,12 +130,12 @@ fn rewrite_renames_as_create_delete(
                     .file_ops
                     .push(RefactorFileOp::Delete { file: from.clone() });
             }
-            RefactorFileOp::Create { file, contents } => canonical.file_ops.push(
-                RefactorFileOp::Create {
+            RefactorFileOp::Create { file, contents } => {
+                canonical.file_ops.push(RefactorFileOp::Create {
                     file: file.clone(),
                     contents: contents.clone(),
-                },
-            ),
+                })
+            }
             RefactorFileOp::Delete { file } => canonical
                 .file_ops
                 .push(RefactorFileOp::Delete { file: file.clone() }),

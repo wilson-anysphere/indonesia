@@ -231,7 +231,11 @@ where
     let def_file = file(info.uri())?;
     Some(Location {
         uri: info.uri().clone(),
-        range: span_to_lsp_range_with_index(&def_file.line_index, &def_file.text, info.def().name_span),
+        range: span_to_lsp_range_with_index(
+            &def_file.line_index,
+            &def_file.text,
+            info.def().name_span,
+        ),
     })
 }
 
@@ -252,9 +256,12 @@ where
 
     // Member field access: `recv.field` -> type definition of the field's declared type.
     if let Some(receiver) = is_member_field_access(&parsed.text, ident_span) {
-        if let Some(receiver_ty) =
-            resolve_receiver_type_best_effort::<TI, FTypeInfo>(lookup_type_info, parsed, ident_span.start, &receiver)
-        {
+        if let Some(receiver_ty) = resolve_receiver_type_best_effort::<TI, FTypeInfo>(
+            lookup_type_info,
+            parsed,
+            ident_span.start,
+            &receiver,
+        ) {
             if let Some(field_ty) = resolve_field_declared_type_best_effort::<TI, FTypeInfo>(
                 lookup_type_info,
                 &receiver_ty,
@@ -262,13 +269,19 @@ where
             ) {
                 // If the field's type is external/JDK, return `None` so the LSP layer can
                 // provide a separate fallback.
-                return type_info_name_location::<TI, FTypeInfo, FFile>(lookup_type_info, file, &field_ty);
+                return type_info_name_location::<TI, FTypeInfo, FFile>(
+                    lookup_type_info,
+                    file,
+                    &field_ty,
+                );
             }
         }
     }
 
     // Type name under cursor.
-    if let Some(loc) = type_info_name_location::<TI, FTypeInfo, FFile>(lookup_type_info, file, &ident) {
+    if let Some(loc) =
+        type_info_name_location::<TI, FTypeInfo, FFile>(lookup_type_info, file, &ident)
+    {
         return Some(loc);
     }
 
@@ -471,22 +484,16 @@ where
 
     let mut candidates: Vec<(Uri, Span)> = Vec::new();
 
-    if let Some(def) = resolve_method_definition::<TI, FTypeInfo>(
-        lookup_type_info,
-        &receiver_ty,
-        &call.method,
-    )
+    if let Some(def) =
+        resolve_method_definition::<TI, FTypeInfo>(lookup_type_info, &receiver_ty, &call.method)
     {
         candidates.push(def);
     }
 
     if !receiver_is_final {
         for subtype in inheritance.all_subtypes(&receiver_ty) {
-            if let Some(def) = resolve_method_definition::<TI, FTypeInfo>(
-                lookup_type_info,
-                &subtype,
-                &call.method,
-            )
+            if let Some(def) =
+                resolve_method_definition::<TI, FTypeInfo>(lookup_type_info, &subtype, &call.method)
             {
                 candidates.push(def);
             }
@@ -538,12 +545,9 @@ where
 
     while let Some(iface) = queue.pop_front() {
         // Prefer the closest declaration (walk interfaces breadth-first).
-        if let Some(loc) = declaration_in_type::<TI, FTypeInfo, FFile>(
-            lookup_type_info,
-            file,
-            &iface,
-            method_name,
-        ) {
+        if let Some(loc) =
+            declaration_in_type::<TI, FTypeInfo, FFile>(lookup_type_info, file, &iface, method_name)
+        {
             return Some(loc);
         }
 
@@ -561,12 +565,8 @@ where
     // Then walk the superclass chain.
     let mut cur = type_info.def().super_class.clone();
     while let Some(next) = cur {
-        if let Some(loc) = declaration_in_type::<TI, FTypeInfo, FFile>(
-            lookup_type_info,
-            file,
-            &next,
-            method_name,
-        )
+        if let Some(loc) =
+            declaration_in_type::<TI, FTypeInfo, FFile>(lookup_type_info, file, &next, method_name)
         {
             return Some(loc);
         }
@@ -604,8 +604,9 @@ where
         .iter()
         .find(|m| m.name == method_name)?;
 
-    let is_declaration =
-        type_info.def().kind == TypeKind::Interface || method.is_abstract || method.body_span.is_none();
+    let is_declaration = type_info.def().kind == TypeKind::Interface
+        || method.is_abstract
+        || method.body_span.is_none();
     if !is_declaration {
         return None;
     }

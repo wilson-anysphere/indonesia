@@ -285,10 +285,7 @@ fn persist_project_indexes_is_noop_when_dirty_files_exist() {
     db.persist_project_indexes(project).unwrap();
 
     let cache_dir = CacheDir::new(&project_root, cache).unwrap();
-    let manifest = cache_dir
-        .indexes_dir()
-        .join("shards")
-        .join("manifest.txt");
+    let manifest = cache_dir.indexes_dir().join("shards").join("manifest.txt");
     assert!(
         !manifest.exists(),
         "persist_project_indexes should not write sharded index artifacts when dirty files exist"

@@ -100,11 +100,11 @@ impl SymbolIndex {
         let mut bytes = 0u64;
 
         // Approximate per-entry storage inside the `BTreeMap` nodes.
-        bytes = bytes.saturating_add(
-            (self.symbols.len() as u64).saturating_mul(
-                (size_of::<String>() + size_of::<Vec<IndexedSymbol>>()) as u64,
-            ),
-        );
+        bytes =
+            bytes
+                .saturating_add((self.symbols.len() as u64).saturating_mul(
+                    (size_of::<String>() + size_of::<Vec<IndexedSymbol>>()) as u64,
+                ));
 
         for (symbol, symbols) in &self.symbols {
             bytes = bytes.saturating_add(symbol.capacity() as u64);
@@ -201,17 +201,18 @@ impl ReferenceIndex {
 
         let mut bytes = 0u64;
 
-        bytes = bytes.saturating_add(
-            (self.references.len() as u64).saturating_mul(
+        bytes = bytes
+            .saturating_add((self.references.len() as u64).saturating_mul(
                 (size_of::<String>() + size_of::<Vec<ReferenceLocation>>()) as u64,
-            ),
-        );
+            ));
 
         for (symbol, locations) in &self.references {
             bytes = bytes.saturating_add(symbol.capacity() as u64);
-            bytes = bytes.saturating_add(
-                (locations.capacity() as u64).saturating_mul(size_of::<ReferenceLocation>() as u64),
-            );
+            bytes = bytes.saturating_add((locations.capacity() as u64).saturating_mul(size_of::<
+                ReferenceLocation,
+            >(
+            )
+                as u64));
             for loc in locations {
                 bytes = bytes.saturating_add(loc.file.capacity() as u64);
             }
@@ -429,17 +430,18 @@ impl AnnotationIndex {
 
         let mut bytes = 0u64;
 
-        bytes = bytes.saturating_add(
-            (self.annotations.len() as u64).saturating_mul(
+        bytes =
+            bytes.saturating_add((self.annotations.len() as u64).saturating_mul(
                 (size_of::<String>() + size_of::<Vec<AnnotationLocation>>()) as u64,
-            ),
-        );
+            ));
 
         for (annotation, locations) in &self.annotations {
             bytes = bytes.saturating_add(annotation.capacity() as u64);
-            bytes = bytes.saturating_add(
-                (locations.capacity() as u64).saturating_mul(size_of::<AnnotationLocation>() as u64),
-            );
+            bytes = bytes.saturating_add((locations.capacity() as u64).saturating_mul(size_of::<
+                AnnotationLocation,
+            >(
+            )
+                as u64));
             for loc in locations {
                 bytes = bytes.saturating_add(loc.file.capacity() as u64);
             }
@@ -533,15 +535,13 @@ fn estimate_btree_map_string_to_vec_string(map: &BTreeMap<String, Vec<String>>) 
     let mut bytes = 0u64;
 
     bytes = bytes.saturating_add(
-        (map.len() as u64)
-            .saturating_mul((size_of::<String>() + size_of::<Vec<String>>()) as u64),
+        (map.len() as u64).saturating_mul((size_of::<String>() + size_of::<Vec<String>>()) as u64),
     );
 
     for (key, values) in map {
         bytes = bytes.saturating_add(key.capacity() as u64);
-        bytes = bytes.saturating_add(
-            (values.capacity() as u64).saturating_mul(size_of::<String>() as u64),
-        );
+        bytes = bytes
+            .saturating_add((values.capacity() as u64).saturating_mul(size_of::<String>() as u64));
         for value in values {
             bytes = bytes.saturating_add(value.capacity() as u64);
         }

@@ -406,7 +406,8 @@ impl MemoryManager {
             for category in MemoryBreakdown::categories() {
                 let category_usage = usage.get(category);
                 let evictable_usage = evictable_by_category.get(category);
-                non_evictable_by_category.set(category, category_usage.saturating_sub(evictable_usage));
+                non_evictable_by_category
+                    .set(category, category_usage.saturating_sub(evictable_usage));
             }
 
             let total_non_evictable = non_evictable_by_category.total();
@@ -418,8 +419,9 @@ impl MemoryManager {
             let mut desired_keep = MemoryBreakdown::default();
             for category in MemoryBreakdown::categories() {
                 let evictable_usage = evictable_by_category.get(category);
-                let max_keep =
-                    target.get(category).saturating_sub(non_evictable_by_category.get(category));
+                let max_keep = target
+                    .get(category)
+                    .saturating_sub(non_evictable_by_category.get(category));
                 desired_keep.set(category, evictable_usage.min(max_keep));
             }
 

@@ -179,7 +179,10 @@ fn maven_config_repo_local_overrides_settings_xml() {
     std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
     std::fs::write(
         mvn_dir.join("maven.config"),
-        format!("-Dmaven.repo.local={}\n", repo_from_config.to_string_lossy()),
+        format!(
+            "-Dmaven.repo.local={}\n",
+            repo_from_config.to_string_lossy()
+        ),
     )
     .expect("write .mvn/maven.config");
 

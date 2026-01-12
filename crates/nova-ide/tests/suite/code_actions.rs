@@ -30,7 +30,10 @@ fn first_edit(action: &lsp_types::CodeAction) -> (&lsp_types::Uri, &lsp_types::T
         .changes
         .as_ref()
         .expect("expected changes (not document_changes)");
-    let (uri, edits) = changes.iter().next().expect("expected at least one file edit");
+    let (uri, edits) = changes
+        .iter()
+        .next()
+        .expect("expected at least one file edit");
     let edit = edits.first().expect("expected at least one text edit");
     (uri, edit)
 }

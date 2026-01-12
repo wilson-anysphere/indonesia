@@ -49,7 +49,10 @@ fn bazel_workspace_java_targets_in_universe_uses_scoped_query_expression() {
     let targets = workspace
         .java_targets_in_universe("deps(//my/app:app)")
         .unwrap();
-    assert_eq!(targets, vec!["//pkg:lib".to_string(), "//pkg:test".to_string()]);
+    assert_eq!(
+        targets,
+        vec!["//pkg:lib".to_string(), "//pkg:test".to_string()]
+    );
 
     assert_eq!(
         runner.calls(),
@@ -80,4 +83,3 @@ fn bazel_workspace_java_targets_in_run_target_closure_wraps_in_deps() {
         ]]
     );
 }
-

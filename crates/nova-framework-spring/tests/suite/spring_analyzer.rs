@@ -1,13 +1,15 @@
 use std::path::Path;
 
+use nova_core::FileId;
 use nova_framework::Database;
 use nova_hir::framework::ClassData;
-use nova_core::FileId;
 use nova_types::ClassId;
 
-use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
 use nova_framework::FrameworkData;
-use nova_framework_spring::{completion_span_for_value_placeholder, SpringAnalyzer, SPRING_NO_BEAN};
+use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
+use nova_framework_spring::{
+    completion_span_for_value_placeholder, SpringAnalyzer, SPRING_NO_BEAN,
+};
 
 /// Database wrapper used to verify analyzer fallbacks when the database does not
 /// support project-wide file enumeration.
@@ -158,11 +160,7 @@ fn value_completions_include_application_properties_key_and_set_replace_span() {
     db.add_classpath_class(project, "org.springframework.context.ApplicationContext");
 
     let config = "server.port=8080\n";
-    db.add_file_with_path_and_text(
-        project,
-        "src/main/resources/application.properties",
-        config,
-    );
+    db.add_file_with_path_and_text(project, "src/main/resources/application.properties", config);
 
     let java = r#"
         import org.springframework.beans.factory.annotation.Value;

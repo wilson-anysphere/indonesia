@@ -94,7 +94,8 @@ fn try_load(
         return None;
     }
     // If the file is absurdly large, treat it as corrupted and skip attempting to mmap it.
-    let max_len = nova_storage::MAX_PAYLOAD_LEN_BYTES.saturating_add(nova_storage::HEADER_LEN as u64);
+    let max_len =
+        nova_storage::MAX_PAYLOAD_LEN_BYTES.saturating_add(nova_storage::HEADER_LEN as u64);
     if meta.len() > max_len {
         let _ = std::fs::remove_file(path);
         return None;

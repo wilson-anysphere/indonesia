@@ -459,7 +459,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         let mut best_guess = dotted.clone();
         if segments.len() > 1 {
             let first = Name::from(segments[0].as_str());
-            if let Some(owner) = self.resolver.resolve_type_name(self.scopes, self.scope, &first) {
+            if let Some(owner) = self
+                .resolver
+                .resolve_type_name(self.scopes, self.scope, &first)
+            {
                 if let Some(owner_name) =
                     self.resolver.type_name_for_resolution(self.scopes, &owner)
                 {

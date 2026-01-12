@@ -47,7 +47,9 @@ fn analyzer_missing_id_diagnostic_is_scoped_to_file() {
 
     let diags_no_id = registry.framework_diagnostics(&db, no_id_file);
     assert!(
-        diags_no_id.iter().any(|d| d.code.as_ref() == JPA_MISSING_ID),
+        diags_no_id
+            .iter()
+            .any(|d| d.code.as_ref() == JPA_MISSING_ID),
         "expected JPA_MISSING_ID in diagnostics; got {diags_no_id:#?}"
     );
 
@@ -156,7 +158,10 @@ fn analyzer_jpql_completions_include_entity_fields() {
     );
 
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
-    assert!(labels.contains(&"id"), "expected `id` completion; got {labels:?}");
+    assert!(
+        labels.contains(&"id"),
+        "expected `id` completion; got {labels:?}"
+    );
     assert!(
         labels.contains(&"name"),
         "expected `name` completion; got {labels:?}"

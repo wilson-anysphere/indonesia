@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use nova_project::{load_project_with_options, reload_project, BuildSystem, LoadOptions, ProjectConfig};
+use nova_project::{
+    load_project_with_options, reload_project, BuildSystem, LoadOptions, ProjectConfig,
+};
 
 fn write_file(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -53,8 +55,7 @@ java_library(
     let changed_path = workspace_root.join(changed_rel);
     write_file(&changed_path, "# changed\n");
 
-    let reloaded =
-        reload_project(&config, &mut options, &[changed_path]).expect("reload project");
+    let reloaded = reload_project(&config, &mut options, &[changed_path]).expect("reload project");
 
     assert!(
         has_source_root(&reloaded, &new_pkg),
@@ -116,8 +117,7 @@ java_library(
     let changed_path = workspace_root.join("java/com/example/Foo.java");
     write_file(&changed_path, "class Foo {}\n");
 
-    let reloaded =
-        reload_project(&config, &mut options, &[changed_path]).expect("reload project");
+    let reloaded = reload_project(&config, &mut options, &[changed_path]).expect("reload project");
 
     assert_eq!(
         reloaded, config,

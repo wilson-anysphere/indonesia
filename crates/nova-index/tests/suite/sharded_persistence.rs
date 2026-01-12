@@ -2,10 +2,9 @@ use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
     affected_shards, load_sharded_index_archives, load_sharded_index_archives_fast,
     load_sharded_index_view, load_sharded_index_view_lazy, load_sharded_index_view_lazy_fast,
-    save_sharded_indexes,
-    save_sharded_indexes_incremental, shard_id_for_path, AnnotationLocation, InheritanceEdge,
-    IndexedSymbol, IndexSymbolKind, ProjectIndexes, ReferenceLocation, ShardedIndexOverlay,
-    SymbolLocation,
+    save_sharded_indexes, save_sharded_indexes_incremental, shard_id_for_path, AnnotationLocation,
+    IndexSymbolKind, IndexedSymbol, InheritanceEdge, ProjectIndexes, ReferenceLocation,
+    ShardedIndexOverlay, SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -70,8 +69,12 @@ fn sharded_roundtrip_loads_all_shards() {
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
     let shard_b = shard_id_for_path("B.java", shard_count) as usize;
 
-    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
-    shards[shard_b].symbols.insert("B", sym("B", "B.java", 1, 1));
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_b]
+        .symbols
+        .insert("B", sym("B", "B.java", 1, 1));
     shards[shard_b].references.insert(
         "A",
         ReferenceLocation {
@@ -153,7 +156,9 @@ fn invalidated_files_map_to_affected_shards() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
 
     // Change only A.java so only its shard is affected.
@@ -342,7 +347,9 @@ fn sharded_index_view_overlay_merges_invalidated_files() {
     // Apply overlay deltas for the invalidated file.
     let mut delta = ProjectIndexes::default();
     for (symbol, column) in [("Foo", 1u32), ("OnlyA", 1), ("NewInA", 10)] {
-        delta.symbols.insert(symbol, sym(symbol, &file_a, 2, column));
+        delta
+            .symbols
+            .insert(symbol, sym(symbol, &file_a, 2, column));
         delta.references.insert(
             symbol,
             ReferenceLocation {
@@ -542,7 +549,9 @@ fn lazy_sharded_index_view_overlay_merges_invalidated_files() {
     // Apply overlay deltas for the invalidated file.
     let mut delta = ProjectIndexes::default();
     for (symbol, column) in [("Foo", 1u32), ("OnlyA", 1), ("NewInA", 10)] {
-        delta.symbols.insert(symbol, sym(symbol, &file_a, 2, column));
+        delta
+            .symbols
+            .insert(symbol, sym(symbol, &file_a, 2, column));
         delta.references.insert(
             symbol,
             ReferenceLocation {
@@ -599,7 +608,10 @@ fn lazy_sharded_index_view_overlay_merges_invalidated_files() {
         vec!["Foo", "NewInA", "OnlyA"]
     );
     assert_eq!(
-        loaded_v2.view.referenced_symbols_merged().collect::<Vec<_>>(),
+        loaded_v2
+            .view
+            .referenced_symbols_merged()
+            .collect::<Vec<_>>(),
         vec!["Foo", "NewInA", "OnlyA"]
     );
     assert_eq!(
@@ -671,7 +683,9 @@ fn corrupt_shard_is_partial_cache_miss() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
+        shards[shard]
+            .symbols
+            .insert(symbol, sym(symbol, name, 1, 1));
     }
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
@@ -751,7 +765,9 @@ fn lazy_sharded_index_view_discovers_corrupt_shards_on_access() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
+        shards[shard]
+            .symbols
+            .insert(symbol, sym(symbol, name, 1, 1));
     }
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
@@ -874,7 +890,9 @@ fn sharded_fast_load_does_not_read_project_file_contents() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
@@ -916,7 +934,9 @@ fn lazy_sharded_fast_load_does_not_read_project_file_contents() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
@@ -958,7 +978,9 @@ fn lazy_sharded_load_works_with_metadata_bin_only() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Simulate an interruption between writing `metadata.bin` and `metadata.json`.
@@ -993,7 +1015,9 @@ fn sharded_load_works_with_metadata_bin_only() {
 
     let mut shards = empty_shards(shard_count);
     let shard_a = shard_id_for_path("A.java", shard_count) as usize;
-    shards[shard_a].symbols.insert("A", sym("A", "A.java", 1, 1));
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
     save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Simulate an interruption between writing `metadata.bin` and `metadata.json`.
@@ -1053,7 +1077,9 @@ fn save_sharded_indexes_rewrites_only_affected_shards() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
+        shards[shard]
+            .symbols
+            .insert(symbol, sym(symbol, name, 1, 1));
     }
 
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
@@ -1153,7 +1179,9 @@ fn save_sharded_indexes_incremental_rewrites_only_touched_shards() {
     for name in &paths {
         let shard = shard_id_for_path(name, shard_count) as usize;
         let symbol = name.trim_end_matches(".java");
-        shards[shard].symbols.insert(symbol, sym(symbol, name, 1, 1));
+        shards[shard]
+            .symbols
+            .insert(symbol, sym(symbol, name, 1, 1));
     }
 
     save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
@@ -1199,7 +1227,9 @@ fn save_sharded_indexes_incremental_rewrites_only_touched_shards() {
 
     let mut overlay = ShardedIndexOverlay::new(shard_count).unwrap();
     let mut delta = ProjectIndexes::default();
-    delta.symbols.insert("Updated", sym("Updated", affected_path, 2, 1));
+    delta
+        .symbols
+        .insert("Updated", sym("Updated", affected_path, 2, 1));
     overlay.apply_file_delta(affected_path, delta);
 
     save_sharded_indexes_incremental(&cache_dir, &snapshot_v2, shard_count, &base, &overlay)

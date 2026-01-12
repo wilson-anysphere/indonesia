@@ -28,7 +28,11 @@ pub(crate) fn feature_gate_diagnostics(
 
 const JAVA_RESERVED_TYPE_NAME_VAR: &str = "JAVA_RESERVED_TYPE_NAME_VAR";
 
-fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+fn gate_reserved_type_name_var(
+    root: &SyntaxNode,
+    level: JavaLanguageLevel,
+    out: &mut Vec<Diagnostic>,
+) {
     // `var` becomes a reserved type name in Java 10. It's still tokenized as `VarKw` at all
     // language levels, but only treated as illegal in type-name positions for Java 10+.
     if level.major < 10 {
@@ -103,8 +107,9 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
 
         // `var` is allowed as a special "inferred type" only when it appears as an unqualified,
         // unparameterized type in a handful of local contexts.
-        let is_plain_var_type =
-            segments.len() == 1 && last_segment.kind() == SyntaxKind::VarKw && !named_type
+        let is_plain_var_type = segments.len() == 1
+            && last_segment.kind() == SyntaxKind::VarKw
+            && !named_type
                 .children()
                 .any(|n| n.kind() == SyntaxKind::TypeArguments);
 
@@ -114,7 +119,11 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
         // #8). Avoid diagnosing lambda parameters here to prevent false positives.
         let is_allowed_inference_context = matches!(
             parent_kind,
-            Some(SyntaxKind::LocalVariableDeclarationStatement | SyntaxKind::Resource | SyntaxKind::ForHeader)
+            Some(
+                SyntaxKind::LocalVariableDeclarationStatement
+                    | SyntaxKind::Resource
+                    | SyntaxKind::ForHeader
+            )
         );
         if is_plain_var_type && is_allowed_inference_context {
             continue;

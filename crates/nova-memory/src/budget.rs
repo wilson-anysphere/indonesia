@@ -108,7 +108,9 @@ pub fn parse_byte_size(input: &str) -> Result<u64, ParseByteSizeError> {
         None => (normalized, ""),
     };
 
-    let value: u64 = num_str.parse().map_err(|_| ParseByteSizeError::InvalidNumber)?;
+    let value: u64 = num_str
+        .parse()
+        .map_err(|_| ParseByteSizeError::InvalidNumber)?;
     let suffix = suffix.to_ascii_lowercase();
     let suffix = suffix.as_str();
 

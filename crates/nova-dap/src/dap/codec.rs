@@ -170,9 +170,7 @@ mod tests {
         let mut cursor = Cursor::new(framed.into_bytes());
         let err = read_raw_message(&mut cursor).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err
-            .to_string()
-            .contains("exceeds maximum allowed size"));
+        assert!(err.to_string().contains("exceeds maximum allowed size"));
     }
 
     #[test]

@@ -243,7 +243,10 @@ fn stdio_server_enforces_safe_mode_across_custom_endpoints() {
         Some(SAFE_MODE_MESSAGE)
     );
 
-    support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 13, "method": "shutdown" }));
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 13, "method": "shutdown" }),
+    );
     let _shutdown_resp = support::read_response_with_id(&mut stdout, 13);
     support::write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);

@@ -454,10 +454,9 @@ fn jpms_typeck_requires_transitive_allows_resolution_across_workspace_modules() 
 
     let info_a =
         lower_module_info_source_strict("module workspace.a { requires workspace.b; }").unwrap();
-    let info_b = lower_module_info_source_strict(
-        "module workspace.b { requires transitive workspace.c; }",
-    )
-    .unwrap();
+    let info_b =
+        lower_module_info_source_strict("module workspace.b { requires transitive workspace.c; }")
+            .unwrap();
     let info_c =
         lower_module_info_source_strict("module workspace.c { exports com.example.c; }").unwrap();
 
@@ -520,16 +519,18 @@ class Use {
         .jpms_compilation_env(project)
         .expect("expected JPMS compilation env to be built");
     assert!(
-        env.env
-            .graph
-            .can_read(&ModuleName::new("workspace.a"), &ModuleName::new("workspace.c")),
+        env.env.graph.can_read(
+            &ModuleName::new("workspace.a"),
+            &ModuleName::new("workspace.c")
+        ),
         "workspace.a should read workspace.c via requires transitive"
     );
 
     let diags = db.type_diagnostics(file_a);
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"
-            && d.message.contains("com.example.c.C")),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("com.example.c.C")),
         "expected com.example.c.C to resolve via requires transitive, got {diags:?}"
     );
 }
@@ -613,16 +614,18 @@ class Use {
         .jpms_compilation_env(project)
         .expect("expected JPMS compilation env to be built");
     assert!(
-        !env.env
-            .graph
-            .can_read(&ModuleName::new("workspace.a"), &ModuleName::new("workspace.c")),
+        !env.env.graph.can_read(
+            &ModuleName::new("workspace.a"),
+            &ModuleName::new("workspace.c")
+        ),
         "workspace.a should not read workspace.c without requires transitive"
     );
 
     let diags = db.type_diagnostics(file_a);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "unresolved-type"
-            && d.message.contains("com.example.c.C")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("com.example.c.C")),
         "expected unresolved-type diagnostic for com.example.c.C, got {diags:?}"
     );
 }

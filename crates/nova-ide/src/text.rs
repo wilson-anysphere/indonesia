@@ -59,7 +59,11 @@ pub(crate) fn position_to_offset_with_index(
 }
 
 #[must_use]
-pub(crate) fn offset_to_position_with_index(index: &LineIndex, text: &str, offset: usize) -> Position {
+pub(crate) fn offset_to_position_with_index(
+    index: &LineIndex,
+    text: &str,
+    offset: usize,
+) -> Position {
     let offset = offset.min(text.len());
     let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
     let pos = index.position(text, TextSize::from(offset_u32));

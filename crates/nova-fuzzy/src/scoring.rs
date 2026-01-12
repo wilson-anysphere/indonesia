@@ -646,7 +646,10 @@ impl FuzzyMatcher {
         }
         let query = std::str::from_utf8(&self.query).unwrap_or("");
         unicode_impl::fold_nfkc_casefold(query, &mut self.unicode_query_folded);
-        unicode_impl::grapheme_ranges(&self.unicode_query_folded, &mut self.unicode_query_graphemes);
+        unicode_impl::grapheme_ranges(
+            &self.unicode_query_folded,
+            &mut self.unicode_query_graphemes,
+        );
         self.unicode_query_ready = true;
     }
 

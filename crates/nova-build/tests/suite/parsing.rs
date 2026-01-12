@@ -501,7 +501,12 @@ fn gradle_collection_skips_node_modules_and_bazel_output_trees() {
     let files = collect_gradle_build_files(&root).unwrap();
     let mut rel: Vec<_> = files
         .iter()
-        .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+        .map(|p| {
+            p.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
         .collect();
     rel.sort();
     assert_eq!(rel, vec!["build.gradle"]);
@@ -515,9 +520,8 @@ fn gradle_collection_skips_node_modules_and_bazel_output_trees() {
     std::fs::write(&bazel_testlogs_gradle, "ext.foo = 2\n").unwrap();
     std::fs::write(&bazel_workspace_gradle, "ext.foo = 2\n").unwrap();
 
-    let fp2 =
-        BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
-            .unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
 
     assert_eq!(fp1.digest, fp2.digest);
 }
@@ -589,7 +593,12 @@ fn maven_collection_skips_node_modules_and_bazel_output_trees() {
     let files = collect_maven_build_files(&root).unwrap();
     let mut rel: Vec<_> = files
         .iter()
-        .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+        .map(|p| {
+            p.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
         .collect();
     rel.sort();
     assert_eq!(rel, vec!["pom.xml"]);
@@ -627,8 +636,8 @@ fn maven_collection_skips_node_modules_and_bazel_output_trees() {
     )
     .unwrap();
 
-    let fp2 = BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap())
-        .unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
 
     assert_eq!(fp1.digest, fp2.digest);
 }
@@ -694,9 +703,8 @@ fn fingerprint_ignores_versions_toml_outside_gradle_dir() {
 
     let fp1 = BuildFileFingerprint::from_files(&root, files).unwrap();
     std::fs::write(&misplaced, "[versions]\nfoo = \"1.1\"\n").unwrap();
-    let fp2 =
-        BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
-            .unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
 
     assert_eq!(fp1.digest, fp2.digest);
 }
@@ -720,9 +728,8 @@ fn fingerprint_ignores_nested_gradle_versions_toml() {
 
     let fp1 = BuildFileFingerprint::from_files(&root, files).unwrap();
     std::fs::write(&nested, "[versions]\nfoo = \"1.1\"\n").unwrap();
-    let fp2 =
-        BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
-            .unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
 
     assert_eq!(fp1.digest, fp2.digest);
 }

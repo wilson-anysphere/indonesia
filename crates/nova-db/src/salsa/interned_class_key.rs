@@ -346,6 +346,9 @@ mod tests {
 
         let id_after = db.with_write(|db| db.intern_class_key(key.clone()));
         assert_eq!(id_before, id_after);
-        assert_eq!(db.with_write(|db| db.lookup_intern_class_key(id_before)), key);
+        assert_eq!(
+            db.with_write(|db| db.lookup_intern_class_key(id_before)),
+            key
+        );
     }
 }

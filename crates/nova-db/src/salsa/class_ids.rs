@@ -112,7 +112,10 @@ mod tests {
 
         let id3 = interner.intern(ClassKey::new(project, "java.lang.Object"));
         assert_eq!(id3.to_raw(), 1);
-        assert_eq!(interner.lookup_key(id3).unwrap().binary_name, "java.lang.Object");
+        assert_eq!(
+            interner.lookup_key(id3).unwrap().binary_name,
+            "java.lang.Object"
+        );
     }
 
     #[test]

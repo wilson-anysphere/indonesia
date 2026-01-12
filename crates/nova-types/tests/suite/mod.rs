@@ -1,5 +1,8 @@
 mod class_members;
 mod default_well_known;
+mod external_type_loader;
+mod external_type_loader_nested_class_generics;
+mod external_type_loader_type_parameter_bounds;
 mod glb;
 mod interface_object_supertype;
 mod java_format;
@@ -9,9 +12,6 @@ mod jls_inference;
 mod lub;
 mod minimal_jdk_subtyping;
 mod overload_resolution;
-mod external_type_loader;
-mod external_type_loader_nested_class_generics;
-mod external_type_loader_type_parameter_bounds;
 mod type_store_clone;
 mod type_store_upsert;
 mod unchecked_varargs;

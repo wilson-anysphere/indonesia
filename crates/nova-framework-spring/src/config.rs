@@ -129,7 +129,10 @@ struct ConfigEntry {
 }
 
 fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
     if ext.eq_ignore_ascii_case("properties") {
         return nova_properties::parse(text)
             .entries

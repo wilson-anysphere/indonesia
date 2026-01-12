@@ -33,7 +33,10 @@ pub(crate) fn append_generated_source_roots(
 
         match build_system {
             BuildSystem::Maven => {
-                candidates.push((SourceRootKind::Main, module_root.join("target/generated-sources")));
+                candidates.push((
+                    SourceRootKind::Main,
+                    module_root.join("target/generated-sources"),
+                ));
                 candidates.push((
                     SourceRootKind::Main,
                     module_root.join("target/generated-sources/annotations"),
@@ -240,7 +243,9 @@ mod tests {
 
         for (kind, path) in expected {
             assert!(
-                roots.iter().any(|root| root.kind == kind && root.path == path),
+                roots
+                    .iter()
+                    .any(|root| root.kind == kind && root.path == path),
                 "expected {kind:?} root {path:?} to be appended; got: {roots:?}"
             );
         }

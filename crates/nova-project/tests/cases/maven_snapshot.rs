@@ -31,8 +31,7 @@ fn resolves_timestamped_snapshot_jars_from_metadata() {
           </versioning>
         </metadata>
     "#;
-    std::fs::write(version_dir.join("maven-metadata-local.xml"), metadata)
-        .expect("write metadata");
+    std::fs::write(version_dir.join("maven-metadata-local.xml"), metadata).expect("write metadata");
 
     let workspace = tempdir().expect("temp workspace");
     let root = workspace.path();
@@ -76,4 +75,3 @@ fn resolves_timestamped_snapshot_jars_from_metadata() {
 
     assert!(resolved.is_file(), "resolved jar should exist on disk");
 }
-

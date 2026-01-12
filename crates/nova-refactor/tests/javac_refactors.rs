@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
 use nova_refactor::{
-    apply_workspace_edit, extract_constant, move_class_workspace_edit, rename, ExtractOptions,
-    extract_variable, inline_variable, ExtractVariableParams, FileId, InlineVariableParams,
-    MoveClassParams, RefactorJavaDatabase, RenameParams, TextRange,
+    apply_workspace_edit, extract_constant, extract_variable, inline_variable,
+    move_class_workspace_edit, rename, ExtractOptions, ExtractVariableParams, FileId,
+    InlineVariableParams, MoveClassParams, RefactorJavaDatabase, RenameParams, TextRange,
 };
 use nova_test_utils::javac::{javac_available, run_javac_files};
 
@@ -314,10 +314,7 @@ fn javac_refactor_rename_type_compiles_before_after() {
         (foo_file.clone(), foo_src.to_string()),
         (use_file.clone(), use_src.to_string()),
     ]);
-    let offset = foo_src
-        .find("class Foo")
-        .expect("class declaration")
-        + "class ".len();
+    let offset = foo_src.find("class Foo").expect("class declaration") + "class ".len();
     let symbol = db.symbol_at(&foo_file, offset).expect("symbol at Foo");
 
     let edit = rename(

@@ -5,13 +5,10 @@ use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileProvider, InitializeBuildResult, JavacOptionsItem,
     JavacProvider, ServerCapabilities,
 };
-use nova_build_bazel::{BazelWorkspace, BspWorkspace, CommandOutput, CommandRunner};
-use std::{
-    collections::BTreeMap,
-    path::Path,
-};
-use tempfile::tempdir;
 use nova_build_bazel::test_support::EnvVarGuard;
+use nova_build_bazel::{BazelWorkspace, BspWorkspace, CommandOutput, CommandRunner};
+use std::{collections::BTreeMap, path::Path};
+use tempfile::tempdir;
 
 #[derive(Clone, Debug, Default)]
 struct NoopRunner;
@@ -93,7 +90,10 @@ fn compile_info_for_file_prefers_bsp_inverse_sources_and_javac_options_without_b
         .unwrap()
         .with_bsp_workspace(bsp_workspace);
 
-    let info1 = workspace.compile_info_for_file(&file_path).unwrap().unwrap();
+    let info1 = workspace
+        .compile_info_for_file(&file_path)
+        .unwrap()
+        .unwrap();
     assert_eq!(info1.classpath, vec!["a.jar".to_string()]);
     assert_eq!(info1.output_dir.as_deref(), Some("out/classes"));
     assert_eq!(info1.release.as_deref(), Some("17"));

@@ -27,7 +27,10 @@ const MAVEN_JPMS_FLAG_NEEDLES: [&str; 12] = [
 fn maven_compiler_arg_looks_like_jpms(arg: &str) -> bool {
     let arg = arg.trim();
     MAVEN_JPMS_FLAG_NEEDLES.iter().any(|flag| {
-        arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
+        arg == *flag
+            || arg
+                .strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
     })
 }
 #[derive(Debug, Clone)]
@@ -358,7 +361,9 @@ impl MavenBuild {
             .map(parse_maven_string_list_output)
             .map(|args| {
                 let enable_preview = args.iter().any(|arg| arg.trim() == "--enable-preview");
-                let looks_like_jpms = args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                let looks_like_jpms = args
+                    .iter()
+                    .any(|arg| maven_compiler_arg_looks_like_jpms(arg));
                 (enable_preview, looks_like_jpms)
             })
             .unwrap_or((false, false));
@@ -372,7 +377,9 @@ impl MavenBuild {
             if let Some(output) = compiler_argument_raw.as_deref() {
                 let args = parse_maven_string_list_output(output);
                 enable_preview |= args.iter().any(|arg| arg.trim() == "--enable-preview");
-                compiler_args_looks_like_jpms |= args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                compiler_args_looks_like_jpms |= args
+                    .iter()
+                    .any(|arg| maven_compiler_arg_looks_like_jpms(arg));
             }
         }
 
@@ -1764,8 +1771,12 @@ mod tests {
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("module-info.class"), b"").unwrap();
 
-        let resolved_compile_classpath =
-            vec![out_dir.clone(), named.clone(), automatic.clone(), dep.clone()];
+        let resolved_compile_classpath = vec![
+            out_dir.clone(),
+            named.clone(),
+            automatic.clone(),
+            dep.clone(),
+        ];
         let module_path = infer_module_path_for_compile_config(
             &resolved_compile_classpath,
             &[main_src_root],
@@ -1834,10 +1845,7 @@ mod tests {
         }
 
         fn invocations(&self) -> Vec<Vec<String>> {
-            self.invocations
-                .lock()
-                .expect("lock poisoned")
-                .clone()
+            self.invocations.lock().expect("lock poisoned").clone()
         }
     }
 
@@ -1918,11 +1926,22 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert(
             "project.compileClasspathElements".to_string(),
-            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+            format!(
+                "[{},{},{}]\n",
+                named.display(),
+                automatic.display(),
+                dep.display()
+            ),
         );
-        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
-        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
 
         // JPMS signal: Maven exposes `*ModulePathElements` even though we have no module-info.java
@@ -1931,7 +1950,10 @@ mod tests {
             "project.compileModulePathElements".to_string(),
             format!("[{}]\n", named.display()),
         );
-        outputs.insert("project.testCompileModulePathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileModulePathElements".to_string(),
+            "[]\n".to_string(),
+        );
 
         let runner = Arc::new(StaticMavenRunner::new(outputs));
         let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
@@ -1974,18 +1996,32 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert(
             "project.compileClasspathElements".to_string(),
-            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+            format!(
+                "[{},{},{}]\n",
+                named.display(),
+                automatic.display(),
+                dep.display()
+            ),
         );
-        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
-        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
 
         outputs.insert(
             "project.compileModulePathElements".to_string(),
             format!("[{}]\n", named.display()),
         );
-        outputs.insert("project.testCompileModulePathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileModulePathElements".to_string(),
+            "[]\n".to_string(),
+        );
 
         let runner = Arc::new(StaticMavenRunner::new(outputs));
         let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
@@ -2032,13 +2068,24 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert(
             "project.compileClasspathElements".to_string(),
-            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+            format!(
+                "[{},{},{}]\n",
+                named.display(),
+                automatic.display(),
+                dep.display()
+            ),
         );
-        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            "[]\n".to_string(),
+        );
 
         // Make `project.compileSourceRoots` empty so Nova falls back to conventional `src/main/java`.
         outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
-        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
 
         let runner = Arc::new(StaticMavenRunner::new(outputs));
@@ -2060,9 +2107,9 @@ mod tests {
                     .iter()
                     .any(|a| a == "-Dexpression=project.compileModulepathElements")
                 || args
-                     .iter()
-                     .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
-         }));
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
+        }));
     }
 
     #[test]
@@ -2087,15 +2134,29 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert(
             "project.compileClasspathElements".to_string(),
-            format!("[{},{},{}]\n", named.display(), automatic.display(), dep.display()),
+            format!(
+                "[{},{},{}]\n",
+                named.display(),
+                automatic.display(),
+                dep.display()
+            ),
         );
-        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
-        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            "[]\n".to_string(),
+        );
         outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
 
         // JPMS signal via compiler args.
-        outputs.insert("maven.compiler.compilerArgs".to_string(), "[-p]\n".to_string());
+        outputs.insert(
+            "maven.compiler.compilerArgs".to_string(),
+            "[-p]\n".to_string(),
+        );
 
         let runner = Arc::new(StaticMavenRunner::new(outputs));
         let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());

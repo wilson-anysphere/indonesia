@@ -137,14 +137,20 @@ fn stdio_server_supports_semantic_tokens_full_delta() {
         }),
     );
     let delta_resp = read_response_with_id(&mut stdout, 3);
-    let delta_result = delta_resp.get("result").expect("semantic tokens delta result");
+    let delta_result = delta_resp
+        .get("result")
+        .expect("semantic tokens delta result");
 
     if let Some(data) = delta_result.get("data").and_then(|v| v.as_array()) {
         assert!(
             !data.is_empty(),
             "expected non-empty semantic tokens delta result.data"
         );
-    } else if delta_result.get("edits").and_then(|v| v.as_array()).is_some() {
+    } else if delta_result
+        .get("edits")
+        .and_then(|v| v.as_array())
+        .is_some()
+    {
         // Accept a delta response (edits may be empty when the token stream is unchanged).
         assert!(
             delta_result.get("resultId").is_some(),
@@ -155,7 +161,10 @@ fn stdio_server_supports_semantic_tokens_full_delta() {
     }
 
     // 5) shutdown + exit
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -163,4 +172,3 @@ fn stdio_server_supports_semantic_tokens_full_delta() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

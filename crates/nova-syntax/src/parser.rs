@@ -1844,7 +1844,10 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::DefaultKw, "expected `default`");
         if matches!(
             self.current(),
-            SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
+            SyntaxKind::Semicolon
+                | SyntaxKind::RBrace
+                | SyntaxKind::StringTemplateExprEnd
+                | SyntaxKind::Eof
         ) {
             self.error_here("expected default value");
             // Preserve a stable subtree shape for downstream consumers.
@@ -3870,7 +3873,10 @@ impl<'a> Parser<'a> {
             // Avoid consuming expression terminators; callers recover at `,` / `}`.
             if !matches!(
                 self.current(),
-                SyntaxKind::Comma | SyntaxKind::RBrace | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
+                SyntaxKind::Comma
+                    | SyntaxKind::RBrace
+                    | SyntaxKind::StringTemplateExprEnd
+                    | SyntaxKind::Eof
             ) {
                 self.bump_any();
             }
@@ -3927,7 +3933,10 @@ impl<'a> Parser<'a> {
 
         while !matches!(
             self.current(),
-            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
+            SyntaxKind::RParen
+                | SyntaxKind::Arrow
+                | SyntaxKind::StringTemplateExprEnd
+                | SyntaxKind::Eof
         ) {
             self.eat_trivia();
             if self.at(SyntaxKind::Comma) {
@@ -3948,7 +3957,10 @@ impl<'a> Parser<'a> {
 
         if !matches!(
             self.current(),
-            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
+            SyntaxKind::RParen
+                | SyntaxKind::Arrow
+                | SyntaxKind::StringTemplateExprEnd
+                | SyntaxKind::Eof
         ) {
             self.builder.start_node(SyntaxKind::Error.into());
             self.error_here("expected `)` in lambda parameters");

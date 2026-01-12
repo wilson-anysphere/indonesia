@@ -283,4 +283,3 @@ async fn sanitization_respects_comment_redaction_flag() {
         "expected comments not to be stripped when redact_comments=false\n{captured}"
     );
 }
-

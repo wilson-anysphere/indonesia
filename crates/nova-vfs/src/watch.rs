@@ -1632,7 +1632,10 @@ mod tests {
 
         watcher.watch_path(&root, WatchMode::NonRecursive).unwrap();
         watcher.watch_path(&root, WatchMode::Recursive).unwrap();
-        assert_eq!(watcher.watched_paths(), vec![(root.clone(), WatchMode::Recursive)]);
+        assert_eq!(
+            watcher.watched_paths(),
+            vec![(root.clone(), WatchMode::Recursive)]
+        );
 
         // Do not downgrade an existing recursive watch.
         watcher.watch_path(&root, WatchMode::NonRecursive).unwrap();

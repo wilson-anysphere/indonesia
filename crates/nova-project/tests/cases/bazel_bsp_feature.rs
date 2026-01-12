@@ -7,4 +7,3 @@ fn bazel_bsp_feature_exposes_nova_build_bazel_bsp_types() {
     let config = nova_build_bazel::BspServerConfig::default();
     assert!(!config.program.trim().is_empty());
 }
-

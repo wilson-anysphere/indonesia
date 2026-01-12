@@ -112,8 +112,14 @@ fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
         panic!("missing field quick fix; got titles {titles:?}");
     });
 
-    let local_edit = local.edit.as_ref().expect("local quick fix should have edit");
-    let field_edit = field.edit.as_ref().expect("field quick fix should have edit");
+    let local_edit = local
+        .edit
+        .as_ref()
+        .expect("local quick fix should have edit");
+    let field_edit = field
+        .edit
+        .as_ref()
+        .expect("field quick fix should have edit");
 
     // Local variable: inserted on the line before `int x = y;` (i.e. at the start of that line).
     let local_updated = apply_workspace_edit(source, local_edit);
@@ -139,4 +145,3 @@ fn unresolved_name_offers_create_variable_and_field_quick_fixes() {
     };
     assert_eq!(field_edits[0].range.start, Position::new(4, 0));
 }
-

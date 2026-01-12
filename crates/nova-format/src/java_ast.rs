@@ -1002,7 +1002,9 @@ fn needs_space_before(last: Option<&SigToken>, next_kind: SyntaxKind) -> bool {
     }
 
     match last {
-        SigToken::Token { kind, text } => is_word_token(*kind, text) && next_kind != SyntaxKind::LParen,
+        SigToken::Token { kind, text } => {
+            is_word_token(*kind, text) && next_kind != SyntaxKind::LParen
+        }
         SigToken::GenericClose { .. } => false,
     }
 }

@@ -163,4 +163,3 @@ class B {
     let out_b = out.get(&file_b).expect("B.java updated");
     assert!(out_b.contains("C obj = new C();"));
 }
-

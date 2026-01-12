@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
@@ -208,7 +208,8 @@ impl GradleBuild {
                     .collect()
             })
             .unwrap_or_default();
-        let mut snapshot_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig> = BTreeMap::new();
+        let mut snapshot_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig> =
+            BTreeMap::new();
 
         let mut out = Vec::new();
         let mut root_config = None::<JavaCompileConfig>;
@@ -2251,9 +2252,10 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
         if name.ends_with(".lockfile")
             && path.parent().is_some_and(|parent| {
-                parent
-                    .ancestors()
-                    .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+                parent.ancestors().any(|dir| {
+                    dir.file_name()
+                        .is_some_and(|name| name == "dependency-locks")
+                })
             })
         {
             out.push(path);
@@ -2399,9 +2401,9 @@ fn update_gradle_snapshot_java_compile_config(
     config: &JavaCompileConfig,
 ) -> std::io::Result<()> {
     update_gradle_snapshot(project_root, fingerprint, |snapshot| {
-        snapshot
-            .java_compile_configs
-            .insert(project_path.to_string(), GradleSnapshotJavaCompileConfig {
+        snapshot.java_compile_configs.insert(
+            project_path.to_string(),
+            GradleSnapshotJavaCompileConfig {
                 project_dir: project_dir.to_path_buf(),
                 compile_classpath: config.compile_classpath.clone(),
                 test_classpath: config.test_classpath.clone(),
@@ -2414,7 +2416,8 @@ fn update_gradle_snapshot_java_compile_config(
                 target: config.target.clone(),
                 release: config.release.clone(),
                 enable_preview: config.enable_preview,
-            });
+            },
+        );
 
         // If the projects mapping is missing, best-effort: record at least the known project.
         if !snapshot.projects.iter().any(|p| p.path == project_path) {
@@ -2435,7 +2438,8 @@ fn update_gradle_snapshot(
 
     let path = gradle_snapshot_path(project_root);
     let mut snapshot = read_gradle_snapshot_file(&path).unwrap_or_default();
-    if snapshot.schema_version != SCHEMA_VERSION || snapshot.build_fingerprint != fingerprint.digest {
+    if snapshot.schema_version != SCHEMA_VERSION || snapshot.build_fingerprint != fingerprint.digest
+    {
         snapshot = GradleSnapshotV1 {
             schema_version: SCHEMA_VERSION,
             build_fingerprint: fingerprint.digest.clone(),
@@ -2512,9 +2516,12 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
-    let file_name = dest
-        .file_name()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "destination path has no file name"))?;
+    let file_name = dest.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "destination path has no file name",
+        )
+    })?;
     let pid = std::process::id();
 
     loop {

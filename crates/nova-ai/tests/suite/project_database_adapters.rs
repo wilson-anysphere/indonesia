@@ -147,7 +147,11 @@ fn db_project_database_project_files_are_sorted_and_deduped() {
         }
 
         fn all_file_ids(&self) -> Vec<FileId> {
-            vec![FileId::from_raw(1), FileId::from_raw(0), FileId::from_raw(1)]
+            vec![
+                FileId::from_raw(1),
+                FileId::from_raw(0),
+                FileId::from_raw(1),
+            ]
         }
     }
 
@@ -165,7 +169,10 @@ fn db_project_database_project_files_are_sorted_and_deduped() {
 fn source_db_project_database_indexes_salsa_snapshot() {
     let db = SalsaDatabase::new();
     let file = FileId::from_raw(0);
-    db.set_file_text(file, "class Main { String hello() { return \"hello\"; } }".to_string());
+    db.set_file_text(
+        file,
+        "class Main { String hello() { return \"hello\"; } }".to_string(),
+    );
     db.set_file_path(file, "src/Main.java");
 
     let snap = db.snapshot();
@@ -182,7 +189,10 @@ fn source_db_project_database_indexes_salsa_snapshot() {
 fn trigram_semantic_search_indexes_salsa_database_via_project_database_impl() {
     let db = SalsaDatabase::new();
     let file = FileId::from_raw(0);
-    db.set_file_text(file, "class Main { String hello() { return \"hello\"; } }".to_string());
+    db.set_file_text(
+        file,
+        "class Main { String hello() { return \"hello\"; } }".to_string(),
+    );
     db.set_file_path(file, "src/Main.java");
 
     let mut search = TrigramSemanticSearch::new();

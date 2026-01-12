@@ -1636,7 +1636,10 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     let Some(target_text) = file_texts.get(&target_file).map(String::as_str) else {
         return Ok(rename_error(
             args.json,
-            format!("focus file {} was not included in workspace snapshot", target_file.0),
+            format!(
+                "focus file {} was not included in workspace snapshot",
+                target_file.0
+            ),
         )?);
     };
 
@@ -1740,8 +1743,12 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
                 from: from.0.clone(),
                 to: to.0.clone(),
             },
-            FileOp::Create { file, .. } => CliJsonFileOp::Create { file: file.0.clone() },
-            FileOp::Delete { file } => CliJsonFileOp::Delete { file: file.0.clone() },
+            FileOp::Create { file, .. } => CliJsonFileOp::Create {
+                file: file.0.clone(),
+            },
+            FileOp::Delete { file } => CliJsonFileOp::Delete {
+                file: file.0.clone(),
+            },
         })
         .collect::<Vec<_>>();
 
@@ -1792,8 +1799,12 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     outputs.sort_by(|a, b| a.file.cmp(&b.file));
 
     if args.in_place {
-        refactor_apply::apply_workspace_edit_to_disk(&project_root, &normalized_edit, &changed_texts)
-            .with_context(|| "failed to apply rename in-place")?;
+        refactor_apply::apply_workspace_edit_to_disk(
+            &project_root,
+            &normalized_edit,
+            &changed_texts,
+        )
+        .with_context(|| "failed to apply rename in-place")?;
     }
 
     let output = CliJsonOutput {
@@ -1916,7 +1927,10 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
             }
 
             fn json_u32(value: &serde_json::Value, key: &str) -> Option<u32> {
-                value.get(key).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok())
+                value
+                    .get(key)
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u32::try_from(v).ok())
             }
 
             fn json_location(value: &serde_json::Value) -> Option<(String, u32, u32)> {
@@ -1964,8 +1978,7 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
                     .or_else(|| json_opt_string(&value, &["name"]))
                     .unwrap_or_else(|| "<symbol>".to_string());
                 let kind = kind_display(value.get("kind"));
-                let container_name =
-                    json_opt_string(&value, &["container_name", "containerName"]);
+                let container_name = json_opt_string(&value, &["container_name", "containerName"]);
 
                 let Some((file, line, column)) = json_location(&value) else {
                     // Best-effort output if symbol has no location.

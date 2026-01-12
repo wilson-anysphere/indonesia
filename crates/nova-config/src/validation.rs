@@ -349,7 +349,8 @@ fn validate_ai(
     // symbol lists (available methods + importable symbols). Nova's cloud multi-token completion
     // provider refuses to call the model when identifier anonymization is enabled, so surface a
     // configuration warning when the feature is enabled in this mode.
-    if config.ai.features.multi_token_completion && config.ai.privacy.effective_anonymize_identifiers()
+    if config.ai.features.multi_token_completion
+        && config.ai.privacy.effective_anonymize_identifiers()
     {
         out.warnings.push(ConfigWarning::InvalidValue {
             toml_path: "ai.privacy.anonymize_identifiers".to_string(),

@@ -57,11 +57,7 @@ impl TestMetricsSink {
 
     /// Returns a snapshot for `key`, or an empty one if `key` was never recorded.
     pub fn snapshot_for(&self, key: &str) -> TestMetricsSnapshot {
-        self.inner
-            .lock()
-            .get(key)
-            .cloned()
-            .unwrap_or_default()
+        self.inner.lock().get(key).cloned().unwrap_or_default()
     }
 }
 

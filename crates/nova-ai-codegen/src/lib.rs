@@ -1070,7 +1070,10 @@ mod tests {
             generated.contains("org.junit.jupiter.api.Assertions"),
             "expected JUnit Assertions import, got: {generated}"
         );
-        assert!(generated.contains("@Test"), "expected @Test, got: {generated}");
+        assert!(
+            generated.contains("@Test"),
+            "expected @Test, got: {generated}"
+        );
     }
 
     struct CountingProvider {
@@ -1132,7 +1135,10 @@ mod tests {
         let CodeGenerationError::WorkspaceContainsExcludedPaths { paths } = err else {
             panic!("expected WorkspaceContainsExcludedPaths, got {err:?}");
         };
-        assert!(paths.iter().any(|p| p == "src/secrets/Secret.java"), "{paths:?}");
+        assert!(
+            paths.iter().any(|p| p == "src/secrets/Secret.java"),
+            "{paths:?}"
+        );
         assert_eq!(provider.calls(), 0);
     }
 }

@@ -6,9 +6,9 @@
 // end-to-end tests (see repo guidance about using one integration test harness
 // per crate).
 mod attach_hostname;
-mod cancel;
-mod breakpoint_locations;
 mod breakpoint_events;
+mod breakpoint_locations;
+mod cancel;
 mod config_stdio;
 mod configuration_done_before_launch;
 mod configuration_done_resumes_command_launch;
@@ -20,15 +20,15 @@ mod dap_launch;
 mod dap_launch_detach;
 mod dap_restart;
 mod dap_session;
-mod process_event;
-mod output_truncation;
 mod debugger_ux;
 mod enable_method_return_values;
 mod exception_breakpoints;
 mod jdwp_client;
 mod logpoints_hitcounts;
+mod output_truncation;
 mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
+mod process_event;
 mod real_jvm;
 mod source_mapping;
 mod stack_trace_paging;

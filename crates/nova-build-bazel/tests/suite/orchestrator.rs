@@ -1,5 +1,6 @@
 #![cfg(feature = "bsp")]
 
+use nova_build_bazel::test_support::EnvVarGuard;
 use nova_build_bazel::{
     BazelBspConfig, BazelBuildExecutor, BazelBuildOrchestrator, BazelBuildRequest,
     BazelBuildTaskState, BspCompileOutcome,
@@ -7,7 +8,6 @@ use nova_build_bazel::{
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use nova_build_bazel::test_support::EnvVarGuard;
 
 #[derive(Debug, Clone)]
 struct Script {
@@ -141,7 +141,10 @@ fn orchestrator_discovers_dot_bsp_config_when_request_missing() {
 
     let config = seen.lock().unwrap().clone().expect("missing BSP config");
     assert_eq!(config.program, "bazel-bsp");
-    assert_eq!(config.args, vec!["--workspace".to_string(), ".".to_string()]);
+    assert_eq!(
+        config.args,
+        vec!["--workspace".to_string(), ".".to_string()]
+    );
 }
 
 #[test]

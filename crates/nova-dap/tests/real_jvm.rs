@@ -17,9 +17,12 @@ fn harness_is_single_root_test_file() {
         .into_owned();
 
     let mut root_rs_files = Vec::new();
-    for entry in std::fs::read_dir(&tests_dir)
-        .unwrap_or_else(|err| panic!("failed to read nova-dap tests dir {}: {err}", tests_dir.display()))
-    {
+    for entry in std::fs::read_dir(&tests_dir).unwrap_or_else(|err| {
+        panic!(
+            "failed to read nova-dap tests dir {}: {err}",
+            tests_dir.display()
+        )
+    }) {
         let entry = entry
             .unwrap_or_else(|err| panic!("failed to read entry in {}: {err}", tests_dir.display()));
         let path = entry.path();

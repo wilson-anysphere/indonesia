@@ -60,7 +60,8 @@ fn gradle_module_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
         "expected root module to remain first for determinism"
     );
 
-    let expected_module_root = fs::canonicalize(&external_module_root).expect("canonicalize module");
+    let expected_module_root =
+        fs::canonicalize(&external_module_root).expect("canonicalize module");
     let expected_source_root = expected_module_root.join("src/main/java");
 
     let module = model
@@ -79,8 +80,9 @@ fn gradle_module_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
     );
 
     // `module_for_path` should work when the caller provides canonical file paths.
-    let java_file = fs::canonicalize(external_module_root.join("src/main/java/com/example/External.java"))
-        .expect("canonicalize file");
+    let java_file =
+        fs::canonicalize(external_module_root.join("src/main/java/com/example/External.java"))
+            .expect("canonicalize file");
     let matched = model.module_for_path(&java_file).expect("module_for_path");
     assert_eq!(matched.module.root, expected_module_root);
     assert_eq!(matched.source_root.kind, SourceRootKind::Main);
@@ -103,4 +105,3 @@ fn gradle_module_roots_are_canonicalized_when_settings_uses_parent_dir_paths() {
         consumer.classpath
     );
 }
-

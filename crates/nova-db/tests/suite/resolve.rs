@@ -169,7 +169,10 @@ class C {}
         .iter()
         .find(|d| d.code.as_ref() == "unresolved-import")
         .unwrap_or_else(|| panic!("expected unresolved-import diagnostic, got {diags:?}"));
-    assert!(diag.span.is_some(), "expected diagnostic span, got {diag:?}");
+    assert!(
+        diag.span.is_some(),
+        "expected diagnostic span, got {diag:?}"
+    );
     assert!(
         diag.message.contains("does.not.Exist"),
         "expected message to contain imported path, got: {:?}",
@@ -290,7 +293,10 @@ class C {}
     let diags = db.import_diagnostics(file);
     let diag = diags
         .iter()
-        .find(|d| d.code.as_ref() == "unresolved-import" && d.message.contains("static does.not.Exist.max"))
+        .find(|d| {
+            d.code.as_ref() == "unresolved-import"
+                && d.message.contains("static does.not.Exist.max")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected unresolved-import diagnostic for static does.not.Exist.max, got {diags:?}"
@@ -713,7 +719,7 @@ class C {
         int x = 1;
     }
 }
-"#
+"#,
     );
 
     let file_scope = db.scope_graph(file).file_scope;
@@ -739,7 +745,7 @@ class C {
         int x = 2;
     }
 }
-"#
+"#,
     );
 
     let second = db.resolve_name(file, file_scope, Name::from("Foo"));
@@ -929,7 +935,10 @@ class C {
 "#;
     set_file(&mut db, project, c_file, "src/c/C.java", text);
     // Keep file list stable + sorted by relative path for determinism.
-    db.set_project_files(project, Arc::new(vec![a_bar_file, a_file, b_bar_file, b_file, c_file]));
+    db.set_project_files(
+        project,
+        Arc::new(vec![a_bar_file, a_file, b_bar_file, b_file, c_file]),
+    );
 
     let diags = db.import_diagnostics(c_file);
     assert_eq!(
@@ -956,7 +965,9 @@ class C {
         "expected ambiguous import diagnostic message to mention Foo and both candidates, got: {:?}",
         diags[0].message
     );
-    let foo_span = diags[0].span.expect("ambiguous Foo diagnostic should have a span");
+    let foo_span = diags[0]
+        .span
+        .expect("ambiguous Foo diagnostic should have a span");
     assert!(
         text[foo_span.start..foo_span.end].contains("import a.Foo"),
         "expected Foo diagnostic span to cover the first import; span={foo_span:?}, slice={:?}",
@@ -1122,7 +1133,9 @@ class C {}
         "expected no ambiguous-import diagnostic, got {diags:?}"
     );
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
         "expected duplicate-import warning diagnostic, got {diags:?}"
     );
 
@@ -1170,7 +1183,9 @@ class C {}
         "expected no ambiguous-import diagnostic, got {diags:?}"
     );
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
         "expected duplicate-import warning diagnostic, got {diags:?}"
     );
 
@@ -1250,7 +1265,11 @@ class C {
     let detailed = db.resolve_name_detailed(use_file, scopes.file_scope, Name::from("Foo"));
     match detailed {
         NameResolution::Ambiguous(candidates) => {
-            assert_eq!(candidates.len(), 2, "expected two candidates, got {candidates:?}");
+            assert_eq!(
+                candidates.len(),
+                2,
+                "expected two candidates, got {candidates:?}"
+            );
             assert!(
                 candidates.contains(&Resolution::Type(TypeResolution::Source(foo_a))),
                 "expected candidate from package a, got {candidates:?}"
@@ -1802,7 +1821,12 @@ fn jpms_resolve_compilation_env_uses_persistence_classpath_cache_dir() {
     let has_entry_cache = std::fs::read_dir(&classpath_dir)
         .unwrap()
         .filter_map(Result::ok)
-        .any(|entry| entry.file_name().to_string_lossy().starts_with("classpath-entry-"));
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("classpath-entry-")
+        });
 
     assert!(
         has_entry_cache,

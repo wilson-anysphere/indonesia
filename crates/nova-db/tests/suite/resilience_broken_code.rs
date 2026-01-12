@@ -78,7 +78,9 @@ class C {
 
     let tree = db.hir_item_tree(file);
     assert!(
-        tree.methods.values().any(|m| m.name == "m" && m.body.is_some()),
+        tree.methods
+            .values()
+            .any(|m| m.name == "m" && m.body.is_some()),
         "expected a method body to be present so typeck/flow is exercised"
     );
 
@@ -117,7 +119,9 @@ class C {
 
     let tree = db.hir_item_tree(file);
     assert!(
-        tree.methods.values().any(|m| m.name == "m" && m.body.is_some()),
+        tree.methods
+            .values()
+            .any(|m| m.name == "m" && m.body.is_some()),
         "expected a method body to be present so typeck/flow is exercised"
     );
 

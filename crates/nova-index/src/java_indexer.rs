@@ -4,7 +4,7 @@ use nova_hir::item_tree::{Item as HirItem, ItemTree as HirItemTree, Member as Hi
 use nova_syntax::ast::{self, AstNode};
 
 use crate::indexes::{
-    AnnotationLocation, IndexedSymbol, IndexSymbolKind, InheritanceEdge, ProjectIndexes,
+    AnnotationLocation, IndexSymbolKind, IndexedSymbol, InheritanceEdge, ProjectIndexes,
     ReferenceLocation, SymbolLocation,
 };
 
@@ -457,7 +457,9 @@ fn collect_hir_type(
     references: &mut BTreeSet<String>,
 ) {
     let container_name = if type_stack.is_empty() {
-        package.map(|pkg| pkg.to_string()).filter(|pkg| !pkg.is_empty())
+        package
+            .map(|pkg| pkg.to_string())
+            .filter(|pkg| !pkg.is_empty())
     } else {
         Some(fqn_for_type(package, type_stack))
     };
@@ -557,15 +559,7 @@ fn collect_hir_members(
             }
             HirMember::Initializer(_) => {}
             HirMember::Type(item) => {
-                collect_hir_item(
-                    tree,
-                    *item,
-                    package,
-                    type_stack,
-                    file,
-                    out,
-                    references,
-                );
+                collect_hir_item(tree, *item, package, type_stack, file, out, references);
             }
         }
     }

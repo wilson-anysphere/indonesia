@@ -170,4 +170,3 @@ fn pack_cache_package_does_not_load_large_index_files_into_memory() {
     );
     assert!(package_path.is_file());
 }
-

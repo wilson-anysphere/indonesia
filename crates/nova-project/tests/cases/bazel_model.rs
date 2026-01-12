@@ -292,7 +292,9 @@ fn loads_bazel_targets_as_module_configs() {
         .find(|root| {
             root.origin == SourceRootOrigin::Generated
                 && root.path.strip_prefix(tmp.path()).unwrap()
-                    == Path::new("bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources")
+                    == Path::new(
+                        "bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources",
+                    )
         })
         .expect("lib generated source root");
     assert_eq!(lib_generated_root.kind, SourceRootKind::Main);
@@ -422,7 +424,8 @@ fn loads_bazel_targets_as_module_configs_with_target_universe() {
         .expect("load bazel workspace model");
 
     assert_eq!(
-        model.modules
+        model
+            .modules
             .iter()
             .map(|m| m.id.as_str())
             .collect::<Vec<_>>(),
@@ -487,7 +490,9 @@ fn resolves_aquery_paths_relative_to_execution_root() {
     );
 
     assert!(
-        lib.classpath.iter().all(|cp| cp.path.starts_with(execroot.path())),
+        lib.classpath
+            .iter()
+            .all(|cp| cp.path.starts_with(execroot.path())),
         "expected classpath entries to be resolved relative to execroot"
     );
     assert!(
@@ -809,7 +814,9 @@ fn loads_bazel_targets_as_workspace_modules() {
         lib.source_roots.iter().any(|root| {
             root.origin == SourceRootOrigin::Generated
                 && root.path.strip_prefix(tmp.path()).unwrap()
-                    == Path::new("bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources")
+                    == Path::new(
+                        "bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources",
+                    )
         }),
         "expected lib generated sources root to be present; got: {:?}",
         lib.source_roots
@@ -842,9 +849,14 @@ fn loads_bazel_targets_as_workspace_modules() {
     let generated_file = tmp.path().join(
         "bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources/com/example/Gen.java",
     );
-    let generated_owner = model.module_for_path(&generated_file).expect("generated owner");
+    let generated_owner = model
+        .module_for_path(&generated_file)
+        .expect("generated owner");
     assert_eq!(generated_owner.module.id, "//java/com/example:lib");
-    assert_eq!(generated_owner.source_root.origin, SourceRootOrigin::Generated);
+    assert_eq!(
+        generated_owner.source_root.origin,
+        SourceRootOrigin::Generated
+    );
 
     let test_file = tmp.path().join("javatests/com/example/FooTest.java");
     assert_eq!(

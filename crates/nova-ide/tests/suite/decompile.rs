@@ -28,4 +28,3 @@ fn canonical_decompiled_definition_location_uses_adr0006_uri_and_correct_range()
     );
     assert_eq!(location.range, expected_range);
 }
-

@@ -97,8 +97,8 @@ impl RefactorWorkspaceSnapshot {
             // Best-effort locality: keep the snapshot constrained to the focus file's directory
             // or the computed project root. This avoids dragging in unrelated open files while
             // still making ad-hoc multi-file operations work.
-            let shares_parent = focus_parent
-                .is_some_and(|parent| overlay_path.parent() == Some(parent));
+            let shares_parent =
+                focus_parent.is_some_and(|parent| overlay_path.parent() == Some(parent));
             let within_project_root = overlay_path.starts_with(&project_root);
             if shares_parent || within_project_root {
                 paths.insert(overlay_path);

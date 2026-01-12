@@ -115,9 +115,8 @@ async fn read_line_limited<R: tokio::io::AsyncBufRead + Unpin>(
         }
     }
 
-    let line = String::from_utf8(buf).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "DAP header line is not UTF-8")
-    })?;
+    let line = String::from_utf8(buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "DAP header line is not UTF-8"))?;
     Ok(Some(line))
 }
 
@@ -234,7 +233,10 @@ mod tests {
         match err {
             DapError::Protocol(msg) => {
                 assert!(msg.contains("exceeds maximum allowed size"), "{msg}");
-                assert!(msg.contains(&(MAX_DAP_MESSAGE_BYTES + 1).to_string()), "{msg}");
+                assert!(
+                    msg.contains(&(MAX_DAP_MESSAGE_BYTES + 1).to_string()),
+                    "{msg}"
+                );
                 assert!(msg.contains(&MAX_DAP_MESSAGE_BYTES.to_string()), "{msg}");
             }
             other => panic!("expected DapError::Protocol, got {other:?}"),
@@ -255,7 +257,9 @@ mod tests {
         match err {
             DapError::Io(io_err) => {
                 assert_eq!(io_err.kind(), io::ErrorKind::InvalidData);
-                assert!(io_err.to_string().contains("header line exceeds maximum size"));
+                assert!(io_err
+                    .to_string()
+                    .contains("header line exceeds maximum size"));
             }
             other => panic!("expected io error, got {other:?}"),
         }

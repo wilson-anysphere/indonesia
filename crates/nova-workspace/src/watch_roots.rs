@@ -44,7 +44,10 @@ pub(crate) enum WatchRootError {
         mode: WatchMode,
         error: io::Error,
     },
-    UnwatchFailed { root: PathBuf, error: io::Error },
+    UnwatchFailed {
+        root: PathBuf,
+        error: io::Error,
+    },
 }
 
 #[derive(Debug)]
@@ -174,7 +177,12 @@ impl WatchRootManager {
                 .pending_roots
                 .remove(&root)
                 .map(|pending| pending.mode)
-                .unwrap_or_else(|| self.desired_roots.get(&root).copied().unwrap_or(WatchMode::Recursive));
+                .unwrap_or_else(|| {
+                    self.desired_roots
+                        .get(&root)
+                        .copied()
+                        .unwrap_or(WatchMode::Recursive)
+                });
             self.try_watch_root(&root, mode, now, watcher, &mut out);
         }
 
@@ -262,9 +270,8 @@ mod tests {
         watcher.fail_not_found.insert(root.clone());
 
         let t0 = Instant::now();
-        let desired: HashMap<PathBuf, WatchMode> = [(root.clone(), WatchMode::Recursive)]
-            .into_iter()
-            .collect();
+        let desired: HashMap<PathBuf, WatchMode> =
+            [(root.clone(), WatchMode::Recursive)].into_iter().collect();
         manager.set_desired_roots(desired, t0, &mut watcher);
 
         assert_eq!(watcher.watch_calls.len(), 1);
@@ -294,9 +301,8 @@ mod tests {
         watcher.fail_not_found.insert(root.clone());
 
         let t0 = Instant::now();
-        let desired: HashMap<PathBuf, WatchMode> = [(root.clone(), WatchMode::Recursive)]
-            .into_iter()
-            .collect();
+        let desired: HashMap<PathBuf, WatchMode> =
+            [(root.clone(), WatchMode::Recursive)].into_iter().collect();
         manager.set_desired_roots(desired, t0, &mut watcher);
         assert_eq!(watcher.watch_calls.len(), 1);
         assert!(manager.pending_roots().contains_key(&root));
@@ -320,9 +326,8 @@ mod tests {
         let root = dir.path().join("external-src");
 
         let t0 = Instant::now();
-        let desired: HashMap<PathBuf, WatchMode> = [(root.clone(), WatchMode::Recursive)]
-            .into_iter()
-            .collect();
+        let desired: HashMap<PathBuf, WatchMode> =
+            [(root.clone(), WatchMode::Recursive)].into_iter().collect();
         manager.set_desired_roots(desired, t0, &mut watcher);
         assert!(manager.watched_roots().contains_key(&root));
 

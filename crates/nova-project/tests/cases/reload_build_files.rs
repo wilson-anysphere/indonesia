@@ -140,7 +140,10 @@ fn gradle_wrapper_properties_is_path_aware() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_path_buf();
     let bogus = root.join("some/other/gradle-wrapper.properties");
-    write_file(&bogus, "distributionUrl=https://example.invalid/gradle.zip\n");
+    write_file(
+        &bogus,
+        "distributionUrl=https://example.invalid/gradle.zip\n",
+    );
 
     // Intentionally set up a "workspace root" that does not contain any Gradle markers. If the
     // wrapper file is incorrectly treated as build-affecting (despite being in the wrong

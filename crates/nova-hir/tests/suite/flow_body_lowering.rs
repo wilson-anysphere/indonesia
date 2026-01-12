@@ -140,9 +140,7 @@ fn collect_local_reads_in_stmt(body: &Body, stmt: StmtId, out: &mut HashSet<usiz
 
 #[test]
 fn switch_expression_arms_are_visited_in_flow_lowering() {
-    let block = parse_block(
-        "{ int y = switch (0) { case 0 -> x + 1; default -> x + 2; }; }",
-    );
+    let block = parse_block("{ int y = switch (0) { case 0 -> x + 1; default -> x + 2; }; }");
 
     let body = lower_flow_body(&block, [(Name::new("x"), Span::new(0, 0))]);
 

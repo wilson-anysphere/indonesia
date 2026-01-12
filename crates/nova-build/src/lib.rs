@@ -36,8 +36,8 @@ pub use orchestrator::{
 // Build-system abstraction (see `instructions/build-systems.md`).
 pub use nova_build_model::BuildSystemBackend as BuildSystem;
 
-use nova_core::Diagnostic;
 use nova_build_model::AnnotationProcessing;
+use nova_core::Diagnostic;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

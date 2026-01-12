@@ -89,11 +89,15 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
     let folding_cap = initialize_resp.pointer("/result/capabilities/foldingRangeProvider");
     let folding_supported = folding_cap.is_some_and(|cap| {
         cap.as_bool().unwrap_or(false)
-            || cap.get("lineFoldingOnly")
+            || cap
+                .get("lineFoldingOnly")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
     });
-    assert!(folding_supported, "expected foldingRangeProvider capability");
+    assert!(
+        folding_supported,
+        "expected foldingRangeProvider capability"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -155,10 +159,10 @@ fn stdio_server_supports_document_highlight_folding_range_and_selection_range() 
         .and_then(|v| v.as_array())
         .expect("foldingRange result array");
     assert!(
-        ranges
-            .iter()
-            .any(|range| range.get("startLine").and_then(|v| v.as_i64()).unwrap_or(0)
-                < range.get("endLine").and_then(|v| v.as_i64()).unwrap_or(0)),
+        ranges.iter().any(
+            |range| range.get("startLine").and_then(|v| v.as_i64()).unwrap_or(0)
+                < range.get("endLine").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
         "expected at least one folding range with startLine < endLine",
     );
 

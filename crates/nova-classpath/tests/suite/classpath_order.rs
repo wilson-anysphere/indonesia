@@ -225,7 +225,9 @@ fn indexes_multi_release_jar_with_target_release() {
         None,
         Some(&deps_store),
         None,
-        IndexOptions { target_release: None },
+        IndexOptions {
+            target_release: None,
+        },
     )
     .unwrap();
     let stub = index_none.lookup_binary("com.example.mr.Override").unwrap();
@@ -287,7 +289,9 @@ fn indexes_exploded_multi_release_directory_with_target_release() {
         Some(&cache_dir),
         Some(&deps_store),
         None,
-        IndexOptions { target_release: None },
+        IndexOptions {
+            target_release: None,
+        },
     )
     .unwrap();
     let stub = index_none.lookup_binary("com.example.mr.Override").unwrap();

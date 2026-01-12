@@ -123,7 +123,11 @@ impl SyntaxTreeStore {
     /// Returns the stored parse result if it corresponds to `text`.
     ///
     /// Alias for [`SyntaxTreeStore::get_if_current`].
-    pub fn get_if_text_matches(&self, file: FileId, text: &Arc<String>) -> Option<Arc<ParseResult>> {
+    pub fn get_if_text_matches(
+        &self,
+        file: FileId,
+        text: &Arc<String>,
+    ) -> Option<Arc<ParseResult>> {
         self.get_if_current(file, text)
     }
 
@@ -159,7 +163,10 @@ impl SyntaxTreeStore {
             return;
         };
         // Approximate parse memory by source length (stored in the root node).
-        let total: u64 = inner.values().map(|stored| stored.parse.root.text_len as u64).sum();
+        let total: u64 = inner
+            .values()
+            .map(|stored| stored.parse.root.text_len as u64)
+            .sum();
         tracker.set_bytes(total);
     }
 }

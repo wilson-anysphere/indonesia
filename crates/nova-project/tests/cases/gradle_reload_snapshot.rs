@@ -42,4 +42,3 @@ fn reload_project_reloads_on_gradle_snapshot_handoff_change() {
     assert_eq!(reloaded.java.source, JavaVersion(21));
     assert_eq!(reloaded.java.target, JavaVersion(21));
 }
-

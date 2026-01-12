@@ -1,6 +1,8 @@
 use std::fs;
 
-use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
+use nova_project::{
+    load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions,
+};
 
 #[test]
 fn gradle_workspace_model_puts_cached_jars_on_module_path_for_jpms_projects() {
@@ -9,9 +11,8 @@ fn gradle_workspace_model_puts_cached_jars_on_module_path_for_jpms_projects() {
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = root.join("gradle-home");
-    let cache_dir = gradle_home.join(
-        "caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890",
-    );
+    let cache_dir =
+        gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
 
     let jar_path = cache_dir.join("foo-1.2.3.jar");
@@ -72,4 +73,3 @@ fn gradle_workspace_model_puts_cached_jars_on_module_path_for_jpms_projects() {
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
-

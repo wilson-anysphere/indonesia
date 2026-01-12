@@ -71,7 +71,9 @@ impl WorkspaceHierarchyIndex {
                 for m in &ty.methods {
                     methods
                         .entry((ty.name.clone(), m.name.clone()))
-                        .or_insert_with(|| method_info_from_def(*file_id, &parsed.uri, &ty.name, m));
+                        .or_insert_with(|| {
+                            method_info_from_def(*file_id, &parsed.uri, &ty.name, m)
+                        });
                 }
             }
         }
@@ -152,12 +154,7 @@ impl WorkspaceHierarchyIndex {
         }
 
         let type_info = self.type_info(type_name)?;
-        if let Some(method) = type_info
-            .def
-            .methods
-            .iter()
-            .find(|m| m.name == method_name)
-        {
+        if let Some(method) = type_info.def.methods.iter().find(|m| m.name == method_name) {
             return Some(method_info_from_def(
                 type_info.file_id,
                 &type_info.uri,

@@ -85,4 +85,3 @@ class Real {
         "method decl_range should end at the method closing brace"
     );
 }
-

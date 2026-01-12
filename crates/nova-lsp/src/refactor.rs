@@ -12,9 +12,9 @@ use nova_refactor::{
     workspace_edit_to_lsp_with_uri_mapper, ChangeSignature, ConvertToRecordError,
     ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
     MoveMethodParams as RefactorMoveMethodParams,
-    MoveStaticMemberParams as RefactorMoveStaticMemberParams, RefactorDatabase, RefactorJavaDatabase,
-    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError, TextDatabase,
-    WorkspaceTextRange,
+    MoveStaticMemberParams as RefactorMoveStaticMemberParams, RefactorDatabase,
+    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
+    SemanticRefactorError, TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -400,19 +400,16 @@ pub fn inline_variable_code_actions(
         return Vec::new();
     }
 
-    let usage_range = db
-        .find_references(symbol)
-        .into_iter()
-        .find_map(|r| {
-            if r.file != file {
-                return None;
-            }
-            if r.range.start <= offset && offset <= r.range.end {
-                Some(r.range)
-            } else {
-                None
-            }
-        });
+    let usage_range = db.find_references(symbol).into_iter().find_map(|r| {
+        if r.file != file {
+            return None;
+        }
+        if r.range.start <= offset && offset <= r.range.end {
+            Some(r.range)
+        } else {
+            None
+        }
+    });
 
     let mut actions = Vec::new();
     for (inline_all, title) in [

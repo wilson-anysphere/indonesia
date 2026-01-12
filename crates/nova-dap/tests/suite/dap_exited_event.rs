@@ -117,7 +117,9 @@ async fn dap_launch_emits_exited_event_with_exit_code() {
     };
 
     assert_eq!(
-        exited_evt.pointer("/body/exitCode").and_then(|v| v.as_i64()),
+        exited_evt
+            .pointer("/body/exitCode")
+            .and_then(|v| v.as_i64()),
         Some(42)
     );
 
@@ -136,4 +138,3 @@ async fn dap_launch_emits_exited_event_with_exit_code() {
 
     server_task.await.unwrap().unwrap();
 }
-

@@ -264,7 +264,8 @@ impl FrameworkAnalyzer for LombokAnalyzer {
             .annotation_span("Setter")
             .or_else(|| class_data.annotation_span("Data"));
 
-        let class_withers = class_data.has_annotation("With") || class_data.has_annotation("Wither");
+        let class_withers =
+            class_data.has_annotation("With") || class_data.has_annotation("Wither");
         let class_wither_span = class_data
             .annotation_span("With")
             .or_else(|| class_data.annotation_span("Wither"));

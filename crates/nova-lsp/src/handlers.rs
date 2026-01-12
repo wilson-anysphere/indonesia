@@ -84,7 +84,11 @@ pub fn call_hierarchy_incoming_calls(
 ) -> Option<Vec<CallHierarchyIncomingCall>> {
     let file = file_id_from_uri(db, &params.item.uri)?;
     let calls = nova_ide::call_hierarchy_incoming_calls_for_item(db, file, &params.item);
-    if calls.is_empty() { None } else { Some(calls) }
+    if calls.is_empty() {
+        None
+    } else {
+        Some(calls)
+    }
 }
 
 pub fn call_hierarchy_outgoing_calls(
@@ -93,7 +97,11 @@ pub fn call_hierarchy_outgoing_calls(
 ) -> Option<Vec<CallHierarchyOutgoingCall>> {
     let file = file_id_from_uri(db, &params.item.uri)?;
     let calls = nova_ide::call_hierarchy_outgoing_calls_for_item(db, file, &params.item);
-    if calls.is_empty() { None } else { Some(calls) }
+    if calls.is_empty() {
+        None
+    } else {
+        Some(calls)
+    }
 }
 
 pub fn prepare_type_hierarchy(
@@ -112,7 +120,11 @@ pub fn type_hierarchy_supertypes(
 ) -> Option<Vec<TypeHierarchyItem>> {
     let file = file_id_from_uri(db, &params.item.uri)?;
     let items = nova_ide::type_hierarchy_supertypes(db, file, &params.item.name);
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 pub fn type_hierarchy_subtypes(
@@ -121,7 +133,11 @@ pub fn type_hierarchy_subtypes(
 ) -> Option<Vec<TypeHierarchyItem>> {
     let file = file_id_from_uri(db, &params.item.uri)?;
     let items = nova_ide::type_hierarchy_subtypes(db, file, &params.item.name);
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 fn file_id_from_uri(db: &dyn FileIdDatabase, uri: &lsp_types::Uri) -> Option<FileId> {

@@ -1,7 +1,7 @@
+pub mod bindings;
 pub mod java_gen;
 pub mod java_types;
 pub mod javac_config;
-pub mod bindings;
 
 use nova_jdwp::wire::{JdwpClient, JdwpError, JdwpValue, ObjectId, ThreadId};
 

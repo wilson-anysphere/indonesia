@@ -1,7 +1,7 @@
 //! Shared, dependency-minimized core types used across Nova.
 
-pub mod diagnostic;
 pub mod debug_config;
+pub mod diagnostic;
 pub mod edit;
 pub mod id;
 pub mod name;
@@ -51,8 +51,8 @@ pub const fn target_pointer_width() -> u8 {
     }
 }
 
-pub use diagnostic::{Location, RelatedDiagnostic, Severity};
 pub use debug_config::{AttachConfig, LaunchConfig};
+pub use diagnostic::{Location, RelatedDiagnostic, Severity};
 pub use edit::{apply_text_edits, normalize_text_edits, EditError, TextEdit, WorkspaceEdit};
 pub use id::*;
 pub use name::{InternedName, Name, NameInterner, SymbolName};

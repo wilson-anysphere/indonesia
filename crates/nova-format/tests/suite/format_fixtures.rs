@@ -284,8 +284,8 @@ fn on_type_formatting_is_noop_inside_text_block_templates() {
 
     let brace_offset = input.find("hello }").unwrap() + "hello ".len();
     let position = idx.position(input, TextSize::from((brace_offset + 1) as u32));
-    let edits =
-        edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default()).unwrap();
+    let edits = edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default())
+        .unwrap();
     assert!(edits.is_empty());
 }
 
@@ -298,8 +298,8 @@ fn on_type_formatting_is_noop_inside_text_blocks() {
 
     let brace_offset = input.find("hello }").unwrap() + "hello ".len();
     let position = idx.position(input, TextSize::from((brace_offset + 1) as u32));
-    let edits =
-        edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default()).unwrap();
+    let edits = edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default())
+        .unwrap();
     assert!(edits.is_empty());
 }
 
@@ -311,8 +311,8 @@ fn on_type_formatting_is_noop_inside_string_templates() {
 
     let brace_offset = input.find("hello }").unwrap() + "hello ".len();
     let position = idx.position(input, TextSize::from((brace_offset + 1) as u32));
-    let edits =
-        edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default()).unwrap();
+    let edits = edits_for_on_type_formatting(&tree, input, position, '}', &FormatConfig::default())
+        .unwrap();
     assert!(edits.is_empty());
 }
 

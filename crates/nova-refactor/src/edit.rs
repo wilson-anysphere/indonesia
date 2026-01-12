@@ -1008,10 +1008,7 @@ mod tests {
             text_edits: Vec::new(),
         };
         let edit2 = WorkspaceEdit {
-            file_ops: vec![FileOp::Rename {
-                from: a,
-                to: c,
-            }],
+            file_ops: vec![FileOp::Rename { from: a, to: c }],
             text_edits: Vec::new(),
         };
 
@@ -1073,10 +1070,7 @@ mod tests {
         let merged_ba = edit_b.merge(edit_a).unwrap();
 
         assert_eq!(merged_ab, merged_ba);
-        assert_eq!(
-            merged_ab.text_edits,
-            vec![TextEdit::insert(file, 0, "ab")]
-        );
+        assert_eq!(merged_ab.text_edits, vec![TextEdit::insert(file, 0, "ab")]);
     }
 
     #[test]
@@ -1087,13 +1081,7 @@ mod tests {
         let edit = TextEdit::replace(file.clone(), TextRange::new(2, 3), "e");
         let err = apply_text_edits(original, &[edit]).unwrap_err();
 
-        assert_eq!(
-            err,
-            EditError::InvalidUtf8Boundary {
-                file,
-                offset: 2,
-            },
-        );
+        assert_eq!(err, EditError::InvalidUtf8Boundary { file, offset: 2 },);
     }
 
     #[test]

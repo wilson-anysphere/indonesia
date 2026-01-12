@@ -203,8 +203,12 @@ fn root_level_rs_files(tests_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     for entry in std::fs::read_dir(tests_dir)
         .with_context(|| format!("failed to read directory {}", tests_dir.display()))?
     {
-        let entry = entry
-            .with_context(|| format!("failed to read directory entry under {}", tests_dir.display()))?;
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to read directory entry under {}",
+                tests_dir.display()
+            )
+        })?;
         let ty = entry
             .file_type()
             .with_context(|| format!("failed to read file type for {}", entry.path().display()))?;
@@ -283,7 +287,10 @@ nova-dap   # inline comment
             .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
             .collect();
 
-        assert_eq!(names, BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()]));
+        assert_eq!(
+            names,
+            BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()])
+        );
     }
 
     #[test]
@@ -301,14 +308,10 @@ nova-dap   # inline comment
 
         let tests_dir = tmp.path().join("tests");
 
-        assert!(diagnostic_for_root_test_files(
-            "my-crate",
-            &manifest,
-            &tests_dir,
-            &[],
-            false,
-        )
-        .is_none());
+        assert!(
+            diagnostic_for_root_test_files("my-crate", &manifest, &tests_dir, &[], false,)
+                .is_none()
+        );
 
         assert!(diagnostic_for_root_test_files(
             "my-crate",

@@ -557,10 +557,9 @@ fn type_variables_shadow_imported_types() {
         None,
     );
     assert_eq!(ty.ty, Type::TypeVar(tv));
-    assert!(ty
-        .diagnostics
-        .iter()
-        .any(|d| d.code == "invalid-type-ref" && d.message.contains("type variables cannot have type arguments")));
+    assert!(ty.diagnostics.iter().any(|d| d.code == "invalid-type-ref"
+        && d.message
+            .contains("type variables cannot have type arguments")));
 }
 
 #[test]
@@ -622,10 +621,7 @@ fn type_vars_shadow_classes() {
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let mut env = TypeStore::with_minimal_jdk();
 
-    let tv = env.add_type_param(
-        "String",
-        vec![Type::class(env.well_known().object, vec![])],
-    );
+    let tv = env.add_type_param("String", vec![Type::class(env.well_known().object, vec![])]);
     let mut type_vars = HashMap::new();
     type_vars.insert("String".to_string(), tv);
 
@@ -739,7 +735,8 @@ fn parses_diamond_as_raw_type() {
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List", None);
     assert_eq!(plain.diagnostics, Vec::new());
 
-    let diamond = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<>", None);
+    let diamond =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<>", None);
     assert_eq!(diamond.diagnostics, Vec::new());
     assert_eq!(diamond.ty, plain.ty);
 }
@@ -826,7 +823,9 @@ class C {}
     );
 
     // Best-effort: prefer java.lang to keep type inference stable, but still surface ambiguity.
-    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    let string_id = env
+        .lookup_class("java.lang.String")
+        .expect("java.lang.String");
     assert_eq!(result.ty, Type::class(string_id, vec![]));
 }
 
@@ -844,7 +843,9 @@ fn type_use_annotations_are_ignored() {
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    let string_id = env
+        .lookup_class("java.lang.String")
+        .expect("java.lang.String");
 
     // Mimics `TypeRef.text` output where whitespace is stripped.
     let result = resolve_type_ref_text(
@@ -901,7 +902,9 @@ fn type_use_annotations_on_arrays_are_ignored() {
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    let string_id = env
+        .lookup_class("java.lang.String")
+        .expect("java.lang.String");
 
     let result = resolve_type_ref_text(
         &resolver,
@@ -947,7 +950,9 @@ class C {}
     let type_vars = HashMap::new();
 
     let list_id = env.lookup_class("java.util.List").expect("java.util.List");
-    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    let string_id = env
+        .lookup_class("java.lang.String")
+        .expect("java.lang.String");
 
     // Mimics `TypeRef.text` output where whitespace is stripped.
     let result = resolve_type_ref_text(
@@ -987,7 +992,9 @@ fn type_use_annotations_before_varargs_are_ignored() {
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    let string_id = env
+        .lookup_class("java.lang.String")
+        .expect("java.lang.String");
 
     let result = resolve_type_ref_text(
         &resolver,
@@ -1033,7 +1040,9 @@ class C {}
     let type_vars = HashMap::new();
 
     let list_id = env.lookup_class("java.util.List").expect("java.util.List");
-    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    let string_id = env
+        .lookup_class("java.lang.String")
+        .expect("java.lang.String");
 
     let expected = Type::class(list_id, vec![Type::class(string_id, vec![])]);
 
@@ -1105,7 +1114,15 @@ fn required_examples_type_use_annotations_are_skipped() {
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<String>", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<String>",
+        None,
+    );
     let annotated = resolve_type_ref_text(
         &resolver,
         &scopes,
@@ -1120,14 +1137,30 @@ fn required_examples_type_use_annotations_are_skipped() {
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[]", None);
-    let annotated = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int@B[]", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int@B[]", None);
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String...", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String@A...", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String...",
+        None,
+    );
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String@A...",
+        None,
+    );
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
@@ -1141,7 +1174,15 @@ fn type_use_annotations_with_arguments_are_ignored() {
     let type_vars = HashMap::new();
 
     // Nested parens inside the annotation argument list should not break parsing.
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String...", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String...",
+        None,
+    );
     let annotated = resolve_type_ref_text(
         &resolver,
         &scopes,
@@ -1165,7 +1206,15 @@ fn type_use_annotations_can_be_qualified_and_glued_to_type_tokens() {
     let type_vars = HashMap::new();
 
     // Source `List<@com.example.A String>` becomes `List<@com.example.AString>` in `TypeRef.text`.
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<String>", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<String>",
+        None,
+    );
     let annotated = resolve_type_ref_text(
         &resolver,
         &scopes,
@@ -1191,9 +1240,24 @@ fn type_use_annotations_before_qualified_segments_are_ignored() {
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "Map.Entry", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "Map.@AEntry", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "Map.Entry",
+        None,
+    );
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "Map.@AEntry",
+        None,
+    );
 
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
@@ -1208,7 +1272,15 @@ fn type_use_annotations_before_qualified_segments_and_before_suffixes_are_ignore
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "Map.Entry[]", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "Map.Entry[]",
+        None,
+    );
     let annotated = resolve_type_ref_text(
         &resolver,
         &scopes,
@@ -1231,7 +1303,15 @@ fn type_use_annotations_between_multiple_array_dims_are_ignored() {
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
 
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String[][]", None);
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "String[][]",
+        None,
+    );
     let annotated = resolve_type_ref_text(
         &resolver,
         &scopes,
@@ -1255,7 +1335,8 @@ fn type_use_annotations_before_primitives_are_ignored() {
     let type_vars = HashMap::new();
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int", None);
-    let annotated = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint", None);
+    let annotated =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint", None);
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
@@ -1269,8 +1350,9 @@ fn type_use_annotations_before_primitives_are_ignored() {
 
     // Varargs is encoded as one array dimension in `nova_types::Type`.
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int...", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint...", None);
+    let annotated = resolve_type_ref_text(
+        &resolver, &scopes, scope, &env, &type_vars, "@Aint...", None,
+    );
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
@@ -1291,13 +1373,22 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
     let type_vars = HashMap::new();
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[]", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint@B[]", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "@Aint@B[]",
+        None,
+    );
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 
-    let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String[]", None);
+    let plain = resolve_type_ref_text(
+        &resolver, &scopes, scope, &env, &type_vars, "String[]", None,
+    );
     let annotated = resolve_type_ref_text(
         &resolver,
         &scopes,
@@ -1320,8 +1411,15 @@ fn type_use_annotations_can_annotate_wildcards() {
     let type_vars = HashMap::new();
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<?>", None);
-    let annotated =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<@A?>", None);
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<@A?>",
+        None,
+    );
 
     assert_eq!(plain.diagnostics, Vec::new());
     assert_eq!(annotated.diagnostics, Vec::new());

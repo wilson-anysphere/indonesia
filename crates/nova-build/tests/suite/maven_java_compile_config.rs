@@ -106,7 +106,10 @@ fn maven_java_compile_config_includes_conventional_generated_source_roots() {
         "project.testCompileSourceRoots".to_string(),
         list_output(&["src/test/java"]),
     );
-    outputs.insert("project.build.directory".to_string(), scalar_output("target"));
+    outputs.insert(
+        "project.build.directory".to_string(),
+        scalar_output("target"),
+    );
 
     let runner = Arc::new(MavenEvaluateRoutingRunner::new(outputs));
     let build = MavenBuild::with_runner(MavenConfig::default(), runner);
@@ -138,4 +141,3 @@ fn maven_java_compile_config_includes_conventional_generated_source_roots() {
         ]
     );
 }
-

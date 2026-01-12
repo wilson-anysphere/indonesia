@@ -235,7 +235,11 @@ fn run() -> anyhow::Result<ExitCode> {
                 print_human("check-layers", layers_ok, &layers.diagnostics);
                 print_human("check-architecture-map", arch_ok, &arch.diagnostics);
                 print_human("check-protocol-extensions", proto_ok, &proto.diagnostics);
-                print_human("check-test-layout", test_layout_ok, &test_layout.diagnostics);
+                print_human(
+                    "check-test-layout",
+                    test_layout_ok,
+                    &test_layout.diagnostics,
+                );
 
                 if overall_ok {
                     println!("check-repo-invariants: ok");

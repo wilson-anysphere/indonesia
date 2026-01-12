@@ -6,4 +6,3 @@ pub use nova_build_model::package::{
     class_to_file_name, infer_source_root, is_valid_package_name, package_to_path, path_ends_with,
     validate_package_name, PackageNameError,
 };
-

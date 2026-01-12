@@ -26,7 +26,11 @@ fn write_maven_aggregator_pom(root: &Path, module: &str) {
     .expect("write pom.xml");
 }
 
-fn write_generated_roots_snapshot(workspace_root: &Path, module_root: &Path, generated_root: &Path) {
+fn write_generated_roots_snapshot(
+    workspace_root: &Path,
+    module_root: &Path,
+    generated_root: &Path,
+) {
     let snapshot_dir = workspace_root.join(".nova").join("apt-cache");
     fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
 
@@ -181,4 +185,3 @@ fn reload_project_reloads_when_apt_generated_roots_snapshot_changes() {
         config3.source_roots
     );
 }
-

@@ -43,4 +43,3 @@ fn iter_binary_names_is_sorted_and_contains_known_fixtures() {
     assert!(saw_bar, "expected dep.jar to contain com.example.dep.Bar");
     assert!(saw_foo, "expected dep.jar to contain com.example.dep.Foo");
 }
-

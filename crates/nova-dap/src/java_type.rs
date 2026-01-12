@@ -1,4 +1,6 @@
-use nova_classfile::{parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature};
+use nova_classfile::{
+    parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature,
+};
 
 /// Convert a JVM type signature (descriptor or generic signature) into a Java *source* type.
 ///
@@ -141,4 +143,3 @@ mod tests {
         );
     }
 }
-

@@ -128,13 +128,7 @@ impl JavaParseCache {
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<JavaParseResult>) {
         let mut inner = self.lock_inner();
 
-        if let Some(prev) = inner.map.insert(
-            file,
-            JavaParseCacheEntry {
-                text,
-                parse,
-            },
-        ) {
+        if let Some(prev) = inner.map.insert(file, JavaParseCacheEntry { text, parse }) {
             let _ = prev;
         }
 

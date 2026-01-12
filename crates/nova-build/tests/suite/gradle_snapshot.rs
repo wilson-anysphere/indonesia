@@ -1,4 +1,7 @@
-use nova_build::{collect_gradle_build_files, BuildCache, BuildFileFingerprint, CommandOutput, CommandRunner, GradleBuild, GradleConfig};
+use nova_build::{
+    collect_gradle_build_files, BuildCache, BuildFileFingerprint, CommandOutput, CommandRunner,
+    GradleBuild, GradleConfig,
+};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,7 +14,12 @@ struct FakeRunner {
 }
 
 impl CommandRunner for FakeRunner {
-    fn run(&self, _cwd: &Path, _program: &Path, _args: &[String]) -> std::io::Result<CommandOutput> {
+    fn run(
+        &self,
+        _cwd: &Path,
+        _program: &Path,
+        _args: &[String],
+    ) -> std::io::Result<CommandOutput> {
         Ok(self.output.clone())
     }
 }
@@ -272,7 +280,11 @@ fn writes_gradle_snapshot_after_root_java_compile_config() {
     let tmp = tempfile::tempdir().unwrap();
     let project_root = tmp.path().join("project");
     std::fs::create_dir_all(&project_root).unwrap();
-    std::fs::write(project_root.join("settings.gradle"), "rootProject.name = 'demo'\n").unwrap();
+    std::fs::write(
+        project_root.join("settings.gradle"),
+        "rootProject.name = 'demo'\n",
+    )
+    .unwrap();
     std::fs::write(project_root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
 
     let stdout = format!(

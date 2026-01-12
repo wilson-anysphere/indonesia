@@ -64,9 +64,7 @@ impl JpaAnalyzer {
             .into_iter()
             .filter(|&file| Self::is_java_file(db, file, db.file_text(file)))
             .map(|file| {
-                let path_key = db
-                    .file_path(file)
-                    .map(|p| p.to_string_lossy().to_string());
+                let path_key = db.file_path(file).map(|p| p.to_string_lossy().to_string());
                 (path_key, file)
             })
             .collect();
@@ -302,4 +300,3 @@ struct CachedProjectAnalysis {
     file_to_source: HashMap<FileId, usize>,
     analysis: Arc<AnalysisResult>,
 }
-

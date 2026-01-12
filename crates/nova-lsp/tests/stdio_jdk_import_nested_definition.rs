@@ -163,7 +163,10 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -238,7 +241,10 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     };
     assert_eq!(uri, expected_uri);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -246,4 +252,3 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

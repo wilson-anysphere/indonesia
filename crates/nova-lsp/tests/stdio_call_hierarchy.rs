@@ -157,7 +157,9 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
         })
         .and_then(|value| value.get("to"))
         .cloned()
-        .unwrap_or_else(|| panic!("expected outgoingCalls to include callee item: {outgoing_resp:#}"));
+        .unwrap_or_else(|| {
+            panic!("expected outgoingCalls to include callee item: {outgoing_resp:#}")
+        });
 
     write_jsonrpc_message(
         &mut stdin,
@@ -289,7 +291,11 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
         .get("result")
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("expected prepareCallHierarchy result array: {prepare_int:#}"));
-    assert_eq!(items.len(), 1, "expected one call hierarchy item: {prepare_int:#}");
+    assert_eq!(
+        items.len(),
+        1,
+        "expected one call hierarchy item: {prepare_int:#}"
+    );
     let foo_int_item = items[0].clone();
     assert!(
         foo_int_item
@@ -312,9 +318,7 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
     let outgoing_int = outgoing_int_resp
         .get("result")
         .and_then(|v| v.as_array())
-        .unwrap_or_else(|| {
-            panic!("expected outgoingCalls result array: {outgoing_int_resp:#}")
-        });
+        .unwrap_or_else(|| panic!("expected outgoingCalls result array: {outgoing_int_resp:#}"));
     assert!(
         outgoing_int.iter().any(|value| {
             value
@@ -353,7 +357,9 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
     let items = prepare_string
         .get("result")
         .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("expected prepareCallHierarchy result array: {prepare_string:#}"));
+        .unwrap_or_else(|| {
+            panic!("expected prepareCallHierarchy result array: {prepare_string:#}")
+        });
     assert_eq!(
         items.len(),
         1,
@@ -381,9 +387,7 @@ fn stdio_server_call_hierarchy_outgoing_calls_disambiguates_overloads() {
     let outgoing_string = outgoing_string_resp
         .get("result")
         .and_then(|v| v.as_array())
-        .unwrap_or_else(|| {
-            panic!("expected outgoingCalls result array: {outgoing_string_resp:#}")
-        });
+        .unwrap_or_else(|| panic!("expected outgoingCalls result array: {outgoing_string_resp:#}"));
     assert!(
         outgoing_string.iter().any(|value| {
             value
@@ -560,7 +564,9 @@ fn stdio_server_supports_call_hierarchy_across_files() {
                     .and_then(|v| v.as_str())
                     .is_some_and(|uri| uri == bar_uri.as_str())
         })
-        .unwrap_or_else(|| panic!("expected outgoing calls to include Bar.callee: {outgoing_resp:#}"));
+        .unwrap_or_else(|| {
+            panic!("expected outgoing calls to include Bar.callee: {outgoing_resp:#}")
+        });
 
     assert!(
         callee_call
@@ -628,18 +634,18 @@ fn stdio_server_supports_call_hierarchy_across_files() {
 #[test]
 fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files() {
     let _lock = stdio_server_lock();
- 
+
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
- 
+
     let cache_dir = TempDir::new().expect("cache dir");
- 
+
     let foo_path = root.join("Foo.java");
     let foo_uri = uri_for_path(&foo_path);
     let bar_path = root.join("Bar.java");
     let bar_uri = uri_for_path(&bar_path);
     let root_uri = uri_for_path(root);
- 
+
     let foo_text = r#"
         public class Foo {
             void caller() {
@@ -647,13 +653,13 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
             }
         }
     "#;
- 
+
     let bar_text = r#"
         public class Bar {
             static void callee() {}
         }
     "#;
- 
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("NOVA_CACHE_DIR", cache_dir.path())
@@ -661,11 +667,11 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn nova-lsp");
- 
+
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
- 
+
     // initialize
     write_jsonrpc_message(
         &mut stdin,
@@ -681,7 +687,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
- 
+
     // didOpen both files
     write_jsonrpc_message(
         &mut stdin,
@@ -713,7 +719,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
             }
         }),
     );
- 
+
     // prepareCallHierarchy at the call-site name (`Bar.callee()`).
     let callee_offset = foo_text.find("callee").expect("callee call-site name");
     let pos = utf16_position(foo_text, callee_offset);
@@ -729,7 +735,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
             }
         }),
     );
- 
+
     let prepare_resp = read_response_with_id(&mut stdout, 2);
     let items = prepare_resp
         .get("result")
@@ -739,7 +745,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
         !items.is_empty(),
         "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
     );
- 
+
     let callee_item = items
         .iter()
         .find(|value| {
@@ -753,7 +759,9 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
                     .is_some_and(|uri| uri == bar_uri.as_str())
         })
         .cloned()
-        .unwrap_or_else(|| panic!("expected prepareCallHierarchy to resolve Bar.callee: {prepare_resp:#}"));
+        .unwrap_or_else(|| {
+            panic!("expected prepareCallHierarchy to resolve Bar.callee: {prepare_resp:#}")
+        });
 
     assert!(
         callee_item
@@ -762,7 +770,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
             .is_some_and(|detail| detail.contains("callee(")),
         "expected prepareCallHierarchy item to include detail: {callee_item:#}"
     );
- 
+
     // incomingCalls on Bar.callee should include Foo.caller.
     write_jsonrpc_message(
         &mut stdin,
@@ -790,7 +798,9 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
                     .and_then(|v| v.as_str())
                     .is_some_and(|uri| uri == foo_uri.as_str())
         })
-        .unwrap_or_else(|| panic!("expected incoming calls to include Foo.caller: {incoming_resp:#}"));
+        .unwrap_or_else(|| {
+            panic!("expected incoming calls to include Foo.caller: {incoming_resp:#}")
+        });
 
     assert!(
         caller_call
@@ -799,7 +809,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
             .is_some_and(|detail| detail.contains("caller(")),
         "expected Foo.caller CallHierarchyItem to include detail: {caller_call:#}"
     );
- 
+
     // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
@@ -808,7 +818,7 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
- 
+
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
@@ -995,7 +1005,9 @@ fn stdio_server_prepare_call_hierarchy_resolves_inherited_receiverless_call_site
     let ranges = foo_call
         .pointer("/fromRanges")
         .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("expected incoming call to include fromRanges: {incoming_resp:#}"));
+        .unwrap_or_else(|| {
+            panic!("expected incoming call to include fromRanges: {incoming_resp:#}")
+        });
     assert!(
         !ranges.is_empty(),
         "expected incoming call to include non-empty fromRanges: {incoming_resp:#}"

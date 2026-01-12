@@ -343,7 +343,9 @@ impl ClassIndex {
         let mut classes = Vec::<ClassData>::new();
         for (_path, file_id) in java_files {
             let text = db.file_content(file_id);
-            classes.extend(crate::framework_class_data::extract_classes_from_source(text));
+            classes.extend(crate::framework_class_data::extract_classes_from_source(
+                text,
+            ));
         }
 
         Self {
@@ -382,7 +384,8 @@ fn build_classpath_index(config: &nova_project::ProjectConfig) -> Option<Arc<Cla
     let target_release = Some(config.java.target.0)
         .filter(|release| *release >= 1)
         .or_else(|| Some(config.java.source.0).filter(|release| *release >= 1));
-    let index = ClasspathIndex::build_with_options(&entries, None, IndexOptions { target_release }).ok()?;
+    let index =
+        ClasspathIndex::build_with_options(&entries, None, IndexOptions { target_release }).ok()?;
     Some(Arc::new(index))
 }
 
@@ -390,7 +393,10 @@ fn build_classpath_index(config: &nova_project::ProjectConfig) -> Option<Arc<Cla
 mod tests {
     use super::*;
 
-    use nova_project::{BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaVersion, Module, ProjectConfig};
+    use nova_project::{
+        BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaVersion, Module,
+        ProjectConfig,
+    };
 
     #[test]
     fn classpath_index_respects_java_target_release_for_multi_release_jars() {
@@ -431,7 +437,9 @@ mod tests {
         let idx_java8 = build_classpath_index(&cfg_for_target(8, &mr_jar))
             .expect("classpath index should build");
         assert!(
-            idx_java8.lookup_binary("com.example.mr.MultiReleaseOnly").is_none(),
+            idx_java8
+                .lookup_binary("com.example.mr.MultiReleaseOnly")
+                .is_none(),
             "expected MR-only class to be absent when targeting Java 8"
         );
 

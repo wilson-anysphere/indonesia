@@ -350,7 +350,10 @@ class Foo {
 
         let explain_prompt =
             crate::actions::explain_error_prompt(&format!("cannot find symbol: {secret}"), context);
-        assert!(explain_prompt.contains(secret), "prompt should include raw input");
+        assert!(
+            explain_prompt.contains(secret),
+            "prompt should include raw input"
+        );
         let explain_out = filter.sanitize_prompt_text(&mut session, &explain_prompt);
         assert!(
             !explain_out.contains(secret),
@@ -359,7 +362,10 @@ class Foo {
 
         let method_sig = format!("public {secret} make({secret} svc)");
         let method_prompt = crate::actions::generate_method_body_prompt(&method_sig, context);
-        assert!(method_prompt.contains(secret), "prompt should include raw input");
+        assert!(
+            method_prompt.contains(secret),
+            "prompt should include raw input"
+        );
         let method_out = filter.sanitize_prompt_text(&mut session, &method_prompt);
         assert!(
             !method_out.contains(secret),
@@ -368,7 +374,10 @@ class Foo {
 
         let target = format!("Generate tests for {secret}#run");
         let tests_prompt = crate::actions::generate_tests_prompt(&target, context);
-        assert!(tests_prompt.contains(secret), "prompt should include raw input");
+        assert!(
+            tests_prompt.contains(secret),
+            "prompt should include raw input"
+        );
         let tests_out = filter.sanitize_prompt_text(&mut session, &tests_prompt);
         assert!(
             !tests_out.contains(secret),
@@ -391,7 +400,10 @@ class Foo {
             .join("secret")
             .join("file.txt");
 
-        assert!(matcher.is_match(&abs), "{abs:?} should match excluded_paths");
+        assert!(
+            matcher.is_match(&abs),
+            "{abs:?} should match excluded_paths"
+        );
         assert!(
             filter.is_excluded(&abs),
             "{abs:?} should be excluded via PrivacyFilter"

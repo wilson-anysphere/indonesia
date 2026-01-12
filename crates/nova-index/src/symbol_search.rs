@@ -224,7 +224,11 @@ impl SymbolSearchIndex {
                 let key = q_bytes[0].to_ascii_lowercase();
                 let bucket = &self.prefix1[key as usize];
                 if !bucket.is_empty() {
-                    (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                    (
+                        CandidateStrategy::Prefix,
+                        bucket.len(),
+                        CandidateSource::Ids(bucket),
+                    )
                 } else {
                     let scan_limit = 50_000usize.min(self.symbols.len());
                     (
@@ -244,7 +248,11 @@ impl SymbolSearchIndex {
                     let key = q_bytes[0].to_ascii_lowercase();
                     let bucket = &self.prefix1[key as usize];
                     if !bucket.is_empty() {
-                        (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                        (
+                            CandidateStrategy::Prefix,
+                            bucket.len(),
+                            CandidateSource::Ids(bucket),
+                        )
                     } else {
                         let scan_limit = 50_000usize.min(self.symbols.len());
                         (
@@ -662,7 +670,11 @@ mod tests {
             let key = q_bytes[0].to_ascii_lowercase();
             let bucket = &index.prefix1[key as usize];
             if !bucket.is_empty() {
-                (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                (
+                    CandidateStrategy::Prefix,
+                    bucket.len(),
+                    CandidateSource::Ids(bucket),
+                )
             } else {
                 let scan_limit = 50_000usize.min(index.symbols.len());
                 (
@@ -672,15 +684,18 @@ mod tests {
                 )
             }
         } else {
-            let trigram_candidates =
-                index
-                    .trigram
-                    .candidates_with_scratch(query, &mut trigram_scratch);
+            let trigram_candidates = index
+                .trigram
+                .candidates_with_scratch(query, &mut trigram_scratch);
             if trigram_candidates.is_empty() {
                 let key = q_bytes[0].to_ascii_lowercase();
                 let bucket = &index.prefix1[key as usize];
                 if !bucket.is_empty() {
-                    (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
+                    (
+                        CandidateStrategy::Prefix,
+                        bucket.len(),
+                        CandidateSource::Ids(bucket),
+                    )
                 } else {
                     let scan_limit = 50_000usize.min(index.symbols.len());
                     (
@@ -816,7 +831,10 @@ mod tests {
 
     #[test]
     fn symbol_search_ranks_prefix_first() {
-        let index = SymbolSearchIndex::build(vec![sym("foobar", "pkg.foobar"), sym("barfoo", "pkg.barfoo")]);
+        let index = SymbolSearchIndex::build(vec![
+            sym("foobar", "pkg.foobar"),
+            sym("barfoo", "pkg.barfoo"),
+        ]);
 
         let results = index.search("foo", 10);
         assert_eq!(results[0].symbol.name, "foobar");
@@ -824,7 +842,10 @@ mod tests {
 
     #[test]
     fn short_queries_still_match_acronyms() {
-        let index = SymbolSearchIndex::build(vec![sym("HashMap", "java.util.HashMap"), sym("Hmac", "crypto.Hmac")]);
+        let index = SymbolSearchIndex::build(vec![
+            sym("HashMap", "java.util.HashMap"),
+            sym("Hmac", "crypto.Hmac"),
+        ]);
 
         let results = index.search("hm", 10);
         assert!(
@@ -872,7 +893,8 @@ mod tests {
     fn search_tiebreaks_by_qualified_name_for_duplicate_names() {
         // Insert in the opposite order of the qualified-name lexicographic sort
         // so we can detect accidental insertion-order tie-breaking.
-        let index = SymbolSearchIndex::build(vec![sym("Foo", "com.b.Foo"), sym("Foo", "com.a.Foo")]);
+        let index =
+            SymbolSearchIndex::build(vec![sym("Foo", "com.b.Foo"), sym("Foo", "com.a.Foo")]);
 
         let results = index.search("Foo", 10);
         assert_eq!(results.len(), 2);
@@ -913,15 +935,15 @@ mod tests {
             .iter()
             .map(|r| r.symbol.qualified_name.clone())
             .collect();
-        let expected_all: Vec<String> = ('a'..='t')
-            .map(|ch| format!("com.{ch}.Foo"))
-            .collect();
+        let expected_all: Vec<String> = ('a'..='t').map(|ch| format!("com.{ch}.Foo")).collect();
         assert_eq!(all_qualified, expected_all);
 
         // Now exercise the top-k path.
         let (limited, _stats) = index.search_with_stats("Foo", 5);
-        let limited_qualified: Vec<String> =
-            limited.iter().map(|r| r.symbol.qualified_name.clone()).collect();
+        let limited_qualified: Vec<String> = limited
+            .iter()
+            .map(|r| r.symbol.qualified_name.clone())
+            .collect();
         assert_eq!(limited_qualified, expected_all[..5].to_vec());
     }
 
@@ -961,7 +983,10 @@ mod tests {
         assert_eq!(streaming_ids, reference_ids);
 
         assert_eq!(streaming.len(), limit);
-        assert_eq!(streaming[0].symbol.qualified_name, "com.example.pkg00000.Foo");
+        assert_eq!(
+            streaming[0].symbol.qualified_name,
+            "com.example.pkg00000.Foo"
+        );
     }
 
     #[test]
@@ -1036,11 +1061,12 @@ mod tests {
         ]);
 
         let results = index.search("Foo", 10);
-        let foos: Vec<_> = results
-            .iter()
-            .filter(|r| r.symbol.name == "Foo")
-            .collect();
-        assert_eq!(foos.len(), 2, "expected both Foo definitions to be returned");
+        let foos: Vec<_> = results.iter().filter(|r| r.symbol.name == "Foo").collect();
+        assert_eq!(
+            foos.len(),
+            2,
+            "expected both Foo definitions to be returned"
+        );
 
         let results = index.search("com.example.Foo", 10);
         assert_eq!(results[0].symbol.qualified_name, "com.example.Foo");

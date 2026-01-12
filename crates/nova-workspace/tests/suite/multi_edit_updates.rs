@@ -47,4 +47,3 @@ fn multi_edit_change_batch_updates_salsa_file_content() {
         "class Main {\n  void m() {\n    int x = 1; /*a*/\n    int y = 2; /*b*/\n  }\n}\n"
     );
 }
-

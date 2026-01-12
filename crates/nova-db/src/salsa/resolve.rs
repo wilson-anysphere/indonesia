@@ -7,8 +7,8 @@ use nova_modules::{ModuleGraph, ModuleName};
 use nova_project::ProjectConfig;
 use nova_types::Diagnostic;
 
-use crate::{FileId, ProjectId};
 use crate::persistence::HasPersistence;
+use crate::{FileId, ProjectId};
 
 use super::cancellation as cancel;
 use super::hir::NovaHir;
@@ -261,7 +261,8 @@ fn workspace_class_id_map(db: &dyn NovaResolve) -> Arc<WorkspaceClassIdMap> {
 }
 
 fn class_id_for_type(db: &dyn NovaResolve, project: ProjectId, name: TypeName) -> Option<ClassId> {
-    db.workspace_class_id_map().class_id_for_type(project, &name)
+    db.workspace_class_id_map()
+        .class_id_for_type(project, &name)
 }
 
 fn class_key(db: &dyn NovaResolve, id: ClassId) -> Option<(ProjectId, TypeName)> {
@@ -353,14 +354,13 @@ fn jpms_compilation_env(
 
     let jdk = db.jdk_index(project);
     let cache_dir = db.persistence().cache_dir().map(|dir| dir.classpath_dir());
-    let env =
-        nova_resolve::jpms_env::build_jpms_compilation_environment_for_project(
-            &*jdk,
-            &cfg,
-            cache_dir.as_deref(),
-        )
-        .ok()
-        .map(|env| ArcEq::new(Arc::new(env)));
+    let env = nova_resolve::jpms_env::build_jpms_compilation_environment_for_project(
+        &*jdk,
+        &cfg,
+        cache_dir.as_deref(),
+    )
+    .ok()
+    .map(|env| ArcEq::new(Arc::new(env)));
     db.record_query_stat("jpms_compilation_env", start.elapsed());
     env
 }

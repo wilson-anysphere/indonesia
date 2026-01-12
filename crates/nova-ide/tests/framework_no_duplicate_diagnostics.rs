@@ -74,4 +74,3 @@ fn framework_diagnostics_not_duplicated_when_build_metadata_is_available() {
         "expected exactly one {CDI_UNSATISFIED_CODE} diagnostic; got {diags:#?}"
     );
 }
-

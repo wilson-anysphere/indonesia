@@ -57,11 +57,14 @@ fn salsa_parse_java_uses_incremental_reparse_for_single_edit() {
     assert_eq!(new_parse.errors, full.errors);
 
     // Ensure at least one unaffected subtree was reused.
-    let old_bar = find_class_by_name(old_parse.as_ref(), "Bar").green().into_owned();
-    let new_bar = find_class_by_name(new_parse.as_ref(), "Bar").green().into_owned();
+    let old_bar = find_class_by_name(old_parse.as_ref(), "Bar")
+        .green()
+        .into_owned();
+    let new_bar = find_class_by_name(new_parse.as_ref(), "Bar")
+        .green()
+        .into_owned();
     assert!(
         green_ptr_eq(&old_bar, &new_bar),
         "expected unchanged `Bar` subtree to be reused across incremental reparse"
     );
 }
-

@@ -24,9 +24,9 @@ use nova_project::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, LoadOptions, OutputDir,
     OutputDirKind, ProjectConfig, ProjectError, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
-use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 #[cfg(test)]
 use nova_scheduler::SchedulerConfig;
+use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
@@ -680,7 +680,8 @@ impl WorkspaceEngine {
         let (batch_tx, batch_rx) = channel::bounded::<WatcherMessage>(BATCH_QUEUE_CAPACITY);
 
         let (watcher_stop_tx, watcher_stop_rx) = channel::bounded::<()>(0);
-        let (command_tx, command_rx) = channel::bounded::<WatchCommand>(WATCH_COMMAND_QUEUE_CAPACITY);
+        let (command_tx, command_rx) =
+            channel::bounded::<WatchCommand>(WATCH_COMMAND_QUEUE_CAPACITY);
 
         {
             *self
@@ -1386,11 +1387,8 @@ impl WorkspaceEngine {
                         .as_deref()
                         .and_then(|old| synthetic_single_edit(old, text_for_db.as_str()));
                     if let Some(edit) = synthetic {
-                        self.query_db.apply_file_text_edit(
-                            file_id,
-                            edit,
-                            Arc::clone(&text_for_db),
-                        );
+                        self.query_db
+                            .apply_file_text_edit(file_id, edit, Arc::clone(&text_for_db));
                     } else {
                         self.query_db.set_file_content(file_id, text_for_db);
                     }
@@ -2257,7 +2255,9 @@ fn build_source_roots(config: &ProjectConfig) -> Vec<SourceRootEntry> {
         .collect()
 }
 
-fn watch_roots_from_project_config(config: &ProjectConfig) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+fn watch_roots_from_project_config(
+    config: &ProjectConfig,
+) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
     let mut source_roots = Vec::new();
     let mut generated_source_roots = Vec::new();
     for root_entry in &config.source_roots {
@@ -2271,7 +2271,11 @@ fn watch_roots_from_project_config(config: &ProjectConfig) -> (Vec<PathBuf>, Vec
     generated_source_roots.sort();
     generated_source_roots.dedup();
 
-    let mut module_roots: Vec<PathBuf> = config.modules.iter().map(|module| module.root.clone()).collect();
+    let mut module_roots: Vec<PathBuf> = config
+        .modules
+        .iter()
+        .map(|module| module.root.clone())
+        .collect();
     module_roots.sort();
     module_roots.dedup();
 
@@ -2450,7 +2454,10 @@ fn is_build_tool_input_file(path: &Path) -> bool {
 }
 
 fn should_refresh_build_config(changed_files: &[PathBuf]) -> bool {
-    changed_files.is_empty() || changed_files.iter().any(|path| is_build_tool_input_file(path))
+    changed_files.is_empty()
+        || changed_files
+            .iter()
+            .any(|path| is_build_tool_input_file(path))
 }
 
 fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
@@ -2988,10 +2995,7 @@ fn reload_project_and_sync(
     }
 
     next_entries.sort_by(|(a_path, a_id), (b_path, b_id)| {
-        a_path
-            .as_str()
-            .cmp(b_path.as_str())
-            .then(a_id.cmp(b_id))
+        a_path.as_str().cmp(b_path.as_str()).then(a_id.cmp(b_id))
     });
     let ordered: Vec<FileId> = next_entries.into_iter().map(|(_, id)| id).collect();
     query_db.set_project_files(project, Arc::new(ordered));
@@ -3441,7 +3445,6 @@ mod tests {
         )
         .expect("plan should be present in Reduced mode");
         assert_eq!(files, vec![FileId::from_raw(2)]);
-
     }
 
     fn new_test_engine(memory: MemoryManager) -> WorkspaceEngine {
@@ -3894,7 +3897,6 @@ mod tests {
             assert!(!file_path.is_empty());
             assert_eq!(file_path.as_str(), expected_rel_path.as_str());
         });
-
     }
 
     #[test]
@@ -3902,10 +3904,9 @@ mod tests {
         let memory = MemoryManager::new(MemoryBudget::from_total(10 * nova_memory::GB));
         let engine = new_test_engine(memory.clone());
 
-        let registration =
-            engine
-                .memory
-                .register_tracker("test-pressure", MemoryCategory::Other);
+        let registration = engine
+            .memory
+            .register_tracker("test-pressure", MemoryCategory::Other);
         let tracker = registration.tracker();
 
         // Start in low pressure so we get the full diagnostic set.
@@ -3949,10 +3950,9 @@ mod tests {
         let memory = MemoryManager::new(MemoryBudget::from_total(10 * nova_memory::GB));
         let engine = new_test_engine(memory.clone());
 
-        let registration =
-            engine
-                .memory
-                .register_tracker("test-pressure", MemoryCategory::Other);
+        let registration = engine
+            .memory
+            .register_tracker("test-pressure", MemoryCategory::Other);
         let tracker = registration.tracker();
         tracker.set_bytes(0);
 
@@ -3995,7 +3995,10 @@ mod tests {
         // Truncation should preserve ordering (prefix of the baseline list).
         let baseline_labels: Vec<&str> = baseline.iter().map(|item| item.label.as_str()).collect();
         let capped_labels: Vec<&str> = capped.iter().map(|item| item.label.as_str()).collect();
-        assert_eq!(capped_labels, baseline_labels.into_iter().take(cap).collect::<Vec<_>>());
+        assert_eq!(
+            capped_labels,
+            baseline_labels.into_iter().take(cap).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -4203,9 +4206,12 @@ mod tests {
 
         let (syntax_store, java_store, item_store) = engine.query_db.with_snapshot(|snap| {
             (
-                snap.syntax_tree_store().expect("syntax tree store should be attached"),
-                snap.java_parse_store().expect("java parse store should be attached"),
-                snap.item_tree_store().expect("item tree store should be attached"),
+                snap.syntax_tree_store()
+                    .expect("syntax tree store should be attached"),
+                snap.java_parse_store()
+                    .expect("java parse store should be attached"),
+                snap.item_tree_store()
+                    .expect("item tree store should be attached"),
             )
         });
 
@@ -4276,9 +4282,12 @@ mod tests {
 
         let (syntax_store, java_store, item_store) = engine.query_db.with_snapshot(|snap| {
             (
-                snap.syntax_tree_store().expect("syntax tree store should be attached"),
-                snap.java_parse_store().expect("java parse store should be attached"),
-                snap.item_tree_store().expect("item tree store should be attached"),
+                snap.syntax_tree_store()
+                    .expect("syntax tree store should be attached"),
+                snap.java_parse_store()
+                    .expect("java parse store should be attached"),
+                snap.item_tree_store()
+                    .expect("item tree store should be attached"),
             )
         });
 
@@ -4317,7 +4326,10 @@ mod tests {
         );
 
         // Sanity check that the overlay is still open (under a different id).
-        let id_b = engine.vfs.get_id(&vfs_b).expect("expected B to have a file id");
+        let id_b = engine
+            .vfs
+            .get_id(&vfs_b)
+            .expect("expected B to have a file id");
         assert!(engine.vfs.open_documents().is_open(id_b));
     }
 
@@ -5599,11 +5611,17 @@ enabled = false
 
         let file_id =
             workspace.open_document(vfs_path.clone(), "class Main { int x; }".to_string(), 1);
-        let text_arc = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let text_arc = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
 
-        let first = engine.query_db.with_snapshot(|snap| snap.item_tree(file_id));
+        let first = engine
+            .query_db
+            .with_snapshot(|snap| snap.item_tree(file_id));
         engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
-        let second = engine.query_db.with_snapshot(|snap| snap.item_tree(file_id));
+        let second = engine
+            .query_db
+            .with_snapshot(|snap| snap.item_tree(file_id));
         assert!(
             Arc::ptr_eq(&first, &second),
             "expected item_tree results to be reused for open documents across memo eviction"
@@ -5613,7 +5631,9 @@ enabled = false
         workspace.close_document(&vfs_path);
         engine.query_db.set_file_content(file_id, text_arc);
         engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
-        let third = engine.query_db.with_snapshot(|snap| snap.item_tree(file_id));
+        let third = engine
+            .query_db
+            .with_snapshot(|snap| snap.item_tree(file_id));
         assert!(
             !Arc::ptr_eq(&first, &third),
             "expected item_tree results to be recomputed for closed documents after memo eviction"
@@ -5724,7 +5744,9 @@ enabled = false
                         snap.file_exists(file_id)
                             && snap.file_content(file_id).as_str() == text
                             && snap.file_rel_path(file_id).as_str() == "src/Main.java"
-                            && snap.project_files(ProjectId::from_raw(0)).contains(&file_id)
+                            && snap
+                                .project_files(ProjectId::from_raw(0))
+                                .contains(&file_id)
                     })
                 }))
                 .unwrap_or(false);

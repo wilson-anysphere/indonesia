@@ -167,10 +167,7 @@ fn infer_from_argument_via_generic_supertype() {
         receiver: Type::class(test, vec![]),
         call_kind: nova_types::CallKind::Static,
         name: "m",
-        args: vec![Type::class(
-            array_list,
-            vec![Type::class(string, vec![])],
-        )],
+        args: vec![Type::class(array_list, vec![Type::class(string, vec![])])],
         expected_return: None,
         explicit_type_args: vec![],
     };

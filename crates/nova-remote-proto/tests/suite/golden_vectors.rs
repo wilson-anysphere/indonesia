@@ -15,8 +15,10 @@ fn rpc_v2_worker_hello_golden_vector() {
         has_cached_index: true,
     };
 
-    let bytes: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/rpc_v2_hello.bin"));
+    let bytes: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/rpc_v2_hello.bin"
+    ));
 
     let decoded = transport::decode_framed_message(bytes).expect("decode golden frame");
     assert_eq!(decoded, expected);

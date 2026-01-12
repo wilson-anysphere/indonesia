@@ -960,9 +960,12 @@ where
             if source.contains("import") {
                 let refactor_file = RefactorFileId::new(uri.to_string());
                 let db = TextDatabase::new([(refactor_file.clone(), source.to_string())]);
-                if let Ok(edit) =
-                    organize_imports(&db, OrganizeImportsParams { file: refactor_file.clone() })
-                {
+                if let Ok(edit) = organize_imports(
+                    &db,
+                    OrganizeImportsParams {
+                        file: refactor_file.clone(),
+                    },
+                ) {
                     if !edit.is_empty() {
                         if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
                             actions.push(lsp_types::CodeActionOrCommand::CodeAction(
@@ -1350,12 +1353,7 @@ where
         if has_build_metadata(db, params.file) {
             return Vec::new();
         }
-        crate::framework_cache::framework_completions(
-            db,
-            params.file,
-            params.offset,
-            &ctx.cancel,
-        )
+        crate::framework_cache::framework_completions(db, params.file, params.offset, &ctx.cancel)
     }
 }
 

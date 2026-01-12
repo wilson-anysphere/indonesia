@@ -17,4 +17,3 @@ fn does_not_report_unknown_keys_when_metadata_is_empty() {
         "expected no {SPRING_UNKNOWN_CONFIG_KEY} diagnostics when metadata is empty; got {diags:?}"
     );
 }
-

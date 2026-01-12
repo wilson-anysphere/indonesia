@@ -15,10 +15,7 @@ async fn dap_enable_method_return_values_succeeds_when_supported() {
     let resp = client
         .request("nova/enableMethodReturnValues", json!({}))
         .await;
-    assert_eq!(
-        resp.get("success").and_then(|v| v.as_bool()),
-        Some(true)
-    );
+    assert_eq!(resp.get("success").and_then(|v| v.as_bool()), Some(true));
 
     client.disconnect().await;
     server_task.await.unwrap().unwrap();

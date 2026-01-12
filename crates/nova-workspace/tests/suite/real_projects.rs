@@ -71,10 +71,13 @@ fn assert_symbols_contain_file(symbols: &[WorkspaceSymbol], expected_file: &str)
     let found = symbols.iter().any(|sym| {
         let value =
             serde_json::to_value(sym).expect("WorkspaceSymbol should be serializable to JSON");
-        let mut locations = value
-            .get("location")
-            .into_iter()
-            .chain(value.get("locations").and_then(|v| v.as_array()).into_iter().flatten());
+        let mut locations = value.get("location").into_iter().chain(
+            value
+                .get("locations")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten(),
+        );
         locations.any(|loc| {
             loc.get("file")
                 .and_then(|v| v.as_str())

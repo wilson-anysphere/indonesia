@@ -103,15 +103,24 @@ fn build_targets_respects_existing_output_flags() {
     let workspace = BazelWorkspace::new(root.path().to_path_buf(), runner.clone()).unwrap();
 
     let _ = workspace
-        .build_targets(&["//:a"], &["--color=yes", "--curses=yes", "--show_progress"])
+        .build_targets(
+            &["//:a"],
+            &["--color=yes", "--curses=yes", "--show_progress"],
+        )
         .unwrap();
 
     assert_eq!(
         runner.last_call(),
-        vec!["build", "--color=yes", "--curses=yes", "--show_progress", "//:a"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+        vec![
+            "build",
+            "--color=yes",
+            "--curses=yes",
+            "--show_progress",
+            "//:a"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
     );
 }
 
@@ -125,10 +134,17 @@ fn build_targets_passes_multiple_targets() {
 
     assert_eq!(
         runner.last_call(),
-        vec!["build", "--color=no", "--curses=no", "--noshow_progress", "//:a", "//:b"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+        vec![
+            "build",
+            "--color=no",
+            "--curses=no",
+            "--noshow_progress",
+            "//:a",
+            "//:b"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
     );
 }
 
@@ -150,4 +166,3 @@ fn build_targets_plumbs_timeout_and_output_limits() {
     assert_eq!(runner.last_timeout(), Some(Duration::from_secs(123)));
     assert_eq!(runner.last_max_bytes(), 2 * 1024 * 1024);
 }
-

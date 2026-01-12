@@ -150,7 +150,10 @@ async fn dap_rejects_data_breakpoints_when_jdwp_capabilities_missing() {
         .get("message")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    assert!(message.contains("watchpoints are not supported"), "{message}");
+    assert!(
+        message.contains("watchpoints are not supported"),
+        "{message}"
+    );
     assert!(
         message.contains("canWatchFieldModification=false"),
         "{message}"

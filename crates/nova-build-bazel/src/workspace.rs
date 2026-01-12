@@ -519,7 +519,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             }
 
             let out: Vec<String> = owners.into_iter().collect();
-            self.java_owning_targets_cache.insert(cache_key, out.clone());
+            self.java_owning_targets_cache
+                .insert(cache_key, out.clone());
             return Ok(out);
         }
 
@@ -563,7 +564,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                             frontier.iter().next().expect("frontier checked non-empty")
                         )
                     } else {
-                        let frontier_expr = frontier.iter().cloned().collect::<Vec<_>>().join(" + ");
+                        let frontier_expr =
+                            frontier.iter().cloned().collect::<Vec<_>>().join(" + ");
                         format!("rdeps({package_universe}, ({frontier_expr}), 1)")
                     };
                     let direct_rdeps = self.query_label_kind(&expr)?;
@@ -590,7 +592,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         }
 
         let out: Vec<String> = owners.into_iter().collect();
-        self.java_owning_targets_cache.insert(cache_key, out.clone());
+        self.java_owning_targets_cache
+            .insert(cache_key, out.clone());
         Ok(out)
     }
 
@@ -618,12 +621,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let args = bazel_build_args(targets, extra_args);
         let args_ref = args.iter().map(String::as_str).collect::<Vec<_>>();
 
-        self.runner.run_with_options(
-            &self.root,
-            "bazel",
-            &args_ref,
-            options.to_run_options(),
-        )
+        self.runner
+            .run_with_options(&self.root, "bazel", &args_ref, options.to_run_options())
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
@@ -700,23 +699,27 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             "bazel java target discovery: universe expression is empty"
         );
 
-        let query = format!(r#"kind("java_.* rule", {universe})"#, universe = universe_expr);
-        self.runner.run_with_stdout(&self.root, "bazel", &["query", &query], |stdout| {
-            let mut targets = Vec::new();
-            let mut line = String::new();
-            loop {
-                line.clear();
-                let bytes = stdout.read_line(&mut line)?;
-                if bytes == 0 {
-                    break;
+        let query = format!(
+            r#"kind("java_.* rule", {universe})"#,
+            universe = universe_expr
+        );
+        self.runner
+            .run_with_stdout(&self.root, "bazel", &["query", &query], |stdout| {
+                let mut targets = Vec::new();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        targets.push(trimmed.to_string());
+                    }
                 }
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    targets.push(trimmed.to_string());
-                }
-            }
-            Ok(targets)
-        })
+                Ok(targets)
+            })
     }
 
     /// Discover `java_*` rule targets within the transitive closure of `run_target`
@@ -1746,7 +1749,10 @@ fn resolve_bazelrc_import_path(workspace_root: &Path, raw: &str) -> Option<PathB
     }
 
     let path = if let Some(rest) = raw.strip_prefix("%workspace%") {
-        let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix('/')
+            .or_else(|| rest.strip_prefix('\\'))
+            .unwrap_or(rest);
         if rest.is_empty() {
             workspace_root.to_path_buf()
         } else {
@@ -1843,7 +1849,12 @@ mod bsp_config_tests {
     struct NoopRunner;
 
     impl CommandRunner for NoopRunner {
-        fn run(&self, _cwd: &Path, _program: &str, _args: &[&str]) -> anyhow::Result<CommandOutput> {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+        ) -> anyhow::Result<CommandOutput> {
             Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),

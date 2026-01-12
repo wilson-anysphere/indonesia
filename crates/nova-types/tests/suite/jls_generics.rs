@@ -464,7 +464,10 @@ fn method_resolution_prefers_class_bound_over_interface_bound_for_type_var_recei
 
     // Intentionally put the interface bound first (even though Java source syntax requires the
     // class bound first) to ensure receiver normalization is robust and deterministic.
-    let tv = env.add_type_param("T", vec![Type::class(iface, vec![]), Type::class(class, vec![])]);
+    let tv = env.add_type_param(
+        "T",
+        vec![Type::class(iface, vec![]), Type::class(class, vec![])],
+    );
 
     let call = MethodCall {
         receiver: Type::TypeVar(tv),

@@ -22,8 +22,10 @@ fn bazel_heuristic_skips_bazel_output_and_tool_dirs() {
     fs::write(tmp.path().join("bazel-bin/some/BUILD"), "").expect("bazel-bin/some/BUILD");
     fs::create_dir_all(tmp.path().join("bazel-testlogs/some")).expect("create bazel-testlogs/");
     fs::write(tmp.path().join("bazel-testlogs/some/BUILD"), "").expect("bazel-testlogs/some/BUILD");
-    fs::create_dir_all(tmp.path().join("bazel-myworkspace/some")).expect("create bazel-myworkspace/");
-    fs::write(tmp.path().join("bazel-myworkspace/some/BUILD"), "").expect("bazel-myworkspace/some/BUILD");
+    fs::create_dir_all(tmp.path().join("bazel-myworkspace/some"))
+        .expect("create bazel-myworkspace/");
+    fs::write(tmp.path().join("bazel-myworkspace/some/BUILD"), "")
+        .expect("bazel-myworkspace/some/BUILD");
 
     // Tooling output that can also contain BUILD files.
     fs::create_dir_all(tmp.path().join("node_modules/pkg")).expect("create node_modules/");
@@ -95,7 +97,8 @@ fn bazel_heuristic_skips_bazel_output_and_tool_dirs() {
         "nested target/ should never be treated as a source package; got: {project_roots:?}"
     );
 
-    let model = load_workspace_model_with_options(tmp.path(), &options).expect("load workspace model");
+    let model =
+        load_workspace_model_with_options(tmp.path(), &options).expect("load workspace model");
     assert_eq!(model.build_system, BuildSystem::Bazel);
     assert_eq!(model.modules.len(), 1);
 

@@ -1344,7 +1344,10 @@ fn merge_null_constraints(
     lhs
 }
 
-fn null_constraints(body: &Body, expr: ExprId) -> (Vec<(LocalId, NullState)>, Vec<(LocalId, NullState)>) {
+fn null_constraints(
+    body: &Body,
+    expr: ExprId,
+) -> (Vec<(LocalId, NullState)>, Vec<(LocalId, NullState)>) {
     let expr_data = body.expr(expr);
     match &expr_data.kind {
         ExprKind::Unary {
@@ -1366,9 +1369,15 @@ fn null_constraints(body: &Body, expr: ExprId) -> (Vec<(LocalId, NullState)>, Ve
                 };
 
                 if is_eq {
-                    (vec![(local, NullState::Null)], vec![(local, NullState::NonNull)])
+                    (
+                        vec![(local, NullState::Null)],
+                        vec![(local, NullState::NonNull)],
+                    )
                 } else {
-                    (vec![(local, NullState::NonNull)], vec![(local, NullState::Null)])
+                    (
+                        vec![(local, NullState::NonNull)],
+                        vec![(local, NullState::Null)],
+                    )
                 }
             }
             BinaryOp::AndAnd => {
@@ -1607,7 +1616,10 @@ fn check_expr_null_deref(
                     if *required == NullState::Unknown {
                         continue;
                     }
-                    let current = state.get(local.index()).copied().unwrap_or(NullState::Unknown);
+                    let current = state
+                        .get(local.index())
+                        .copied()
+                        .unwrap_or(NullState::Unknown);
                     if current != NullState::Unknown && current != *required {
                         return NullState::NonNull;
                     }
@@ -1639,7 +1651,10 @@ fn check_expr_null_deref(
                     if *required == NullState::Unknown {
                         continue;
                     }
-                    let current = state.get(local.index()).copied().unwrap_or(NullState::Unknown);
+                    let current = state
+                        .get(local.index())
+                        .copied()
+                        .unwrap_or(NullState::Unknown);
                     if current != NullState::Unknown && current != *required {
                         return NullState::NonNull;
                     }

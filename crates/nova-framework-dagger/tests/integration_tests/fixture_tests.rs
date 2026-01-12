@@ -170,4 +170,3 @@ fn multiline_provides_signature_produces_navigation_links() {
         "expected injection -> provider navigation link for multiline @Provides signature"
     );
 }
-

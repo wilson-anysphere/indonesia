@@ -634,10 +634,7 @@ impl TextWriter {
 /// `nova:///decompiled/<hash>/<binary-name>.java` URI format.
 pub fn uri_for_class_internal_name(internal_name: &str) -> String {
     let internal_name = normalize_legacy_internal_name(internal_name);
-    format!(
-        "{DECOMPILE_URI_SCHEME}:///{}.class",
-        internal_name
-    )
+    format!("{DECOMPILE_URI_SCHEME}:///{}.class", internal_name)
 }
 
 /// Attempts to extract the class internal name from a decompiled URI.
@@ -645,9 +642,7 @@ pub fn class_internal_name_from_uri(uri: &str) -> Option<String> {
     if uri.contains('?') || uri.contains('#') {
         return None;
     }
-    let rest = uri
-        .strip_prefix(DECOMPILE_URI_SCHEME)?
-        .strip_prefix(':')?;
+    let rest = uri.strip_prefix(DECOMPILE_URI_SCHEME)?.strip_prefix(':')?;
 
     // Extract the path component, rejecting URIs with a non-empty authority.
     // Mirror `nova-vfs` legacy decompile URI parsing so downstream sees the same internal name.

@@ -110,11 +110,7 @@ async fn tcp_server_listens_and_speaks_dap() {
 
     let addr: SocketAddr = tokio::time::timeout(timeout, async {
         loop {
-            let Some(line) = stderr_lines
-                .next_line()
-                .await
-                .expect("read stderr")
-            else {
+            let Some(line) = stderr_lines.next_line().await.expect("read stderr") else {
                 panic!("nova-dap exited before reporting listening address");
             };
 
@@ -234,7 +230,10 @@ async fn tcp_server_listens_and_speaks_dap() {
             .unwrap_or(false),
         "disconnect was not successful: {disconnect_response}"
     );
-    assert!(got_terminated_event, "expected terminated event after disconnect");
+    assert!(
+        got_terminated_event,
+        "expected terminated event after disconnect"
+    );
 
     drop(writer);
     drop(reader);

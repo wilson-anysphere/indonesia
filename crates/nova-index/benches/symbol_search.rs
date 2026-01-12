@@ -130,10 +130,7 @@ fn bench_symbol_search(c: &mut Criterion) {
     let index_qualified = SymbolSearchIndex::build(symbols_qualified);
 
     // Sanity-check the benchmark scenarios: if these change, the numbers stop being meaningful.
-    for (label, index) in [
-        ("equal", &index_equal),
-        ("qualified", &index_qualified),
-    ] {
+    for (label, index) in [("equal", &index_equal), ("qualified", &index_qualified)] {
         let (_results, stats) = index.search_with_stats("hm", LIMIT);
         assert_eq!(
             stats.strategy,
@@ -176,17 +173,18 @@ fn bench_symbol_search(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(2));
     group.sample_size(20);
 
-    for (label, index) in [
-        ("equal", &index_equal),
-        ("qualified", &index_qualified),
-    ] {
+    for (label, index) in [("equal", &index_equal), ("qualified", &index_qualified)] {
         group.bench_with_input(BenchmarkId::new("prefix_hm", label), index, |b, index| {
             b.iter(|| black_box(index.search_with_stats(black_box("hm"), black_box(LIMIT))))
         });
 
-        group.bench_with_input(BenchmarkId::new("prefix_m_many", label), index, |b, index| {
-            b.iter(|| black_box(index.search_with_stats(black_box("m"), black_box(LIMIT))))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("prefix_m_many", label),
+            index,
+            |b, index| {
+                b.iter(|| black_box(index.search_with_stats(black_box("m"), black_box(LIMIT))))
+            },
+        );
 
         group.bench_with_input(BenchmarkId::new("trigram_map", label), index, |b, index| {
             b.iter(|| black_box(index.search_with_stats(black_box("map"), black_box(LIMIT))))
@@ -195,13 +193,17 @@ fn bench_symbol_search(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("trigram_hmap_multi", label),
             index,
-            |b, index| b.iter(|| black_box(index.search_with_stats(black_box("hmap"), black_box(LIMIT)))),
+            |b, index| {
+                b.iter(|| black_box(index.search_with_stats(black_box("hmap"), black_box(LIMIT))))
+            },
         );
 
         group.bench_with_input(
             BenchmarkId::new("fallback_full_scan_zkm", label),
             index,
-            |b, index| b.iter(|| black_box(index.search_with_stats(black_box("zkm"), black_box(LIMIT)))),
+            |b, index| {
+                b.iter(|| black_box(index.search_with_stats(black_box("zkm"), black_box(LIMIT))))
+            },
         );
     }
 

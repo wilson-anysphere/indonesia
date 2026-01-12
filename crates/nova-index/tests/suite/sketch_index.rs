@@ -38,10 +38,7 @@ fn overloaded_methods_indexed_with_signatures_and_lookup_works() {
         index.method_param_types(id_map).unwrap(),
         ["Map<String, Integer>"]
     );
-    assert_eq!(
-        index.method_param_names(id_map).unwrap(),
-        ["m".to_string()]
-    );
+    assert_eq!(index.method_param_names(id_map).unwrap(), ["m".to_string()]);
 
     let sig_string_int = vec!["String".to_string(), "int".to_string()];
     let id_string_int = index
@@ -505,7 +502,10 @@ abstract class A {
     let method = index
         .find_method("A", "foo")
         .expect("method symbol missing");
-    assert!(method.is_override, "expected method to be marked as override");
+    assert!(
+        method.is_override,
+        "expected method to be marked as override"
+    );
 }
 
 #[test]
@@ -773,10 +773,7 @@ class Outer {
         .find(|sym| sym.kind == SymbolKind::Class && sym.name == "Nested")
         .expect("expected Nested to be indexed");
 
-    assert_eq!(
-        &text[inner.name_range.start..inner.name_range.end],
-        "Inner"
-    );
+    assert_eq!(&text[inner.name_range.start..inner.name_range.end], "Inner");
     assert_eq!(
         &text[nested.name_range.start..nested.name_range.end],
         "Nested"

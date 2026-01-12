@@ -19,9 +19,7 @@ fn command_output_with_retry(
     for attempt in 0..7 {
         match make_command().output() {
             Ok(output) => return output,
-            Err(err)
-                if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 6 =>
-            {
+            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 6 => {
                 std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                 backoff_ms *= 2;
             }
@@ -163,8 +161,7 @@ fn lsp_version_passthrough_matches_nova_lsp() {
         String::from_utf8_lossy(&via_nova.stderr)
     );
     assert_eq!(
-        direct.stdout,
-        via_nova.stdout,
+        direct.stdout, via_nova.stdout,
         "expected identical stdout for `nova-lsp --version` and `nova lsp --version`"
     );
 
@@ -182,15 +179,16 @@ fn lsp_version_passthrough_matches_nova_lsp() {
         String::from_utf8_lossy(&via_nova_path.stderr)
     );
     assert_eq!(
-        direct.stdout,
-        via_nova_path.stdout,
+        direct.stdout, via_nova_path.stdout,
         "expected identical stdout for `nova-lsp --version` and `nova lsp --path ... --version`"
     );
 }
 
 #[test]
 fn lsp_stdio_initialize_shutdown_exit_passthrough() {
-    let _guard = STDIO_SERVER_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = STDIO_SERVER_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
 
     let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
@@ -230,12 +228,17 @@ fn lsp_stdio_initialize_shutdown_exit_passthrough() {
     drop(stdin);
 
     let status = child.wait().expect("wait");
-    assert!(status.success(), "expected successful LSP lifecycle, got {status:?}");
+    assert!(
+        status.success(),
+        "expected successful LSP lifecycle, got {status:?}"
+    );
 }
 
 #[test]
 fn lsp_exit_without_shutdown_propagates_failure_status() {
-    let _guard = STDIO_SERVER_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _guard = STDIO_SERVER_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
 
     let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
@@ -308,8 +311,7 @@ fn dap_version_passthrough_matches_nova_dap() {
         String::from_utf8_lossy(&via_nova.stderr)
     );
     assert_eq!(
-        direct.stdout,
-        via_nova.stdout,
+        direct.stdout, via_nova.stdout,
         "expected identical stdout for `nova-dap --version` and `nova dap --version`"
     );
 
@@ -326,8 +328,7 @@ fn dap_version_passthrough_matches_nova_dap() {
         String::from_utf8_lossy(&via_nova_path.stderr)
     );
     assert_eq!(
-        direct.stdout,
-        via_nova_path.stdout,
+        direct.stdout, via_nova_path.stdout,
         "expected identical stdout for `nova-dap --version` and `nova dap --path ... --version`"
     );
 }
@@ -565,9 +566,7 @@ fn index_creates_persistent_cache_and_symbols_work() {
                     .and_then(|v| v.as_array())
                     .into_iter()
                     .flatten()
-                    .any(|loc| {
-                        loc.get("file").and_then(|v| v.as_str()) == Some("src/Main.java")
-                    });
+                    .any(|loc| loc.get("file").and_then(|v| v.as_str()) == Some("src/Main.java"));
             sym.get("name").and_then(|v| v.as_str()) == Some("Main") && has_file
         }),
         "expected Main symbol in results, got: {symbols:#?}"

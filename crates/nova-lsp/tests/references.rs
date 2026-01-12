@@ -1,4 +1,6 @@
-use lsp_types::{ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams};
+use lsp_types::{
+    ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams,
+};
 
 use nova_test_utils::Fixture;
 
@@ -40,4 +42,3 @@ class Main {
         loc.uri == fixture.marker_uri(1) && loc.range.start == fixture.marker_position(1)
     }));
 }
-

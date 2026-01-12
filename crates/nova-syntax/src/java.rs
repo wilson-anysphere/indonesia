@@ -414,7 +414,10 @@ pub mod ast {
         ///
         /// We still preserve any direct child expressions so downstream passes (resolver,
         /// refactoring, etc.) can traverse them and record references.
-        Invalid { children: Vec<Expr>, range: Span },
+        Invalid {
+            children: Vec<Expr>,
+            range: Span,
+        },
         Missing(Span),
     }
 
@@ -2382,8 +2385,13 @@ impl Lowerer {
         let mut args = Vec::new();
 
         let mut dims = 0usize;
-        if let Some(dim_exprs) = node.children().find(|child| child.kind() == SyntaxKind::DimExprs) {
-            for dim_expr in dim_exprs.children().filter(|child| child.kind() == SyntaxKind::DimExpr)
+        if let Some(dim_exprs) = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::DimExprs)
+        {
+            for dim_expr in dim_exprs
+                .children()
+                .filter(|child| child.kind() == SyntaxKind::DimExpr)
             {
                 dims += 1;
                 if let Some(expr) = dim_expr
@@ -2395,7 +2403,10 @@ impl Lowerer {
             }
         }
 
-        if let Some(dims_node) = node.children().find(|child| child.kind() == SyntaxKind::Dims) {
+        if let Some(dims_node) = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Dims)
+        {
             dims += dims_node
                 .children()
                 .filter(|child| child.kind() == SyntaxKind::Dim)

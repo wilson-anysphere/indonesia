@@ -726,7 +726,12 @@ pub fn diagnostics_for_file(
             for mapping in &method.mappings {
                 // MapStruct targets can refer to nested paths (`foo.bar`). For unmapped property
                 // diagnostics we only care about the top-level target property name (`foo`).
-                let target = mapping.target.split('.').next().unwrap_or(&mapping.target).trim();
+                let target = mapping
+                    .target
+                    .split('.')
+                    .next()
+                    .unwrap_or(&mapping.target)
+                    .trim();
                 if !target.is_empty() {
                     mapped.insert(target.to_string());
                 }
@@ -1596,9 +1601,7 @@ fn mapping_property_completions_fs(
         return Vec::new();
     }
 
-    let before_cursor = file_text
-        .get(value_span.start..cursor)
-        .unwrap_or_default();
+    let before_cursor = file_text.get(value_span.start..cursor).unwrap_or_default();
     let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
     let segment_start = value_span.start + segment_start_rel;
     let prefix = file_text.get(segment_start..cursor).unwrap_or_default();

@@ -532,8 +532,11 @@ mod tests {
         let plain_dir = deps_dir.join("plain");
 
         std::fs::create_dir_all(&explicit_dir).expect("mkdir explicit");
-        std::fs::write(explicit_dir.join("module-info.class"), make_module_info_class())
-            .expect("write module-info.class");
+        std::fs::write(
+            explicit_dir.join("module-info.class"),
+            make_module_info_class(),
+        )
+        .expect("write module-info.class");
 
         std::fs::create_dir_all(manifest_dir.join("META-INF")).expect("mkdir manifest META-INF");
         std::fs::write(
@@ -592,8 +595,11 @@ mod tests {
         let plain_dir = deps_dir.join("plain");
 
         std::fs::create_dir_all(&explicit_dir).expect("mkdir explicit");
-        std::fs::write(explicit_dir.join("module-info.class"), make_module_info_class())
-            .expect("write module-info.class");
+        std::fs::write(
+            explicit_dir.join("module-info.class"),
+            make_module_info_class(),
+        )
+        .expect("write module-info.class");
 
         std::fs::create_dir_all(manifest_dir.join("META-INF")).expect("mkdir manifest META-INF");
         std::fs::write(

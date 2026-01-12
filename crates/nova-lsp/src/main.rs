@@ -3,6 +3,7 @@ mod codec;
 mod rpc_out;
 
 use crossbeam_channel::{Receiver, Sender};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::{
     CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
@@ -14,25 +15,25 @@ use lsp_types::{
     HoverParams, InlayHintParams as LspInlayHintParams, Location as LspLocation,
     Position as LspTypesPosition, Range as LspTypesRange, ReferenceParams,
     RenameParams as LspRenameParams, SelectionRange, SelectionRangeParams, SignatureHelpParams,
-    SymbolInformation, SymbolKind as LspSymbolKind,
-    TextDocumentPositionParams, TextEdit, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
-    TypeHierarchySupertypesParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
-    WorkspaceSymbolParams,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextDocumentPositionParams, TextEdit,
+    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
+    Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit, WorkspaceSymbolParams,
 };
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
-use nova_ai::ExcludedPathMatcher;
 use nova_ai::workspace::VirtualWorkspace;
+use nova_ai::ExcludedPathMatcher;
 use nova_ai::NovaAi;
-use nova_ai_codegen::{CodeGenerationConfig, PromptCompletionProvider};
 #[cfg(feature = "ai")]
 use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
     MultiTokenCompletionProvider,
 };
+use nova_ai_codegen::{CodeGenerationConfig, PromptCompletionProvider};
 use nova_core::WasmHostDb;
 use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
+use nova_decompile::DecompiledDocumentStore;
 use nova_ext::{ExtensionManager, ExtensionMetadata, ExtensionRegistry};
 use nova_ide::extensions::IdeExtensions;
 use nova_ide::{
@@ -46,13 +47,14 @@ use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngin
 use nova_index::{Index, SymbolKind};
 use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
 use nova_lsp::{AiCodeAction, AiCodeActionExecutor, CodeActionOutcome};
-use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager};
+use nova_memory::{
+    MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager,
+};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
     RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
 };
-use nova_decompile::DecompiledDocumentStore;
 use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;
 use rpc_out::RpcOut;
@@ -66,7 +68,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 
 static SEMANTIC_TOKENS_RESULT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1153,7 +1154,8 @@ impl AnalysisState {
         let id = self.vfs.open_document(path.clone(), text.clone(), version);
         if let Some(local) = path.as_local_path() {
             self.file_paths.insert(id, local.to_path_buf());
-            self.salsa.set_file_path(id, local.to_string_lossy().to_string());
+            self.salsa
+                .set_file_path(id, local.to_string_lossy().to_string());
         }
         self.file_exists.insert(id, true);
         self.file_contents.insert(id, text.clone());
@@ -1254,7 +1256,8 @@ impl AnalysisState {
         let id = self.vfs.rename_path(&from_path, to_path.clone());
         if let Some(local) = to_path.as_local_path() {
             self.file_paths.insert(id, local.to_path_buf());
-            self.salsa.set_file_path(id, local.to_string_lossy().to_string());
+            self.salsa
+                .set_file_path(id, local.to_string_lossy().to_string());
         } else {
             self.file_paths.remove(&id);
             self.salsa.set_file_path(id, String::new());
@@ -1275,8 +1278,8 @@ impl Default for AnalysisState {
             Err(err) => {
                 // Best-effort fallback: if we can't resolve the normal cache directory
                 // (e.g. missing HOME in a sandbox), fall back to a per-process temp dir.
-                let fallback_root =
-                    std::env::temp_dir().join(format!("nova-decompiled-docs-{}", std::process::id()));
+                let fallback_root = std::env::temp_dir()
+                    .join(format!("nova-decompiled-docs-{}", std::process::id()));
                 let _ = std::fs::create_dir_all(&fallback_root);
                 tracing::warn!(
                     target = "nova.lsp",
@@ -1440,8 +1443,8 @@ impl ServerState {
     ) -> Self {
         let config = Arc::new(config);
         let ai_config = config.ai.clone();
-        let privacy =
-            privacy_override.unwrap_or_else(|| nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy));
+        let privacy = privacy_override
+            .unwrap_or_else(|| nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy));
         let ai_privacy_excluded_matcher = ExcludedPathMatcher::from_config(&ai_config.privacy);
 
         let (ai, runtime) = if ai_config.enabled {
@@ -1518,8 +1521,7 @@ impl ServerState {
             // `nova.aiCompletions.maxItems` is surfaced to the server via `NOVA_AI_COMPLETIONS_MAX_ITEMS`.
             // Treat `0` as a hard disable so the server doesn't spawn background AI completion tasks
             // or mark results as `is_incomplete`.
-            let multi_token_enabled =
-                multi_token_enabled && ai_max_items_override.unwrap_or(1) > 0;
+            let multi_token_enabled = multi_token_enabled && ai_max_items_override.unwrap_or(1) > 0;
             let ai_provider = if multi_token_enabled {
                 match AiClient::from_config(&ai_config) {
                     Ok(client) => {
@@ -1847,7 +1849,8 @@ impl ServerState {
         #[cfg(feature = "wasm-extensions")]
         {
             let mut registry = ExtensionRegistry::<SingleFileDb>::default();
-            let register_report = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
+            let register_report =
+                ExtensionManager::register_all_best_effort(&mut registry, &loaded);
             self.extension_register_errors = register_report
                 .errors
                 .iter()
@@ -2045,7 +2048,8 @@ impl ServerState {
     }
 
     fn semantic_search_workspace_index_status_json(&self) -> serde_json::Value {
-        let (current, completed, files, bytes) = self.semantic_search_workspace_index_status.snapshot();
+        let (current, completed, files, bytes) =
+            self.semantic_search_workspace_index_status.snapshot();
         let done = current != 0 && current == completed;
         json!({
             "currentRunId": current,
@@ -2245,17 +2249,11 @@ impl ServerState {
 
                 indexed_files += 1;
                 indexed_bytes = indexed_bytes.saturating_add(len);
-                status
-                    .indexed_files
-                    .store(indexed_files, Ordering::SeqCst);
-                status
-                    .indexed_bytes
-                    .store(indexed_bytes, Ordering::SeqCst);
+                status.indexed_files.store(indexed_files, Ordering::SeqCst);
+                status.indexed_bytes.store(indexed_bytes, Ordering::SeqCst);
             }
 
-            status
-                .completed_run_id
-                .store(run_id, Ordering::SeqCst);
+            status.completed_run_id.store(run_id, Ordering::SeqCst);
         });
     }
 
@@ -2939,7 +2937,8 @@ fn handle_request_json(
                 return Ok(server_shutting_down_error(id));
             }
             nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::NOVA_COMPLETION_MORE_METHOD)
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::NOVA_COMPLETION_MORE_METHOD)
             {
                 let (code, message) = match err {
                     nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
@@ -3368,7 +3367,9 @@ fn handle_extensions_navigation(
     let uri = params.text_document.uri;
     let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
-        return Ok(json!({ "schemaVersion": nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION, "targets": [] }));
+        return Ok(
+            json!({ "schemaVersion": nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION, "targets": [] }),
+        );
     }
 
     let text = state.analysis.file_content(file_id).to_string();
@@ -4080,7 +4081,9 @@ fn handle_code_action(
                                 )
                                 // Preserve previous behavior: only offer Safe Delete when the
                                 // cursor is on the method name token.
-                                .filter(|sym| offset >= sym.name_range.start && offset <= sym.name_range.end)
+                                .filter(|sym| {
+                                    offset >= sym.name_range.start && offset <= sym.name_range.end
+                                })
                                 .map(|sym| sym.id);
 
                             if let Some(target) = target {
@@ -4637,7 +4640,11 @@ fn parse_java_imports(text: &str) -> (HashMap<String, String>, Vec<String>) {
 
         // Ignore static imports for type navigation.
         if let Some(after_static) = rest.strip_prefix("static") {
-            if after_static.is_empty() || after_static.chars().next().is_some_and(|c| c.is_whitespace())
+            if after_static.is_empty()
+                || after_static
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_whitespace())
             {
                 continue;
             }
@@ -4750,7 +4757,8 @@ fn goto_definition_jdk(
 
             // Ensure we matched an identifier.
             let before_ok = found == 0 || !is_ident_continue(bytes[found - 1]);
-            let after_ok = found + var_len >= bytes.len() || !is_ident_continue(bytes[found + var_len]);
+            let after_ok =
+                found + var_len >= bytes.len() || !is_ident_continue(bytes[found + var_len]);
             if !before_ok || !after_ok {
                 search_from = found + 1;
                 continue;
@@ -4943,14 +4951,12 @@ fn goto_definition_jdk(
                             descriptor: m.descriptor.clone(),
                         })
                 } else {
-                    stub_value
-                        .fields
-                        .iter()
-                        .find(|f| f.name == ident)
-                        .map(|f| nova_decompile::SymbolKey::Field {
+                    stub_value.fields.iter().find(|f| f.name == ident).map(|f| {
+                        nova_decompile::SymbolKey::Field {
                             name: f.name.clone(),
                             descriptor: f.descriptor.clone(),
-                        })
+                        }
+                    })
                 };
             }
 
@@ -4989,10 +4995,11 @@ fn goto_definition_jdk(
         binary_name,
     } = &vfs_path
     {
-        if let Err(err) = state
-            .analysis
-            .decompiled_store
-            .store_text(content_hash, binary_name, &decompiled.text)
+        if let Err(err) =
+            state
+                .analysis
+                .decompiled_store
+                .store_text(content_hash, binary_name, &decompiled.text)
         {
             tracing::warn!(
                 target = "nova.lsp",
@@ -6435,8 +6442,7 @@ fn handle_selection_range(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: SelectionRangeParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: SelectionRangeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -6518,7 +6524,10 @@ fn handle_workspace_symbol(
     }
 
     fn json_u32(value: &serde_json::Value, key: &str) -> Option<u32> {
-        value.get(key).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok())
+        value
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
     }
 
     fn json_location(value: &serde_json::Value) -> Option<(String, u32, u32)> {
@@ -6535,7 +6544,9 @@ fn handle_workspace_symbol(
     }
 
     fn kind_to_lsp(kind: Option<&serde_json::Value>) -> LspSymbolKind {
-        let Some(kind) = kind else { return LspSymbolKind::OBJECT };
+        let Some(kind) = kind else {
+            return LspSymbolKind::OBJECT;
+        };
         match kind {
             serde_json::Value::String(s) => {
                 match s.trim().to_ascii_lowercase().as_str() {
@@ -6563,10 +6574,9 @@ fn handle_workspace_symbol(
                     "object" => LspSymbolKind::OBJECT,
                     "key" => LspSymbolKind::KEY,
                     "null" => LspSymbolKind::NULL,
-                    "enumconstant"
-                    | "enum_constant"
-                    | "enummember"
-                    | "enum_member" => LspSymbolKind::ENUM_MEMBER,
+                    "enumconstant" | "enum_constant" | "enummember" | "enum_member" => {
+                        LspSymbolKind::ENUM_MEMBER
+                    }
                     "struct" => LspSymbolKind::STRUCT,
                     "event" => LspSymbolKind::EVENT,
                     "operator" => LspSymbolKind::OPERATOR,
@@ -6900,7 +6910,13 @@ fn handle_execute_command(
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests_code_action(args, params.work_done_token, state, client, cancel.clone())
+            run_ai_generate_tests_code_action(
+                args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
@@ -7030,7 +7046,15 @@ fn resolve_workspace_relative_path(
         .project_root
         .clone()
         .or_else(|| abs_path.parent().map(Path::to_path_buf))
-        .ok_or_else(|| (-32602, format!("unable to determine project root for {}", abs_path.display())))?;
+        .ok_or_else(|| {
+            (
+                -32602,
+                format!(
+                    "unable to determine project root for {}",
+                    abs_path.display()
+                ),
+            )
+        })?;
     if !root.is_absolute() {
         root = std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("/"))
@@ -7044,10 +7068,12 @@ fn resolve_workspace_relative_path(
 
     // Fallback: treat the file's directory as the workspace root so join_uri still
     // produces a correct URI for applyEdit.
-    let fallback_root = abs_path
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| (-32602, format!("file has no parent directory: {}", abs_path.display())))?;
+    let fallback_root = abs_path.parent().map(Path::to_path_buf).ok_or_else(|| {
+        (
+            -32602,
+            format!("file has no parent directory: {}", abs_path.display()),
+        )
+    })?;
     let file_name = abs_path
         .file_name()
         .ok_or_else(|| (-32602, format!("file has no name: {}", abs_path.display())))?
@@ -7206,8 +7232,7 @@ mod tests {
 
         let _redact_sensitive_strings = ScopedEnvVar::remove("NOVA_AI_REDACT_SENSITIVE_STRINGS");
         let _redact_numeric_literals = ScopedEnvVar::remove("NOVA_AI_REDACT_NUMERIC_LITERALS");
-        let _strip_or_redact_comments =
-            ScopedEnvVar::remove("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
+        let _strip_or_redact_comments = ScopedEnvVar::remove("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
 
         let (cfg, _privacy) = load_ai_config_from_env()
             .expect("load_ai_config_from_env")
@@ -7224,10 +7249,8 @@ mod tests {
         {
             let _anonymize = ScopedEnvVar::set("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0");
             let _allow_cloud_code_edits = ScopedEnvVar::set("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1");
-            let _allow_code_edits_without_anonymization = ScopedEnvVar::set(
-                "NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION",
-                "true",
-            );
+            let _allow_code_edits_without_anonymization =
+                ScopedEnvVar::set("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "true");
             let _redact_sensitive_strings =
                 ScopedEnvVar::set("NOVA_AI_REDACT_SENSITIVE_STRINGS", "0");
             let _redact_numeric_literals =
@@ -7603,7 +7626,9 @@ mod tests {
         // Multi-token completion must not run for excluded paths (no async follow-up completions).
         let completion_params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: secret_uri.clone() },
+                text_document: lsp_types::TextDocumentIdentifier {
+                    uri: secret_uri.clone(),
+                },
                 position: lsp_types::Position::new(0, 0),
             },
             work_done_progress_params: Default::default(),
@@ -7814,13 +7839,15 @@ fn ai_workspace_root_uri_and_rel_path(
 ) -> Result<(LspUri, String), (i32, String)> {
     let root_path = match state.project_root.as_deref() {
         Some(root) if file_path.starts_with(root) => root.to_path_buf(),
-        _ => file_path.parent().ok_or_else(|| {
-            (
-                -32602,
-                format!("missing parent directory for `{}`", file_path.display()),
-            )
-        })?
-        .to_path_buf(),
+        _ => file_path
+            .parent()
+            .ok_or_else(|| {
+                (
+                    -32602,
+                    format!("missing parent directory for `{}`", file_path.display()),
+                )
+            })?
+            .to_path_buf(),
     };
 
     let file_rel = if file_path.starts_with(&root_path) {
@@ -7830,12 +7857,16 @@ fn ai_workspace_root_uri_and_rel_path(
             .to_path_buf()
     } else {
         PathBuf::from(file_path.file_name().ok_or_else(|| {
-            (-32602, format!("invalid file path `{}`", file_path.display()))
+            (
+                -32602,
+                format!("invalid file path `{}`", file_path.display()),
+            )
         })?)
     };
     let file_rel = file_rel.to_string_lossy().replace('\\', "/");
 
-    let abs_root = nova_core::AbsPathBuf::try_from(root_path).map_err(|e| (-32603, e.to_string()))?;
+    let abs_root =
+        nova_core::AbsPathBuf::try_from(root_path).map_err(|e| (-32603, e.to_string()))?;
     let root_uri = nova_core::path_to_file_uri(&abs_root)
         .map_err(|e| (-32603, e.to_string()))?
         .parse::<LspUri>()
@@ -7877,12 +7908,8 @@ fn run_ai_generate_method_body_code_action(
         ));
     }
 
-    let source = load_document_text(state, uri).ok_or_else(|| {
-        (
-            -32603,
-            format!("missing document text for `{}`", uri),
-        )
-    })?;
+    let source = load_document_text(state, uri)
+        .ok_or_else(|| (-32603, format!("missing document text for `{}`", uri)))?;
 
     let selection = LspTypesRange::new(
         LspTypesPosition::new(range.start.line, range.start.character),
@@ -8006,12 +8033,8 @@ fn run_ai_generate_tests_code_action(
         ));
     }
 
-    let source = load_document_text(state, uri).ok_or_else(|| {
-        (
-            -32603,
-            format!("missing document text for `{}`", uri),
-        )
-    })?;
+    let source = load_document_text(state, uri)
+        .ok_or_else(|| (-32603, format!("missing document text for `{}`", uri)))?;
 
     let insert_range = LspTypesRange::new(
         LspTypesPosition::new(range.start.line, range.start.character),
@@ -8094,14 +8117,14 @@ fn run_ai_explain_error(
         // diagnostic originates from an excluded path.
         (None, None, String::new())
     } else {
-        (args.uri.as_deref(), args.range, args.code.unwrap_or_default())
+        (
+            args.uri.as_deref(),
+            args.range,
+            args.code.unwrap_or_default(),
+        )
     };
     let mut ctx = build_context_request_from_args(
-        state,
-        uri,
-        range,
-        code,
-        /*fallback_enclosing=*/ None,
+        state, uri, range, code, /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
     ctx.diagnostics.push(ContextDiagnostic {
@@ -8165,14 +8188,10 @@ fn run_ai_generate_method_body(
     let range = args
         .range
         .ok_or_else(|| (-32602, "missing range for generateMethodBody".to_string()))?;
-    let text = load_document_text(state, uri).ok_or_else(|| {
-        (
-            -32602,
-            format!("missing document text for `{}`", uri),
-        )
-    })?;
-    let abs_path = path_from_uri(uri)
-        .ok_or_else(|| (-32602, format!("unsupported uri scheme: {uri}")))?;
+    let text = load_document_text(state, uri)
+        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri)))?;
+    let abs_path =
+        path_from_uri(uri).ok_or_else(|| (-32602, format!("unsupported uri scheme: {uri}")))?;
 
     if is_ai_excluded_path(state, &abs_path) {
         return Err((
@@ -8186,7 +8205,11 @@ fn run_ai_generate_method_body(
 
     let insert_range = method_body_insertion_range(&text, range)?;
 
-    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_begin(
+        rpc_out,
+        work_done_token.as_ref(),
+        "AI: Generate method body",
+    )?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Generating patch…", None)?;
     send_log_message(rpc_out, "AI: generating method body patch…")?;
 
@@ -8274,12 +8297,8 @@ fn run_ai_generate_tests(
     let range = args
         .range
         .ok_or_else(|| (-32602, "missing range for generateTests".to_string()))?;
-    let source_text = load_document_text(state, uri).ok_or_else(|| {
-        (
-            -32602,
-            format!("missing document text for `{}`", uri),
-        )
-    })?;
+    let source_text = load_document_text(state, uri)
+        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri)))?;
     let abs_path = path_from_uri(uri).ok_or_else(|| (-32602, format!("unsupported uri: {uri}")))?;
 
     if is_ai_excluded_path(state, &abs_path) {
@@ -8316,7 +8335,10 @@ fn run_ai_generate_tests(
 
         (
             test_file,
-            lsp_types::Range::new(lsp_types::Position::new(0, 0), lsp_types::Position::new(0, 0)),
+            lsp_types::Range::new(
+                lsp_types::Position::new(0, 0),
+                lsp_types::Position::new(0, 0),
+            ),
             workspace,
         )
     } else {

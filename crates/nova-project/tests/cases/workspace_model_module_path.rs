@@ -1,4 +1,6 @@
-use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
+use nova_project::{
+    load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions,
+};
 use std::io::Write;
 use std::path::Path;
 use tempfile::tempdir;
@@ -115,8 +117,11 @@ fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
         "module com.example.app { requires com.example.dep; }",
     )
     .expect("write module-info.java");
-    std::fs::write(src_dir.join("Main.java"), "package com.example.app; class Main {}")
-        .expect("write dummy java");
+    std::fs::write(
+        src_dir.join("Main.java"),
+        "package com.example.app; class Main {}",
+    )
+    .expect("write dummy java");
 
     let maven_repo = tmp.path().join("maven-repo");
     let jar_path = maven_repo.join("com/example/dep/1.0/dep-1.0.jar");
@@ -272,7 +277,9 @@ fn make_module_info_class() -> Vec<u8> {
 
     impl Cp {
         fn new() -> Self {
-            Self { entries: Vec::new() }
+            Self {
+                entries: Vec::new(),
+            }
         }
 
         fn push(&mut self, entry: CpEntry) -> u16 {
@@ -328,7 +335,7 @@ fn make_module_info_class() -> Vec<u8> {
     push_u2(&mut module_attr, 0); // module_version_index
     push_u2(&mut module_attr, 0); // requires_count
     push_u2(&mut module_attr, 1); // exports_count
-                                       // exports
+                                  // exports
     push_u2(&mut module_attr, api_pkg); // exports_index (Package)
     push_u2(&mut module_attr, 0); // exports_flags
     push_u2(&mut module_attr, 1); // exports_to_count

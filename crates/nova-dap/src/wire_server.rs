@@ -39,8 +39,7 @@ use crate::{
     stream_debug::{StreamDebugArguments, StreamDebugBody, STREAM_DEBUG_COMMAND},
     wire_debugger::{
         is_retryable_attach_error, AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger,
-        DebuggerError,
-        FunctionBreakpointSpec, StepDepth, VmStoppedValue,
+        DebuggerError, FunctionBreakpointSpec, StepDepth, VmStoppedValue,
     },
     EvaluateResult,
 };
@@ -592,7 +591,8 @@ async fn handle_request_inner(
             }
         }
         "launch" => {
-            let mut args: LaunchArguments = match serde_json::from_value(request.arguments.clone()) {
+            let mut args: LaunchArguments = match serde_json::from_value(request.arguments.clone())
+            {
                 Ok(args) => args,
                 Err(err) => {
                     send_response(
@@ -1225,7 +1225,9 @@ async fn handle_request_inner(
                         request,
                         false,
                         None,
-                        Some(format!("failed to resolve host {host_label:?}: no addresses found")),
+                        Some(format!(
+                            "failed to resolve host {host_label:?}: no addresses found"
+                        )),
                     );
                     return;
                 }
@@ -1748,7 +1750,8 @@ async fn handle_request_inner(
                 sess.kind = Some(SessionKind::Launch);
                 sess.debugger_id = Some(debugger_id);
                 let needs_config_done_resume = args.stop_on_entry;
-                let resume_after_launch = needs_config_done_resume && sess.configuration_done_received;
+                let resume_after_launch =
+                    needs_config_done_resume && sess.configuration_done_received;
                 sess.awaiting_configuration_done_resume =
                     needs_config_done_resume && !sess.configuration_done_received;
                 sess.project_root = project_root;
@@ -2405,14 +2408,7 @@ async fn handle_request_inner(
                     if let Some(total_frames) = total_frames {
                         body.insert("totalFrames".to_string(), json!(total_frames));
                     }
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        true,
-                        Some(Value::Object(body)),
-                        None,
-                    )
+                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None)
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -3069,7 +3065,8 @@ async fn handle_request_inner(
                 return;
             }
 
-            let args: StreamDebugArguments = match serde_json::from_value(request.arguments.clone()) {
+            let args: StreamDebugArguments = match serde_json::from_value(request.arguments.clone())
+            {
                 Ok(args) => args,
                 Err(err) => {
                     send_response(
@@ -3214,7 +3211,9 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     request,
                     false,
                     None,
-                    Some(format!("stream debug invocation threw exception objectId=0x{exception:x}")),
+                    Some(format!(
+                        "stream debug invocation threw exception objectId=0x{exception:x}"
+                    )),
                 ),
                 Ok((value, _exception)) => {
                     let source_sample = nova_stream_debug::StreamSample {
@@ -3258,10 +3257,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         total_duration_ms: 0,
                     };
 
-                    let body = StreamDebugBody {
-                        analysis,
-                        runtime,
-                    };
+                    let body = StreamDebugBody { analysis, runtime };
 
                     send_response(out_tx, seq, request, true, Some(json!(body)), None);
                 }
@@ -3433,21 +3429,21 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 return;
             }
 
-            let args: DataBreakpointInfoArguments = match serde_json::from_value(request.arguments.clone())
-            {
-                Ok(args) => args,
-                Err(err) => {
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        false,
-                        None,
-                        Some(format!("invalid dataBreakpointInfo arguments: {err}")),
-                    );
-                    return;
-                }
-            };
+            let args: DataBreakpointInfoArguments =
+                match serde_json::from_value(request.arguments.clone()) {
+                    Ok(args) => args,
+                    Err(err) => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("invalid dataBreakpointInfo arguments: {err}")),
+                        );
+                        return;
+                    }
+                };
 
             // `frameId` is optional in the DAP spec; the debugger can resolve the field based on
             // the variables reference alone.
@@ -4409,8 +4405,10 @@ fn spawn_output_task<R>(
 
             if read == 0 {
                 if !discarding && !buf.is_empty() {
-                    let output =
-                        truncate_message(String::from_utf8_lossy(&buf).to_string(), MAX_OUTPUT_EVENT_BYTES);
+                    let output = truncate_message(
+                        String::from_utf8_lossy(&buf).to_string(),
+                        MAX_OUTPUT_EVENT_BYTES,
+                    );
                     send_event(
                         &tx,
                         &seq,
@@ -4874,7 +4872,9 @@ fn spawn_event_task(
                     // these stop events, avoid mutating breakpoint state, and immediately
                     // resume the thread so the invoke can complete.
                     match &event {
-                        nova_jdwp::wire::JdwpEvent::Breakpoint { thread, request_id, .. } => {
+                        nova_jdwp::wire::JdwpEvent::Breakpoint {
+                            thread, request_id, ..
+                        } => {
                             if dbg.is_internal_evaluation_thread(*thread) {
                                 internal_eval_stop_event = true;
                                 // Logpoints use `SuspendPolicy::NONE`, so there is no thread

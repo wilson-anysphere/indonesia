@@ -18,4 +18,3 @@ fn spring_builtin_analyzer_applies() {
         "expected Spring builtin analyzer to apply for org.springframework.boot:spring-boot"
     );
 }
-

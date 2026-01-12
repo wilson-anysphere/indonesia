@@ -286,11 +286,7 @@ impl MockJdwpServer {
     }
 
     pub async fn reference_type_methods_calls(&self) -> Vec<ReferenceTypeMethodsCall> {
-        self.state
-            .reference_type_methods_calls
-            .lock()
-            .await
-            .clone()
+        self.state.reference_type_methods_calls.lock().await.clone()
     }
 
     pub async fn class_type_invoke_method_calls(&self) -> Vec<ClassTypeInvokeMethodCall> {
@@ -2364,10 +2360,8 @@ async fn handle_packet(
                 let tag = values.first().map(jdwp_value_tag).unwrap_or(b'V');
                 w.write_u8(tag);
                 w.write_u32(slice.len() as u32);
-                let primitive = matches!(
-                    tag,
-                    b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D'
-                );
+                let primitive =
+                    matches!(tag, b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D');
                 for value in slice {
                     if primitive {
                         w.write_value(value, sizes);
@@ -2500,16 +2494,12 @@ async fn handle_packet(
 
             match res {
                 Ok((loader, name, len)) => {
-                    state
-                        .define_class_calls
-                        .lock()
-                        .await
-                        .push(DefineClassCall {
-                            loader,
-                            name,
-                            bytecode_len: len,
-                            returned_id: DEFINED_CLASS_ID,
-                        });
+                    state.define_class_calls.lock().await.push(DefineClassCall {
+                        loader,
+                        name,
+                        bytecode_len: len,
+                        returned_id: DEFINED_CLASS_ID,
+                    });
                     let mut w = JdwpWriter::new();
                     w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
                     (0, w.into_vec())

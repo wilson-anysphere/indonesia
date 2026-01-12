@@ -135,7 +135,9 @@ class Statics {
 "#,
     );
 
-    let class_id = store.class_id("p.Statics").expect("class should be registered");
+    let class_id = store
+        .class_id("p.Statics")
+        .expect("class should be registered");
     let class_def = store.class(class_id).expect("class def should exist");
 
     let field = class_def
@@ -168,7 +170,9 @@ enum Color { RED, GREEN }
 "#,
     );
 
-    let color_id = store.class_id("p.Color").expect("expected p.Color to be defined");
+    let color_id = store
+        .class_id("p.Color")
+        .expect("expected p.Color to be defined");
     let color = store.class(color_id).expect("expected p.Color class def");
 
     let red = color

@@ -71,9 +71,9 @@ impl WorkspaceIndex {
 
         let mut uri_to_file_id = HashMap::new();
         for file_id in &file_ids {
-            let is_java = db.file_path(*file_id).is_some_and(|path| {
-                path.extension().and_then(|e| e.to_str()) == Some("java")
-            });
+            let is_java = db
+                .file_path(*file_id)
+                .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
             if !is_java {
                 continue;
             }
@@ -91,13 +91,11 @@ impl WorkspaceIndex {
                 continue;
             };
             for ty in &parsed_file.types {
-                types
-                    .entry(ty.name.clone())
-                    .or_insert_with(|| TypeInfo {
-                        file_id: *file_id,
-                        uri: parsed_file.uri.clone(),
-                        def: ty.clone(),
-                    });
+                types.entry(ty.name.clone()).or_insert_with(|| TypeInfo {
+                    file_id: *file_id,
+                    uri: parsed_file.uri.clone(),
+                    def: ty.clone(),
+                });
             }
         }
 
@@ -267,7 +265,9 @@ impl WorkspaceIndex {
 
         // First walk the superclass chain (including interface inheritance via `extends`).
         if let Some(super_name) = type_info.def.super_class.as_deref() {
-            if let Some(def) = self.resolve_method_definition_inner(super_name, method_name, visited) {
+            if let Some(def) =
+                self.resolve_method_definition_inner(super_name, method_name, visited)
+            {
                 return Some(def);
             }
         }
@@ -313,7 +313,8 @@ impl WorkspaceIndex {
 
         // Walk superclass chain first.
         if let Some(super_name) = type_info.def.super_class.as_deref() {
-            if let Some(def) = self.resolve_field_definition_inner(super_name, field_name, visited) {
+            if let Some(def) = self.resolve_field_definition_inner(super_name, field_name, visited)
+            {
                 return Some(def);
             }
         }
@@ -501,9 +502,7 @@ impl Resolver {
                 let receiver_ty =
                     self.index
                         .resolve_receiver_type(parsed, ident_span.start, &receiver)?;
-                let def = self
-                    .index
-                    .resolve_method_definition(&receiver_ty, &ident)?;
+                let def = self.index.resolve_method_definition(&receiver_ty, &ident)?;
                 Some(ResolvedSymbol {
                     name: ident,
                     kind: ResolvedKind::Method,
@@ -619,7 +618,9 @@ fn looks_like_type_usage(text: &str, ident_span: Span) -> bool {
                         while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
                             j += 1;
                         }
-                        return bytes.get(j).is_some_and(|b| is_ident_start(*b) || *b == b'[');
+                        return bytes
+                            .get(j)
+                            .is_some_and(|b| is_ident_start(*b) || *b == b'[');
                     }
                 }
                 _ => {}

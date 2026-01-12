@@ -193,12 +193,10 @@ pub fn move_class(
     }
 
     // Conflict detection: destination already contains a type with the same name.
-    let source_root =
-        nova_build_model::infer_source_root(&params.source_path, &pkg.name).ok_or_else(|| {
-            RefactorError::CannotInferSourceRoot {
-                path: params.source_path.clone(),
-                package: pkg.name.clone(),
-            }
+    let source_root = nova_build_model::infer_source_root(&params.source_path, &pkg.name)
+        .ok_or_else(|| RefactorError::CannotInferSourceRoot {
+            path: params.source_path.clone(),
+            package: pkg.name.clone(),
         })?;
 
     let dest_path = source_root
@@ -1069,7 +1067,12 @@ mod tests {
     ) -> BTreeMap<PathBuf, String> {
         let by_id: BTreeMap<FileId, String> = input
             .iter()
-            .map(|(path, text)| (FileId::new(path.to_string_lossy().into_owned()), text.clone()))
+            .map(|(path, text)| {
+                (
+                    FileId::new(path.to_string_lossy().into_owned()),
+                    text.clone(),
+                )
+            })
             .collect();
 
         let applied = apply_workspace_edit(&by_id, edit).expect("workspace edit applies cleanly");

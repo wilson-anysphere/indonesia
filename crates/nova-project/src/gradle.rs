@@ -130,9 +130,10 @@ fn collect_gradle_build_files_rec(
         }
         if name.ends_with(".lockfile")
             && path.parent().is_some_and(|parent| {
-                parent
-                    .ancestors()
-                    .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+                parent.ancestors().any(|dir| {
+                    dir.file_name()
+                        .is_some_and(|name| name == "dependency-locks")
+                })
             })
         {
             out.push(path);
@@ -288,18 +289,9 @@ fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
 
 fn java_language_level_from_snapshot(cfg: &GradleSnapshotJavaCompileConfig) -> JavaLanguageLevel {
     JavaLanguageLevel {
-        release: cfg
-            .release
-            .as_deref()
-            .and_then(JavaVersion::parse),
-        source: cfg
-            .source
-            .as_deref()
-            .and_then(JavaVersion::parse),
-        target: cfg
-            .target
-            .as_deref()
-            .and_then(JavaVersion::parse),
+        release: cfg.release.as_deref().and_then(JavaVersion::parse),
+        source: cfg.source.as_deref().and_then(JavaVersion::parse),
+        target: cfg.target.as_deref().and_then(JavaVersion::parse),
         preview: cfg.enable_preview,
     }
 }
@@ -1300,8 +1292,7 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
 
 fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<String, String> {
     static INCLUDE_FLAT_RE: OnceLock<Regex> = OnceLock::new();
-    let re =
-        INCLUDE_FLAT_RE.get_or_init(|| Regex::new(r"\bincludeFlat\b").expect("valid regex"));
+    let re = INCLUDE_FLAT_RE.get_or_init(|| Regex::new(r"\bincludeFlat\b").expect("valid regex"));
 
     let mut out = BTreeMap::new();
 
@@ -1581,8 +1572,7 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-const GRADLE_DEPENDENCY_CONFIGS: &str =
-    r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
 fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
     match configuration.trim().to_ascii_lowercase().as_str() {
@@ -1682,16 +1672,15 @@ fn parse_gradle_version_catalog_library(
             })
         }
         Value::Table(table) => {
-            let (group_id, artifact_id) = if let Some(module) =
-                table.get("module").and_then(Value::as_str)
-            {
-                let (group_id, artifact_id) = module.split_once(':')?;
-                (group_id.to_string(), artifact_id.to_string())
-            } else {
-                let group_id = table.get("group").and_then(Value::as_str)?;
-                let artifact_id = table.get("name").and_then(Value::as_str)?;
-                (group_id.to_string(), artifact_id.to_string())
-            };
+            let (group_id, artifact_id) =
+                if let Some(module) = table.get("module").and_then(Value::as_str) {
+                    let (group_id, artifact_id) = module.split_once(':')?;
+                    (group_id.to_string(), artifact_id.to_string())
+                } else {
+                    let group_id = table.get("group").and_then(Value::as_str)?;
+                    let artifact_id = table.get("name").and_then(Value::as_str)?;
+                    (group_id.to_string(), artifact_id.to_string())
+                };
 
             let version = match table.get("version") {
                 Some(Value::String(v)) => Some(v.to_string()),
@@ -1741,7 +1730,10 @@ fn parse_gradle_dependencies(
             continue;
         };
 
-        out.extend(parse_gradle_dependencies_from_text(&contents, version_catalog));
+        out.extend(parse_gradle_dependencies_from_text(
+            &contents,
+            version_catalog,
+        ));
     }
     out
 }
@@ -2045,7 +2037,10 @@ fn parse_gradle_dependencies_from_text(
 
     // Version catalog references (`implementation(libs.foo)` / `implementation libs.foo`).
     if let Some(version_catalog) = version_catalog {
-        deps.extend(resolve_version_catalog_dependencies(contents, version_catalog));
+        deps.extend(resolve_version_catalog_dependencies(
+            contents,
+            version_catalog,
+        ));
     }
     sort_dedup_dependencies(&mut deps);
     deps
@@ -2094,8 +2089,7 @@ fn resolve_version_catalog_reference(
     }
 
     if let Some(bundle_accessor) = reference.strip_prefix("bundles.") {
-        let Some(bundle) =
-            resolve_version_catalog_key(&version_catalog.bundles, bundle_accessor)
+        let Some(bundle) = resolve_version_catalog_key(&version_catalog.bundles, bundle_accessor)
         else {
             return Vec::new();
         };
@@ -2118,7 +2112,9 @@ fn resolve_version_catalog_reference(
         return Vec::new();
     };
 
-    version_catalog_library_to_dependency(lib).into_iter().collect()
+    version_catalog_library_to_dependency(lib)
+        .into_iter()
+        .collect()
 }
 
 fn version_catalog_library_to_dependency(lib: &GradleVersionCatalogLibrary) -> Option<Dependency> {
@@ -2553,7 +2549,11 @@ dependencies {
         let mut scopes: BTreeMap<(String, String, Option<String>), Option<String>> =
             BTreeMap::new();
         for dep in deps {
-            tuples.push((dep.group_id.clone(), dep.artifact_id.clone(), dep.version.clone()));
+            tuples.push((
+                dep.group_id.clone(),
+                dep.artifact_id.clone(),
+                dep.version.clone(),
+            ));
             scopes.insert((dep.group_id, dep.artifact_id, dep.version), dep.scope);
         }
         let got: BTreeSet<_> = tuples.iter().cloned().collect();
@@ -2588,22 +2588,58 @@ dependencies {
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep the most permissive Maven-like scope (union).
         let expected_scopes: [((String, String, Option<String>), &str); 14] = [
-            ((String::from("g1"), String::from("a1"), Some("1".into())), "compile"),
-            ((String::from("g2"), String::from("a2"), Some("2".into())), "compile"),
-            ((String::from("g3"), String::from("a3"), Some("3".into())), "provided"),
-            ((String::from("g4"), String::from("a4"), Some("4".into())), "runtime"),
-            ((String::from("g5"), String::from("a5"), Some("5".into())), "test"),
-            ((String::from("g6"), String::from("a6"), Some("6".into())), "test"),
-            ((String::from("g7"), String::from("a7"), Some("7".into())), "test"),
-            ((String::from("g8"), String::from("a8"), Some("8".into())), "provided"),
-            ((String::from("g9"), String::from("a9"), Some("9".into())), "test"),
+            (
+                (String::from("g1"), String::from("a1"), Some("1".into())),
+                "compile",
+            ),
+            (
+                (String::from("g2"), String::from("a2"), Some("2".into())),
+                "compile",
+            ),
+            (
+                (String::from("g3"), String::from("a3"), Some("3".into())),
+                "provided",
+            ),
+            (
+                (String::from("g4"), String::from("a4"), Some("4".into())),
+                "runtime",
+            ),
+            (
+                (String::from("g5"), String::from("a5"), Some("5".into())),
+                "test",
+            ),
+            (
+                (String::from("g6"), String::from("a6"), Some("6".into())),
+                "test",
+            ),
+            (
+                (String::from("g7"), String::from("a7"), Some("7".into())),
+                "test",
+            ),
+            (
+                (String::from("g8"), String::from("a8"), Some("8".into())),
+                "provided",
+            ),
+            (
+                (String::from("g9"), String::from("a9"), Some("9".into())),
+                "test",
+            ),
             (
                 (String::from("g10"), String::from("a10"), Some("10".into())),
                 "provided",
             ),
-            ((String::from("g11"), String::from("a11"), Some("11".into())), "test"),
-            ((String::from("g12"), String::from("a12"), Some("12".into())), "compile"),
-            ((String::from("g13"), String::from("a13"), Some("13".into())), "provided"),
+            (
+                (String::from("g11"), String::from("a11"), Some("11".into())),
+                "test",
+            ),
+            (
+                (String::from("g12"), String::from("a12"), Some("12".into())),
+                "compile",
+            ),
+            (
+                (String::from("g13"), String::from("a13"), Some("13".into())),
+                "provided",
+            ),
             (
                 (String::from("dup"), String::from("dep"), Some("1.0".into())),
                 "compile",
@@ -2643,12 +2679,11 @@ dependencies {
         let deps = parse_gradle_project_dependencies_from_text(&stripped);
         let got: BTreeSet<_> = deps.into_iter().collect();
 
-        let expected: BTreeSet<String> = [
-            ":lib", ":lib2", ":lib3", ":lib4", ":lib5", ":lib6", ":lib7",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+        let expected: BTreeSet<String> =
+            [":lib", ":lib2", ":lib3", ":lib4", ":lib5", ":lib6", ":lib7"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
 
         assert_eq!(got, expected);
     }

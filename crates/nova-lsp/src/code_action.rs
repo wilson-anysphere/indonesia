@@ -210,14 +210,16 @@ fn workspace_edit_from_virtual_workspace<'a>(
     for (file, before_text, after_text) in &changed {
         if before_text.is_none() && after_text.is_some() {
             let uri = crate::workspace_edit::join_uri(root_uri, Path::new(file));
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(CreateFile {
-                uri,
-                options: Some(CreateFileOptions {
-                    overwrite: Some(false),
-                    ignore_if_exists: Some(true),
-                }),
-                annotation_id: None,
-            })));
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                CreateFile {
+                    uri,
+                    options: Some(CreateFileOptions {
+                        overwrite: Some(false),
+                        ignore_if_exists: Some(true),
+                    }),
+                    annotation_id: None,
+                },
+            )));
         }
     }
 
@@ -482,9 +484,9 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Mutex,
     };
+    use tempfile::TempDir;
     use tokio::sync::oneshot;
     use tokio::time::{timeout, Duration};
-    use tempfile::TempDir;
 
     #[derive(Default)]
     struct MockAiProvider {
@@ -844,10 +846,8 @@ mod tests {
             panic!("expected operations-based document changes");
         };
         assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                DocumentChangeOperation::Op(ResourceOp::Create(_))
-            )),
+            ops.iter()
+                .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Create(_)))),
             "expected CreateFile op, got: {ops:?}"
         );
 

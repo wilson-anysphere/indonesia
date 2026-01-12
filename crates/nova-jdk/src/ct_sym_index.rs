@@ -248,9 +248,8 @@ impl CtSymReleaseIndex {
                 }
             }
 
-            bytes = bytes.saturating_add(
-                (info.opens.capacity() * size_of::<nova_modules::Opens>()) as u64,
-            );
+            bytes = bytes
+                .saturating_add((info.opens.capacity() * size_of::<nova_modules::Opens>()) as u64);
             for opens in &info.opens {
                 bytes = bytes.saturating_add(opens.package.capacity() as u64);
                 bytes =
@@ -260,8 +259,8 @@ impl CtSymReleaseIndex {
                 }
             }
 
-            bytes =
-                bytes.saturating_add((info.uses.capacity() * size_of::<nova_modules::Uses>()) as u64);
+            bytes = bytes
+                .saturating_add((info.uses.capacity() * size_of::<nova_modules::Uses>()) as u64);
             for uses in &info.uses {
                 bytes = bytes.saturating_add(uses.service.capacity() as u64);
             }

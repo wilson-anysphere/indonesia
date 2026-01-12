@@ -442,11 +442,13 @@ impl<B: BuildSystemMulti, J: JdwpRedefiner> HotSwapEngine<B, J> {
                                     status: HotSwapStatus::Success,
                                     message: None,
                                 }),
-                                Err(JdwpError::NotLoaded(_)) => class_results.push(HotSwapClassResult {
-                                    class_name,
-                                    status: HotSwapStatus::Success,
-                                    message: None,
-                                }),
+                                Err(JdwpError::NotLoaded(_)) => {
+                                    class_results.push(HotSwapClassResult {
+                                        class_name,
+                                        status: HotSwapStatus::Success,
+                                        message: None,
+                                    })
+                                }
                                 Err(JdwpError::SchemaChange(message)) => {
                                     class_results.push(HotSwapClassResult {
                                         class_name,
@@ -529,11 +531,13 @@ impl<B: BuildSystemMulti, J: AsyncJdwpRedefiner> HotSwapEngine<B, J> {
                                     status: HotSwapStatus::Success,
                                     message: None,
                                 }),
-                                Err(JdwpError::NotLoaded(_)) => class_results.push(HotSwapClassResult {
-                                    class_name,
-                                    status: HotSwapStatus::Success,
-                                    message: None,
-                                }),
+                                Err(JdwpError::NotLoaded(_)) => {
+                                    class_results.push(HotSwapClassResult {
+                                        class_name,
+                                        status: HotSwapStatus::Success,
+                                        message: None,
+                                    })
+                                }
                                 Err(JdwpError::SchemaChange(message)) => {
                                     class_results.push(HotSwapClassResult {
                                         class_name,
@@ -746,7 +750,10 @@ mod tests {
 
         assert_eq!(
             engine.jdwp.calls,
-            vec!["com.example.A".to_string(), "com.example.A$Inner".to_string()]
+            vec![
+                "com.example.A".to_string(),
+                "com.example.A$Inner".to_string()
+            ]
         );
     }
 

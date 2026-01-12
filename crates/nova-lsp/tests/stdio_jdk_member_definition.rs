@@ -148,7 +148,7 @@ fn stdio_definition_into_jdk_member_methods_and_fields_returns_symbol_ranges() {
         }),
     );
 
-    let get_offset = method_text.find("get(0)").expect("get call") ;
+    let get_offset = method_text.find("get(0)").expect("get call");
     let get_position = utf16_position(method_text, get_offset);
     write_jsonrpc_message(
         &mut stdin,
@@ -217,4 +217,3 @@ fn stdio_definition_into_jdk_member_methods_and_fields_returns_symbol_ranges() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

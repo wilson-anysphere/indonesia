@@ -77,6 +77,6 @@ fn bazel_flag_is_present(arg: &str, flag: &str) -> bool {
     }
 
     // Bazel flags are usually `--flag=value`.
-    arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
+    arg.strip_prefix(flag)
+        .is_some_and(|rest| rest.starts_with('='))
 }
-

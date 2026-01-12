@@ -61,18 +61,19 @@ pub fn property_keys_from_configs(files: &[(&str, &str)]) -> BTreeSet<String> {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(path);
-        let file_name: Cow<'_, str> = if file_name == *path && path.contains('\\') && !path.contains('/') {
-            let normalized = path.replace('\\', "/");
-            Cow::Owned(
-                Path::new(&normalized)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(file_name)
-                    .to_string(),
-            )
-        } else {
-            Cow::Borrowed(file_name)
-        };
+        let file_name: Cow<'_, str> =
+            if file_name == *path && path.contains('\\') && !path.contains('/') {
+                let normalized = path.replace('\\', "/");
+                Cow::Owned(
+                    Path::new(&normalized)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(file_name)
+                        .to_string(),
+                )
+            } else {
+                Cow::Borrowed(file_name)
+            };
         let file_name = file_name.as_ref();
         if !starts_with_ignore_ascii_case(file_name, "application") {
             continue;

@@ -110,13 +110,7 @@ impl ItemTreeStore {
             return;
         }
 
-        inner.insert(
-            file,
-            Entry {
-                text,
-                item_tree,
-            },
-        );
+        inner.insert(file, Entry { text, item_tree });
         self.update_tracker_locked(&inner);
     }
 

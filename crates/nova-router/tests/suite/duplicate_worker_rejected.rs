@@ -1,8 +1,8 @@
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use crate::remote_rpc_util;
+use anyhow::{Context, Result};
 use nova_router::{
     DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
 };

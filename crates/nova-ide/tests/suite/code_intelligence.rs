@@ -216,7 +216,10 @@ class A {
         !labels1.is_empty(),
         "expected completion list to be non-empty at EOF; got {labels1:?}"
     );
-    assert_eq!(labels1, labels2, "expected completion list to be deterministic");
+    assert_eq!(
+        labels1, labels2,
+        "expected completion list to be deterministic"
+    );
 }
 
 #[test]
@@ -1560,10 +1563,7 @@ class A {}
         .expect("expected java.util.Map.Entry nested type completion");
 
     let text = text_with_caret.replace("<|>", "");
-    let segment_start = text
-        .find("Map.E")
-        .expect("expected Map.E in fixture")
-        + "Map.".len();
+    let segment_start = text.find("Map.E").expect("expected Map.E in fixture") + "Map.".len();
 
     let edit = match item.text_edit.as_ref().expect("expected text_edit") {
         CompletionTextEdit::Edit(edit) => edit,

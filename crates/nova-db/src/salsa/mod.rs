@@ -47,21 +47,21 @@ mod syntax;
 mod typeck;
 mod workspace;
 
+pub use class_ids::{ClassIdInterner, ClassKey, HasClassInterner};
+pub use diagnostics::NovaDiagnostics;
 pub use flow::NovaFlow;
 pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use indexing::NovaIndexing;
+pub use inputs::NovaInputs;
 pub use interned_class_key::{InternedClassKey, InternedClassKeyId, NovaInternedClassKeys};
 pub use item_tree_store::ItemTreeStore;
-pub use inputs::NovaInputs;
-pub use diagnostics::NovaDiagnostics;
 pub use resolve::{NovaResolve, WorkspaceClassIdMap};
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};
 pub use typeck::{BodyTypeckResult, DemandExprTypeckResult, FileExprId, NovaTypeck};
 pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
-pub use class_ids::{ClassIdInterner, ClassKey, HasClassInterner};
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -463,10 +463,7 @@ impl SalsaInputFootprint {
             .project_class_ids_by_project
             .insert(project, bytes)
             .unwrap_or(0);
-        inner.total_bytes = inner
-            .total_bytes
-            .saturating_sub(prev)
-            .saturating_add(bytes);
+        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(bytes);
         drop(inner);
         self.refresh_tracker();
     }
@@ -481,7 +478,10 @@ fn estimated_project_config_bytes(config: &ProjectConfig) -> u64 {
     }
 
     fn add_slice<T>(total: &mut u64, slice: &[T]) {
-        add_bytes(total, (slice.len() as u64).saturating_mul(size_of::<T>() as u64));
+        add_bytes(
+            total,
+            (slice.len() as u64).saturating_mul(size_of::<T>() as u64),
+        );
     }
 
     fn add_path(total: &mut u64, path: &Path) {
@@ -637,7 +637,10 @@ fn estimated_project_config_bytes(config: &ProjectConfig) -> u64 {
         let mut bytes = 0u64;
         for (name, info) in graph.iter() {
             // Best-effort container sizing.
-            bytes = bytes.saturating_add(size_of::<(nova_modules::ModuleName, nova_modules::ModuleInfo)>() as u64);
+            bytes = bytes
+                .saturating_add(
+                    size_of::<(nova_modules::ModuleName, nova_modules::ModuleInfo)>() as u64,
+                );
             add_module_name(&mut bytes, name);
             bytes = bytes.saturating_add(module_info_bytes(info));
         }
@@ -2121,11 +2124,17 @@ impl Database {
             // Store incremental parsing metadata so `parse_java` can attempt `reparse_java`.
             inputs.file_prev_content.insert(file, old_text.clone());
             inputs.file_content.insert(file, new_text.clone());
-            inputs.file_last_edit.insert(file, Some(syntax_edit.clone()));
+            inputs
+                .file_last_edit
+                .insert(file, Some(syntax_edit.clone()));
             inputs.file_is_dirty.insert(file, true);
 
             // Ensure `project_files(project)` includes the edited file.
-            let project = inputs.file_project.get(&file).copied().unwrap_or(default_project);
+            let project = inputs
+                .file_project
+                .get(&file)
+                .copied()
+                .unwrap_or(default_project);
             let mut update: Option<Arc<Vec<FileId>>> = None;
             match inputs.project_files.get(&project) {
                 Some(existing) if existing.as_ref().contains(&file) => {}
@@ -2227,7 +2236,8 @@ impl Database {
 
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
         let bytes = estimated_project_config_bytes(&config);
-        self.input_footprint.record_project_config_bytes(project, bytes);
+        self.input_footprint
+            .record_project_config_bytes(project, bytes);
 
         self.inputs
             .lock()
@@ -2236,7 +2246,11 @@ impl Database {
         self.inner.lock().set_project_config(project, config);
     }
 
-    pub fn set_project_class_ids(&self, project: ProjectId, mapping: Arc<Vec<(Arc<str>, ClassId)>>) {
+    pub fn set_project_class_ids(
+        &self,
+        project: ProjectId,
+        mapping: Arc<Vec<(Arc<str>, ClassId)>>,
+    ) {
         // Best-effort sizing: count the bytes of each binary name plus the per-entry tuple size.
         //
         // NOTE: This intentionally does not attempt to account for all `Arc` header overhead or
@@ -2471,7 +2485,10 @@ impl Database {
         let db_for_initial_check = db.clone();
         manager.subscribe(Arc::new(move |event: nova_memory::MemoryEvent| {
             // Request cancellation whenever we're under High/Critical pressure.
-            if !matches!(event.pressure, MemoryPressure::High | MemoryPressure::Critical) {
+            if !matches!(
+                event.pressure,
+                MemoryPressure::High | MemoryPressure::Critical
+            ) {
                 return;
             }
 
@@ -2490,7 +2507,10 @@ impl Database {
         // Best-effort: if we register this listener while the process is already under high
         // pressure, we may not see another MemoryEvent until pressure changes. Trigger a
         // cancellation request eagerly in that case.
-        if matches!(manager.pressure(), MemoryPressure::High | MemoryPressure::Critical) {
+        if matches!(
+            manager.pressure(),
+            MemoryPressure::High | MemoryPressure::Critical
+        ) {
             if let Some(db) = db_for_initial_check.upgrade() {
                 if let Some(mut guard) = db.try_lock() {
                     guard.request_cancellation();
@@ -2851,10 +2871,9 @@ mod tests {
             let snap = db.snapshot();
 
             let worker = std::thread::spawn(move || {
-                let _guard =
-                    cancellation::test_support::install_entered_long_running_region_sender(
-                        entered_tx,
-                    );
+                let _guard = cancellation::test_support::install_entered_long_running_region_sender(
+                    entered_tx,
+                );
                 catch_cancelled(|| run_query(&snap))
             });
 
@@ -2866,7 +2885,9 @@ mod tests {
             // Synthesize memory pressure and drive an enforcement pass to emit a MemoryEvent.
             let budget = manager.budget();
             let registration = manager.register_tracker("pressure_test", MemoryCategory::Other);
-            registration.tracker().set_bytes(budget.total.saturating_mul(2));
+            registration
+                .tracker()
+                .set_bytes(budget.total.saturating_mul(2));
             manager.enforce();
 
             let deadline = Instant::now() + CANCEL_TIMEOUT;
@@ -3064,7 +3085,10 @@ mod tests {
         assert_eq!(executions(&db, "hir_item_tree"), 1);
         assert_eq!(executions(&db, "hir_symbol_names"), 1);
 
-        db.set_file_text(file, "class Foo { int x; void bar() { int y = 1; int z = 0; } }");
+        db.set_file_text(
+            file,
+            "class Foo { int x; void bar() { int y = 1; int z = 0; } }",
+        );
         let second = db.hir_symbol_names(file);
 
         assert_eq!(&*second, &*first);
@@ -4080,7 +4104,10 @@ class Foo {
             "expected java parse store to report usage for open document"
         );
 
-        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        let syntax_and_cache = report
+            .usage
+            .query_cache
+            .saturating_add(report.usage.syntax_trees);
         assert!(
             syntax_and_cache <= text_len.saturating_mul(3) / 2,
             "expected (query_cache+syntax_trees) to be ~text_len once (<= 1.5x), got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
@@ -4348,7 +4375,10 @@ class Foo {
         });
 
         let report = manager.report();
-        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        let syntax_and_cache = report
+            .usage
+            .query_cache
+            .saturating_add(report.usage.syntax_trees);
         assert!(
             syntax_and_cache <= text_len.saturating_mul(3) / 2,
             "expected (query_cache+syntax_trees) to be ~text_len once (<= 1.5x), got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
@@ -4899,10 +4929,10 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg.clone(),
             },
-         );
-         rw_db.set_file_path(file, file_path);
+        );
+        rw_db.set_file_path(file, file_path);
         rw_db.set_file_text_full(file, text.clone());
- 
+
         let from_rw = rw_db.item_tree(file);
         drop(rw_db);
 
@@ -4913,10 +4943,10 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg.clone(),
             },
-         );
-         rw_db2.set_file_path(file, file_path);
+        );
+        rw_db2.set_file_path(file, file_path);
         rw_db2.set_file_text_full(file, text.clone());
- 
+
         let from_cache = rw_db2.item_tree(file);
         assert_eq!(&*from_cache, &*from_rw);
         assert_eq!(executions(&rw_db2, "parse"), 0);
@@ -4930,10 +4960,10 @@ class Foo {
                 mode: crate::PersistenceMode::Disabled,
                 cache: cache_cfg,
             },
-         );
-         disabled_db.set_file_path(file, file_path);
+        );
+        disabled_db.set_file_path(file, file_path);
         disabled_db.set_file_text_full(file, text);
- 
+
         let from_disabled = disabled_db.item_tree(file);
         assert_eq!(&*from_disabled, &*from_rw);
         assert_eq!(stat(&disabled_db, "item_tree").disk_hits, 0);
@@ -5025,8 +5055,8 @@ class Foo {
                 mode: crate::PersistenceMode::ReadOnly,
                 cache: cache_cfg.clone(),
             },
-         );
-         ro_db.set_file_path(file, rel_path);
+        );
+        ro_db.set_file_path(file, rel_path);
         ro_db.set_file_text_full(file, text.clone());
         let ro_tree = ro_db.item_tree(file);
         assert_eq!(stat(&ro_db, "item_tree").disk_hits, 0);
@@ -5056,8 +5086,8 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg,
             },
-         );
-         rw_db.set_file_path(file, rel_path);
+        );
+        rw_db.set_file_path(file, rel_path);
         rw_db.set_file_text_full(file, text);
         let rw_tree = rw_db.item_tree(file);
         assert_eq!(&*rw_tree, &*ro_tree);
@@ -5089,8 +5119,8 @@ class Foo {
                 mode: crate::PersistenceMode::ReadWrite,
                 cache: cache_cfg.clone(),
             },
-         );
-         db.set_file_path(file, rel_path);
+        );
+        db.set_file_path(file, rel_path);
         db.set_file_text_full(file, text.clone());
         let expected = db.item_tree(file);
         drop(db);
@@ -5115,10 +5145,10 @@ class Foo {
                     cache_root_override: Some(cache_root),
                 },
             },
-         );
-         db2.set_file_path(file, rel_path);
+        );
+        db2.set_file_path(file, rel_path);
         db2.set_file_text_full(file, text);
- 
+
         let actual = db2.item_tree(file);
         assert_eq!(&*actual, &*expected);
         assert_eq!(stat(&db2, "item_tree").disk_hits, 0);

@@ -475,9 +475,7 @@ fn validate_decimal_floating(main: &str, had_suffix: bool) -> Result<(), Literal
     let sig_end = exp_idx.unwrap_or(bytes.len());
     if let Some(d) = dot_idx {
         let left_has_digit = bytes[..d].iter().any(|b| b.is_ascii_digit());
-        let right_has_digit = bytes[d + 1..sig_end]
-            .iter()
-            .any(|b| b.is_ascii_digit());
+        let right_has_digit = bytes[d + 1..sig_end].iter().any(|b| b.is_ascii_digit());
         if !left_has_digit && !right_has_digit {
             return Err(err("Missing digits in literal", 0..sig_end));
         }

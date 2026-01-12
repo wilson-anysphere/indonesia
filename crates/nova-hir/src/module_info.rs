@@ -68,10 +68,7 @@ pub fn lower_module_info_source(src: &str) -> ModuleInfoLowerResult {
 
     let info = Some(lower_module_decl(&decl));
 
-    ModuleInfoLowerResult {
-        info,
-        errors,
-    }
+    ModuleInfoLowerResult { info, errors }
 }
 
 /// Strict lowering wrapper that fails fast on malformed `module-info.java` sources.
@@ -178,9 +175,7 @@ pub fn lower_module_decl(decl: &ModuleDeclaration) -> ModuleInfo {
                     if service.is_empty() {
                         continue;
                     }
-                    uses.push(Uses {
-                        service,
-                    });
+                    uses.push(Uses { service });
                 }
                 nova_syntax::SyntaxKind::ProvidesDirective => {
                     let Some(directive) = ProvidesDirective::cast(directive) else {
@@ -234,11 +229,14 @@ mod tests {
     fn best_effort_lowering_missing_name_is_panic_free() {
         let res = lower_module_info_source("module { }");
         assert!(
-            res.errors.contains(&ModuleInfoLowerError::MissingModuleName),
+            res.errors
+                .contains(&ModuleInfoLowerError::MissingModuleName),
             "expected MissingModuleName, got {:?}",
             res.errors
         );
-        let info = res.info.expect("best-effort should still return ModuleInfo");
+        let info = res
+            .info
+            .expect("best-effort should still return ModuleInfo");
         assert_eq!(info.name.as_str(), "<missing>");
     }
 
@@ -262,7 +260,9 @@ mod tests {
     #[test]
     fn malformed_directive_does_not_panic() {
         let res = lower_module_info_source("module m { requires ; }");
-        let info = res.info.expect("should lower module header even with broken directives");
+        let info = res
+            .info
+            .expect("should lower module header even with broken directives");
         assert_eq!(info.name.as_str(), "m");
         assert!(info.requires.is_empty());
     }

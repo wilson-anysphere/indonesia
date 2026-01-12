@@ -40,7 +40,8 @@ package com.example;
 
     let diags = registry.framework_diagnostics(&db, mapper_file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
         "expected MAPSTRUCT_MISSING_DEPENDENCY diagnostic, got: {diags:#?}"
     );
@@ -91,7 +92,12 @@ fn diagnostics_do_not_require_db_file_enumeration() {
             Vec::new()
         }
 
-        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+        fn has_dependency(
+            &self,
+            project: nova_core::ProjectId,
+            group: &str,
+            artifact: &str,
+        ) -> bool {
             nova_framework::Database::has_dependency(&self.inner, project, group, artifact)
         }
 
@@ -99,7 +105,11 @@ fn diagnostics_do_not_require_db_file_enumeration() {
             nova_framework::Database::has_class_on_classpath(&self.inner, project, binary_name)
         }
 
-        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+        fn has_class_on_classpath_prefix(
+            &self,
+            project: nova_core::ProjectId,
+            prefix: &str,
+        ) -> bool {
             nova_framework::Database::has_class_on_classpath_prefix(&self.inner, project, prefix)
         }
     }
@@ -132,7 +142,8 @@ public interface FooMapper {}
     let analyzer = MapStructAnalyzer::new();
     let diags = analyzer.diagnostics(&db, mapper_file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
         "expected missing-dependency diagnostic even without db.all_files(), got: {diags:?}"
     );
@@ -165,7 +176,8 @@ package com.example;
 
 public class CarMapperImpl implements CarMapper {}
 "#;
-    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    let impl_path =
+        root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
     write_file(&impl_path, impl_src);
     let impl_file = db.add_file_with_path_and_text(project, impl_path, impl_src);
 
@@ -258,9 +270,7 @@ public interface CarMapper {
 }
 "#;
 
-    let cursor_offset = mapper_with_cursor
-        .find("<cursor>")
-        .expect("cursor marker");
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
     let mapper = mapper_with_cursor.replace("<cursor>", "");
 
     let mapper_file = db.add_file_with_path_and_text(
@@ -333,9 +343,7 @@ public interface CarMapper {
 }
 "#;
 
-    let cursor_offset = mapper_with_cursor
-        .find("<cursor>")
-        .expect("cursor marker");
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
     let mapper = mapper_with_cursor.replace("<cursor>", "");
 
     let mapper_file = db.add_file_with_path_and_text(
@@ -408,9 +416,7 @@ public interface CarMapper {
 }
 "#;
 
-    let cursor_offset = mapper_with_cursor
-        .find("<cursor>")
-        .expect("cursor marker");
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
     let mapper = mapper_with_cursor.replace("<cursor>", "");
 
     let mapper_file = db.add_file_with_path_and_text(
@@ -519,9 +525,7 @@ public interface CarMapper {
 }
 "#;
 
-    let cursor_offset = mapper_with_cursor
-        .find("<cursor>")
-        .expect("cursor marker");
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
     let mapper = mapper_with_cursor.replace("<cursor>", "");
 
     let mapper_file = db.add_file_with_path_and_text(
@@ -572,9 +576,7 @@ public interface CarMapper {
 }
 "#;
 
-    let cursor_offset = mapper_with_cursor
-        .find("<cursor>")
-        .expect("cursor marker");
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
     let mapper = mapper_with_cursor.replace("<cursor>", "");
 
     let mapper_file = db.add_file_with_path_and_text(
@@ -647,9 +649,7 @@ public interface CarMapper {
 }
 "#;
 
-    let cursor_offset = mapper_with_cursor
-        .find("<cursor>")
-        .expect("cursor marker");
+    let cursor_offset = mapper_with_cursor.find("<cursor>").expect("cursor marker");
     let mapper = mapper_with_cursor.replace("<cursor>", "");
 
     let mapper_file = db.add_file_with_path_and_text(
@@ -784,7 +784,8 @@ public class Car {
 
     let diags = registry.framework_diagnostics(&db, mapper_file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .all(|d| d.code.as_ref() != "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"),
         "expected no unmapped-target diagnostic, got: {diags:?}"
     );

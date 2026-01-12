@@ -97,9 +97,7 @@ async fn distributed_rpc_cancellation_propagates_to_worker() -> anyhow::Result<(
     .context("index_workspace_cancelable timed out")?;
     let call_finished_at = Instant::now();
 
-    cancel_task
-        .await
-        .context("cancellation task panicked")??;
+    cancel_task.await.context("cancellation task panicked")??;
 
     let cancelled_at = cancelled_at_rx
         .await

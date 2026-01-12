@@ -200,10 +200,13 @@ async fn handshake_replies_with_legacy_error_for_v2_worker_hello() {
     worker_io.flush().await.unwrap();
 
     // The v3 router implementation replies with a legacy v2 Error frame for clearer diagnostics.
-    let len = tokio::time::timeout(std::time::Duration::from_millis(200), worker_io.read_u32_le())
-        .await
-        .expect("timed out waiting for router reply")
-        .unwrap();
+    let len = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        worker_io.read_u32_le(),
+    )
+    .await
+    .expect("timed out waiting for router reply")
+    .unwrap();
     let mut buf = vec![0u8; len as usize];
     worker_io.read_exact(&mut buf).await.unwrap();
     let msg = nova_remote_proto::decode_message(&buf).unwrap();

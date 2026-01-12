@@ -160,9 +160,7 @@ pub fn reparse_java(
             .map(|e| (e.range, e.message.as_str()))
             .collect();
 
-        preserved_errors.retain(|e| {
-            !fragment_error_keys.contains(&(e.range, e.message.as_str()))
-        });
+        preserved_errors.retain(|e| !fragment_error_keys.contains(&(e.range, e.message.as_str())));
     }
 
     let mut errors = Vec::new();
@@ -211,7 +209,10 @@ fn fragment_ends_in_line_comment(fragment_text: &str) -> bool {
     last.kind == SyntaxKind::LineComment
 }
 
-fn fragment_has_trailing_unparsed_tokens(target: ReparseTarget, fragment: &JavaParseResult) -> bool {
+fn fragment_has_trailing_unparsed_tokens(
+    target: ReparseTarget,
+    fragment: &JavaParseResult,
+) -> bool {
     // This only applies to fragment parsers built on `parse_node_fragment` (lists and type
     // parameter/argument nodes). Block/class-body fragment parsers either parse to a delimiter or
     // rely on a separate losslessness check.

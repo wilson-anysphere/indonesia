@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
 use crate::remote_rpc_util;
+use anyhow::{anyhow, Context, Result};
 use nova_remote_proto::v3::Notification;
 use nova_remote_proto::ShardIndex;
 use nova_router::{
@@ -96,4 +96,3 @@ async fn cached_index_notification_for_wrong_shard_disconnects_worker() -> Resul
     router.shutdown().await?;
     Ok(())
 }
-

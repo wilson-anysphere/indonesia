@@ -500,7 +500,10 @@ class C {
     let err = refactoring
         .apply(&source)
         .expect_err("should reject selection");
-    assert!(err.contains("IllegalControlFlow"), "unexpected error: {err}");
+    assert!(
+        err.contains("IllegalControlFlow"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -525,7 +528,10 @@ class C {
     let err = refactoring
         .apply(&source)
         .expect_err("should reject selection");
-    assert!(err.contains("IllegalControlFlow"), "unexpected error: {err}");
+    assert!(
+        err.contains("IllegalControlFlow"),
+        "unexpected error: {err}"
+    );
     assert!(err.contains("Return"), "unexpected error: {err}");
 }
 
@@ -554,7 +560,10 @@ class C {
     let err = refactoring
         .apply(&source)
         .expect_err("should reject selection");
-    assert!(err.contains("IllegalControlFlow"), "unexpected error: {err}");
+    assert!(
+        err.contains("IllegalControlFlow"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -898,7 +907,10 @@ class C {
     let err = refactoring
         .apply(&source)
         .expect_err("should reject selection");
-    assert!(err.contains("IllegalControlFlow"), "unexpected error: {err}");
+    assert!(
+        err.contains("IllegalControlFlow"),
+        "unexpected error: {err}"
+    );
     assert!(err.contains("Break"), "unexpected error: {err}");
 }
 

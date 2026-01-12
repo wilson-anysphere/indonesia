@@ -123,4 +123,3 @@ fn stdio_definition_into_jdk_supports_fully_qualified_type_names() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

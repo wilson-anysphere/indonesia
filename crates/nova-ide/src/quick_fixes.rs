@@ -86,11 +86,7 @@ pub fn create_symbol_quick_fixes(
                 actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                     title,
                     kind: Some(CodeActionKind::QUICKFIX),
-                    edit: Some(single_file_insert_edit(
-                        uri.clone(),
-                        insert_range,
-                        stub,
-                    )),
+                    edit: Some(single_file_insert_edit(uri.clone(), insert_range, stub)),
                     ..CodeAction::default()
                 }));
             }
@@ -114,11 +110,7 @@ pub fn create_symbol_quick_fixes(
                 actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                     title,
                     kind: Some(CodeActionKind::QUICKFIX),
-                    edit: Some(single_file_insert_edit(
-                        uri.clone(),
-                        insert_range,
-                        stub,
-                    )),
+                    edit: Some(single_file_insert_edit(uri.clone(), insert_range, stub)),
                     ..CodeAction::default()
                 }));
             }
@@ -173,7 +165,11 @@ fn insertion_point(source: &str) -> (usize, String) {
     (close_brace, indent)
 }
 
-fn single_file_insert_edit(uri: lsp_types::Uri, range: lsp_types::Range, new_text: String) -> WorkspaceEdit {
+fn single_file_insert_edit(
+    uri: lsp_types::Uri,
+    range: lsp_types::Range,
+    new_text: String,
+) -> WorkspaceEdit {
     let mut changes: HashMap<lsp_types::Uri, Vec<TextEdit>> = HashMap::new();
     changes.insert(uri, vec![TextEdit { range, new_text }]);
     WorkspaceEdit {
@@ -185,9 +181,7 @@ fn single_file_insert_edit(uri: lsp_types::Uri, range: lsp_types::Range, new_tex
 
 fn method_stub(name: &str, indent: &str, is_static: bool) -> String {
     let static_kw = if is_static { "static " } else { "" };
-    format!(
-        "\n\n{indent}private {static_kw}Object {name}(Object... args) {{ return null; }}\n"
-    )
+    format!("\n\n{indent}private {static_kw}Object {name}(Object... args) {{ return null; }}\n")
 }
 
 fn field_stub(name: &str, indent: &str, is_static: bool) -> String {
@@ -217,12 +211,12 @@ fn extract_backticked_ident(message: &str) -> Option<String> {
 fn extract_identifier_from_snippet(snippet: &str) -> Option<String> {
     let trimmed = snippet.trim();
     // For call expressions, drop `(...)`. For field accesses, drop receiver prefixes.
-    let before_paren = trimmed
-        .split('(')
+    let before_paren = trimmed.split('(').next().unwrap_or(trimmed).trim();
+    let tail = before_paren
+        .rsplit('.')
         .next()
-        .unwrap_or(trimmed)
+        .unwrap_or(before_paren)
         .trim();
-    let tail = before_paren.rsplit('.').next().unwrap_or(before_paren).trim();
     if is_java_identifier(tail) {
         Some(tail.to_string())
     } else {

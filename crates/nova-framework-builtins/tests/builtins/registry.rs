@@ -37,4 +37,3 @@ fn lombok_virtual_members_smoke_test() {
     });
     assert!(has_get_x, "expected Lombok analyzer to generate getX");
 }
-

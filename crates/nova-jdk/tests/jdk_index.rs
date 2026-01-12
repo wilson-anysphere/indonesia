@@ -50,7 +50,10 @@ fn builtin_index_resolves_minimal_fixture_types() {
     );
 
     assert_eq!(
-        index.resolve_static_member(&TypeName::new("java.util.Collections"), &Name::from("emptyList")),
+        index.resolve_static_member(
+            &TypeName::new("java.util.Collections"),
+            &Name::from("emptyList")
+        ),
         Some(StaticMemberId::new("java.util.Collections::emptyList"))
     );
     assert_eq!(
@@ -761,8 +764,8 @@ fn jdk_index_discover_for_release_uses_ct_sym_when_release_differs(
 
     let file = std::fs::File::create(&ct_sym_path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::FileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let opts =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     zip.start_file("META-INF/sym/8/java.base/java/lang/String.sig", opts)?;
     zip.write_all(&string_bytes)?;
@@ -827,8 +830,8 @@ fn jdk_index_discover_for_release_errors_when_ct_sym_release_missing(
 
     let file = std::fs::File::create(&ct_sym_path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::FileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let opts =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     // ct.sym contains only release 11 stubs; request 8 should fail.
     zip.start_file("META-INF/sym/11/java.base/java/lang/String.sig", opts)?;
@@ -1204,7 +1207,8 @@ fn reuses_persisted_ct_sym_release_index_cache() -> Result<(), Box<dyn std::erro
 
     let file = std::fs::File::create(&ct_sym_path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let opts =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("META-INF/sym/8/java.base/java/lang/String.sig", opts)?;
     zip.write_all(&string_bytes)?;
     zip.start_file("META-INF/sym/8/java.base/module-info.sig", opts)?;

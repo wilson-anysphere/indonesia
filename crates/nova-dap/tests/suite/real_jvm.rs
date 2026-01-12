@@ -8,9 +8,9 @@ use std::{
     time::Duration,
 };
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tempfile::TempDir;
-use tokio::time::{Instant, timeout};
+use tokio::time::{timeout, Instant};
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
@@ -644,18 +644,22 @@ async fn dap_stream_debug_request_works_on_real_jvm() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-        if !stream_ok {
-            // Stream debug is currently only implemented for the mock debugger; the
-            // wire debugger returns an error. Treat this as a best-effort smoke test
-            // so environments with a JDK still stay green, while keeping assertions
-            // for the eventual implementation.
-            let msg = stream_resp.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            assert!(
-                msg.contains("streamDebug is not implemented") || msg.contains("VM returned error code"),
-                "nova/streamDebug request failed unexpectedly: {stream_resp}"
-            );
-            return;
-        }
+    if !stream_ok {
+        // Stream debug is currently only implemented for the mock debugger; the
+        // wire debugger returns an error. Treat this as a best-effort smoke test
+        // so environments with a JDK still stay green, while keeping assertions
+        // for the eventual implementation.
+        let msg = stream_resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            msg.contains("streamDebug is not implemented")
+                || msg.contains("VM returned error code"),
+            "nova/streamDebug request failed unexpectedly: {stream_resp}"
+        );
+        return;
+    }
 
     let intermediates = stream_resp
         .pointer("/body/analysis/intermediates")

@@ -437,8 +437,8 @@ public class NovaStreamDebugHelper {
 }
 "#;
 
-    let dir = stream_debug_temp_dir()
-        .map_err(|err| WireStreamDebugError::Compile(err.to_string()))?;
+    let dir =
+        stream_debug_temp_dir().map_err(|err| WireStreamDebugError::Compile(err.to_string()))?;
     let out_dir = dir.join("out");
     if let Err(err) = std::fs::create_dir(&out_dir) {
         let _ = std::fs::remove_dir_all(&dir);
@@ -457,14 +457,8 @@ public class NovaStreamDebugHelper {
 
     // Prefer `--release 8` so the helper class can load on older debuggee JVMs when attaching.
     // If the host toolchain is JDK 8 (no `--release` support), retry with `-source/-target`.
-    let release_attempt = run_javac_attempt(
-        cancel,
-        javac,
-        &out_dir,
-        &src_path,
-        &["--release", "8"],
-    )
-    .await;
+    let release_attempt =
+        run_javac_attempt(cancel, javac, &out_dir, &src_path, &["--release", "8"]).await;
     let status = match release_attempt {
         Ok(status) => status,
         Err(err) => {
@@ -768,8 +762,8 @@ mod tests {
             }
         }
 
-        let result = debug_stream_wire_with_compiler(&jdwp, &chain, &cfg, &cancel, &FailingCompiler)
-            .await;
+        let result =
+            debug_stream_wire_with_compiler(&jdwp, &chain, &cfg, &cancel, &FailingCompiler).await;
         match result {
             Err(WireStreamDebugError::Compile(msg)) => {
                 assert!(

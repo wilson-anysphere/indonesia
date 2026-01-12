@@ -106,9 +106,9 @@ fn is_relevant_node(node: &SyntaxNode) -> bool {
     match node.kind() {
         SyntaxKind::Parameter => node.parent().is_some_and(|parent| {
             parent.kind() == SyntaxKind::ParameterList
-                && parent.parent().is_some_and(|grandparent| {
-                    grandparent.kind() == SyntaxKind::RecordDeclaration
-                })
+                && parent
+                    .parent()
+                    .is_some_and(|grandparent| grandparent.kind() == SyntaxKind::RecordDeclaration)
         }),
         kind => matches!(
             kind,

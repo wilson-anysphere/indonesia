@@ -133,10 +133,8 @@ impl ItemTreeLower<'_> {
             }
             syntax::TypeDecl::Interface(interface) => {
                 let members = self.lower_members(&interface.members);
-                let node = self.syntax_node_for_name(
-                    SyntaxKind::InterfaceDeclaration,
-                    interface.name_range,
-                )?;
+                let node = self
+                    .syntax_node_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range)?;
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = InterfaceId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);
@@ -175,7 +173,8 @@ impl ItemTreeLower<'_> {
 
                 members.extend(self.lower_members(&enm.members));
 
-                let node = self.syntax_node_for_name(SyntaxKind::EnumDeclaration, enm.name_range)?;
+                let node =
+                    self.syntax_node_for_name(SyntaxKind::EnumDeclaration, enm.name_range)?;
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = EnumId::new(self.file, ast_id);
                 let (implements, implements_ranges) = collect_direct_child_types_after_token(
@@ -215,10 +214,9 @@ impl ItemTreeLower<'_> {
                         let Member::Constructor(ctor_id) = *member else {
                             continue;
                         };
-                        let is_compact = self
-                            .ast_id_map
-                            .ptr(ctor_id.ast_id)
-                            .is_some_and(|ptr| ptr.kind == SyntaxKind::CompactConstructorDeclaration);
+                        let is_compact = self.ast_id_map.ptr(ctor_id.ast_id).is_some_and(|ptr| {
+                            ptr.kind == SyntaxKind::CompactConstructorDeclaration
+                        });
                         if !is_compact {
                             continue;
                         }
@@ -359,7 +357,7 @@ impl ItemTreeLower<'_> {
                             SyntaxKind::CompactConstructorDeclaration,
                             cons.name_range,
                         )
-                })?;
+                    })?;
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = ConstructorId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);
@@ -623,7 +621,9 @@ fn lower_param_modifiers_and_annotations(param: &SyntaxNode) -> (Modifiers, Vec<
 }
 
 fn lower_rowan_annotation_use(node: &SyntaxNode) -> Option<AnnotationUse> {
-    let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name)?;
+    let name_node = node
+        .children()
+        .find(|child| child.kind() == SyntaxKind::Name)?;
     let name = non_trivia_text(&name_node);
     Some(AnnotationUse {
         name,
@@ -722,7 +722,10 @@ fn lower_type_param(node: &SyntaxNode) -> Option<TypeParam> {
     let name_range = token_text_range_to_span(&name_tok);
     let mut bounds = Vec::new();
     let mut bounds_ranges = Vec::new();
-    for ty in node.children().filter(|child| child.kind() == SyntaxKind::Type) {
+    for ty in node
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::Type)
+    {
         bounds.push(non_trivia_text(&ty));
         bounds_ranges.push(non_trivia_span(&ty).unwrap_or_else(|| node_text_range_to_span(&ty)));
     }
@@ -742,7 +745,10 @@ fn collect_clause_types(decl: &SyntaxNode, clause_kind: SyntaxKind) -> (Vec<Stri
 
     let mut types = Vec::new();
     let mut ranges = Vec::new();
-    for ty in clause.children().filter(|child| child.kind() == SyntaxKind::Type) {
+    for ty in clause
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::Type)
+    {
         types.push(non_trivia_text(&ty));
         ranges.push(non_trivia_span(&ty).unwrap_or_else(|| node_text_range_to_span(&ty)));
     }
@@ -804,7 +810,10 @@ fn collect_throws_clause_types(
         let mut types = Vec::new();
         let mut ranges = Vec::new();
         for clause in throws_clauses {
-            for ty in clause.descendants().filter(|n| n.kind() == SyntaxKind::Type) {
+            for ty in clause
+                .descendants()
+                .filter(|n| n.kind() == SyntaxKind::Type)
+            {
                 // Only keep the outermost `Type` nodes within the throws clause. This avoids
                 // treating type arguments (e.g. `Foo<Bar>`) as separate thrown types.
                 let nested_in_type = ty
@@ -829,7 +838,10 @@ fn collect_throws_clause_types(
 
 fn non_trivia_text(node: &SyntaxNode) -> String {
     let mut text = String::new();
-    for tok in node.descendants_with_tokens().filter_map(|el| el.into_token()) {
+    for tok in node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
         if tok.kind().is_trivia() || tok.kind() == SyntaxKind::Eof {
             continue;
         }
@@ -857,18 +869,26 @@ fn non_trivia_span(node: &SyntaxNode) -> Option<Span> {
 
 fn node_text_range_to_span(node: &SyntaxNode) -> Span {
     let range = node.text_range();
-    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    Span::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn token_text_range_to_span(tok: &SyntaxToken) -> Span {
     let range = tok.text_range();
-    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    Span::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn lower_parameter_signature(param: &SyntaxNode) -> Option<(String, Span, String, Span, Span)> {
     let range = node_text_range_to_span(param);
 
-    let ty_node = param.children().find(|child| child.kind() == SyntaxKind::Type)?;
+    let ty_node = param
+        .children()
+        .find(|child| child.kind() == SyntaxKind::Type)?;
     let mut ty_range =
         non_trivia_span(&ty_node).unwrap_or_else(|| node_text_range_to_span(&ty_node));
     let mut ty = non_trivia_text(&ty_node);
@@ -888,7 +908,10 @@ fn lower_parameter_signature(param: &SyntaxNode) -> Option<(String, Span, String
     let mut dims = 0usize;
     let mut saw_lbracket = false;
 
-    for tok in param.children_with_tokens().filter_map(|el| el.into_token()) {
+    for tok in param
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
         if tok.kind().is_trivia() {
             continue;
         }

@@ -175,11 +175,7 @@ impl<'a> Lexer<'a> {
                 let mut template_idx = None;
 
                 for (idx, mode) in self.mode_stack.iter().enumerate().rev() {
-                    if let LexMode::Template {
-                        delimiter: d,
-                        ..
-                    } = *mode
-                    {
+                    if let LexMode::Template { delimiter: d, .. } = *mode {
                         delimiter = d;
                         template_idx = Some(idx);
                         break;

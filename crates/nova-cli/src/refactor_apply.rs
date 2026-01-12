@@ -21,7 +21,8 @@ pub(crate) fn build_java_workspace_snapshot(focus_file: &Path) -> Result<JavaWor
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    let project_root = nova_project::workspace_root(focus_dir).unwrap_or_else(|| focus_dir.to_path_buf());
+    let project_root =
+        nova_project::workspace_root(focus_dir).unwrap_or_else(|| focus_dir.to_path_buf());
     let project_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.clone());
@@ -73,9 +74,7 @@ pub(crate) fn apply_workspace_edit_to_disk(
     normalized
         .remap_text_edits_across_renames()
         .map_err(|err| anyhow::anyhow!(err))?;
-    normalized
-        .normalize()
-        .map_err(|err| anyhow::anyhow!(err))?;
+    normalized.normalize().map_err(|err| anyhow::anyhow!(err))?;
 
     let mut deletes: Vec<FileId> = Vec::new();
 
@@ -110,8 +109,7 @@ pub(crate) fn apply_workspace_edit_to_disk(
 
     for file in deletes {
         let path = path_for_file_id(project_root, &file);
-        fs::remove_file(&path)
-            .with_context(|| format!("failed to delete {}", path.display()))?;
+        fs::remove_file(&path).with_context(|| format!("failed to delete {}", path.display()))?;
     }
 
     Ok(())
@@ -143,8 +141,9 @@ fn rename_file(src: &Path, dest: &Path) -> Result<()> {
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
-            fs::copy(src, dest)
-                .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+            fs::copy(src, dest).with_context(|| {
+                format!("failed to copy {} to {}", src.display(), dest.display())
+            })?;
             fs::remove_file(src).with_context(|| format!("failed to remove {}", src.display()))?;
             Ok(())
         }
@@ -316,7 +315,10 @@ mod tests {
         let changed = compute_changed_texts(&original, &edit);
         apply_workspace_edit_to_disk(root, &edit, &changed).unwrap();
 
-        assert_eq!(fs::read_to_string(root.join("src/New.java")).unwrap(), "hi!");
+        assert_eq!(
+            fs::read_to_string(root.join("src/New.java")).unwrap(),
+            "hi!"
+        );
         assert_eq!(
             collect_disk_files(root),
             BTreeSet::from(["src/New.java".to_string()])

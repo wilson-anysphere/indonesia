@@ -10,7 +10,10 @@ use nova_ide::framework_cache::{project_config, project_root_for_path, spring_me
 #[test]
 fn discovers_project_root_for_in_memory_fixture_path() {
     let java_file = PathBuf::from("/workspace/src/main/java/A.java");
-    assert_eq!(project_root_for_path(&java_file), PathBuf::from("/workspace"));
+    assert_eq!(
+        project_root_for_path(&java_file),
+        PathBuf::from("/workspace")
+    );
 }
 
 #[test]

@@ -1028,8 +1028,8 @@ fn record_body_references(
         match &body.exprs[expr] {
             hir::Expr::This { .. } | hir::Expr::Super { .. } => {
                 let item = enclosing_class(&scope_result.scopes, scope)?;
-        Some(TypeResolution::Source(item))
-    }
+                Some(TypeResolution::Source(item))
+            }
             hir::Expr::Name { name, .. } => {
                 let resolved = resolver.resolve_name(
                     &scope_result.scopes,
@@ -1090,9 +1090,7 @@ fn record_body_references(
                     out.push(name.clone());
                     true
                 }
-                hir::Expr::FieldAccess {
-                    receiver, name, ..
-                } => {
+                hir::Expr::FieldAccess { receiver, name, .. } => {
                     if !collect(body, *receiver, out) {
                         return false;
                     }
@@ -1206,9 +1204,15 @@ fn record_body_references(
                     }
                 }
 
-                let Some(receiver_ty) =
-                    receiver_type(owner, body, *receiver, scope_result, resolver, item_trees, tree)
-                else {
+                let Some(receiver_ty) = receiver_type(
+                    owner,
+                    body,
+                    *receiver,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    tree,
+                ) else {
                     return;
                 };
                 let TypeResolution::Source(item) = receiver_ty else {
@@ -1299,8 +1303,7 @@ fn record_body_references(
                     let Some(method) = methods.first().map(|method| method.id) else {
                         return;
                     };
-                    let Some(&symbol) =
-                        resolution_to_symbol.get(&ResolutionKey::Method(method))
+                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
                     else {
                         return;
                     };

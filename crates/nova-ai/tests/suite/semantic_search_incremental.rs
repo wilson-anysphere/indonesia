@@ -66,7 +66,10 @@ fn trigram_remove_file_removes_from_results() {
 
 #[test]
 fn trigram_index_project_matches_repeated_index_file() {
-    let files = vec![("src/a.txt", "hello world"), ("src/b.txt", "helicopter landing pad")];
+    let files = vec![
+        ("src/a.txt", "hello world"),
+        ("src/b.txt", "helicopter landing pad"),
+    ];
 
     let db = VirtualWorkspace::new(
         files

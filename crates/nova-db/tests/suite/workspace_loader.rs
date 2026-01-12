@@ -164,8 +164,7 @@ fn jpms_project_config_includes_module_graph_entries_from_module_path() {
 
     let mvn_dir = root.join(".mvn");
     fs::create_dir_all(&mvn_dir).expect("mkdir .mvn");
-    fs::write(mvn_dir.join("maven.config"), "-Dmaven.repo.local=repo")
-        .expect("write maven.config");
+    fs::write(mvn_dir.join("maven.config"), "-Dmaven.repo.local=repo").expect("write maven.config");
 
     let dep_jar = root.join("repo/com/example/dep/1.0/dep-1.0.jar");
     fs::create_dir_all(dep_jar.parent().expect("jar parent")).expect("mkdir repo dirs");

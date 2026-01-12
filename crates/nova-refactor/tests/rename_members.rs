@@ -61,9 +61,7 @@ fn rename_method_updates_declaration_and_call() {
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
     let offset = src.find("void foo").unwrap() + "void ".len() + 1;
-    let symbol = db
-        .symbol_at(&file, offset)
-        .expect("symbol at method foo");
+    let symbol = db.symbol_at(&file, offset).expect("symbol at method foo");
 
     let edit = rename(
         &db,

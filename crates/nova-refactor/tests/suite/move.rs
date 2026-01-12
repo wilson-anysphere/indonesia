@@ -10,7 +10,12 @@ use std::path::{Path, PathBuf};
 fn apply_edit(files: &mut BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) {
     let by_id: BTreeMap<FileId, String> = files
         .iter()
-        .map(|(path, text)| (FileId::new(path.to_string_lossy().into_owned()), text.clone()))
+        .map(|(path, text)| {
+            (
+                FileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        })
         .collect();
 
     let updated = apply_workspace_edit(&by_id, edit).expect("workspace edit applies cleanly");
@@ -103,7 +108,9 @@ fn move_class_workspace_edit_normalizes_and_generates_preview() {
     .expect("refactoring succeeds");
 
     let mut normalized = edit.clone();
-    normalized.normalize().expect("workspace edit should normalize");
+    normalized
+        .normalize()
+        .expect("workspace edit should normalize");
 
     let db = TextDatabase::new(files.iter().map(|(path, text)| {
         (

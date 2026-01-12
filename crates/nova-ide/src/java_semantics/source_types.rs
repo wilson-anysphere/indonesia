@@ -89,16 +89,7 @@ impl SourceTypeProvider {
             let store_ro: &TypeStore = &*store;
             let mut defs = Vec::new();
             for item in &tree.items {
-                collect_class_defs(
-                    &tree,
-                    store_ro,
-                    &ctx,
-                    text,
-                    item,
-                    None,
-                    &object,
-                    &mut defs,
-                );
+                collect_class_defs(&tree, store_ro, &ctx, text, item, None, &object, &mut defs);
             }
             defs
         };
@@ -164,7 +155,12 @@ fn collect_class_names(
     }
 }
 
-fn preintern_inheritance_refs(tree: &ItemTree, store: &mut TypeStore, ctx: &ResolveCtx, item: &Item) {
+fn preintern_inheritance_refs(
+    tree: &ItemTree,
+    store: &mut TypeStore,
+    ctx: &ResolveCtx,
+    item: &Item,
+) {
     let (extends, implements, members) = match *item {
         Item::Class(id) => {
             let data = tree.class(id);
@@ -352,18 +348,16 @@ fn collect_class_defs(
                 });
             }
             Member::Initializer(_) => {}
-            Member::Type(nested) => {
-                collect_class_defs(
-                    tree,
-                    store,
-                    ctx,
-                    source_text,
-                    nested,
-                    Some(&binary_name),
-                    object,
-                    out,
-                )
-            }
+            Member::Type(nested) => collect_class_defs(
+                tree,
+                store,
+                ctx,
+                source_text,
+                nested,
+                Some(&binary_name),
+                object,
+                out,
+            ),
         }
     }
 

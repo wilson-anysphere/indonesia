@@ -124,7 +124,8 @@ class ImportCompletion {}
         db.set_file_text(import_file, import_text);
 
         // Type-position completion: `new Arr<cursor>`
-        let type_path = workspace_root.join("src/main/java/com/example/TypePositionCompletion.java");
+        let type_path =
+            workspace_root.join("src/main/java/com/example/TypePositionCompletion.java");
         let (type_text, type_pos) = strip_caret(
             r#"package com.example;
 

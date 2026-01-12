@@ -13,8 +13,7 @@ fn write_fake_jar_with_automatic_module_name(jar_path: &Path, module_name: &str)
         fs::create_dir_all(parent).expect("mkdir jar parent");
     }
 
-    let manifest =
-        format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
+    let manifest = format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
     let mut jar = zip::ZipWriter::new(std::fs::File::create(jar_path).expect("create jar"));
     let options = FileOptions::<()>::default();
     jar.start_file("META-INF/MANIFEST.MF", options)
@@ -26,8 +25,7 @@ fn write_fake_jar_with_automatic_module_name(jar_path: &Path, module_name: &str)
 
 fn write_exploded_jar_with_automatic_module_name(jar_dir: &Path, module_name: &str) {
     fs::create_dir_all(jar_dir.join("META-INF")).expect("mkdir exploded jar META-INF");
-    let manifest =
-        format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
+    let manifest = format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
     fs::write(jar_dir.join("META-INF/MANIFEST.MF"), manifest).expect("write manifest");
 }
 
@@ -176,8 +174,11 @@ fn maven_workspace_model_keeps_dependency_jars_on_classpath_when_jpms_disabled()
 
     let src_dir = workspace_root.join("src/main/java/com/example");
     fs::create_dir_all(&src_dir).expect("mkdir src/main/java");
-    fs::write(src_dir.join("Main.java"), "package com.example; class Main {}")
-        .expect("write Main.java");
+    fs::write(
+        src_dir.join("Main.java"),
+        "package com.example; class Main {}",
+    )
+    .expect("write Main.java");
 
     let options = LoadOptions {
         maven_repo: Some(maven_repo),
@@ -214,8 +215,7 @@ fn maven_workspace_model_accepts_exploded_dependency_jars() {
     fs::create_dir_all(&workspace_root).expect("mkdir workspace");
     fs::create_dir_all(&maven_repo).expect("mkdir repo");
 
-    let guava_jar_dir =
-        maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    let guava_jar_dir = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
     write_exploded_jar_with_automatic_module_name(&guava_jar_dir, "com.google.common");
 
     fs::write(
@@ -270,7 +270,10 @@ fn maven_workspace_model_accepts_exploded_dependency_jars() {
         "expected exploded jar to be placed on module-path"
     );
     assert!(
-        !module.classpath.iter().any(|entry| entry.path == guava_jar_dir),
+        !module
+            .classpath
+            .iter()
+            .any(|entry| entry.path == guava_jar_dir),
         "expected exploded jar to be removed from classpath"
     );
 }

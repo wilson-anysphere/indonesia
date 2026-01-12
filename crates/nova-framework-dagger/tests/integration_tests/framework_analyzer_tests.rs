@@ -60,7 +60,9 @@ fn registry_diagnostics_reports_missing_binding_with_correct_span() {
 
     let diags = registry.framework_diagnostics(&db, foo_file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "DAGGER_MISSING_BINDING"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "DAGGER_MISSING_BINDING"),
         "expected DAGGER_MISSING_BINDING diagnostic, got: {diags:#?}"
     );
 
@@ -113,7 +115,8 @@ fn registry_diagnostics_reports_duplicate_binding_with_correct_span() {
 
     let diags = registry.framework_diagnostics(&db, consumer_file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "DAGGER_DUPLICATE_BINDING"),
         "expected DAGGER_DUPLICATE_BINDING diagnostic, got: {diags:#?}"
     );

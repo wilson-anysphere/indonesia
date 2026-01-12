@@ -10,9 +10,7 @@ fn main() -> std::io::Result<()> {
     }
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        eprintln!(
-            "nova-cli-test-lsp 0.0.0\n\nUsage:\n  nova-cli-test-lsp [--stdio]\n"
-        );
+        eprintln!("nova-cli-test-lsp 0.0.0\n\nUsage:\n  nova-cli-test-lsp [--stdio]\n");
         return Ok(());
     }
 
@@ -79,7 +77,10 @@ fn main() -> std::io::Result<()> {
     std::process::exit(if saw_shutdown { 0 } else { 1 });
 }
 
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) -> std::io::Result<()> {
+fn write_jsonrpc_message(
+    writer: &mut impl Write,
+    message: &serde_json::Value,
+) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(message)?;
     write!(writer, "Content-Length: {}\r\n\r\n", bytes.len())?;
     writer.write_all(&bytes)?;
@@ -87,9 +88,7 @@ fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) -
     Ok(())
 }
 
-fn read_jsonrpc_message(
-    reader: &mut impl BufRead,
-) -> std::io::Result<Option<serde_json::Value>> {
+fn read_jsonrpc_message(reader: &mut impl BufRead) -> std::io::Result<Option<serde_json::Value>> {
     let mut content_length: Option<usize> = None;
     let mut line = String::new();
 

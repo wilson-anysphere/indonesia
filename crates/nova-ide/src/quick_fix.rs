@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit};
+use lsp_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
+};
 use nova_types::{Diagnostic, Span};
 
 /// Produce quick-fix code actions for a selection span given diagnostics.

@@ -277,7 +277,9 @@ mod tests {
         let file_id = workspace.open_document(path, "class Main {}".to_string(), 1);
 
         let snapshot = workspace.snapshot();
-        let salsa = snapshot.salsa_db().expect("snapshot should expose workspace salsa db");
+        let salsa = snapshot
+            .salsa_db()
+            .expect("snapshot should expose workspace salsa db");
 
         // Basic smoke test: the DB should be usable for Salsa-backed queries without panicking.
         salsa.with_snapshot(|snap| {

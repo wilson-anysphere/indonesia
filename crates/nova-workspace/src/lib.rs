@@ -25,9 +25,9 @@ mod watch;
 mod watch_roots;
 
 pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
+pub use nova_index::SearchSymbol as WorkspaceSymbol;
 pub use snapshot::WorkspaceSnapshot;
 pub use watch::{ChangeCategory, NormalizedEvent, WatchConfig};
-pub use nova_index::SearchSymbol as WorkspaceSymbol;
 
 /// A minimal, library-first backend for the `nova` CLI.
 ///
@@ -1484,9 +1484,7 @@ mod fuzzy_symbol_tests {
 
         let order: Vec<(String, String)> = first
             .iter()
-            .map(|sym| {
-                (sym.name.clone(), sym.location.file.clone())
-            })
+            .map(|sym| (sym.name.clone(), sym.location.file.clone()))
             .collect();
 
         assert_eq!(
@@ -1541,11 +1539,19 @@ mod fuzzy_symbol_tests {
 
         let dir_a = root.join("src/main/java/com/a");
         fs::create_dir_all(&dir_a).expect("mkdir a");
-        fs::write(dir_a.join("Foo.java"), "package com.a; public class Foo {}\n").expect("write");
+        fs::write(
+            dir_a.join("Foo.java"),
+            "package com.a; public class Foo {}\n",
+        )
+        .expect("write");
 
         let dir_b = root.join("src/main/java/com/b");
         fs::create_dir_all(&dir_b).expect("mkdir b");
-        fs::write(dir_b.join("Foo.java"), "package com.b; public class Foo {}\n").expect("write");
+        fs::write(
+            dir_b.join("Foo.java"),
+            "package com.b; public class Foo {}\n",
+        )
+        .expect("write");
 
         let ws = Workspace::open(root).expect("workspace open");
 
@@ -1559,7 +1565,9 @@ mod fuzzy_symbol_tests {
             "expected com.b.Foo in results"
         );
 
-        let qualified = ws.workspace_symbols("com.b.Foo").expect("workspace symbols");
+        let qualified = ws
+            .workspace_symbols("com.b.Foo")
+            .expect("workspace symbols");
         assert_eq!(qualified[0].qualified_name, "com.b.Foo");
     }
 }

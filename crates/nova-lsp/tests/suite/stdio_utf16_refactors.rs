@@ -285,8 +285,7 @@ fn stdio_server_supports_field_rename() {
 }
 "#;
 
-    let foo_offset =
-        source.find("int foo = 0").expect("field foo declaration") + "int ".len() + 1;
+    let foo_offset = source.find("int foo = 0").expect("field foo declaration") + "int ".len() + 1;
     let foo_position = lsp_position_utf16(source, foo_offset);
     let foo_name_offset = source.find("foo").expect("field foo identifier");
     let foo_range = lsp_range_utf16(source, foo_name_offset, foo_name_offset + "foo".len());

@@ -615,12 +615,12 @@ impl Debugger {
         // `ThreadReference.FrameCount` is significantly cheaper than fetching the full
         // `ThreadReference.Frames` list and allows us to compute an accurate DAP `totalFrames`
         // for paged stackTrace requests.
-        let total_frames = match cancellable_jdwp(cancel, self.jdwp.thread_frame_count(thread)).await
-        {
-            Ok(count) => Some(count as i64),
-            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-            Err(_) => None,
-        };
+        let total_frames =
+            match cancellable_jdwp(cancel, self.jdwp.thread_frame_count(thread)).await {
+                Ok(count) => Some(count as i64),
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => None,
+            };
 
         // Some JVMs treat an oversized `length` as `INVALID_LENGTH` instead of clamping.
         // Clamp the requested `levels` against the known frame count when available to avoid
@@ -647,12 +647,11 @@ impl Debugger {
                 Err(err @ JdwpError::VmError(_)) if length >= 0 => {
                     // Best-effort fallback: if a VM rejects the requested `length`, retry using
                     // `-1` (all frames) and then truncate locally.
-                    let frames = match cancellable_jdwp(cancel, self.jdwp.frames(thread, start, -1))
-                        .await
-                    {
-                        Ok(frames) => frames,
-                        Err(_) => return Err(err.into()),
-                    };
+                    let frames =
+                        match cancellable_jdwp(cancel, self.jdwp.frames(thread, start, -1)).await {
+                            Ok(frames) => frames,
+                            Err(_) => return Err(err.into()),
+                        };
 
                     frames.into_iter().take(length as usize).collect()
                 }
@@ -1743,7 +1742,10 @@ impl Debugger {
         };
 
         // --- Instance fields (object handles) ---------------------------------------------
-        if let Some(handle) = self.objects.handle_from_variables_reference(variables_reference) {
+        if let Some(handle) = self
+            .objects
+            .handle_from_variables_reference(variables_reference)
+        {
             if self.objects.is_invalid(handle) {
                 return Ok(json!({
                     "description": "<collected>",
@@ -1856,7 +1858,11 @@ impl Debugger {
         // Clear prior watchpoint requests.
         let existing = std::mem::take(&mut self.watchpoint_requests);
         for (event_kind, request_id) in existing {
-            match cancellable_jdwp(cancel, self.jdwp.event_request_clear(event_kind, request_id)).await
+            match cancellable_jdwp(
+                cancel,
+                self.jdwp.event_request_clear(event_kind, request_id),
+            )
+            .await
             {
                 Ok(()) => {}
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
@@ -2199,9 +2205,10 @@ impl Debugger {
                     })));
                 };
 
-                let Some(handle) = self.objects.handle_from_variables_reference(
-                    OBJECT_HANDLE_BASE + i64::from(handle_u32),
-                ) else {
+                let Some(handle) = self
+                    .objects
+                    .handle_from_variables_reference(OBJECT_HANDLE_BASE + i64::from(handle_u32))
+                else {
                     return Ok(Some(
                         json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
                     ));
@@ -2614,7 +2621,8 @@ impl Debugger {
             let in_scope: Vec<VariableInfo> = vars
                 .into_iter()
                 .filter(|v| {
-                    v.code_index <= location.index && location.index < v.code_index + (v.length as u64)
+                    v.code_index <= location.index
+                        && location.index < v.code_index + (v.length as u64)
                 })
                 .collect();
             let Some(var) = in_scope.iter().find(|v| v.name == name) else {
@@ -2725,9 +2733,9 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
         // Resolve the source sample by inspecting the underlying collection/array object.
         let (source_elements, source_truncated, source_collection_type) = {
             let (name, kind) = match &analysis.source {
-                nova_stream_debug::StreamSource::Collection { collection_expr, .. } => {
-                    (collection_expr.trim().to_string(), "collection")
-                }
+                nova_stream_debug::StreamSource::Collection {
+                    collection_expr, ..
+                } => (collection_expr.trim().to_string(), "collection"),
                 nova_stream_debug::StreamSource::ExistingStream { stream_expr } => {
                     let stream_expr = stream_expr.trim();
                     if is_pure_access_expr(stream_expr) {
@@ -2768,9 +2776,9 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
 
             let name = name.trim();
             if name.is_empty() {
-                return Err(DebuggerError::InvalidRequest(
-                    format!("stream source {kind} expression is empty"),
-                ));
+                return Err(DebuggerError::InvalidRequest(format!(
+                    "stream source {kind} expression is empty"
+                )));
             }
 
             // The frame selected by the DAP client may correspond to a synthetic lambda frame
@@ -2788,7 +2796,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             .await?;
 
             if value.is_none() {
-                let frames = cancellable_jdwp(cancel, self.jdwp.frames(frame.thread, 0, -1)).await?;
+                let frames =
+                    cancellable_jdwp(cancel, self.jdwp.frames(frame.thread, 0, -1)).await?;
                 for frame_info in frames {
                     if frame_info.frame_id == frame.frame_id {
                         continue;
@@ -2824,7 +2833,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             };
 
             // First attempt: use the built-in preview for known collection types.
-            let preview = cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await?;
+            let preview =
+                cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await?;
             let collection_type = Some(preview.runtime_type.clone());
 
             let (size, mut raw_sample) = match preview.kind {
@@ -2835,19 +2845,22 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     // Arrays.asList uses `java.util.Arrays$ArrayList`, which isn't covered by
                     // the default preview helpers. Read the backing array field directly.
                     let children =
-                        cancellable_jdwp(cancel, self.inspector.object_children(object_id))
-                            .await?;
-                    let array_id = children.iter().find_map(|child| match (&child.name[..], &child.value) {
-                        ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
-                        _ => None,
-                    });
+                        cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await?;
+                    let array_id =
+                        children
+                            .iter()
+                            .find_map(|child| match (&child.name[..], &child.value) {
+                                ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
+                                _ => None,
+                            });
                     let Some(array_id) = array_id else {
                         return Err(DebuggerError::InvalidRequest(
                             "unsupported list implementation (missing backing array)".to_string(),
                         ));
                     };
                     let length =
-                        cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id)).await?;
+                        cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id))
+                            .await?;
                     let length = length.max(0) as usize;
                     let sample_len = length.min(config.max_sample_size);
                     let sample = if sample_len == 0 {
@@ -2982,7 +2995,9 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
         }
 
         let terminal = if let Some(term) = &analysis.terminal {
-            if !config.allow_terminal_ops || (term.is_side_effecting() && !config.allow_side_effects) {
+            if !config.allow_terminal_ops
+                || (term.is_side_effecting() && !config.allow_side_effects)
+            {
                 Some(StreamTerminalResult {
                     operation: term.name.clone(),
                     kind: term.kind,
@@ -3023,10 +3038,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             total_duration_ms: started.elapsed().as_millis(),
         };
 
-        Ok(crate::stream_debug::StreamDebugBody {
-            analysis,
-            runtime,
-        })
+        Ok(crate::stream_debug::StreamDebugBody { analysis, runtime })
     }
 
     pub async fn set_variable(
@@ -4224,8 +4236,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                                         && method.method_id < *best_method)
                             }
                         };
-                        if replace
-                        {
+                        if replace {
                             *best_synth = is_synthetic;
                             *best_method = method.method_id;
                             *best_index = entry.code_index;

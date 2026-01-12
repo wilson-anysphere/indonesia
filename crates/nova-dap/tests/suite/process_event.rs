@@ -4,7 +4,7 @@ use std::{path::Path, time::Duration};
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tempfile::TempDir;
 
 async fn send_request(
@@ -79,7 +79,8 @@ async fn dap_launch_emits_process_event() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -203,7 +204,8 @@ async fn dap_attach_emits_process_event() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);

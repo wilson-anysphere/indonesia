@@ -32,11 +32,7 @@ fn diagnostics(db: &dyn NovaDiagnostics, file: FileId) -> Arc<Vec<Diagnostic>> {
     let flow = db.flow_diagnostics_for_file(file);
 
     let mut out = Vec::with_capacity(
-        parse.errors.len()
-            + syntax_feature.len()
-            + imports.len()
-            + type_diags.len()
-            + flow.len(),
+        parse.errors.len() + syntax_feature.len() + imports.len() + type_diags.len() + flow.len(),
     );
 
     let mut steps: u32 = 0;
@@ -126,4 +122,3 @@ fn severity_rank(sev: Severity) -> u8 {
         Severity::Info => 0,
     }
 }
-

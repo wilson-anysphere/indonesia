@@ -18,15 +18,15 @@ pub mod package;
 mod simple;
 mod workspace_config;
 
-pub use discover::BazelLoadOptions;
-pub use discover::{
-    bazel_workspace_root, is_bazel_workspace, is_build_file, load_project, load_project_with_options,
-    load_project_with_workspace_config, load_workspace_model, load_workspace_model_with_options,
-    load_workspace_model_with_workspace_config, reload_project, workspace_root, LoadOptions,
-    ProjectError,
-};
 pub use build_systems::{
     default_build_systems, BazelBuildSystem, GradleBuildSystem, MavenBuildSystem, SimpleBuildSystem,
+};
+pub use discover::BazelLoadOptions;
+pub use discover::{
+    bazel_workspace_root, is_bazel_workspace, is_build_file, load_project,
+    load_project_with_options, load_project_with_workspace_config, load_workspace_model,
+    load_workspace_model_with_options, load_workspace_model_with_workspace_config, reload_project,
+    workspace_root, LoadOptions, ProjectError,
 };
 pub use model::*;
 
@@ -53,8 +53,14 @@ mod debug_config_tests {
         let _project_launch: LaunchConfig = nova_core::LaunchConfig::default();
         let _core_launch: nova_core::LaunchConfig = LaunchConfig::default();
 
-        let _project_attach: AttachConfig = nova_core::AttachConfig { host: None, port: 5005 };
-        let _core_attach: nova_core::AttachConfig = AttachConfig { host: None, port: 5005 };
+        let _project_attach: AttachConfig = nova_core::AttachConfig {
+            host: None,
+            port: 5005,
+        };
+        let _core_attach: nova_core::AttachConfig = AttachConfig {
+            host: None,
+            port: 5005,
+        };
 
         // Avoid unused variable warnings in case future refactors change lint levels.
         let _ = (_project_launch, _core_launch, _project_attach, _core_attach);

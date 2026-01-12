@@ -119,8 +119,11 @@ fn annotation_attribute_completions_are_surfaced_via_ide_extensions() {
     let anno_text = r#"package p; public @interface MyAnno { String value(); int count(); }"#;
     let java_text = r#"package p; @MyAnno(co<|>) class Main {}"#;
 
-    let fixture =
-        fixture_multi(java_path, java_text, vec![(anno_path, anno_text.to_string())]);
+    let fixture = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
 
     let items =
         fixture
@@ -405,6 +408,9 @@ class A {}
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
 
-    assert_eq!(edit.range.start, offset_to_position(&fixture.text, u_offset));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&fixture.text, u_offset)
+    );
     assert_eq!(edit.range.end, fixture.position);
 }

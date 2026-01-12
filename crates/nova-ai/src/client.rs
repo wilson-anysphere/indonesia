@@ -528,15 +528,14 @@ impl LlmClient for AiClient {
                 }
 
                 let (started_at, result) = {
-                    let permit = match tokio::time::timeout(remaining, self.acquire_permit(&cancel))
-                        .await
-                    {
-                        Ok(permit) => match permit {
-                            Ok(permit) => permit,
-                            Err(err) => break 'chat_result Err(err),
-                        },
-                        Err(_) => break 'chat_result Err(AiError::Timeout),
-                    };
+                    let permit =
+                        match tokio::time::timeout(remaining, self.acquire_permit(&cancel)).await {
+                            Ok(permit) => match permit {
+                                Ok(permit) => permit,
+                                Err(err) => break 'chat_result Err(err),
+                            },
+                            Err(_) => break 'chat_result Err(AiError::Timeout),
+                        };
 
                     let remaining = timeout.saturating_sub(operation_start.elapsed());
                     if remaining == Duration::ZERO {
@@ -1593,4 +1592,4 @@ mod tests {
             "expected {AI_CHAT_METRIC} timeout_count to increment"
         );
     }
-} 
+}

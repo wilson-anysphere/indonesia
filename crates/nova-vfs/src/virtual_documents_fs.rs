@@ -57,12 +57,12 @@ impl<F: FileSystem> FileSystem for VirtualDocumentsFs<F> {
                                 self.store.insert_text(path.clone(), text.clone());
                                 Ok(text.into_bytes())
                             }
-                            Err(err) if err.kind() == io::ErrorKind::Unsupported => Err(
-                                io::Error::new(
+                            Err(err) if err.kind() == io::ErrorKind::Unsupported => {
+                                Err(io::Error::new(
                                     io::ErrorKind::NotFound,
                                     format!("virtual document not found ({path})"),
-                                ),
-                            ),
+                                ))
+                            }
                             Err(err) => Err(err),
                         }
                     }

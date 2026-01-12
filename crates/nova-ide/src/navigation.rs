@@ -8,8 +8,8 @@ use crate::framework_cache;
 use crate::nav_core;
 use crate::text::{position_to_offset_with_index, span_to_lsp_range_with_index};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex};
-use nova_framework_mapstruct::NavigationTarget as MapStructNavigationTarget;
 use nova_db::Database as _;
+use nova_framework_mapstruct::NavigationTarget as MapStructNavigationTarget;
 
 impl DatabaseSnapshot {
     /// Best-effort `textDocument/implementation`.
@@ -84,37 +84,38 @@ impl DatabaseSnapshot {
         let lookup_type_info = |name: &str| self.type_info(name);
         let lookup_file = |uri: &Uri| self.file(uri);
 
-        let mut location = if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset)
-        {
-            nav_core::declaration_for_override(
-                &lookup_type_info,
-                &lookup_file,
-                &ty_name,
-                &method_name,
-            )
-        } else {
-            let (ident, _span) = nav_core::identifier_at(&parsed.text, offset)?;
-            if let Some((decl_file, decl_span)) =
-                nav_core::variable_declaration(parsed, offset, &ident)
-            {
-                let decl_parsed = self.file(&decl_file)?;
-                Some(Location {
-                    uri: decl_file,
-                    range: span_to_lsp_range_with_index(
-                        &decl_parsed.line_index,
-                        &decl_parsed.text,
-                        decl_span,
-                    ),
-                })
+        let mut location =
+            if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset) {
+                nav_core::declaration_for_override(
+                    &lookup_type_info,
+                    &lookup_file,
+                    &ty_name,
+                    &method_name,
+                )
             } else {
-                None
-            }
-        };
+                let (ident, _span) = nav_core::identifier_at(&parsed.text, offset)?;
+                if let Some((decl_file, decl_span)) =
+                    nav_core::variable_declaration(parsed, offset, &ident)
+                {
+                    let decl_parsed = self.file(&decl_file)?;
+                    Some(Location {
+                        uri: decl_file,
+                        range: span_to_lsp_range_with_index(
+                            &decl_parsed.line_index,
+                            &decl_parsed.text,
+                            decl_span,
+                        ),
+                    })
+                } else {
+                    None
+                }
+            };
 
         if location.is_none() {
             if let Some(file_id) = self.file_id_for_uri(file) {
-                location =
-                    mapstruct_fallback_locations(self, file_id, &parsed.text, offset).into_iter().next();
+                location = mapstruct_fallback_locations(self, file_id, &parsed.text, offset)
+                    .into_iter()
+                    .next();
             }
         }
 
@@ -150,10 +151,11 @@ fn mapstruct_fallback_locations(
     }
 
     let root = framework_cache::project_root_for_path(path);
-    let targets = match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset) {
-        Ok(targets) => targets,
-        Err(_) => return Vec::new(),
-    };
+    let targets =
+        match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset) {
+            Ok(targets) => targets,
+            Err(_) => return Vec::new(),
+        };
 
     targets
         .into_iter()
@@ -161,7 +163,10 @@ fn mapstruct_fallback_locations(
         .collect()
 }
 
-fn mapstruct_target_location(db: &DatabaseSnapshot, target: MapStructNavigationTarget) -> Option<Location> {
+fn mapstruct_target_location(
+    db: &DatabaseSnapshot,
+    target: MapStructNavigationTarget,
+) -> Option<Location> {
     let uri = uri_for_path(&target.file).unwrap_or_else(fallback_unknown_uri);
 
     if let Some(parsed) = db.file(&uri) {

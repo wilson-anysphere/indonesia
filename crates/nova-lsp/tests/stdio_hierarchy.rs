@@ -109,10 +109,7 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
         !items.is_empty(),
         "expected prepareCallHierarchy to return at least one item: {resp:#}"
     );
-    assert_eq!(
-        items[0].get("name").and_then(|v| v.as_str()),
-        Some("foo")
-    );
+    assert_eq!(items[0].get("name").and_then(|v| v.as_str()), Some("foo"));
     let foo_item = items[0].clone();
 
     // 2) outgoingCalls for `foo` should include `bar`.
@@ -131,7 +128,9 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
         .and_then(|v| v.as_array())
         .expect("outgoingCalls result array");
     assert!(
-        outgoing.iter().any(|call| call.pointer("/to/name").and_then(|v| v.as_str()) == Some("bar")),
+        outgoing
+            .iter()
+            .any(|call| call.pointer("/to/name").and_then(|v| v.as_str()) == Some("bar")),
         "expected outgoing calls to include `bar`, got: {resp:#}"
     );
 
@@ -159,10 +158,7 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
         !items.is_empty(),
         "expected prepareTypeHierarchy to return at least one item: {resp:#}"
     );
-    assert_eq!(
-        items[0].get("name").and_then(|v| v.as_str()),
-        Some("B")
-    );
+    assert_eq!(items[0].get("name").and_then(|v| v.as_str()), Some("B"));
     let b_item = items[0].clone();
 
     // 4) supertypes for `B` should include `A`.
@@ -181,7 +177,9 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
         .and_then(|v| v.as_array())
         .expect("supertypes result array");
     assert!(
-        supertypes.iter().any(|item| item.get("name").and_then(|v| v.as_str()) == Some("A")),
+        supertypes
+            .iter()
+            .any(|item| item.get("name").and_then(|v| v.as_str()) == Some("A")),
         "expected supertypes to include `A`, got: {resp:#}"
     );
 
@@ -197,4 +195,3 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

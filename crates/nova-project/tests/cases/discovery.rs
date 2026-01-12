@@ -61,7 +61,9 @@ fn loads_maven_multi_module_workspace() {
         "expected jar entries, found: {jar_entries:?}"
     );
     assert!(
-        jar_entries.iter().all(|jar| jar.starts_with(repo_dir.path())),
+        jar_entries
+            .iter()
+            .all(|jar| jar.starts_with(repo_dir.path())),
         "expected jar paths to start with {:?}, got: {:?}",
         repo_dir.path(),
         jar_entries
@@ -78,9 +80,8 @@ fn loads_maven_multi_module_workspace() {
         "expected Guava jar entry to be present; got: {jar_entries:?}"
     );
     assert!(
-        jar_entries
-            .iter()
-            .any(|jar| jar.contains("org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.jar")),
+        jar_entries.iter().any(|jar| jar
+            .contains("org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.jar")),
         "expected JUnit jar entry to be present; got: {jar_entries:?}"
     );
 
@@ -833,7 +834,9 @@ fn loads_maven_multi_module_workspace_model() {
         "expected dependency jar entries to be synthesized"
     );
     assert!(
-        jar_entries.iter().all(|jar| jar.starts_with(repo_dir.path())),
+        jar_entries
+            .iter()
+            .all(|jar| jar.starts_with(repo_dir.path())),
         "expected jar paths to start with {:?}, got: {:?}",
         repo_dir.path(),
         jar_entries
@@ -1017,16 +1020,20 @@ fn loads_gradle_includeflat_workspace_model() {
     assert_eq!(lib.root, expected_lib_root);
 
     let app_file = std::fs::canonicalize(
-        model.workspace_root
+        model
+            .workspace_root
             .join("../app/src/main/java/com/example/app/App.java"),
     )
     .expect("canonicalize app file");
-    let match_app = model.module_for_path(&app_file).expect("module for App.java");
+    let match_app = model
+        .module_for_path(&app_file)
+        .expect("module for App.java");
     assert_eq!(match_app.module.id, "gradle::app");
     assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
 
     let lib_file = std::fs::canonicalize(
-        model.workspace_root
+        model
+            .workspace_root
             .join("../lib/src/main/java/com/example/lib/Lib.java"),
     )
     .expect("canonicalize lib file");
@@ -1060,7 +1067,8 @@ fn loads_gradle_includeflat_kts_workspace_model() {
     assert_eq!(lib.root, expected_lib_root);
 
     let app_file = std::fs::canonicalize(
-        model.workspace_root
+        model
+            .workspace_root
             .join("../app/src/main/java/com/example/app/App.java"),
     )
     .expect("canonicalize app file");
@@ -1071,7 +1079,8 @@ fn loads_gradle_includeflat_kts_workspace_model() {
     assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
 
     let lib_file = std::fs::canonicalize(
-        model.workspace_root
+        model
+            .workspace_root
             .join("../lib/src/main/java/com/example/lib/Lib.java"),
     )
     .expect("canonicalize lib file");

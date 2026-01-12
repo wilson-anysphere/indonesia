@@ -207,4 +207,3 @@ public class CarMapperImpl implements CarMapper {
     let dto_text = std::fs::read_to_string(&dto_path).unwrap();
     assert_eq!(range_text(&dto_text, location.range), "seatCount");
 }
-

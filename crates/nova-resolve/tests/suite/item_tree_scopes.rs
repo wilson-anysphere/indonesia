@@ -67,10 +67,7 @@ fn constructor_id(tree: &ItemTree) -> nova_hir::ids::ConstructorId {
     panic!("constructor not found");
 }
 
-fn find_constructor_in_item(
-    tree: &ItemTree,
-    item: Item,
-) -> Option<nova_hir::ids::ConstructorId> {
+fn find_constructor_in_item(tree: &ItemTree, item: Item) -> Option<nova_hir::ids::ConstructorId> {
     let members = match item {
         Item::Class(id) => &tree.class(id).members,
         Item::Interface(id) => &tree.interface(id).members,
@@ -393,10 +390,7 @@ record Point(int x, int y) {
         .expect("record compact constructor");
 
     let scopes = build_scopes_for_item_tree(file, &tree);
-    let ctor_scope = *scopes
-        .constructor_scopes
-        .get(&ctor_id)
-        .expect("ctor scope");
+    let ctor_scope = *scopes.constructor_scopes.get(&ctor_id).expect("ctor scope");
 
     let jdk = JdkIndex::new();
     let resolver = Resolver::new(&jdk);

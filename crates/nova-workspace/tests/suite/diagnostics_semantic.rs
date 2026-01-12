@@ -57,10 +57,7 @@ async fn workspace_diagnostics_use_workspace_salsa_db_for_imports_and_language_l
     write(&root.join("pom.xml"), pom_java11());
 
     // Local import across files.
-    write(
-        &root.join("src/p/A.java"),
-        "package p; public class A {}",
-    );
+    write(&root.join("src/p/A.java"), "package p; public class A {}");
     write(
         &root.join("src/q/B.java"),
         "package q; import p.A; class B { A a; }",

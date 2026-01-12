@@ -704,7 +704,9 @@ fn rdeps_fallback_batches_frontier_union_per_layer() {
         ),
         (
             "rdeps(//java:*, (//java:fg1 + //java:fg2), 1)".to_string(),
-            MockResponse::Ok("java_library rule //java:lib1\njava_library rule //java:lib2\n".to_string()),
+            MockResponse::Ok(
+                "java_library rule //java:lib1\njava_library rule //java:lib2\n".to_string(),
+            ),
         ),
     ]);
     let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
@@ -1038,7 +1040,10 @@ fn owning_targets_cache_is_cleared_by_invalidate_changed_files_on_bazelrc_import
     // `.bazelrc` can be split across multiple files via `import` / `try-import`; those imported
     // files can affect query results and should clear the owning-target cache.
     write_file(&dir.path().join(".bazelrc"), "try-import tools/bazel.rc\n");
-    write_file(&dir.path().join("tools/bazel.rc"), "query --output=label_kind\n");
+    write_file(
+        &dir.path().join("tools/bazel.rc"),
+        "query --output=label_kind\n",
+    );
 
     let runner = QueryRunner::new([(
         format!("same_pkg_direct_rdeps({file_label})"),
@@ -1080,8 +1085,14 @@ fn owning_targets_cache_is_cleared_by_invalidate_changed_files_on_bazelrc_import
     let file_label = "//java:Hello.java";
 
     // Repositories may import bazelrc fragments with arbitrary filenames/extensions.
-    write_file(&dir.path().join(".bazelrc"), "try-import tools/bazelconfig\n");
-    write_file(&dir.path().join("tools/bazelconfig"), "query --output=label_kind\n");
+    write_file(
+        &dir.path().join(".bazelrc"),
+        "try-import tools/bazelconfig\n",
+    );
+    write_file(
+        &dir.path().join("tools/bazelconfig"),
+        "query --output=label_kind\n",
+    );
 
     let runner = QueryRunner::new([(
         format!("same_pkg_direct_rdeps({file_label})"),
@@ -1125,8 +1136,14 @@ fn invalidate_changed_files_matches_bazelrc_import_paths_when_root_is_symlink() 
     minimal_java_package(real.path());
 
     // `.bazelrc` imports a file without a `.rc` extension.
-    write_file(&real.path().join(".bazelrc"), "try-import tools/bazelconfig\n");
-    write_file(&real.path().join("tools/bazelconfig"), "query --output=label_kind\n");
+    write_file(
+        &real.path().join(".bazelrc"),
+        "try-import tools/bazelconfig\n",
+    );
+    write_file(
+        &real.path().join("tools/bazelconfig"),
+        "query --output=label_kind\n",
+    );
 
     let link_parent = tempdir().unwrap();
     let link_root = link_parent.path().join("ws");
@@ -1168,8 +1185,14 @@ fn invalidate_changed_files_matches_bazelrc_import_paths_for_deleted_files_when_
     minimal_java_package(real.path());
 
     // `.bazelrc` imports a file without a `.rc` extension.
-    write_file(&real.path().join(".bazelrc"), "try-import tools/bazelconfig\n");
-    write_file(&real.path().join("tools/bazelconfig"), "query --output=label_kind\n");
+    write_file(
+        &real.path().join(".bazelrc"),
+        "try-import tools/bazelconfig\n",
+    );
+    write_file(
+        &real.path().join("tools/bazelconfig"),
+        "query --output=label_kind\n",
+    );
 
     let link_parent = tempdir().unwrap();
     let link_root = link_parent.path().join("ws");

@@ -227,7 +227,10 @@ impl DecompiledDocumentStore {
     ///
     /// GC operates on all regular files under the store root (e.g. `.java` documents and any
     /// metadata sidecars). Symlinks are ignored and never followed.
-    pub fn gc(&self, policy: &DecompiledStoreGcPolicy) -> Result<DecompiledStoreGcReport, CacheError> {
+    pub fn gc(
+        &self,
+        policy: &DecompiledStoreGcPolicy,
+    ) -> Result<DecompiledStoreGcReport, CacheError> {
         let before_files = enumerate_regular_files(&self.root)?;
         let before_bytes: u64 = before_files
             .iter()
@@ -747,10 +750,9 @@ fn validate_binary_name(binary_name: &str) -> Result<(), CacheError> {
         return Err(io::Error::other("invalid decompiled binary name (empty)").into());
     }
     if binary_name.contains('/') || binary_name.contains('\\') {
-        return Err(io::Error::other(
-            "invalid decompiled binary name (contains path separators)",
-        )
-        .into());
+        return Err(
+            io::Error::other("invalid decompiled binary name (contains path separators)").into(),
+        );
     }
 
     // Reject drive prefixes / absolute paths / dot segments.

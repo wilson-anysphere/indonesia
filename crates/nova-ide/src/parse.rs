@@ -362,7 +362,10 @@ fn is_generic_member_call(tokens: &[Token], method_idx: usize) -> bool {
     //
     // We need this to avoid misclassifying the `method(` token sequence as a
     // receiverless call (`this.method(...)`).
-    let Some('>') = tokens.get(method_idx.wrapping_sub(1)).and_then(|t| t.symbol()) else {
+    let Some('>') = tokens
+        .get(method_idx.wrapping_sub(1))
+        .and_then(|t| t.symbol())
+    else {
         return false;
     };
 
@@ -631,7 +634,8 @@ fn parse_method_body(
 
         // Local variable: Type name
         let mut decl_start = i;
-        while decl_start < body_end && tokens.get(decl_start).and_then(|t| t.ident()) == Some("final")
+        while decl_start < body_end
+            && tokens.get(decl_start).and_then(|t| t.ident()) == Some("final")
         {
             decl_start += 1;
         }
@@ -666,7 +670,8 @@ fn parse_method_body(
                     name_span,
                 });
 
-                for (name, name_span) in scan_comma_separated_decl_names(tokens, after_name, stmt_end)
+                for (name, name_span) in
+                    scan_comma_separated_decl_names(tokens, after_name, stmt_end)
                 {
                     locals.push(VarDef {
                         ty: resolved_ty.clone(),
@@ -763,10 +768,8 @@ fn parse_type_body(
                             if let Some(body_end_idx) = find_matching(tokens, j, '{', '}') {
                                 // Include the method signature so that navigation can resolve
                                 // parameter identifiers within it.
-                                let body_span = Span::new(
-                                    tokens[i].span.start,
-                                    tokens[body_end_idx].span.end,
-                                );
+                                let body_span =
+                                    Span::new(tokens[i].span.start, tokens[body_end_idx].span.end);
 
                                 let (mut locals, mut method_calls) =
                                     parse_method_body(tokens, j, body_end_idx);
@@ -793,7 +796,8 @@ fn parse_type_body(
         }
 
         // Field: Type name;
-        if let Some((ty, ty_span, name, name_span, after_name)) = parse_var_decl(tokens, i, body_end)
+        if let Some((ty, ty_span, name, name_span, after_name)) =
+            parse_var_decl(tokens, i, body_end)
         {
             if tokens.get(after_name).and_then(|t| t.symbol()) != Some('(') {
                 fields.push(FieldDef {
@@ -817,7 +821,8 @@ fn parse_type_body(
                         body_end
                     });
 
-                for (name, name_span) in scan_comma_separated_decl_names(tokens, after_name, stmt_end)
+                for (name, name_span) in
+                    scan_comma_separated_decl_names(tokens, after_name, stmt_end)
                 {
                     fields.push(FieldDef {
                         ty: ty.clone(),
@@ -919,7 +924,8 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                                             break;
                                         }
                                         // Sealed types: `permits` can follow an extends list.
-                                        if tokens.get(j).and_then(|t| t.ident()) == Some("permits") {
+                                        if tokens.get(j).and_then(|t| t.ident()) == Some("permits")
+                                        {
                                             break;
                                         }
                                         if let Some((ty, _span, next)) =
@@ -948,7 +954,8 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                                             break;
                                         }
                                         // Sealed types: `permits` can follow an implements list.
-                                        if tokens.get(j).and_then(|t| t.ident()) == Some("permits") {
+                                        if tokens.get(j).and_then(|t| t.ident()) == Some("permits")
+                                        {
                                             break;
                                         }
                                         if let Some((ty, _span, next)) =

@@ -224,7 +224,11 @@ fn initialize_unassigned_local_quick_fix(
     let (line_start, indent) = line_start_and_indent(source, start_offset)?;
 
     let default_value = infer_default_value_for_local(source, name, start_offset);
-    let line_ending = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let line_ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let new_text = format!("{indent}{name} = {default_value};{line_ending}");
 
     let insert_pos = crate::text::offset_to_position(source, line_start);
@@ -338,10 +342,7 @@ fn full_line_range(source: &str, range: &Range) -> Option<Range> {
 
 fn line_start_and_indent(source: &str, offset: usize) -> Option<(usize, &str)> {
     let offset = offset.min(source.len());
-    let line_start = source[..offset]
-        .rfind('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
+    let line_start = source[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
 
     let line = source.get(line_start..)?;
     let indent_len: usize = line

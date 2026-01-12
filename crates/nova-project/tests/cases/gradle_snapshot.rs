@@ -1,7 +1,10 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-use nova_project::{load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions, OutputDirKind, SourceRootKind, SourceRootOrigin};
+use nova_project::{
+    load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
+    LoadOptions, OutputDirKind, SourceRootKind, SourceRootOrigin,
+};
 
 fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
     let files = collect_gradle_build_files(workspace_root);
@@ -175,7 +178,11 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
             }
         }
     });
-    std::fs::write(&snapshot_path, serde_json::to_vec_pretty(&snapshot_json).unwrap()).unwrap();
+    std::fs::write(
+        &snapshot_path,
+        serde_json::to_vec_pretty(&snapshot_json).unwrap(),
+    )
+    .unwrap();
 
     let gradle_home = tempfile::tempdir().expect("tempdir");
     let options = LoadOptions {
@@ -202,7 +209,10 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     );
 
     assert!(
-        project.output_dirs.iter().any(|out| out.kind == OutputDirKind::Main && out.path == main_out),
+        project
+            .output_dirs
+            .iter()
+            .any(|out| out.kind == OutputDirKind::Main && out.path == main_out),
         "project should use snapshot output dirs"
     );
 
@@ -216,7 +226,9 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
 
     let model =
         load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
-    let app = model.module_by_id("gradle::app").expect("app module config");
+    let app = model
+        .module_by_id("gradle::app")
+        .expect("app module config");
     assert_eq!(app.root, app_root);
 
     assert!(
@@ -229,7 +241,9 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     );
 
     assert!(
-        app.output_dirs.iter().any(|out| out.kind == OutputDirKind::Main && out.path == main_out),
+        app.output_dirs
+            .iter()
+            .any(|out| out.kind == OutputDirKind::Main && out.path == main_out),
         "workspace model should use snapshot output dirs"
     );
 

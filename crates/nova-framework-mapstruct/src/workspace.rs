@@ -27,7 +27,11 @@ impl WorkspaceCache {
         Self::default()
     }
 
-    pub(crate) fn workspace(&self, db: &dyn Database, project: ProjectId) -> Arc<MapStructWorkspace> {
+    pub(crate) fn workspace(
+        &self,
+        db: &dyn Database,
+        project: ProjectId,
+    ) -> Arc<MapStructWorkspace> {
         let fingerprint = project_fingerprint(db, project);
 
         {
@@ -226,9 +230,9 @@ fn top_level_type_names(root: Node<'_>, source: &str) -> Vec<String> {
         ) {
             continue;
         }
-        let name_node = child.child_by_field_name("name").or_else(|| {
-            nova_framework_parse::find_named_child(child, "identifier")
-        });
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| nova_framework_parse::find_named_child(child, "identifier"));
         let Some(name_node) = name_node else {
             continue;
         };
@@ -375,14 +379,18 @@ impl WorkspaceBuilder {
                 let mut mapped: HashSet<String> =
                     source_props.intersection(&target_props).cloned().collect();
                 for mapping in &method.mappings {
-                    let target = mapping.target.split('.').next().unwrap_or(&mapping.target).trim();
+                    let target = mapping
+                        .target
+                        .split('.')
+                        .next()
+                        .unwrap_or(&mapping.target)
+                        .trim();
                     if !target.is_empty() {
                         mapped.insert(target.to_string());
                     }
                 }
 
-                let mut unmapped: Vec<String> =
-                    target_props.difference(&mapped).cloned().collect();
+                let mut unmapped: Vec<String> = target_props.difference(&mapped).cloned().collect();
                 unmapped.sort();
                 if unmapped.is_empty() {
                     continue;

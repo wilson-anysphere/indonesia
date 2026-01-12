@@ -102,7 +102,11 @@ fn write_extension_bundle(root: &Path, id: &str, wat_src: &str) -> PathBuf {
     let ext_dir = root.join(id);
     fs::create_dir_all(&ext_dir).unwrap();
 
-    fs::write(ext_dir.join("plugin.wasm"), wat::parse_str(wat_src).unwrap()).unwrap();
+    fs::write(
+        ext_dir.join("plugin.wasm"),
+        wat::parse_str(wat_src).unwrap(),
+    )
+    .unwrap();
     fs::write(
         ext_dir.join(nova_ext::MANIFEST_FILE_NAME),
         format!(
@@ -171,7 +175,11 @@ fn timeout_and_memory_limits_are_enforced_via_config() {
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(loaded.len(), 2);
 
-    let busy = loaded.iter().find(|ext| ext.id() == "busy").unwrap().clone();
+    let busy = loaded
+        .iter()
+        .find(|ext| ext.id() == "busy")
+        .unwrap()
+        .clone();
     let mem = loaded.iter().find(|ext| ext.id() == "mem").unwrap().clone();
 
     // Busy-loop should be interrupted by the sandbox timeout and record an error.
@@ -247,11 +255,8 @@ fn allow_and_deny_lists_filter_extensions() {
     write_extension_bundle(root, "a", TODO_WAT);
     write_extension_bundle(root, "b", TODO_WAT);
 
-    let (loaded, errors) = ExtensionManager::load_all_filtered(
-        &[root.to_path_buf()],
-        Some(&["a".to_string()]),
-        &[],
-    );
+    let (loaded, errors) =
+        ExtensionManager::load_all_filtered(&[root.to_path_buf()], Some(&["a".to_string()]), &[]);
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].id(), "a");
     assert_eq!(errors.len(), 1);

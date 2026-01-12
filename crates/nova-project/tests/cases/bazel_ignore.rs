@@ -54,4 +54,3 @@ fn bazel_heuristic_respects_bazelignore_and_prunes_junk_dirs() {
         "expected .git/ to be excluded, got: {source_roots:?}"
     );
 }
-

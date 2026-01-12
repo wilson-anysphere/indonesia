@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use nova_types_bridge::ExternalTypeLoader;
 use nova_types::{
     resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub,
     Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
 };
+use nova_types_bridge::ExternalTypeLoader;
 
 #[derive(Default)]
 struct StubProvider {
@@ -68,24 +68,26 @@ fn resolves_field_from_loaded_stub_class() {
                 access_flags: ACC_STATIC | ACC_FINAL,
             },
         ],
-        methods: vec![MethodStub {
-            name: "<init>".to_string(),
-            descriptor: "()V".to_string(),
-            signature: None,
-            access_flags: 0,
-        },
-        MethodStub {
-            name: "greet".to_string(),
-            descriptor: "(I)Ljava/lang/String;".to_string(),
-            signature: None,
-            access_flags: 0,
-        },
-        MethodStub {
-            name: "util".to_string(),
-            descriptor: "()I".to_string(),
-            signature: None,
-            access_flags: ACC_STATIC,
-        }],
+        methods: vec![
+            MethodStub {
+                name: "<init>".to_string(),
+                descriptor: "()V".to_string(),
+                signature: None,
+                access_flags: 0,
+            },
+            MethodStub {
+                name: "greet".to_string(),
+                descriptor: "(I)Ljava/lang/String;".to_string(),
+                signature: None,
+                access_flags: 0,
+            },
+            MethodStub {
+                name: "util".to_string(),
+                descriptor: "()I".to_string(),
+                signature: None,
+                access_flags: ACC_STATIC,
+            },
+        ],
     });
 
     let mut env = TypeStore::with_minimal_jdk();

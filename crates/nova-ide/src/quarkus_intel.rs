@@ -152,10 +152,15 @@ fn project_for_file(db: &dyn Database, file: FileId) -> Option<Arc<CachedQuarkus
         return Some(hit);
     }
 
-    let sources: Vec<&str> = java_files.iter().map(|(_, id)| db.file_content(*id)).collect();
+    let sources: Vec<&str> = java_files
+        .iter()
+        .map(|(_, id)| db.file_content(*id))
+        .collect();
     let applicable = is_quarkus_applicable(&root_raw, &sources);
     let analysis = applicable.then(|| {
-        Arc::new(nova_framework_quarkus::analyze_java_sources_with_spans(&sources))
+        Arc::new(nova_framework_quarkus::analyze_java_sources_with_spans(
+            &sources,
+        ))
     });
 
     let (java_sources, file_ids): (Vec<PathBuf>, Vec<FileId>) = java_files.into_iter().unzip();
@@ -282,4 +287,3 @@ fn is_quarkus_applicable(root: &Path, sources: &[&str]) -> bool {
 
     nova_framework_quarkus::is_quarkus_applicable(&[], sources)
 }
-

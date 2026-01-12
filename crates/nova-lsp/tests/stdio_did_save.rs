@@ -118,4 +118,3 @@ fn stdio_server_supports_did_save_and_updates_open_document_contents() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

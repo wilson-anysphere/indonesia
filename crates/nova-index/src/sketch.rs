@@ -197,7 +197,8 @@ impl Index {
                             best = Some(sym);
                             continue;
                         }
-                        if sym_on_name && current_on_name
+                        if sym_on_name
+                            && current_on_name
                             && sym.name_range.len() < current.name_range.len()
                         {
                             best = Some(sym);

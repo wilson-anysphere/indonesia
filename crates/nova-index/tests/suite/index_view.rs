@@ -1,7 +1,7 @@
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
 use nova_index::{
-    load_index_view, load_index_view_fast, save_indexes, AnnotationLocation, IndexedSymbol,
-    IndexSymbolKind, ProjectIndexes, ReferenceLocation, SymbolLocation,
+    load_index_view, load_index_view_fast, save_indexes, AnnotationLocation, IndexSymbolKind,
+    IndexedSymbol, ProjectIndexes, ReferenceLocation, SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -67,7 +67,9 @@ fn index_view_filters_invalidated_files_without_materializing() {
             },
         );
     }
-    indexes.symbols.insert("OnlyA", sym("OnlyA", "A.java", 1, 1));
+    indexes
+        .symbols
+        .insert("OnlyA", sym("OnlyA", "A.java", 1, 1));
     indexes.references.insert(
         "OnlyA",
         ReferenceLocation {
@@ -174,18 +176,18 @@ fn index_view_filters_invalidated_files_without_materializing() {
     // the in-memory overlay; merged queries should now include both B.java
     // (persisted) and A.java (overlay), and should also surface any new keys
     // introduced by the updated file.
-    view_v2.overlay.symbols.insert(
-        "Foo",
-        sym("Foo", "A.java", 2, 1),
-    );
-    view_v2.overlay.symbols.insert(
-        "OnlyA",
-        sym("OnlyA", "A.java", 2, 1),
-    );
-    view_v2.overlay.symbols.insert(
-        "NewInA",
-        sym("NewInA", "A.java", 2, 10),
-    );
+    view_v2
+        .overlay
+        .symbols
+        .insert("Foo", sym("Foo", "A.java", 2, 1));
+    view_v2
+        .overlay
+        .symbols
+        .insert("OnlyA", sym("OnlyA", "A.java", 2, 1));
+    view_v2
+        .overlay
+        .symbols
+        .insert("NewInA", sym("NewInA", "A.java", 2, 10));
     view_v2.overlay.references.insert(
         "Foo",
         ReferenceLocation {

@@ -34,10 +34,7 @@ impl<'a> JavaComments<'a> {
     pub fn new(root: &SyntaxNode, source: &'a str) -> Self {
         let store = CommentStore::new(root, source);
 
-        Self {
-            source,
-            store,
-        }
+        Self { source, store }
     }
 
     /// Drain and format the leading comments that attach *before* `token`.
@@ -104,11 +101,7 @@ impl<'a> JavaComments<'a> {
         self.store.consume_in_range(range);
     }
 
-    fn fmt_leading_comments(
-        &self,
-        ctx: &FmtCtx,
-        comments: &[Comment],
-    ) -> Doc<'a> {
+    fn fmt_leading_comments(&self, ctx: &FmtCtx, comments: &[Comment]) -> Doc<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
 
         // Preserve blank line metadata around the entire leading comment block.
@@ -176,11 +169,7 @@ impl<'a> JavaComments<'a> {
 }
 
 impl<'a> JavaComments<'a> {
-    fn fmt_trailing_comments(
-        &self,
-        ctx: &FmtCtx,
-        comments: &[Comment],
-    ) -> Doc<'a> {
+    fn fmt_trailing_comments(&self, ctx: &FmtCtx, comments: &[Comment]) -> Doc<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
 
         for (idx, comment) in comments.iter().enumerate() {
@@ -232,7 +221,6 @@ impl<'a> JavaComments<'a> {
                 }
                 continue;
             }
-
         }
 
         Doc::concat(parts)

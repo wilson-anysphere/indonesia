@@ -268,10 +268,14 @@ impl ExtractMethod {
 
         // Until lambdas are modeled in flow IR, selections inside lambda bodies are invalid.
         let body_range = syntax_range(method_body.syntax());
-        let selection_inside_lambda = selected_expr.syntax().ancestors().find_map(ast::LambdaExpression::cast).is_some_and(|lambda| {
-            let lambda_range = syntax_range(lambda.syntax());
-            body_range.start <= lambda_range.start && lambda_range.end <= body_range.end
-        });
+        let selection_inside_lambda = selected_expr
+            .syntax()
+            .ancestors()
+            .find_map(ast::LambdaExpression::cast)
+            .is_some_and(|lambda| {
+                let lambda_range = syntax_range(lambda.syntax());
+                body_range.start <= lambda_range.start && lambda_range.end <= body_range.end
+            });
         if selection_inside_lambda {
             issues.push(ExtractMethodIssue::InvalidSelection);
             return Ok(ExtractMethodAnalysis {
@@ -395,7 +399,8 @@ impl ExtractMethod {
         let new_body_indent = format!("{method_indent}    ");
         let (method_body_text, replacement, return_ty) = match analysis.region {
             ExtractRegionKind::Statements => {
-                let extracted_body = reindent(&extracted_text, &call_indent, &new_body_indent, newline);
+                let extracted_body =
+                    reindent(&extracted_text, &call_indent, &new_body_indent, newline);
 
                 let mut method_body_text = extracted_body;
                 if !method_body_text.ends_with(newline) {
@@ -408,10 +413,8 @@ impl ExtractMethod {
                         let decl = format!("{new_body_indent}{} {};{newline}", ret.ty, ret.name);
                         method_body_text = format!("{decl}{method_body_text}");
                     }
-                    method_body_text.push_str(&format!(
-                        "{new_body_indent}return {};{newline}",
-                        ret.name
-                    ));
+                    method_body_text
+                        .push_str(&format!("{new_body_indent}return {};{newline}", ret.name));
                 }
 
                 let return_ty = analysis.return_ty.clone();
@@ -677,10 +680,17 @@ struct StatementSelection {
 /// - `selection.start == start(stmts[i])`
 /// - `selection.end == end(stmts[j])`
 /// - all statements between `i` and `j` are fully covered (contiguous).
-fn find_statement_selection(method_body: &ast::Block, selection: TextRange) -> Option<StatementSelection> {
+fn find_statement_selection(
+    method_body: &ast::Block,
+    selection: TextRange,
+) -> Option<StatementSelection> {
     let mut best: Option<(usize, StatementSelection)> = None;
-    let blocks = std::iter::once(method_body.clone())
-        .chain(method_body.syntax().descendants().filter_map(ast::Block::cast));
+    let blocks = std::iter::once(method_body.clone()).chain(
+        method_body
+            .syntax()
+            .descendants()
+            .filter_map(ast::Block::cast),
+    );
 
     for block in blocks {
         let stmts: Vec<_> = block.statements().collect();
@@ -689,8 +699,7 @@ fn find_statement_selection(method_body: &ast::Block, selection: TextRange) -> O
         }
 
         let start_idx = stmts.iter().position(|stmt| {
-            non_trivia_range(stmt.syntax())
-                .is_some_and(|range| range.start == selection.start)
+            non_trivia_range(stmt.syntax()).is_some_and(|range| range.start == selection.start)
         });
         let end_idx = stmts.iter().position(|stmt| {
             non_trivia_range(stmt.syntax()).is_some_and(|range| range.end == selection.end)
@@ -707,10 +716,7 @@ fn find_statement_selection(method_body: &ast::Block, selection: TextRange) -> O
             block: block.clone(),
             statements: stmts[start_idx..=end_idx].to_vec(),
         };
-        if best
-            .as_ref()
-            .is_none_or(|(best_span, _)| span < *best_span)
-        {
+        if best.as_ref().is_none_or(|(best_span, _)| span < *best_span) {
             best = Some((span, sel));
         }
     }
@@ -817,7 +823,8 @@ fn collect_control_flow_hazards(
                         continue;
                     };
                     let target_range = syntax_range(target.syntax());
-                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                    {
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Break,
                         });
@@ -840,7 +847,8 @@ fn collect_control_flow_hazards(
                         continue;
                     };
                     let target_range = syntax_range(target.syntax());
-                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                    {
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Continue,
                         });
@@ -915,7 +923,10 @@ fn collect_declared_types(
             let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
                 continue;
             };
-            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            let ty_text = slice_syntax(source, ty.syntax())
+                .unwrap_or("Object")
+                .trim()
+                .to_string();
             out.insert(span_of_token(&name_tok), ty_text);
         }
     }
@@ -928,7 +939,10 @@ fn collect_declared_types(
         let Some(ty) = stmt.ty() else {
             continue;
         };
-        let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+        let ty_text = slice_syntax(source, ty.syntax())
+            .unwrap_or("Object")
+            .trim()
+            .to_string();
         let Some(list) = stmt.declarator_list() else {
             continue;
         };
@@ -942,7 +956,11 @@ fn collect_declared_types(
 
     // Try-with-resources variables are declared in `ResourceSpecification`, not in ordinary local
     // variable declaration statements.
-    for try_stmt in method_body.syntax().descendants().filter_map(ast::TryStatement::cast) {
+    for try_stmt in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::TryStatement::cast)
+    {
         let Some(resources) = try_stmt.resources() else {
             continue;
         };
@@ -960,7 +978,10 @@ fn collect_declared_types(
                 continue;
             };
 
-            let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+            let ty_text = slice_syntax(source, ty.syntax())
+                .unwrap_or("Object")
+                .trim()
+                .to_string();
             out.insert(span_of_token(&name_tok), ty_text);
         }
     }
@@ -990,7 +1011,10 @@ fn collect_declared_types(
         else {
             continue;
         };
-        let Some(lparen) = header_tokens.iter().find(|tok| tok.kind() == SyntaxKind::LParen) else {
+        let Some(lparen) = header_tokens
+            .iter()
+            .find(|tok| tok.kind() == SyntaxKind::LParen)
+        else {
             continue;
         };
 
@@ -1018,7 +1042,10 @@ fn collect_declared_types(
         let (Some(name_tok), Some(ty)) = (param.name_token(), param.ty()) else {
             continue;
         };
-        let ty_text = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim().to_string();
+        let ty_text = slice_syntax(source, ty.syntax())
+            .unwrap_or("Object")
+            .trim()
+            .to_string();
         out.insert(span_of_token(&name_tok), ty_text);
     }
     out
@@ -1100,13 +1127,19 @@ fn collect_reads_writes_in_stmt(
                 collect_reads_writes_in_stmt(body, *else_branch, selection, reads, writes);
             }
         }
-        StmtKind::While { condition, body: inner } => {
+        StmtKind::While {
+            condition,
+            body: inner,
+        } => {
             if contained {
                 collect_reads_in_expr(body, *condition, selection, reads);
             }
             collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
         }
-        StmtKind::DoWhile { body: inner, condition } => {
+        StmtKind::DoWhile {
+            body: inner,
+            condition,
+        } => {
             collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
             if contained {
                 collect_reads_in_expr(body, *condition, selection, reads);
@@ -1145,7 +1178,11 @@ fn collect_reads_writes_in_stmt(
                 collect_reads_writes_in_stmt(body, arm.body, selection, reads, writes);
             }
         }
-        StmtKind::Try { body: inner, catches, finally } => {
+        StmtKind::Try {
+            body: inner,
+            catches,
+            finally,
+        } => {
             collect_reads_writes_in_stmt(body, *inner, selection, reads, writes);
             for catch in catches {
                 collect_reads_writes_in_stmt(body, *catch, selection, reads, writes);
@@ -1170,7 +1207,12 @@ fn collect_reads_writes_in_stmt(
     }
 }
 
-fn collect_reads_in_expr(body: &Body, expr_id: ExprId, selection: TextRange, reads: &mut Vec<(LocalId, Span)>) {
+fn collect_reads_in_expr(
+    body: &Body,
+    expr_id: ExprId,
+    selection: TextRange,
+    reads: &mut Vec<(LocalId, Span)>,
+) {
     let expr = body.expr(expr_id);
     if !span_within_range(expr.span, selection) {
         return;
@@ -1189,7 +1231,9 @@ fn collect_reads_in_expr(body: &Body, expr_id: ExprId, selection: TextRange, rea
             collect_reads_in_expr(body, *lhs, selection, reads);
             collect_reads_in_expr(body, *rhs, selection, reads);
         }
-        ExprKind::FieldAccess { receiver, .. } => collect_reads_in_expr(body, *receiver, selection, reads),
+        ExprKind::FieldAccess { receiver, .. } => {
+            collect_reads_in_expr(body, *receiver, selection, reads)
+        }
         ExprKind::Call { receiver, args, .. } => {
             if let Some(recv) = receiver {
                 collect_reads_in_expr(body, *recv, selection, reads);
@@ -1220,14 +1264,11 @@ fn type_for_local(
     issues: &mut Vec<ExtractMethodIssue>,
 ) -> String {
     let local_data = &body.locals()[local.index()];
-    types
-        .get(&local_data.span)
-        .cloned()
-        .unwrap_or_else(|| {
-            let name = local_data.name.as_str().to_string();
-            issues.push(ExtractMethodIssue::UnknownType { name });
-            "Object".to_string()
-        })
+    types.get(&local_data.span).cloned().unwrap_or_else(|| {
+        let name = local_data.name.as_str().to_string();
+        issues.push(ExtractMethodIssue::UnknownType { name });
+        "Object".to_string()
+    })
 }
 
 fn compute_return_value(
@@ -1277,8 +1318,13 @@ fn compute_return_value(
 
 #[derive(Debug, Clone, Copy)]
 enum StmtLocation {
-    InBlock { block: nova_flow::BlockId, index: usize },
-    Terminator { block: nova_flow::BlockId },
+    InBlock {
+        block: nova_flow::BlockId,
+        index: usize,
+    },
+    Terminator {
+        block: nova_flow::BlockId,
+    },
 }
 
 fn live_locals_after_selection(body: &Body, selection: TextRange) -> HashSet<LocalId> {
@@ -1293,8 +1339,7 @@ fn live_locals_after_selection(body: &Body, selection: TextRange) -> HashSet<Loc
         return HashSet::new();
     };
 
-    live_after_stmt(body, &cfg, &live_out, location)
-        .unwrap_or_else(HashSet::new)
+    live_after_stmt(body, &cfg, &live_out, location).unwrap_or_else(HashSet::new)
 }
 
 fn collect_stmt_locations(cfg: &nova_flow::ControlFlowGraph) -> HashMap<StmtId, StmtLocation> {
@@ -1302,8 +1347,10 @@ fn collect_stmt_locations(cfg: &nova_flow::ControlFlowGraph) -> HashMap<StmtId, 
     for (idx, bb) in cfg.blocks.iter().enumerate() {
         let bb_id = nova_flow::BlockId(idx);
         for (pos, stmt) in bb.stmts.iter().enumerate() {
-            out.entry(*stmt)
-                .or_insert(StmtLocation::InBlock { block: bb_id, index: pos });
+            out.entry(*stmt).or_insert(StmtLocation::InBlock {
+                block: bb_id,
+                index: pos,
+            });
         }
         if let Some(from) = bb.terminator.from_stmt() {
             out.entry(from)
@@ -1495,7 +1542,11 @@ fn add_expr_uses(body: &Body, expr: ExprId, live: &mut HashSet<LocalId>) {
     }
 }
 
-fn insertion_offset_end_of_type_body(source: &str, body: &nova_syntax::SyntaxNode, newline: &str) -> usize {
+fn insertion_offset_end_of_type_body(
+    source: &str,
+    body: &nova_syntax::SyntaxNode,
+    newline: &str,
+) -> usize {
     // Insert immediately before the newline that starts the closing brace line.
     let mut close = None;
     for tok in body.children_with_tokens().filter_map(|el| el.into_token()) {
@@ -1629,11 +1680,17 @@ fn find_flow_expr_in_stmt(body: &Body, stmt_id: StmtId, target: Span, found: &mu
                 find_flow_expr_in_stmt(body, *else_branch, target, found);
             }
         }
-        StmtKind::While { condition, body: inner } => {
+        StmtKind::While {
+            condition,
+            body: inner,
+        } => {
             find_flow_expr_in_expr(body, *condition, target, found);
             find_flow_expr_in_stmt(body, *inner, target, found);
         }
-        StmtKind::DoWhile { body: inner, condition } => {
+        StmtKind::DoWhile {
+            body: inner,
+            condition,
+        } => {
             find_flow_expr_in_stmt(body, *inner, target, found);
             find_flow_expr_in_expr(body, *condition, target, found);
         }
@@ -1698,7 +1755,11 @@ fn find_flow_expr_in_expr(body: &Body, expr_id: ExprId, target: Span, found: &mu
     }
 
     match &expr.kind {
-        ExprKind::Local(_) | ExprKind::Null | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => {}
+        ExprKind::Local(_)
+        | ExprKind::Null
+        | ExprKind::Bool(_)
+        | ExprKind::Int(_)
+        | ExprKind::String(_) => {}
         ExprKind::New { args, .. } => {
             for arg in args {
                 find_flow_expr_in_expr(body, *arg, target, found);

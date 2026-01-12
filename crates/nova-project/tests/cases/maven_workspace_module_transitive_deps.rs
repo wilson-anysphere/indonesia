@@ -127,4 +127,3 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
-

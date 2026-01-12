@@ -387,17 +387,14 @@ impl ExtensionManager {
         use crate::wasm::{WasmCapabilities, WasmPlugin, WasmPluginConfig};
         use std::sync::Arc;
 
-        let plugin = WasmPlugin::from_wasm_bytes(
-            ext.id(),
-            ext.entry_bytes(),
-            WasmPluginConfig::default(),
-        )
-        .map_err(|err| RegisterError::WasmCompile {
-            id: ext.id().to_string(),
-            dir: ext.dir().to_path_buf(),
-            entry_path: ext.entry_path().to_path_buf(),
-            message: err.to_string(),
-        })?;
+        let plugin =
+            WasmPlugin::from_wasm_bytes(ext.id(), ext.entry_bytes(), WasmPluginConfig::default())
+                .map_err(|err| RegisterError::WasmCompile {
+                id: ext.id().to_string(),
+                dir: ext.dir().to_path_buf(),
+                entry_path: ext.entry_path().to_path_buf(),
+                message: err.to_string(),
+            })?;
         let plugin = Arc::new(plugin);
         let caps = plugin.capabilities();
 
@@ -1288,7 +1285,11 @@ abi_version = 1
 capabilities = ["diagnostics", "completions"]
 "#,
             );
-            write_wat_wasm(&dup_ext, "plugin.wasm", &simple_wat("from-dup", Some("dup")));
+            write_wat_wasm(
+                &dup_ext,
+                "plugin.wasm",
+                &simple_wat("from-dup", Some("dup")),
+            );
 
             let ok_ext = root.join("ext-ok");
             fs::create_dir_all(&ok_ext).unwrap();

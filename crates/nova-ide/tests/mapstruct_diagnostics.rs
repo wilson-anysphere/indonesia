@@ -1,5 +1,5 @@
-mod text_fixture;
 mod framework_harness;
+mod text_fixture;
 
 use std::sync::Arc;
 
@@ -24,9 +24,7 @@ fn maven_mapper_without_mapstruct_dependency_emits_missing_dependency() {
     )
     .expect("write pom.xml");
 
-    let mapper_path = dir
-        .path()
-        .join("src/main/java/com/example/MyMapper.java");
+    let mapper_path = dir.path().join("src/main/java/com/example/MyMapper.java");
     std::fs::create_dir_all(mapper_path.parent().expect("mapper parent")).expect("mkdirs");
 
     let mapper_text = r#"package com.example;
@@ -57,7 +55,9 @@ class Target {
 
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
     assert!(
-        diags.iter().any(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY" && d.severity == Severity::Error),
+        diags
+            .iter()
+            .any(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY" && d.severity == Severity::Error),
         "expected MAPSTRUCT_MISSING_DEPENDENCY; got {diags:#?}"
     );
 }
@@ -84,9 +84,7 @@ fn maven_mapper_with_mapstruct_dependency_does_not_emit_missing_dependency() {
     )
     .expect("write pom.xml");
 
-    let mapper_path = dir
-        .path()
-        .join("src/main/java/com/example/MyMapper.java");
+    let mapper_path = dir.path().join("src/main/java/com/example/MyMapper.java");
     std::fs::create_dir_all(mapper_path.parent().expect("mapper parent")).expect("mkdirs");
 
     let mapper_text = r#"package com.example;
@@ -117,7 +115,9 @@ class Target {
 
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
     assert!(
-        !diags.iter().any(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        !diags
+            .iter()
+            .any(|d| d.code == "MAPSTRUCT_MISSING_DEPENDENCY"),
         "expected MAPSTRUCT_MISSING_DEPENDENCY to be absent; got {diags:#?}"
     );
 }
@@ -146,9 +146,7 @@ fn mapstruct_ambiguous_and_unmapped_diagnostics_are_surfaced_via_ide_extensions(
 
     let src_path = dir.path().join("src/main/java/com/example/Source.java");
     let target_path = dir.path().join("src/main/java/com/example/Target.java");
-    let mapper_path = dir
-        .path()
-        .join("src/main/java/com/example/MyMapper.java");
+    let mapper_path = dir.path().join("src/main/java/com/example/MyMapper.java");
     std::fs::create_dir_all(mapper_path.parent().expect("java parent")).expect("mkdirs");
 
     let source_text = r#"package com.example;
@@ -193,12 +191,17 @@ public interface MyMapper {
     let diags = ide.all_diagnostics(CancellationToken::new(), mapper_file);
 
     assert!(
-        diags.iter().any(|d| d.code == "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD" && d.severity == Severity::Error),
+        diags.iter().any(
+            |d| d.code == "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD" && d.severity == Severity::Error
+        ),
         "expected MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD; got {diags:#?}"
     );
 
     assert!(
-        diags.iter().any(|d| d.code == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES" && d.severity == Severity::Warning),
+        diags
+            .iter()
+            .any(|d| d.code == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"
+                && d.severity == Severity::Warning),
         "expected MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES; got {diags:#?}"
     );
 }

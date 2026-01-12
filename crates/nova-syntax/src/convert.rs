@@ -83,7 +83,10 @@ mod tests {
     fn converts_core_text_edits_to_syntax_text_edits() {
         let edits = vec![
             // Replace "cd" -> "XX"
-            CoreTextEdit::new(CoreTextRange::new(TextSize::from(2), TextSize::from(4)), "XX"),
+            CoreTextEdit::new(
+                CoreTextRange::new(TextSize::from(2), TextSize::from(4)),
+                "XX",
+            ),
             // Insert "!" at start
             CoreTextEdit::insert(TextSize::from(0), "!"),
             // Delete "f"
@@ -107,8 +110,10 @@ mod tests {
 
     #[test]
     fn converts_borrowed_core_text_edits_to_syntax_text_edits() {
-        let edit =
-            CoreTextEdit::new(CoreTextRange::new(TextSize::from(2), TextSize::from(4)), "XX");
+        let edit = CoreTextEdit::new(
+            CoreTextRange::new(TextSize::from(2), TextSize::from(4)),
+            "XX",
+        );
         let converted = TextEdit::try_from(&edit).unwrap();
         assert_eq!(converted.replacement, "XX");
         assert_eq!(converted.range, TextRange { start: 2, end: 4 });

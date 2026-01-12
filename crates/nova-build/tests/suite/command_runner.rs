@@ -246,8 +246,7 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
     )
     .unwrap();
 
-    let testdata_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+    let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
     let named = testdata_dir.join("named-module.jar");
     let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
     let dep = testdata_dir.join("dep.jar");
@@ -322,8 +321,7 @@ fn maven_java_compile_config_uses_evaluated_module_path_when_present() {
     )
     .unwrap();
 
-    let testdata_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+    let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
     std::fs::copy(testdata_dir.join("named-module.jar"), root.join("mods.jar")).unwrap();
     let named = root.join("mods.jar");
 
@@ -511,7 +509,11 @@ fn gradle_java_compile_configs_all_parses_and_populates_cache() {
     std::fs::create_dir_all(root.join("app")).unwrap();
     std::fs::write(root.join("settings.gradle"), "").unwrap();
     std::fs::write(root.join("build.gradle"), "").unwrap();
-    std::fs::write(root.join("app").join("build.gradle"), "plugins { id 'java' }").unwrap();
+    std::fs::write(
+        root.join("app").join("build.gradle"),
+        "plugins { id 'java' }",
+    )
+    .unwrap();
 
     let shared = root.join("shared.jar");
     let app_dep = root.join("app.jar");
@@ -577,7 +579,9 @@ fn gradle_java_compile_configs_all_parses_and_populates_cache() {
     // Root queries should also be cache hits: for aggregator roots (compileClasspath == null),
     // `java_compile_config(None)` unions subprojects. The batch method caches that union under
     // `<root>` to avoid an extra Gradle invocation.
-    let root_cp = build.classpath(&root, None, &cache).expect("cached root union");
+    let root_cp = build
+        .classpath(&root, None, &cache)
+        .expect("cached root union");
     assert_eq!(
         root_cp,
         Classpath::new(vec![
@@ -607,8 +611,16 @@ fn gradle_java_compile_config_uses_batch_task_to_avoid_per_module_invocations() 
     std::fs::create_dir_all(root.join("lib")).unwrap();
     std::fs::write(root.join("settings.gradle"), "include ':app', ':lib'\n").unwrap();
     std::fs::write(root.join("build.gradle"), "").unwrap();
-    std::fs::write(root.join("app").join("build.gradle"), "plugins { id 'java' }").unwrap();
-    std::fs::write(root.join("lib").join("build.gradle"), "plugins { id 'java' }").unwrap();
+    std::fs::write(
+        root.join("app").join("build.gradle"),
+        "plugins { id 'java' }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib").join("build.gradle"),
+        "plugins { id 'java' }",
+    )
+    .unwrap();
 
     let shared = root.join("shared.jar");
     let app_dep = root.join("app.jar");
@@ -700,8 +712,16 @@ fn gradle_root_classpath_prefers_batch_task_for_multi_project_builds() {
     std::fs::create_dir_all(root.join("lib")).unwrap();
     std::fs::write(root.join("settings.gradle"), "include ':app', ':lib'\n").unwrap();
     std::fs::write(root.join("build.gradle"), "").unwrap();
-    std::fs::write(root.join("app").join("build.gradle"), "plugins { id 'java' }").unwrap();
-    std::fs::write(root.join("lib").join("build.gradle"), "plugins { id 'java' }").unwrap();
+    std::fs::write(
+        root.join("app").join("build.gradle"),
+        "plugins { id 'java' }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib").join("build.gradle"),
+        "plugins { id 'java' }",
+    )
+    .unwrap();
 
     let shared = root.join("shared.jar");
     let app_dep = root.join("app.jar");

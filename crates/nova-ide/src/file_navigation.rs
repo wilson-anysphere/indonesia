@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use lsp_types::{Location, Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf, LineIndex};
 use nova_db::{Database, FileId};
-use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_framework_mapstruct::NavigationTarget as MapStructNavigationTarget;
+use nova_index::{InheritanceEdge, InheritanceIndex};
 use once_cell::sync::Lazy;
 
 use crate::framework_cache;
@@ -441,16 +441,13 @@ pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Optio
     let lookup_type_info = |name: &str| index.type_info(name);
     let lookup_file = |uri: &Uri| index.file_by_uri(uri);
 
-    let mut location = if let Some((ty_name, method_name)) = nav_core::method_decl_at(parsed, offset)
+    let mut location = if let Some((ty_name, method_name)) =
+        nav_core::method_decl_at(parsed, offset)
     {
-        nav_core::declaration_for_override(
-            &lookup_type_info,
-            &lookup_file,
-            &ty_name,
-            &method_name,
-        )
+        nav_core::declaration_for_override(&lookup_type_info, &lookup_file, &ty_name, &method_name)
     } else if let Some((ident, _span)) = nav_core::identifier_at(&parsed.text, offset) {
-        if let Some((decl_uri, decl_span)) = nav_core::variable_declaration(parsed, offset, &ident) {
+        if let Some((decl_uri, decl_span)) = nav_core::variable_declaration(parsed, offset, &ident)
+        {
             if let Some(decl_parsed) = index.file_by_uri(&decl_uri) {
                 Some(Location {
                     uri: decl_uri,
@@ -506,12 +503,13 @@ fn mapstruct_fallback_locations(
     if !(text.contains("@Mapper") || text.contains("org.mapstruct")) {
         return Vec::new();
     }
- 
+
     let root = framework_cache::project_root_for_path(path);
-    let targets = match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset) {
-        Ok(targets) => targets,
-        Err(_) => return Vec::new(),
-    };
+    let targets =
+        match nova_framework_mapstruct::goto_definition_in_source(&root, path, text, offset) {
+            Ok(targets) => targets,
+            Err(_) => return Vec::new(),
+        };
 
     targets
         .into_iter()

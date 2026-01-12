@@ -303,7 +303,9 @@ fn collect_affected_methods(
         if target_is_interface {
             // 1) Subinterfaces that redeclare the method.
             for ty in index.symbols().iter().filter(|sym| {
-                sym.kind == SymbolKind::Class && sym.container.is_none() && index.is_interface(&sym.name)
+                sym.kind == SymbolKind::Class
+                    && sym.container.is_none()
+                    && index.is_interface(&sym.name)
             }) {
                 if ty.name == target_class {
                     continue;
@@ -321,7 +323,9 @@ fn collect_affected_methods(
 
             // 2) Classes that implement the interface (directly or transitively).
             for ty in index.symbols().iter().filter(|sym| {
-                sym.kind == SymbolKind::Class && sym.container.is_none() && !index.is_interface(&sym.name)
+                sym.kind == SymbolKind::Class
+                    && sym.container.is_none()
+                    && !index.is_interface(&sym.name)
             }) {
                 if !class_implements_interface(index, &ty.name, target_class) {
                     continue;
@@ -352,7 +356,8 @@ fn collect_affected_methods(
                     Ok(m) => m,
                     Err(_) => continue,
                 };
-                let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
+                let parsed_types: Vec<String> =
+                    parsed.params.iter().map(|p| p.ty.clone()).collect();
                 if parsed_types == target_param_types {
                     out.push(parsed);
                 }
@@ -388,7 +393,8 @@ fn collect_affected_methods(
                     Ok(m) => m,
                     Err(_) => continue,
                 };
-                let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
+                let parsed_types: Vec<String> =
+                    parsed.params.iter().map(|p| p.ty.clone()).collect();
                 if parsed_types == target_param_types {
                     out.push(parsed);
                 }
@@ -682,9 +688,13 @@ fn detect_overload_collisions(
     change: &ChangeSignature,
     conflicts: &mut Vec<ChangeSignatureConflict>,
 ) {
-    let new_name = change.new_name.clone().unwrap_or_else(|| method.name.clone());
+    let new_name = change
+        .new_name
+        .clone()
+        .unwrap_or_else(|| method.name.clone());
     let old_param_types = method_param_types_for_signature(index, method);
-    let new_param_types = compute_new_param_types_for_signature(&old_param_types, &change.parameters);
+    let new_param_types =
+        compute_new_param_types_for_signature(&old_param_types, &change.parameters);
 
     for sym_id in index.method_overloads(method.class.as_str(), &new_name) {
         let other_id = MethodId(sym_id.0);
@@ -731,7 +741,8 @@ fn collect_call_site_updates(
     let old_arity = old_param_types.len();
 
     let new_name = change.new_name.clone().unwrap_or_else(|| old_name.clone());
-    let new_param_types = compute_new_param_types_for_signature(&old_param_types, &change.parameters);
+    let new_param_types =
+        compute_new_param_types_for_signature(&old_param_types, &change.parameters);
 
     // Exclude method declaration name tokens. `find_name_candidates` is intentionally lexical
     // and reports method declarations as call candidates (identifier followed by `(`).
@@ -1078,16 +1089,16 @@ fn overload_candidates_after_change(
                 if sym.name != new_name {
                     continue;
                 }
-                let param_types: Vec<String> = if let Some(sig_types) = index.method_param_types(sym.id)
-                {
-                    sig_types.to_vec()
-                } else {
-                    let parsed = match parse_method(index, sym, id) {
-                        Ok(m) => m,
-                        Err(_) => continue,
+                let param_types: Vec<String> =
+                    if let Some(sig_types) = index.method_param_types(sym.id) {
+                        sig_types.to_vec()
+                    } else {
+                        let parsed = match parse_method(index, sym, id) {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
+                        parsed.params.iter().map(|p| p.ty.clone()).collect()
                     };
-                    parsed.params.iter().map(|p| p.ty.clone()).collect()
-                };
                 (sym.name.as_str(), param_types)
             };
 
@@ -1215,7 +1226,12 @@ fn infer_expr_type(text: &str, offset: usize, expr: &str) -> Option<String> {
     if let Some(rest) = e.strip_prefix("new") {
         let rest = rest.trim_start();
         let bytes = rest.as_bytes();
-        if bytes.first().copied().map(is_ident_continue).unwrap_or(false) {
+        if bytes
+            .first()
+            .copied()
+            .map(is_ident_continue)
+            .unwrap_or(false)
+        {
             let mut end = 0usize;
             while end < bytes.len()
                 && (is_ident_continue(bytes[end]) || bytes[end] == b'.' || bytes[end] == b'$')
@@ -1236,7 +1252,10 @@ fn infer_expr_type(text: &str, offset: usize, expr: &str) -> Option<String> {
 
 fn looks_like_int_literal(expr: &str) -> bool {
     let e = expr.trim();
-    let e = e.strip_prefix('+').or_else(|| e.strip_prefix('-')).unwrap_or(e);
+    let e = e
+        .strip_prefix('+')
+        .or_else(|| e.strip_prefix('-'))
+        .unwrap_or(e);
     if e.is_empty() {
         return false;
     }
@@ -1319,7 +1338,10 @@ fn is_type_token_char(b: u8) -> bool {
     // Allow generic/array/package tokens in best-effort type extraction.
     (b as char).is_ascii_alphanumeric()
         || b.is_ascii_whitespace()
-        || matches!(b, b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?')
+        || matches!(
+            b,
+            b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?'
+        )
 }
 
 fn extract_type_token_suffix(prefix: &str) -> Option<&str> {
@@ -1970,11 +1992,7 @@ fn split_top_level_types(text: &str, sep: char) -> Vec<String> {
             _ => {}
         }
 
-        if ch == sep
-            && depth_paren == 0
-            && depth_brack == 0
-            && depth_brace == 0
-            && depth_angle == 0
+        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && depth_angle == 0
         {
             out.push(text[start..i].to_string());
             start = i + 1;

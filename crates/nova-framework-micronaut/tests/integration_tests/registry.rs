@@ -82,4 +82,3 @@ fn registry_completes_value_placeholder_from_application_properties() {
         "expected completion to replace current key prefix"
     );
 }
-

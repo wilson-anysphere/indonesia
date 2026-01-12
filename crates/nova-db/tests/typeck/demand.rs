@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
+use nova_db::salsa::FileExprId;
 use nova_db::{
     ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
 };
-use nova_db::salsa::FileExprId;
 use nova_jdk::JdkIndex;
 use nova_resolve::ids::DefWithBodyId;
 use nova_types::format_type;
@@ -55,7 +55,9 @@ class C {
         nova_hir::hir::Stmt::Block { statements, .. } => statements
             .iter()
             .find_map(|stmt| match &body.stmts[*stmt] {
-                nova_hir::hir::Stmt::Return { expr: Some(expr), .. } => Some(*expr),
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
                 _ => None,
             })
             .expect("expected a return expression"),

@@ -1,4 +1,6 @@
-use nova_classfile::{parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature};
+use nova_classfile::{
+    parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature,
+};
 
 /// Formats a JVM field signature (descriptor) and optional generic signature into a Java source
 /// type string.
@@ -166,12 +168,9 @@ mod tests {
         assert_eq!(
             java_type_from_signatures(
                 "Ljava/util/Map$Entry;",
-                Some(
-                    "Ljava/util/Map<Ljava/lang/String;Ljava/lang/Integer;>.Entry<*>;"
-                )
+                Some("Ljava/util/Map<Ljava/lang/String;Ljava/lang/Integer;>.Entry<*>;")
             ),
             "java.util.Map<java.lang.String, java.lang.Integer>.Entry<?>"
         );
     }
 }
-

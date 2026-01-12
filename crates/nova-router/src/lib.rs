@@ -600,9 +600,9 @@ impl InProcessRouter {
             let root = root.path.clone();
             let shard_id = shard_id as ShardId;
             collect_set.spawn(async move {
-                let files = collect_java_files(&root)
-                    .await
-                    .with_context(|| format!("collect files for shard {shard_id} ({})", root.display()))?;
+                let files = collect_java_files(&root).await.with_context(|| {
+                    format!("collect files for shard {shard_id} ({})", root.display())
+                })?;
                 Ok::<_, anyhow::Error>((shard_id, files))
             });
         }
@@ -1428,10 +1428,7 @@ async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
             }
         }
         guard.insert(index.shard_id, index);
-        let update_id = state
-            .shard_indexes_update_id
-            .fetch_add(1, Ordering::SeqCst)
-            + 1;
+        let update_id = state.shard_indexes_update_id.fetch_add(1, Ordering::SeqCst) + 1;
         (guard.clone(), update_id)
     };
 

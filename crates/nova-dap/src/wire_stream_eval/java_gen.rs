@@ -378,9 +378,11 @@ fn expr_ends_with_member_call_named(expr: &str, method: &str) -> bool {
     let before_paren = &expr[..open_paren];
 
     // Trim whitespace before the `(`.
-    let Some(method_end) = before_paren.char_indices().rev().find_map(|(idx, ch)| {
-        (!ch.is_whitespace()).then_some(idx + ch.len_utf8())
-    }) else {
+    let Some(method_end) = before_paren
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx + ch.len_utf8()))
+    else {
         return false;
     };
 
@@ -601,7 +603,10 @@ mod tests {
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
-                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+                (
+                    "s".to_string(),
+                    "java.util.stream.Stream<Integer>".to_string(),
+                ),
             ],
             &[],
             &["s.forEach(System.out::println)".to_string()],
@@ -625,7 +630,10 @@ mod tests {
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
-                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+                (
+                    "s".to_string(),
+                    "java.util.stream.Stream<Integer>".to_string(),
+                ),
             ],
             &[],
             &["s.forEachOrdered(System.out::println)".to_string()],
@@ -660,9 +668,9 @@ mod tests {
             !src.contains("return java.util.stream.IntStream.range"),
             "should not emit `return <void expr>;`:\n{src}"
         );
-        assert!(src.contains(
-            "java.util.stream.IntStream.range(0, 3).forEach(System.out::println);"
-        ));
+        assert!(
+            src.contains("java.util.stream.IntStream.range(0, 3).forEach(System.out::println);")
+        );
     }
 
     #[test]
@@ -671,7 +679,10 @@ mod tests {
             "",
             &[],
             &[("this".to_string(), "com.example.Foo".to_string())],
-            &[("nums".to_string(), "java.util.List<java.lang.Integer>".to_string())],
+            &[(
+                "nums".to_string(),
+                "java.util.List<java.lang.Integer>".to_string(),
+            )],
             &["nums.stream().count()".to_string()],
         );
 
@@ -692,7 +703,10 @@ mod tests {
             &[],
             &[
                 ("this".to_string(), "Object".to_string()),
-                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+                (
+                    "s".to_string(),
+                    "java.util.stream.Stream<Integer>".to_string(),
+                ),
             ],
             &[],
             &["s.map(x -> x).mapToInt(x -> x).forEach(System.out::println)".to_string()],

@@ -130,7 +130,11 @@ impl CompletionEnvCache {
             }
         }
 
-        let mut files = if under_root.is_empty() { all } else { under_root };
+        let mut files = if under_root.is_empty() {
+            all
+        } else {
+            under_root
+        };
         files.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         // Fingerprint sources (cheap pointer/len hashing, like `framework_cache`).
@@ -283,7 +287,11 @@ impl WorkspaceTypeIndexBuilder {
             fqns.dedup();
         }
 
-        types.sort_by(|a, b| a.simple.cmp(&b.simple).then_with(|| a.qualified.cmp(&b.qualified)));
+        types.sort_by(|a, b| {
+            a.simple
+                .cmp(&b.simple)
+                .then_with(|| a.qualified.cmp(&b.qualified))
+        });
 
         WorkspaceTypeIndex {
             packages: self.packages.into_iter().collect(),

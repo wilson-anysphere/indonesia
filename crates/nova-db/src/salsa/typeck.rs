@@ -520,9 +520,7 @@ fn type_of_expr_demand_result(
                         // If the target expression is inside a lambda initializer that has an
                         // explicit target type, seed the lambda parameter locals from the SAM
                         // signature without type-checking the entire lambda body.
-                        if matches!(body.exprs[*init], HirExpr::Lambda { .. })
-                            && !is_infer_var
-                        {
+                        if matches!(body.exprs[*init], HirExpr::Lambda { .. }) && !is_infer_var {
                             let init_range = body.exprs[*init].range();
                             let may_contain = init_range.start <= target_range.start
                                 && target_range.end <= init_range.end;
@@ -1127,7 +1125,9 @@ fn resolve_method_call_demand(
                     visit_expr(body, *iterable, parent_expr, visited_expr);
                     visit_stmt(body, *b, parent_expr, visited_expr);
                 }
-                HirStmt::Switch { selector, body: b, .. } => {
+                HirStmt::Switch {
+                    selector, body: b, ..
+                } => {
                     visit_expr(body, *selector, parent_expr, visited_expr);
                     visit_stmt(body, *b, parent_expr, visited_expr);
                 }
@@ -1162,14 +1162,22 @@ fn resolve_method_call_demand(
             expected_roots: &mut [Option<Type>],
         ) {
             match &body.stmts[stmt] {
-                HirStmt::Return { expr: Some(expr), .. } => {
+                HirStmt::Return {
+                    expr: Some(expr), ..
+                } => {
                     if !expected_return.is_errorish() && expr.idx() < expected_roots.len() {
                         expected_roots[expr.idx()] = Some(expected_return.clone());
                     }
                 }
                 HirStmt::Block { statements, .. } => {
                     for stmt in statements {
-                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                        collect_expected_roots(
+                            body,
+                            *stmt,
+                            expected_return,
+                            local_types,
+                            expected_roots,
+                        );
                     }
                 }
                 HirStmt::Let {
@@ -1178,7 +1186,9 @@ fn resolve_method_call_demand(
                     ..
                 } => {
                     if expr.idx() < expected_roots.len() {
-                        if let Some(ty) = local_types.get(local.idx()).filter(|ty| !ty.is_errorish()) {
+                        if let Some(ty) =
+                            local_types.get(local.idx()).filter(|ty| !ty.is_errorish())
+                        {
                             expected_roots[expr.idx()] = Some(ty.clone());
                         }
                     }
@@ -1188,9 +1198,21 @@ fn resolve_method_call_demand(
                     else_branch,
                     ..
                 } => {
-                    collect_expected_roots(body, *then_branch, expected_return, local_types, expected_roots);
+                    collect_expected_roots(
+                        body,
+                        *then_branch,
+                        expected_return,
+                        local_types,
+                        expected_roots,
+                    );
                     if let Some(stmt) = else_branch {
-                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                        collect_expected_roots(
+                            body,
+                            *stmt,
+                            expected_return,
+                            local_types,
+                            expected_roots,
+                        );
                     }
                 }
                 HirStmt::While { body: b, .. }
@@ -1200,7 +1222,13 @@ fn resolve_method_call_demand(
                 }
                 HirStmt::For { init, body: b, .. } => {
                     for stmt in init {
-                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                        collect_expected_roots(
+                            body,
+                            *stmt,
+                            expected_return,
+                            local_types,
+                            expected_roots,
+                        );
                     }
                     collect_expected_roots(body, *b, expected_return, local_types, expected_roots);
                 }
@@ -1212,10 +1240,22 @@ fn resolve_method_call_demand(
                 } => {
                     collect_expected_roots(body, *b, expected_return, local_types, expected_roots);
                     for catch in catches {
-                        collect_expected_roots(body, catch.body, expected_return, local_types, expected_roots);
+                        collect_expected_roots(
+                            body,
+                            catch.body,
+                            expected_return,
+                            local_types,
+                            expected_roots,
+                        );
                     }
                     if let Some(stmt) = finally {
-                        collect_expected_roots(body, *stmt, expected_return, local_types, expected_roots);
+                        collect_expected_roots(
+                            body,
+                            *stmt,
+                            expected_return,
+                            local_types,
+                            expected_roots,
+                        );
                     }
                 }
                 HirStmt::Return { expr: None, .. }
@@ -1802,22 +1842,13 @@ fn collect_annotation_use_diagnostics<'idx>(
         }
         let base_span = annotation_name_span(file_text, ann).or(Some(ann.range));
         let resolved = resolve_type_ref_text(
-            resolver,
-            scopes,
-            scope_id,
-            loader,
-            type_vars,
-            &ann.name,
-            base_span,
+            resolver, scopes, scope_id, loader, type_vars, &ann.name, base_span,
         );
         out.extend(resolved.diagnostics);
     }
 }
 
-fn annotation_name_span(
-    file_text: &str,
-    ann: &nova_hir::item_tree::AnnotationUse,
-) -> Option<Span> {
+fn annotation_name_span(file_text: &str, ann: &nova_hir::item_tree::AnnotationUse) -> Option<Span> {
     if ann.name.is_empty() {
         return Some(ann.range);
     }
@@ -3345,9 +3376,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 // expression for IDE features. Don't propagate `void` as an "expected type" into
                 // call/generic inference: Java doesn't allow `void` as a type argument and using it
                 // as a target type can lead to nonsensical inferred return types (e.g. `T = void`).
-                let expected =
-                    (!expected_return.is_errorish() && expected_return != &Type::Void)
-                        .then_some(expected_return);
+                let expected = (!expected_return.is_errorish() && expected_return != &Type::Void)
+                    .then_some(expected_return);
                 let expr_ty = self.infer_expr_with_expected(loader, *expr, expected).ty;
                 if expected_return == &Type::Void {
                     self.diagnostics.push(Diagnostic::error(
@@ -3390,11 +3420,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if !condition_ty.is_errorish() {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
-                    self.diagnostics.push(Diagnostic::error(
-                        "condition-not-boolean",
-                        "condition must be boolean",
-                        Some(self.body.exprs[*condition].range()),
-                    ));
+                        self.diagnostics.push(Diagnostic::error(
+                            "condition-not-boolean",
+                            "condition must be boolean",
+                            Some(self.body.exprs[*condition].range()),
+                        ));
                     }
                 }
                 self.check_stmt(loader, *then_branch, expected_return);
@@ -3409,11 +3439,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if !condition_ty.is_errorish() {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
-                    self.diagnostics.push(Diagnostic::error(
-                        "condition-not-boolean",
-                        "condition must be boolean",
-                        Some(self.body.exprs[*condition].range()),
-                    ));
+                        self.diagnostics.push(Diagnostic::error(
+                            "condition-not-boolean",
+                            "condition must be boolean",
+                            Some(self.body.exprs[*condition].range()),
+                        ));
                     }
                 }
                 self.check_stmt(loader, *body, expected_return);
@@ -3432,12 +3462,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let condition_ty = self.infer_expr(loader, *condition).ty;
                     if !condition_ty.is_errorish() {
                         let env_ro: &dyn TypeEnv = &*loader.store;
-                        if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
-                        self.diagnostics.push(Diagnostic::error(
-                            "condition-not-boolean",
-                            "condition must be boolean",
-                            Some(self.body.exprs[*condition].range()),
-                        ));
+                        if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none()
+                        {
+                            self.diagnostics.push(Diagnostic::error(
+                                "condition-not-boolean",
+                                "condition must be boolean",
+                                Some(self.body.exprs[*condition].range()),
+                            ));
                         }
                     }
                 }
@@ -4251,11 +4282,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if !condition_ty.is_errorish() {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
-                    self.diagnostics.push(Diagnostic::error(
-                        "condition-not-boolean",
-                        "condition must be boolean",
-                        Some(self.body.exprs[*condition].range()),
-                    ));
+                        self.diagnostics.push(Diagnostic::error(
+                            "condition-not-boolean",
+                            "condition must be boolean",
+                            Some(self.body.exprs[*condition].range()),
+                        ));
                     }
                 }
                 let then_ty = self
@@ -4779,7 +4810,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         if let StaticMemberResolution::SourceField(field) = member {
             // Static field imports carry the stable `FieldId`; prefer the already-resolved declared
             // type over name-based lookup.
-            let ty = self.field_types.get(&field).cloned().unwrap_or(Type::Unknown);
+            let ty = self
+                .field_types
+                .get(&field)
+                .cloned()
+                .unwrap_or(Type::Unknown);
             return ExprInfo {
                 ty,
                 is_type_ref: false,

@@ -41,15 +41,10 @@ fn extract_edit_for_uri(edit: &WorkspaceEdit, uri: &Uri) -> Vec<TextEdit> {
                     if &doc_edit.text_document.uri != uri {
                         continue;
                     }
-                    out.extend(
-                        doc_edit
-                            .edits
-                            .iter()
-                            .filter_map(|edit| match edit {
-                                lsp_types::OneOf::Left(text_edit) => Some(text_edit.clone()),
-                                lsp_types::OneOf::Right(_) => None,
-                            }),
-                    );
+                    out.extend(doc_edit.edits.iter().filter_map(|edit| match edit {
+                        lsp_types::OneOf::Left(text_edit) => Some(text_edit.clone()),
+                        lsp_types::OneOf::Right(_) => None,
+                    }));
                 }
             }
             lsp_types::DocumentChanges::Operations(_) => {}
@@ -145,4 +140,3 @@ public class Foo {
         "did not expect `source.organizeImports` code action when there are no import changes; got {actions:?}"
     );
 }
-

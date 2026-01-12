@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use nova_remote_proto::v3::{
-    Capabilities, CachedIndexInfo, Notification, ProtocolVersion, Request, Response,
+    CachedIndexInfo, Capabilities, Notification, ProtocolVersion, Request, Response,
     SupportedVersions, WorkerHello,
 };
 use nova_remote_proto::{ShardIndex, Symbol};
@@ -27,12 +27,9 @@ async fn delayed_cached_index_does_not_overwrite_newer_index() -> Result<()> {
     tokio::fs::create_dir_all(&root)
         .await
         .context("create source root")?;
-    tokio::fs::write(
-        root.join("A.java"),
-        "package a; public class Alpha {}",
-    )
-    .await
-    .context("write fixture java file")?;
+    tokio::fs::write(root.join("A.java"), "package a; public class Alpha {}")
+        .await
+        .context("write fixture java file")?;
 
     let config = DistributedRouterConfig {
         listen_addr: ListenAddr::Tcp(TcpListenAddr::Plain("127.0.0.1:0".parse()?)),
@@ -85,9 +82,10 @@ async fn delayed_cached_index_does_not_overwrite_newer_index() -> Result<()> {
         worker_build: None,
     };
 
-    let (worker_conn, welcome) = RpcConnection::handshake_as_worker(TcpStream::connect(addr).await?, hello)
-        .await
-        .context("handshake as v3 worker")?;
+    let (worker_conn, welcome) =
+        RpcConnection::handshake_as_worker(TcpStream::connect(addr).await?, hello)
+            .await
+            .context("handshake as v3 worker")?;
     anyhow::ensure!(welcome.shard_id == 0, "welcome shard mismatch");
 
     let fresh_symbol = Symbol {

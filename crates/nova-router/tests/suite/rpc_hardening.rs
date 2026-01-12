@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use crate::remote_rpc_util;
+use anyhow::{Context, Result};
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

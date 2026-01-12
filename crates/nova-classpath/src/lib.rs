@@ -461,7 +461,13 @@ impl ClasspathIndex {
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_with_deps_store_and_options(entries, cache_dir, deps_store.as_ref(), None, options)
+        Self::build_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store.as_ref(),
+            None,
+            options,
+        )
     }
 
     pub fn build_with_deps_store(
@@ -605,12 +611,15 @@ impl ClasspathIndex {
             add_opt_string(bytes, &stub.signature);
             add_vec_string(bytes, &stub.annotations);
 
-            *bytes = bytes.saturating_add((stub.fields.capacity() * size_of::<ClasspathFieldStub>()) as u64);
+            *bytes = bytes
+                .saturating_add((stub.fields.capacity() * size_of::<ClasspathFieldStub>()) as u64);
             for field in &stub.fields {
                 add_field_stub(bytes, field);
             }
 
-            *bytes = bytes.saturating_add((stub.methods.capacity() * size_of::<ClasspathMethodStub>()) as u64);
+            *bytes = bytes.saturating_add(
+                (stub.methods.capacity() * size_of::<ClasspathMethodStub>()) as u64,
+            );
             for method in &stub.methods {
                 add_method_stub(bytes, method);
             }
@@ -634,12 +643,14 @@ impl ClasspathIndex {
             add_string(&mut bytes, v);
         }
 
-        bytes = bytes.saturating_add((self.binary_names_sorted.capacity() * size_of::<String>()) as u64);
+        bytes = bytes
+            .saturating_add((self.binary_names_sorted.capacity() * size_of::<String>()) as u64);
         for name in &self.binary_names_sorted {
             add_string(&mut bytes, name);
         }
 
-        bytes = bytes.saturating_add((self.packages_sorted.capacity() * size_of::<String>()) as u64);
+        bytes =
+            bytes.saturating_add((self.packages_sorted.capacity() * size_of::<String>()) as u64);
         for pkg in &self.packages_sorted {
             add_string(&mut bytes, pkg);
         }
@@ -737,7 +748,13 @@ impl ModuleAwareClasspathIndex {
         options: IndexOptions,
     ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
-        Self::build_with_deps_store_and_options(entries, cache_dir, deps_store.as_ref(), None, options)
+        Self::build_with_deps_store_and_options(
+            entries,
+            cache_dir,
+            deps_store.as_ref(),
+            None,
+            options,
+        )
     }
 
     pub fn build_with_deps_store(
@@ -1298,13 +1315,15 @@ fn index_entry(
     }
 }
 
-fn index_class_dir(dir: &Path, options: IndexOptions) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
+fn index_class_dir(
+    dir: &Path,
+    options: IndexOptions,
+) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     // Exploded multi-release JARs typically include the manifest, but some build tooling may drop
     // it when extracting. We treat the directory as multi-release if either:
     // - the manifest opts into multi-release behavior, or
     // - a `META-INF/versions` directory is present.
-    let is_multi_release =
-        dir_is_multi_release(dir) || dir.join("META-INF/versions").is_dir();
+    let is_multi_release = dir_is_multi_release(dir) || dir.join("META-INF/versions").is_dir();
 
     // Ensure deterministic directory iteration (WalkDir does not guarantee ordering).
     let mut class_files: Vec<PathBuf> = Vec::new();
@@ -2063,7 +2082,11 @@ mod tests {
         assert_eq!(names_again, expected);
 
         // Slice view should match the iterator view.
-        let slice_names: Vec<&str> = index.binary_class_names().iter().map(|s| s.as_str()).collect();
+        let slice_names: Vec<&str> = index
+            .binary_class_names()
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(slice_names, expected);
 
         // A rebuild of the index should produce the same stable ordering.
@@ -2074,7 +2097,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(index_rebuilt.binary_class_names(), index.binary_class_names());
+        assert_eq!(
+            index_rebuilt.binary_class_names(),
+            index.binary_class_names()
+        );
     }
 
     #[test]
@@ -2147,26 +2173,20 @@ mod tests {
         let entry = ClasspathEntry::Jar(test_jar()).normalize().unwrap();
         let fingerprint = entry.fingerprint().unwrap();
 
-        let stubs_first = persist::load_or_build_entry(
-            tmp.path(),
-            &entry,
-            fingerprint,
-            None,
-            || index_entry(&entry, None, None, IndexOptions::default()),
-        )
-        .unwrap();
+        let stubs_first =
+            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, None, || {
+                index_entry(&entry, None, None, IndexOptions::default())
+            })
+            .unwrap();
         assert!(stubs_first
             .iter()
             .any(|s| s.binary_name == "com.example.dep.Foo"));
 
-        let stubs_cached = persist::load_or_build_entry(
-            tmp.path(),
-            &entry,
-            fingerprint,
-            None,
-            || panic!("expected cache hit, but builder was invoked"),
-        )
-        .unwrap();
+        let stubs_cached =
+            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, None, || {
+                panic!("expected cache hit, but builder was invoked")
+            })
+            .unwrap();
 
         assert_eq!(stubs_first.len(), stubs_cached.len());
     }
@@ -2181,28 +2201,20 @@ mod tests {
 
         let build_calls = AtomicUsize::new(0);
 
-        let stubs_first = persist::load_or_build_entry(
-            tmp.path(),
-            &entry,
-            fingerprint,
-            None,
-            || {
+        let stubs_first =
+            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, None, || {
                 build_calls.fetch_add(1, Ordering::Relaxed);
                 index_entry(&entry, None, None, IndexOptions::default())
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(build_calls.load(Ordering::Relaxed), 1);
 
         // Ensure we're actually hitting the persisted cache.
-        let stubs_cached = persist::load_or_build_entry(
-            tmp.path(),
-            &entry,
-            fingerprint,
-            None,
-            || panic!("expected cache hit, but builder was invoked"),
-        )
-        .unwrap();
+        let stubs_cached =
+            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, None, || {
+                panic!("expected cache hit, but builder was invoked")
+            })
+            .unwrap();
         assert_eq!(stubs_first.len(), stubs_cached.len());
 
         // Truncate the persisted cache file to simulate corruption.
@@ -2216,27 +2228,19 @@ mod tests {
         file.set_len(10).unwrap();
         drop(file);
 
-        let stubs_rebuilt = persist::load_or_build_entry(
-            tmp.path(),
-            &entry,
-            fingerprint,
-            None,
-            || {
+        let stubs_rebuilt =
+            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, None, || {
                 build_calls.fetch_add(1, Ordering::Relaxed);
                 index_entry(&entry, None, None, IndexOptions::default())
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(build_calls.load(Ordering::Relaxed), 2);
         assert_eq!(stubs_first.len(), stubs_rebuilt.len());
 
         let bytes = std::fs::read(&cache_path).unwrap();
         let header =
             nova_storage::StorageHeader::decode(&bytes[..nova_storage::HEADER_LEN]).unwrap();
-        assert_eq!(
-            header.kind,
-            nova_storage::ArtifactKind::ClasspathEntryStubs
-        );
+        assert_eq!(header.kind, nova_storage::ArtifactKind::ClasspathEntryStubs);
         assert_eq!(header.schema_version, 2);
     }
 

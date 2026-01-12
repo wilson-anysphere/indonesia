@@ -60,11 +60,7 @@ fn trigram_from_units(a: char, b: char, c: char) -> Trigram {
         // Keep ASCII trigrams compatible with the fast packed representation so
         // ASCII-only queries can still match identifiers that contain Unicode
         // elsewhere (e.g. "café" should match "caf").
-        pack_trigram(
-            fold_byte(a as u8),
-            fold_byte(b as u8),
-            fold_byte(c as u8),
-        )
+        pack_trigram(fold_byte(a as u8), fold_byte(b as u8), fold_byte(c as u8))
     } else {
         hash_trigram_units(a, b, c)
     }

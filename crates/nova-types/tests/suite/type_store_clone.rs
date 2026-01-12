@@ -85,7 +85,10 @@ fn type_store_clone_preserves_ids_and_is_independent() {
             expected_name
         );
         assert_eq!(
-            cloned.class(id).expect("well-known class missing in clone").name,
+            cloned
+                .class(id)
+                .expect("well-known class missing in clone")
+                .name,
             expected_name
         );
     }
@@ -95,7 +98,9 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     for idx in 0..store.type_param_count() {
         let id = TypeVarId(idx as u32);
         let orig = store.type_param(id).expect("type param should exist");
-        let cloned_tp = cloned.type_param(id).expect("type param should exist in clone");
+        let cloned_tp = cloned
+            .type_param(id)
+            .expect("type param should exist in clone");
         assert_eq!(orig.name, cloned_tp.name);
         assert_eq!(orig.upper_bounds, cloned_tp.upper_bounds);
         assert_eq!(orig.lower_bound, cloned_tp.lower_bound);
@@ -111,7 +116,9 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     ];
     for name in names {
         let orig_id = store.lookup_class(name).expect("class should exist");
-        let cloned_id = cloned.lookup_class(name).expect("class should exist in clone");
+        let cloned_id = cloned
+            .lookup_class(name)
+            .expect("class should exist in clone");
         assert_eq!(orig_id, cloned_id);
 
         // And the class definitions should match across clones.
@@ -142,7 +149,9 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     assert_eq!(cloned.type_param(added_to_clone).unwrap().name, "U");
 
     // Removing a class in the clone should not affect the original.
-    let removed_foo_id = cloned.remove_class("com.example.Foo").expect("foo removed in clone");
+    let removed_foo_id = cloned
+        .remove_class("com.example.Foo")
+        .expect("foo removed in clone");
     assert_eq!(removed_foo_id, foo_id);
     assert_eq!(cloned.lookup_class("com.example.Foo"), None);
     assert_eq!(store.lookup_class("com.example.Foo"), Some(foo_id));
@@ -174,7 +183,10 @@ fn default_type_store_can_be_cloned_and_mutated_independently() {
             expected_name
         );
         assert_eq!(
-            cloned.class(id).expect("well-known class missing in clone").name,
+            cloned
+                .class(id)
+                .expect("well-known class missing in clone")
+                .name,
             expected_name
         );
     }

@@ -700,9 +700,7 @@ fn stdio_server_resolves_extract_variable_code_action() {
         "expected original expression to be replaced"
     );
     assert!(
-        updated
-            .find(decl_line)
-            .expect("declaration exists")
+        updated.find(decl_line).expect("declaration exists")
             < updated
                 .find(&format!("int x = /* 😀 */ {name};"))
                 .expect("replacement exists"),

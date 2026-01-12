@@ -245,9 +245,12 @@ impl<'a> Resolver<'a> {
 
         // Additional best-effort: any member type declared in an interface/annotation is
         // implicitly static (JLS 9.1.1.3 / 9.6.1.1).
-        workspace
-            .type_def(enclosing)
-            .is_some_and(|enclosing_def| matches!(enclosing_def.kind, TypeKind::Interface | TypeKind::Annotation))
+        workspace.type_def(enclosing).is_some_and(|enclosing_def| {
+            matches!(
+                enclosing_def.kind,
+                TypeKind::Interface | TypeKind::Annotation
+            )
+        })
     }
 
     fn resolve_static_imported_member_type(
@@ -704,7 +707,8 @@ impl<'a> Resolver<'a> {
         scope: ScopeId,
         name: &Name,
     ) -> Option<TypeResolution> {
-        self.resolve_type_name_detailed(scopes, scope, name).into_option()
+        self.resolve_type_name_detailed(scopes, scope, name)
+            .into_option()
     }
 
     /// Like [`Resolver::resolve_type_name`], but preserves ambiguity.
@@ -726,7 +730,9 @@ impl<'a> Resolver<'a> {
                 ScopeKind::Import { imports, package } => {
                     match self.resolve_single_type_imports_detailed(imports, name) {
                         TypeLookup::Found(ty) => {
-                            return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
+                            return TypeNameResolution::Resolved(
+                                self.type_resolution_from_name(ty),
+                            );
                         }
                         TypeLookup::Ambiguous(types) => {
                             return TypeNameResolution::Ambiguous(
@@ -741,13 +747,17 @@ impl<'a> Resolver<'a> {
 
                     if let Some(pkg) = package {
                         if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
-                            return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
+                            return TypeNameResolution::Resolved(
+                                self.type_resolution_from_name(ty),
+                            );
                         }
                     }
 
                     match self.resolve_on_demand_type_imports_detailed(imports, name) {
                         TypeLookup::Found(ty) => {
-                            return TypeNameResolution::Resolved(self.type_resolution_from_name(ty));
+                            return TypeNameResolution::Resolved(
+                                self.type_resolution_from_name(ty),
+                            );
                         }
                         TypeLookup::Ambiguous(types) => {
                             return TypeNameResolution::Ambiguous(
@@ -838,8 +848,7 @@ impl<'a> Resolver<'a> {
 
         self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate_dotted))
             .and_then(|ty| {
-                (ty.as_str() == expected_binary)
-                    .then_some(self.type_resolution_from_name(ty))
+                (ty.as_str() == expected_binary).then_some(self.type_resolution_from_name(ty))
             })
     }
 
@@ -1096,7 +1105,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn resolve_static_star_type_imports_detailed(&self, imports: &ImportMap, name: &Name) -> TypeLookup {
+    fn resolve_static_star_type_imports_detailed(
+        &self,
+        imports: &ImportMap,
+        name: &Name,
+    ) -> TypeLookup {
         let mut seen = HashSet::<TypeName>::new();
         let mut candidates = Vec::<TypeName>::new();
 
@@ -1130,11 +1143,8 @@ impl<'a> Resolver<'a> {
             if let Some(owner) = self.resolve_type_in_index(&import.path) {
                 // Prefer resolving the member as a binary nested name (`Outer$Inner`) so we don't
                 // accidentally treat a subpackage type (`Outer.Inner`) as a member type.
-                let binary_candidate = QualifiedName::from_dotted(&format!(
-                    "{}${}",
-                    owner.as_str(),
-                    name.as_str()
-                ));
+                let binary_candidate =
+                    QualifiedName::from_dotted(&format!("{}${}", owner.as_str(), name.as_str()));
                 if let Some(ty) = self.resolve_type_in_index_exact(&binary_candidate) {
                     if seen.insert(ty.clone()) {
                         candidates.push(ty);
@@ -1146,9 +1156,12 @@ impl<'a> Resolver<'a> {
                 // nesting heuristic, but ensure the resolved type is actually nested under `owner`
                 // (i.e. `owner$Name`).
                 let prefix = import.path.to_dotted();
-                let dotted_candidate = QualifiedName::from_dotted(&format!("{prefix}.{}", name.as_str()));
+                let dotted_candidate =
+                    QualifiedName::from_dotted(&format!("{prefix}.{}", name.as_str()));
                 if let Some(ty) = self.resolve_type_in_index(&dotted_candidate) {
-                    if ty.as_str().starts_with(&format!("{}$", owner.as_str())) && seen.insert(ty.clone()) {
+                    if ty.as_str().starts_with(&format!("{}$", owner.as_str()))
+                        && seen.insert(ty.clone())
+                    {
                         candidates.push(ty);
                     }
                 }

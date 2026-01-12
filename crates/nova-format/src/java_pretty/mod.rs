@@ -133,7 +133,9 @@ impl<'a> JavaPrettyFormatter<'a> {
                         {
                             let next_start = u32::from(first.text_range().start());
                             if has_whitespace_only_blank_line_between_offsets(
-                                self.source, prev_end, next_start,
+                                self.source,
+                                prev_end,
+                                next_start,
                             ) {
                                 pending_hardlines = pending_hardlines.max(2);
                             }

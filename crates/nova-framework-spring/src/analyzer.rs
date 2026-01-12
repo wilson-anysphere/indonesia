@@ -6,16 +6,17 @@ use std::sync::{Arc, Mutex};
 use nova_config_metadata::MetadataIndex;
 use nova_core::{FileId, ProjectId};
 use nova_framework::{
-    BeanDefinition, CompletionContext, Database, FrameworkAnalyzer, FrameworkData, NavigationTarget,
-    SpringData, Symbol,
+    BeanDefinition, CompletionContext, Database, FrameworkAnalyzer, FrameworkData,
+    NavigationTarget, SpringData, Symbol,
 };
 use nova_types::{CompletionItem, Diagnostic, Span, Type};
 
 use crate::{
-    analyze_java_sources, completion_span_for_properties_file, completion_span_for_value_placeholder,
-    completion_span_for_yaml_file, completions_for_properties_file, completions_for_value_placeholder,
-    completions_for_yaml_file, diagnostics_for_config_file, profile_completions,
-    qualifier_completions, AnalysisResult, SpringWorkspaceIndex,
+    analyze_java_sources, completion_span_for_properties_file,
+    completion_span_for_value_placeholder, completion_span_for_yaml_file,
+    completions_for_properties_file, completions_for_value_placeholder, completions_for_yaml_file,
+    diagnostics_for_config_file, profile_completions, qualifier_completions, AnalysisResult,
+    SpringWorkspaceIndex,
 };
 
 const MAX_CACHED_PROJECTS: usize = 32;
@@ -91,7 +92,11 @@ impl SpringAnalyzer {
         Self::default()
     }
 
-    fn cached_workspace(&self, db: &dyn Database, project: ProjectId) -> Option<Arc<CachedWorkspace>> {
+    fn cached_workspace(
+        &self,
+        db: &dyn Database,
+        project: ProjectId,
+    ) -> Option<Arc<CachedWorkspace>> {
         let all_files = db.all_files(project);
         if all_files.is_empty() {
             return None;
@@ -183,7 +188,10 @@ impl FrameworkAnalyzer for SpringAnalyzer {
 
         // Stable marker classes.
         db.has_class_on_classpath(project, "org.springframework.context.ApplicationContext")
-            || db.has_class_on_classpath(project, "org.springframework.beans.factory.annotation.Autowired")
+            || db.has_class_on_classpath(
+                project,
+                "org.springframework.beans.factory.annotation.Autowired",
+            )
     }
 
     fn analyze_file(&self, db: &dyn Database, file: FileId) -> Option<FrameworkData> {
@@ -447,7 +455,8 @@ impl FrameworkAnalyzer for SpringAnalyzer {
                     continue;
                 }
 
-                let Some(&dest_file) = workspace.source_to_file_id.get(target.location.source) else {
+                let Some(&dest_file) = workspace.source_to_file_id.get(target.location.source)
+                else {
                     continue;
                 };
 
@@ -475,7 +484,8 @@ impl FrameworkAnalyzer for SpringAnalyzer {
                     continue;
                 }
 
-                let Some(&dest_file) = workspace.source_to_file_id.get(target.location.source) else {
+                let Some(&dest_file) = workspace.source_to_file_id.get(target.location.source)
+                else {
                     continue;
                 };
 
@@ -706,7 +716,10 @@ enum AnnotationStringContext {
     Profile,
 }
 
-fn annotation_string_context(text: &str, offset: usize) -> Option<(AnnotationStringContext, Option<Span>)> {
+fn annotation_string_context(
+    text: &str,
+    offset: usize,
+) -> Option<(AnnotationStringContext, Option<Span>)> {
     let bytes = text.as_bytes();
     let offset = offset.min(bytes.len());
 

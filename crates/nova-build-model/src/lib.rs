@@ -139,7 +139,11 @@ pub fn is_bazel_workspace(root: &Path) -> bool {
 /// `start` may be either a directory or a file path within a workspace.
 pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
     let start = start.as_ref();
-    let mut dir = if start.is_file() { start.parent()? } else { start };
+    let mut dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
 
     loop {
         if is_bazel_workspace(dir) {

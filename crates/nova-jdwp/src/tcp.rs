@@ -1663,9 +1663,10 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], JdwpError> {
-        let end = self.pos.checked_add(len).ok_or_else(|| {
-            JdwpError::Protocol("unexpected end of packet".to_string())
-        })?;
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| JdwpError::Protocol("unexpected end of packet".to_string()))?;
         if end > self.buf.len() {
             return Err(JdwpError::Protocol("unexpected end of packet".to_string()));
         }

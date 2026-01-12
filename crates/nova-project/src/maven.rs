@@ -984,7 +984,8 @@ impl EffectivePom {
                 .as_deref()
                 .map(|v| resolve_placeholders(v, &properties));
 
-            let managed = dependency_management.get(&(dep.group_id.clone(), dep.artifact_id.clone()));
+            let managed =
+                dependency_management.get(&(dep.group_id.clone(), dep.artifact_id.clone()));
 
             dep.version = dep
                 .version
@@ -1274,14 +1275,21 @@ impl MavenResolver {
                     version: None,
                 });
 
-                let new_intersection: BTreeSet<_> =
-                    state.exclusions.intersection(&item.exclusions).cloned().collect();
+                let new_intersection: BTreeSet<_> = state
+                    .exclusions
+                    .intersection(&item.exclusions)
+                    .cloned()
+                    .collect();
                 if new_intersection != state.exclusions {
                     state.exclusions = new_intersection;
                 }
 
                 if state.version.is_none() {
-                    if let Some(v) = dep.version.as_deref().map(str::trim).filter(|v| !v.is_empty())
+                    if let Some(v) = dep
+                        .version
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
                     {
                         if !v.contains("${") {
                             state.version = Some(v.to_string());
@@ -1295,7 +1303,11 @@ impl MavenResolver {
                     state.expanded_with = Some(state.exclusions.clone());
                 }
 
-                (state.exclusions.clone(), state.version.clone(), should_expand)
+                (
+                    state.exclusions.clone(),
+                    state.version.clone(),
+                    should_expand,
+                )
             };
 
             if !should_expand {
@@ -1677,10 +1689,9 @@ fn java_from_maven_config(
             // Best-effort: treat the property value as a whitespace-separated list of args.
             // Maven projects also commonly set this as a single string that may contain other
             // flags, so we accept substring matches as well.
-            resolved
-                .split_whitespace()
-                .any(|arg| arg.trim_matches(|c| matches!(c, '"' | '\'')).trim() == "--enable-preview")
-                || resolved.contains("--enable-preview")
+            resolved.split_whitespace().any(|arg| {
+                arg.trim_matches(|c| matches!(c, '"' | '\'')).trim() == "--enable-preview"
+            }) || resolved.contains("--enable-preview")
         })
     };
 

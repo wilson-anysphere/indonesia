@@ -349,7 +349,9 @@ fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
-        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        errors
+            .iter()
+            .any(|e| e.message.starts_with("unterminated ")),
         "expected an unterminated error, got: {errors:?}"
     );
     assert!(
@@ -379,7 +381,9 @@ fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
-        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        errors
+            .iter()
+            .any(|e| e.message.starts_with("unterminated ")),
         "expected an unterminated error, got: {errors:?}"
     );
     assert!(
@@ -400,7 +404,9 @@ fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
-        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        errors
+            .iter()
+            .any(|e| e.message.starts_with("unterminated ")),
         "expected an unterminated error, got: {errors:?}"
     );
     assert!(
@@ -415,7 +421,9 @@ fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
-        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        errors
+            .iter()
+            .any(|e| e.message.starts_with("unterminated ")),
         "expected an unterminated error, got: {errors:?}"
     );
     assert!(
@@ -431,7 +439,9 @@ hello \{"#;
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
-        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        errors
+            .iter()
+            .any(|e| e.message.starts_with("unterminated ")),
         "expected an unterminated error, got: {errors:?}"
     );
     assert!(
@@ -446,7 +456,9 @@ hello \{"#;
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
-        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        errors
+            .iter()
+            .any(|e| e.message.starts_with("unterminated ")),
         "expected an unterminated error, got: {errors:?}"
     );
     assert!(
@@ -730,7 +742,10 @@ fn lexer_string_templates_do_not_start_interpolation_when_unicode_escape_backsla
             (SyntaxKind::Identifier, "STR".into()),
             (SyntaxKind::Dot, ".".into()),
             (SyntaxKind::StringTemplateStart, "\"".into()),
-            (SyntaxKind::StringTemplateText, r"hello \u005C\u005C{name}".into()),
+            (
+                SyntaxKind::StringTemplateText,
+                r"hello \u005C\u005C{name}".into()
+            ),
             (SyntaxKind::StringTemplateEnd, "\"".into()),
             (SyntaxKind::Eof, "".into()),
         ]
@@ -756,9 +771,9 @@ fn lexer_non_template_strings_still_reject_escape_brace() {
 
     assert_eq!(tokens, vec![SyntaxKind::StringLiteral, SyntaxKind::Eof]);
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("invalid escape sequence in string literal")),
+        errors.iter().any(|e| e
+            .message
+            .contains("invalid escape sequence in string literal")),
         "expected invalid escape error, got: {errors:?}"
     );
 }
@@ -778,9 +793,9 @@ fn lexer_non_template_strings_reject_unicode_escape_translated_escape_brace() {
 
     assert_eq!(tokens, vec![SyntaxKind::StringLiteral, SyntaxKind::Eof]);
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("invalid escape sequence in string literal")),
+        errors.iter().any(|e| e
+            .message
+            .contains("invalid escape sequence in string literal")),
         "expected invalid escape error, got: {errors:?}"
     );
 }
@@ -906,8 +921,14 @@ fn lexer_string_templates_allow_nested_templates_inside_interpolations() {
 fn lexer_reports_unterminated_string_templates() {
     for (input, expected_msg) in [
         ("STR.\"unterminated", "unterminated string template"),
-        ("STR.\"hello \\{name", "unterminated string template interpolation"),
-        ("STR.\"\"\"\nunterminated", "unterminated text block template"),
+        (
+            "STR.\"hello \\{name",
+            "unterminated string template interpolation",
+        ),
+        (
+            "STR.\"\"\"\nunterminated",
+            "unterminated text block template",
+        ),
         (
             "STR.\"\"\"\nhello \\{name",
             "unterminated text block template interpolation",
@@ -1110,7 +1131,10 @@ hello \{"#,
             "expected parse tree to be lossless for `{input}`"
         );
         assert!(
-            result.errors.iter().any(|e| e.message.starts_with(expected_prefix)),
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.starts_with(expected_prefix)),
             "expected parse errors starting with `{expected_prefix}` for `{input}`, got: {:#?}",
             result.errors
         );
@@ -1914,7 +1938,8 @@ fn feature_gate_var_lambda_parameters_version_matrix() {
     );
     assert_eq!(java8.result.errors, Vec::new());
     assert_eq!(
-        java8.diagnostics
+        java8
+            .diagnostics
             .iter()
             .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
@@ -1932,7 +1957,8 @@ fn feature_gate_var_lambda_parameters_version_matrix() {
     );
     assert_eq!(java10.result.errors, Vec::new());
     assert_eq!(
-        java10.diagnostics
+        java10
+            .diagnostics
             .iter()
             .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),

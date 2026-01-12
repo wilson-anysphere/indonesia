@@ -191,8 +191,14 @@ class C {
         .lookup_class("com.example.dep.Bar")
         .expect("Bar should be interned in body b env");
 
-    assert_eq!(foo_a, foo_b, "expected Foo to have stable ClassId across bodies");
-    assert_eq!(bar_a, bar_b, "expected Bar to have stable ClassId across bodies");
+    assert_eq!(
+        foo_a, foo_b,
+        "expected Foo to have stable ClassId across bodies"
+    );
+    assert_eq!(
+        bar_a, bar_b,
+        "expected Bar to have stable ClassId across bodies"
+    );
 }
 
 #[test]
@@ -462,6 +468,12 @@ class C {
         .lookup_class("com.example.dep.Bar")
         .expect("Bar should be interned in body b env");
 
-    assert_eq!(foo_a, foo_b, "expected Foo to have stable ClassId across bodies");
-    assert_eq!(bar_a, bar_b, "expected Bar to have stable ClassId across bodies");
+    assert_eq!(
+        foo_a, foo_b,
+        "expected Foo to have stable ClassId across bodies"
+    );
+    assert_eq!(
+        bar_a, bar_b,
+        "expected Bar to have stable ClassId across bodies"
+    );
 }

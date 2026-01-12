@@ -21,7 +21,11 @@ fn diagnostic_messages(resp: &serde_json::Value) -> Vec<String> {
         .and_then(|v| v.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|item| item.get("message").and_then(|m| m.as_str()).map(ToOwned::to_owned))
+        .filter_map(|item| {
+            item.get("message")
+                .and_then(|m| m.as_str())
+                .map(ToOwned::to_owned)
+        })
         .collect()
 }
 
@@ -178,4 +182,3 @@ fn did_create_delete_files_updates_cached_analysis_state() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-

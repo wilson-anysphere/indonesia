@@ -110,11 +110,8 @@ fn workspace_model_populates_module_path_when_jpms_is_enabled() {
     let repo_dir = tempdir().expect("tempdir");
     // Seed a minimal local Maven repo so the workspace model includes at least one
     // dependency jar entry. The JPMS fixture declares `com.example:dep:1.0`.
-    let dep_jar = repo_dir
-        .path()
-        .join("com/example/dep/1.0/dep-1.0.jar");
-    std::fs::create_dir_all(dep_jar.parent().expect("jar parent"))
-        .expect("create maven repo dirs");
+    let dep_jar = repo_dir.path().join("com/example/dep/1.0/dep-1.0.jar");
+    std::fs::create_dir_all(dep_jar.parent().expect("jar parent")).expect("create maven repo dirs");
     std::fs::write(&dep_jar, b"").expect("write fake jar");
 
     let options = LoadOptions {

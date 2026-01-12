@@ -57,7 +57,10 @@ fn warns_for_non_reifiable_varargs_parameter_in_variable_arity_form() {
         panic!("expected method resolution success");
     };
 
-    assert!(found.used_varargs, "expected variable-arity varargs invocation");
+    assert!(
+        found.used_varargs,
+        "expected variable-arity varargs invocation"
+    );
     assert!(found
         .warnings
         .contains(&TypeWarning::Unchecked(UncheckedReason::UncheckedVarargs)));
@@ -103,7 +106,10 @@ fn no_warning_for_reifiable_varargs_parameter_in_variable_arity_form() {
         panic!("expected method resolution success");
     };
 
-    assert!(found.used_varargs, "expected variable-arity varargs invocation");
+    assert!(
+        found.used_varargs,
+        "expected variable-arity varargs invocation"
+    );
     assert!(
         !found
             .warnings
@@ -111,4 +117,3 @@ fn no_warning_for_reifiable_varargs_parameter_in_variable_arity_form() {
         "expected no unchecked-varargs warning for reifiable `String[]` parameter"
     );
 }
-

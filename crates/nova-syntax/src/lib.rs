@@ -13,11 +13,11 @@ pub mod ast;
 mod convert;
 mod feature_gate;
 mod incremental;
+mod java_parse_store;
 mod language_level;
 mod lexer;
 mod literals;
 mod parser;
-mod java_parse_store;
 mod syntax_kind;
 mod tree_store;
 mod util;
@@ -25,6 +25,7 @@ mod util;
 pub use ast::*;
 pub use convert::TextEditConvertError;
 pub use incremental::{parse_java_incremental, reparse_java};
+pub use java_parse_store::JavaParseStore;
 pub use language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};
 pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};
 pub use literals::{
@@ -38,7 +39,6 @@ pub use parser::{
     JavaFragmentParseResult, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken,
 };
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
-pub use java_parse_store::JavaParseStore;
 pub use tree_store::SyntaxTreeStore;
 
 /// Options that influence parsing diagnostics.

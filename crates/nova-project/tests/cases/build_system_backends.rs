@@ -25,10 +25,16 @@ fn gradle_backend_detects_settings_or_build_files() {
     let tmp = tempfile::tempdir().expect("tempdir");
 
     let backend = GradleBuildSystem::new(LoadOptions::default());
-    assert!(!backend.detect(tmp.path()), "empty dir should not detect as Gradle");
+    assert!(
+        !backend.detect(tmp.path()),
+        "empty dir should not detect as Gradle"
+    );
 
-    std::fs::write(tmp.path().join("settings.gradle"), "rootProject.name = \"x\"")
-        .expect("write settings.gradle");
+    std::fs::write(
+        tmp.path().join("settings.gradle"),
+        "rootProject.name = \"x\"",
+    )
+    .expect("write settings.gradle");
     assert!(backend.detect(tmp.path()));
 }
 
@@ -67,7 +73,9 @@ fn watch_files_contains_canonical_markers() {
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::Glob("**/gradle/*.versions.toml")));
-    assert!(gradle.watch_files().contains(&PathPattern::Glob("**/*.gradle")));
+    assert!(gradle
+        .watch_files()
+        .contains(&PathPattern::Glob("**/*.gradle")));
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
@@ -103,7 +111,9 @@ fn watch_files_contains_canonical_markers() {
 fn parse_project_returns_non_empty_models_for_fixtures() {
     let maven_root = testdata_path("maven-multi");
     let maven = MavenBuildSystem::new(LoadOptions::default());
-    let maven_model = maven.parse_project(&maven_root).expect("parse maven project");
+    let maven_model = maven
+        .parse_project(&maven_root)
+        .expect("parse maven project");
     assert!(
         !maven_model.modules.is_empty(),
         "expected Maven fixture to return at least one module"
@@ -111,7 +121,9 @@ fn parse_project_returns_non_empty_models_for_fixtures() {
 
     let gradle_root = testdata_path("gradle-multi");
     let gradle = GradleBuildSystem::new(LoadOptions::default());
-    let gradle_model = gradle.parse_project(&gradle_root).expect("parse gradle project");
+    let gradle_model = gradle
+        .parse_project(&gradle_root)
+        .expect("parse gradle project");
     assert!(
         !gradle_model.modules.is_empty(),
         "expected Gradle fixture to return at least one module"
@@ -123,7 +135,9 @@ fn parse_project_returns_non_empty_models_for_fixtures() {
         .join("testdata")
         .join("minimal_workspace");
     let bazel = BazelBuildSystem::new(LoadOptions::default());
-    let bazel_model = bazel.parse_project(&bazel_root).expect("parse bazel project");
+    let bazel_model = bazel
+        .parse_project(&bazel_root)
+        .expect("parse bazel project");
     assert!(
         !bazel_model.modules.is_empty(),
         "expected Bazel fixture to return at least one module"
@@ -133,7 +147,9 @@ fn parse_project_returns_non_empty_models_for_fixtures() {
     std::fs::create_dir_all(tmp.path().join("src")).expect("mkdir src");
     std::fs::write(tmp.path().join("src/Main.java"), "class Main {}").expect("write java");
     let simple = SimpleBuildSystem::new(LoadOptions::default());
-    let simple_model = simple.parse_project(tmp.path()).expect("parse simple project");
+    let simple_model = simple
+        .parse_project(tmp.path())
+        .expect("parse simple project");
     assert!(
         !simple_model.modules.is_empty(),
         "expected Simple project to return at least one module"

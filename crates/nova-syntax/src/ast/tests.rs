@@ -182,7 +182,9 @@ fn record_compact_constructor_modifiers_are_accessible() {
 
     let modifiers = compact.modifiers().expect("expected modifiers node");
     assert!(
-        modifiers.keywords().any(|tok| tok.kind() == SyntaxKind::PrivateKw),
+        modifiers
+            .keywords()
+            .any(|tok| tok.kind() == SyntaxKind::PrivateKw),
         "expected private modifier keyword"
     );
 }
@@ -221,7 +223,10 @@ fn record_compact_constructor_type_parameters_are_accessible() {
     let tparams = compact
         .type_parameters()
         .expect("expected type parameters on compact constructor");
-    let tp = tparams.type_parameters().next().expect("expected a type parameter");
+    let tp = tparams
+        .type_parameters()
+        .next()
+        .expect("expected a type parameter");
     assert_eq!(tp.name_token().unwrap().text(), "T");
 }
 
@@ -1544,7 +1549,9 @@ fn string_template_expression_accessors_basic() {
         Expression::StringTemplateExpression(_)
     ));
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     match processor {
         Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
         other => panic!("expected processor NameExpression, got {other:?}"),
@@ -1632,7 +1639,9 @@ Hello \{name}!
         Expression::StringTemplateExpression(_)
     ));
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     match processor {
         Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
         other => panic!("expected processor NameExpression, got {other:?}"),
@@ -1711,7 +1720,9 @@ fn string_template_expression_accessors_multiple_interpolations() {
         .find_map(StringTemplateExpression::cast)
         .expect("expected a StringTemplateExpression");
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     match processor {
         Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
         other => panic!("expected processor NameExpression, got {other:?}"),
@@ -1750,7 +1761,11 @@ fn string_template_expression_accessors_multiple_interpolations() {
 
     let interpolation_exprs: Vec<_> = template
         .parts()
-        .map(|interp| interp.expression().expect("expected interpolation expression"))
+        .map(|interp| {
+            interp
+                .expression()
+                .expect("expected interpolation expression")
+        })
         .collect();
     assert_eq!(interpolation_exprs.len(), 2);
 
@@ -1784,7 +1799,9 @@ fn string_template_expression_accessors_brace_depth() {
         .find_map(StringTemplateExpression::cast)
         .expect("expected a StringTemplateExpression");
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     match processor {
         Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "STR"),
         other => panic!("expected processor NameExpression, got {other:?}"),
@@ -1838,7 +1855,9 @@ fn string_template_expression_accessors_brace_depth() {
             _ => None,
         })
         .expect("expected a return statement inside lambda block");
-    let returned = return_stmt.expression().expect("expected return expression");
+    let returned = return_stmt
+        .expression()
+        .expect("expected return expression");
     assert_eq!(returned.syntax().text().to_string(), "1");
 }
 
@@ -1860,7 +1879,9 @@ fn string_template_expression_accessors_qualified_processor() {
         .find_map(StringTemplateExpression::cast)
         .expect("expected a StringTemplateExpression");
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     assert_eq!(processor.syntax().text().to_string(), "Foo.STR");
 
     let template = template_expr.template().expect("expected string template");
@@ -1904,7 +1925,9 @@ fn string_template_expression_accessors_method_call_processor() {
         .find_map(StringTemplateExpression::cast)
         .expect("expected a StringTemplateExpression");
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     let call = match processor {
         Expression::MethodCallExpression(call) => call,
         other => panic!("expected processor MethodCallExpression, got {other:?}"),
@@ -1912,7 +1935,9 @@ fn string_template_expression_accessors_method_call_processor() {
 
     let callee = call.callee().expect("expected call callee");
     match callee {
-        Expression::NameExpression(name) => assert_eq!(name.syntax().text().to_string(), "processor"),
+        Expression::NameExpression(name) => {
+            assert_eq!(name.syntax().text().to_string(), "processor")
+        }
         other => panic!("expected call callee NameExpression, got {other:?}"),
     }
 
@@ -2035,14 +2060,18 @@ fn string_template_expression_accessors_field_access_processor() {
         .find_map(StringTemplateExpression::cast)
         .expect("expected a StringTemplateExpression");
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     let access = match processor {
         Expression::FieldAccessExpression(access) => access,
         other => panic!("expected processor FieldAccessExpression, got {other:?}"),
     };
     assert_eq!(access.name_token().unwrap().text(), "STR");
 
-    let receiver = access.expression().expect("expected field access receiver expression");
+    let receiver = access
+        .expression()
+        .expect("expected field access receiver expression");
     match receiver {
         Expression::ThisExpression(_) => {}
         other => panic!("expected receiver ThisExpression, got {other:?}"),
@@ -2084,7 +2113,9 @@ fn string_template_expression_accessors_no_interpolations() {
         .find_map(StringTemplateExpression::cast)
         .expect("expected a StringTemplateExpression");
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     assert_eq!(processor.syntax().text().to_string(), "STR");
 
     let template = template_expr.template().expect("expected string template");
@@ -2168,7 +2199,11 @@ fn string_template_expression_accessors_text_segment_boundary_cases() {
 
         let interpolations: Vec<_> = template
             .parts()
-            .map(|interp| interp.expression().expect("expected interpolation expression"))
+            .map(|interp| {
+                interp
+                    .expression()
+                    .expect("expected interpolation expression")
+            })
             .map(|expr| match expr {
                 Expression::NameExpression(name) => name.syntax().text().to_string(),
                 other => panic!("expected interpolation NameExpression, got {other:?}"),
@@ -2248,7 +2283,9 @@ fn string_template_expression_accessors_expression_fragment() {
         other => panic!("expected StringTemplateExpression, got {other:?}"),
     };
 
-    let processor = template_expr.processor().expect("expected processor expression");
+    let processor = template_expr
+        .processor()
+        .expect("expected processor expression");
     assert_eq!(processor.syntax().text().to_string(), "STR");
 
     let template = template_expr.template().expect("expected string template");
@@ -2265,8 +2302,7 @@ fn string_template_expression_accessors_expression_fragment() {
 
 #[test]
 fn string_template_expression_accessors_statement_fragment() {
-    let fragment_parse =
-        parse_java_statement_fragment("String s = STR.\"Hello \\{name}!\";", 0);
+    let fragment_parse = parse_java_statement_fragment("String s = STR.\"Hello \\{name}!\";", 0);
     assert!(fragment_parse.parse.errors.is_empty());
 
     let fragment =
@@ -2297,8 +2333,7 @@ fn string_template_expression_accessors_statement_fragment() {
 
 #[test]
 fn string_template_expression_accessors_class_member_fragment() {
-    let fragment_parse =
-        parse_java_class_member_fragment("String s = STR.\"Hello \\{name}!\";", 0);
+    let fragment_parse = parse_java_class_member_fragment("String s = STR.\"Hello \\{name}!\";", 0);
     assert!(fragment_parse.parse.errors.is_empty());
 
     let fragment =

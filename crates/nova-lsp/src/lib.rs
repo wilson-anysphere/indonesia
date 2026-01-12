@@ -37,7 +37,6 @@
 //!   - `nova/bugReport`
 
 pub mod code_action;
-pub mod patch_paths;
 mod completion_resolve;
 pub mod decompile;
 pub mod extensions;
@@ -47,6 +46,7 @@ pub mod handlers;
 pub mod hardening;
 pub mod ide_state;
 pub mod imports;
+pub mod patch_paths;
 pub mod refactor;
 pub mod refactor_workspace;
 pub mod text_pos;
@@ -566,26 +566,23 @@ pub fn diagnostics_with_extensions(
     let db = extensions.db();
     let text = db.file_content(file);
     let mut diagnostics = crate::diagnostics(db.as_ref(), file);
-    diagnostics.extend(
-        extensions
-            .diagnostics(cancel, file)
-            .into_iter()
-            .map(|d| lsp_types::Diagnostic {
-                range: d
-                    .span
-                    .map(|span| span_to_lsp_range(text, span.start, span.end))
-                    .unwrap_or_else(zero_range),
-                severity: Some(match d.severity {
-                    nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
-                    nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-                    nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
-                }),
-                code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-                source: Some("nova".into()),
-                message: d.message,
-                ..lsp_types::Diagnostic::default()
+    diagnostics.extend(extensions.diagnostics(cancel, file).into_iter().map(|d| {
+        lsp_types::Diagnostic {
+            range: d
+                .span
+                .map(|span| span_to_lsp_range(text, span.start, span.end))
+                .unwrap_or_else(zero_range),
+            severity: Some(match d.severity {
+                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
             }),
-    );
+            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+            source: Some("nova".into()),
+            message: d.message,
+            ..lsp_types::Diagnostic::default()
+        }
+    }));
     diagnostics
 }
 
@@ -644,9 +641,10 @@ mod tests {
             json.get("callHierarchyProvider"),
             Some(&serde_json::Value::Bool(true))
         );
-        let type_hierarchy = json
-            .get("typeHierarchyProvider")
-            .or_else(|| json.get("experimental").and_then(|exp| exp.get("typeHierarchyProvider")));
+        let type_hierarchy = json.get("typeHierarchyProvider").or_else(|| {
+            json.get("experimental")
+                .and_then(|exp| exp.get("typeHierarchyProvider"))
+        });
         assert_eq!(type_hierarchy, Some(&serde_json::Value::Bool(true)));
     }
 }

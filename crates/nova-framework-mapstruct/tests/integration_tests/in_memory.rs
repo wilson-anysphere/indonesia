@@ -128,7 +128,8 @@ public interface TestMapper {
 
     assert_eq!(diag.severity, Severity::Warning);
     assert!(
-        diag.message.contains("Potentially unmapped target properties"),
+        diag.message
+            .contains("Potentially unmapped target properties"),
         "unexpected message: {}",
         diag.message
     );
@@ -184,7 +185,8 @@ public interface TestMapper {
 
     let diags = diagnostics_for_file(root, &mapper_file, mapper_source, true).unwrap();
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .all(|d| d.code.as_ref() != "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"),
         "did not expect MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES, got: {diags:?}"
     );
@@ -215,7 +217,8 @@ public interface TestMapper {
 
     assert_eq!(diag.severity, Severity::Error);
     assert!(
-        diag.message.contains("no org.mapstruct dependency was detected"),
+        diag.message
+            .contains("no org.mapstruct dependency was detected"),
         "unexpected message: {}",
         diag.message
     );
@@ -224,4 +227,3 @@ public interface TestMapper {
     let expected_span = Span::new(start, start + "TestMapper".len());
     assert_eq!(diag.span, Some(expected_span));
 }
-

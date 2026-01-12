@@ -492,8 +492,10 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "this-in-static-context"
-            && d.code.as_ref() != "super-in-static-context"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "this-in-static-context"
+                && d.code.as_ref() != "super-in-static-context"),
         "expected instance initializer to allow `this`/`super`; got {diags:?}"
     );
 }
@@ -1190,8 +1192,9 @@ enum E {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "static-context"
-            && d.code.as_ref() != "unresolved-name"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "static-context" && d.code.as_ref() != "unresolved-name"),
         "expected enum constant to resolve as an implicit static field, got {diags:?}"
     );
 }
@@ -1210,8 +1213,9 @@ interface I {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "static-context"
-            && d.code.as_ref() != "unresolved-name"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "static-context" && d.code.as_ref() != "unresolved-name"),
         "expected interface field to resolve as an implicit static field, got {diags:?}"
     );
 }
@@ -1630,7 +1634,6 @@ class C {
         "resolve_method_call_demand should not invoke full-body type checking"
     );
 }
-
 
 #[test]
 fn resolve_method_call_demand_propagates_expected_return_through_conditional() {
@@ -2905,10 +2908,7 @@ class C {
         "expected Math.max(int,int) to resolve via implicit java.lang import; got {diags:?}"
     );
 
-    let offset = src
-        .find("max(")
-        .expect("snippet should contain max call")
-        + "max".len();
+    let offset = src.find("max(").expect("snippet should contain max call") + "max".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -2960,10 +2960,7 @@ class C {
         "expected Math.PI to resolve via implicit java.lang import; got {diags:?}"
     );
 
-    let offset = src
-        .find("PI")
-        .expect("snippet should contain PI")
-        + 1;
+    let offset = src.find("PI").expect("snippet should contain PI") + 1;
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -4337,7 +4334,9 @@ class D { void m(){ new C<String>("x"); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected generic constructor call to resolve; got {diags:?}"
     );
 }
@@ -4564,7 +4563,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "void-variable-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "void-variable-type"),
         "expected void-variable-type diagnostic; got {diags:?}"
     );
 }
@@ -4580,7 +4581,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "void-parameter-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "void-parameter-type"),
         "expected void-parameter-type diagnostic; got {diags:?}"
     );
 }
@@ -4598,7 +4601,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "void-catch-parameter-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "void-catch-parameter-type"),
         "expected void-catch-parameter-type diagnostic; got {diags:?}"
     );
 }

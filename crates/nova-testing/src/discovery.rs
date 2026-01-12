@@ -615,9 +615,9 @@ fn parse_java(source: &str) -> Result<tree_sitter::Tree> {
             .as_mut()
             .map_err(|err| NovaTestingError::InvalidRequest(err.to_string()))?;
 
-        parser
-            .parse(source, None)
-            .ok_or_else(|| NovaTestingError::InvalidRequest("tree-sitter failed to parse Java".into()))
+        parser.parse(source, None).ok_or_else(|| {
+            NovaTestingError::InvalidRequest("tree-sitter failed to parse Java".into())
+        })
     })
 }
 

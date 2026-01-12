@@ -1,6 +1,6 @@
 use nova_cache::Fingerprint;
-use nova_decompile::{decompile_classfile, decompiled_uri_for_classfile, parse_decompiled_uri};
 use nova_decompile::DecompiledDocumentStore;
+use nova_decompile::{decompile_classfile, decompiled_uri_for_classfile, parse_decompiled_uri};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -121,7 +121,10 @@ fn store_handles_windows_invalid_characters_in_binary_name() {
         .store_text(&content_hash, binary_name, "first")
         .unwrap();
     assert_eq!(
-        store.load_text(&content_hash, binary_name).unwrap().as_deref(),
+        store
+            .load_text(&content_hash, binary_name)
+            .unwrap()
+            .as_deref(),
         Some("first")
     );
 
@@ -135,7 +138,10 @@ fn store_handles_windows_invalid_characters_in_binary_name() {
         .store_text(&content_hash, binary_name, "second")
         .unwrap();
     assert_eq!(
-        store.load_text(&content_hash, binary_name).unwrap().as_deref(),
+        store
+            .load_text(&content_hash, binary_name)
+            .unwrap()
+            .as_deref(),
         Some("second")
     );
 
@@ -156,9 +162,14 @@ fn store_handles_windows_reserved_device_names() {
     // even on Unix filesystems that would otherwise accept it.
     let binary_name = "CON";
 
-    store.store_text(&content_hash, binary_name, "hello").unwrap();
+    store
+        .store_text(&content_hash, binary_name, "hello")
+        .unwrap();
     assert_eq!(
-        store.load_text(&content_hash, binary_name).unwrap().as_deref(),
+        store
+            .load_text(&content_hash, binary_name)
+            .unwrap()
+            .as_deref(),
         Some("hello")
     );
 
@@ -300,7 +311,10 @@ fn symlink_entries_are_treated_as_cache_miss_and_deleted() {
     let loaded = store.load_text(content_hash, binary_name).unwrap();
     assert!(loaded.is_none());
     assert!(!path.exists(), "symlink should be deleted");
-    assert!(target.exists(), "target outside the store must not be deleted");
+    assert!(
+        target.exists(),
+        "target outside the store must not be deleted"
+    );
 }
 
 #[cfg(unix)]
@@ -329,7 +343,10 @@ fn exists_rejects_symlink_entries_and_deletes_them() {
 
     assert!(!store.exists(content_hash, binary_name));
     assert!(!path.exists(), "expected symlink to be deleted");
-    assert!(target.exists(), "target outside the store must not be deleted");
+    assert!(
+        target.exists(),
+        "target outside the store must not be deleted"
+    );
 }
 
 #[cfg(unix)]
@@ -444,7 +461,10 @@ fn store_text_does_not_follow_symlink_store_root() {
     );
 
     // Ensure we did not write into the symlink target directory.
-    let outside_path = outside.path().join(content_hash).join(format!("{safe_stem}.java"));
+    let outside_path = outside
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
     assert!(
         !outside_path.exists(),
         "expected symlink target to not receive store writes"

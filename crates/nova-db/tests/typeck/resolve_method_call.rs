@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use nova_db::{
-    salsa::FileExprId, ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase,
-    SourceRootId,
+    salsa::FileExprId, ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId,
+    SalsaRootDatabase, SourceRootId,
 };
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};

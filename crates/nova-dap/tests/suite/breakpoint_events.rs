@@ -35,12 +35,14 @@ async fn emits_breakpoint_event_when_class_prepare_verifies_pending_breakpoint()
 
     let evt = client.wait_for_event("breakpoint").await;
     assert_eq!(
-        evt.pointer("/body/breakpoint/verified").and_then(|v| v.as_bool()),
+        evt.pointer("/body/breakpoint/verified")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "expected breakpoint event to report verified breakpoint: {evt}"
     );
     assert_eq!(
-        evt.pointer("/body/breakpoint/line").and_then(|v| v.as_i64()),
+        evt.pointer("/body/breakpoint/line")
+            .and_then(|v| v.as_i64()),
         Some(3),
         "expected breakpoint event to report line 3: {evt}"
     );
@@ -48,4 +50,3 @@ async fn emits_breakpoint_event_when_class_prepare_verifies_pending_breakpoint()
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

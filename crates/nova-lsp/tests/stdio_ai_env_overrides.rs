@@ -133,7 +133,8 @@ model = "default"
         .get("result")
         .cloned()
         .expect("completion result");
-    let list: CompletionList = serde_json::from_value(completion_result).expect("decode completion list");
+    let list: CompletionList =
+        serde_json::from_value(completion_result).expect("decode completion list");
     assert_eq!(
         list.is_incomplete, false,
         "expected no AI completions when {env_key}={env_value}"
@@ -163,7 +164,8 @@ model = "default"
     );
     let more_resp = support::read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
-    let more: MoreCompletionsResult = serde_json::from_value(more_result).expect("decode more completions");
+    let more: MoreCompletionsResult =
+        serde_json::from_value(more_result).expect("decode more completions");
     assert!(!more.is_incomplete);
     assert!(more.items.is_empty());
 

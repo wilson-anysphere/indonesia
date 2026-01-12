@@ -525,11 +525,17 @@ mod tests {
     fn parse_java_is_safe_across_threads() {
         let t1 = std::thread::spawn(|| {
             let tree = parse_java("class A {}").expect("parse thread 1");
-            (tree.root_node().has_error(), tree.root_node().named_child_count())
+            (
+                tree.root_node().has_error(),
+                tree.root_node().named_child_count(),
+            )
         });
         let t2 = std::thread::spawn(|| {
             let tree = parse_java("class B {}").expect("parse thread 2");
-            (tree.root_node().has_error(), tree.root_node().named_child_count())
+            (
+                tree.root_node().has_error(),
+                tree.root_node().named_child_count(),
+            )
         });
 
         let (err1, count1) = t1.join().expect("thread 1 join");

@@ -18,4 +18,3 @@ fn jpa_builtin_analyzer_applies() {
         "expected JPA builtin analyzer to apply for jakarta.persistence:jakarta.persistence-api"
     );
 }
-

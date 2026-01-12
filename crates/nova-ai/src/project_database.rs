@@ -7,10 +7,7 @@ use std::collections::BTreeMap;
 
 impl ProjectDatabase for VirtualWorkspace {
     fn project_files(&self) -> Vec<PathBuf> {
-        let mut paths: Vec<PathBuf> = self
-            .files()
-            .map(|(path, _)| PathBuf::from(path))
-            .collect();
+        let mut paths: Vec<PathBuf> = self.files().map(|(path, _)| PathBuf::from(path)).collect();
         paths.sort();
         paths
     }

@@ -16,9 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    codec::{
-        signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN,
-    },
+    codec::{signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN},
     inspect::InspectCache,
     types::{
         ClassInfo, FieldId, FieldInfo, FieldInfoWithGeneric, FrameId, FrameInfo,
@@ -1888,10 +1886,7 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         let flags = header[8];
         let payload_len = length - HEADER_LEN;
         let mut payload = Vec::new();
-        if payload
-            .try_reserve_exact(payload_len)
-            .is_err()
-        {
+        if payload.try_reserve_exact(payload_len).is_err() {
             terminated_with_error = true;
             break;
         }
@@ -2163,10 +2158,10 @@ mod tests {
     use crate::wire::types::{
         JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, EVENT_KIND_BREAKPOINT,
         EVENT_KIND_CLASS_PREPARE, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION,
-        EVENT_KIND_FIELD_ACCESS,
-        EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
-        EVENT_KIND_VM_DISCONNECT, INVOKE_NONVIRTUAL, INVOKE_SINGLE_THREADED, SUSPEND_POLICY_ALL,
-        SUSPEND_POLICY_EVENT_THREAD, SUSPEND_POLICY_NONE,
+        EVENT_KIND_FIELD_ACCESS, EVENT_KIND_FIELD_MODIFICATION,
+        EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, EVENT_KIND_VM_DISCONNECT, INVOKE_NONVIRTUAL,
+        INVOKE_SINGLE_THREADED, SUSPEND_POLICY_ALL, SUSPEND_POLICY_EVENT_THREAD,
+        SUSPEND_POLICY_NONE,
     };
     use crate::wire::JdwpValue;
 
@@ -2190,7 +2185,10 @@ mod tests {
             // JDWP handshake.
             let mut hs = [0u8; crate::wire::codec::HANDSHAKE.len()];
             socket.read_exact(&mut hs).await.unwrap();
-            socket.write_all(crate::wire::codec::HANDSHAKE).await.unwrap();
+            socket
+                .write_all(crate::wire::codec::HANDSHAKE)
+                .await
+                .unwrap();
 
             // Read the first command packet from the debugger (VirtualMachine.IDSizes).
             // This ensures the client has a pending request before we inject the oversized
@@ -3406,15 +3404,16 @@ mod tests {
         assert_eq!(groups, vec![TOP_LEVEL_THREAD_GROUP_ID]);
 
         let group = groups[0];
-        let (child_groups, child_threads) = client
-            .thread_group_reference_children(group)
-            .await
-            .unwrap();
+        let (child_groups, child_threads) =
+            client.thread_group_reference_children(group).await.unwrap();
         assert!(child_groups.contains(&NESTED_THREAD_GROUP_ID));
         assert!(child_threads.contains(&THREAD_ID));
         assert!(child_threads.contains(&WORKER_THREAD_ID));
 
-        let thread_group = client.thread_reference_thread_group(THREAD_ID).await.unwrap();
+        let thread_group = client
+            .thread_reference_thread_group(THREAD_ID)
+            .await
+            .unwrap();
         assert_eq!(thread_group, group);
 
         let name = client.thread_group_reference_name(group).await.unwrap();

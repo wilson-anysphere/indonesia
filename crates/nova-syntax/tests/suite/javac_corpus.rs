@@ -79,7 +79,8 @@ fn javac_corpus_ok() {
                 ("PackagedClass.java", packaged.as_str()),
                 ("package-info.java", package_info.as_str()),
             ];
-            run_javac_files_with_options(files.as_slice(), &opts).expect("javac invocation succeeds")
+            run_javac_files_with_options(files.as_slice(), &opts)
+                .expect("javac invocation succeeds")
         } else {
             run_javac_files_with_options(&[(&filename, &src)], &opts)
                 .expect("javac invocation succeeds")

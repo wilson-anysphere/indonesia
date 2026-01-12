@@ -79,11 +79,8 @@ async fn stream_debug_does_not_deadlock_event_task_and_cancels_cleanly() {
     .await
     .expect("timeout waiting for ThreadReference.Resume during stream debug InvokeMethod");
 
-    let stopped = tokio::time::timeout(
-        Duration::from_millis(200),
-        client.wait_for_event("stopped"),
-    )
-    .await;
+    let stopped =
+        tokio::time::timeout(Duration::from_millis(200), client.wait_for_event("stopped")).await;
     assert!(
         stopped.is_err(),
         "streamDebug should not emit stopped events for internal evaluation breakpoint hits"

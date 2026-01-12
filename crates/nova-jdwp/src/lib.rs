@@ -291,7 +291,9 @@ pub mod wire;
 #[cfg(feature = "fuzzing")]
 pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
     let Some((len_bytes, _rest)) = bytes.split_first_chunk::<4>() else {
-        return Err(JdwpError::Protocol("missing JDWP length prefix".to_string()));
+        return Err(JdwpError::Protocol(
+            "missing JDWP length prefix".to_string(),
+        ));
     };
 
     let length = u32::from_be_bytes(*len_bytes) as usize;
@@ -316,8 +318,7 @@ pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
     let _id = u32::from_be_bytes(header[4..8].try_into().expect("4 byte slice"));
     let flags = header[8];
     if (flags & 0x80) != 0 {
-        let _error_code =
-            u16::from_be_bytes(header[9..11].try_into().expect("2 byte slice"));
+        let _error_code = u16::from_be_bytes(header[9..11].try_into().expect("2 byte slice"));
     } else {
         let _command_set = header[9];
         let _command = header[10];

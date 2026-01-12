@@ -1,7 +1,5 @@
 use nova_framework::{AnalyzerRegistry, CompletionContext, Database, MemoryDatabase, Symbol};
-use nova_framework_spring::{
-    SpringAnalyzer, SPRING_NO_BEAN, SPRING_UNKNOWN_CONFIG_KEY,
-};
+use nova_framework_spring::{SpringAnalyzer, SPRING_NO_BEAN, SPRING_UNKNOWN_CONFIG_KEY};
 use nova_types::Span;
 
 #[test]
@@ -80,8 +78,10 @@ fn config_diagnostics_report_unknown_keys() {
 
     let diags = registry.framework_diagnostics(&db, config);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
-            && d.message.contains("unknown.key")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
+                && d.message.contains("unknown.key")),
         "expected SPRING_UNKNOWN_CONFIG_KEY for unknown.key; got {diags:?}"
     );
 }
@@ -117,8 +117,10 @@ fn config_diagnostics_are_case_insensitive_for_application_properties() {
 
     let diags = registry.framework_diagnostics(&db, config);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
-            && d.message.contains("unknown.key")),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
+                && d.message.contains("unknown.key")),
         "expected SPRING_UNKNOWN_CONFIG_KEY for unknown.key; got {diags:?}"
     );
 }
@@ -287,7 +289,9 @@ fn di_navigation_targets_include_bean_definition_file() {
 
     let targets = registry.framework_navigation_targets(&db, &Symbol::File(bar));
     assert!(
-        targets.iter().any(|t| t.file == foo && t.label == "Bean: foo"),
+        targets
+            .iter()
+            .any(|t| t.file == foo && t.label == "Bean: foo"),
         "expected Bean: foo navigation target into Foo.java; got {targets:?}"
     );
 
