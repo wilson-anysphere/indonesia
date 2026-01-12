@@ -67,6 +67,40 @@ test('package.json contributes Nova request metrics commands', async () => {
   assert.ok(activationEvents.includes('onCommand:nova.resetRequestMetrics'));
 });
 
+test('package.json contributes Nova CodeLens executeCommand command palette entries', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const byId = new Map<string, { title?: unknown }>();
+  for (const entry of commands) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const id = (entry as { command?: unknown }).command;
+    if (typeof id !== 'string') {
+      continue;
+    }
+    byId.set(id, { title: (entry as { title?: unknown }).title });
+  }
+
+  assert.equal(byId.get('nova.runTest')?.title, 'Nova: Run Test');
+  assert.equal(byId.get('nova.debugTest')?.title, 'Nova: Debug Test');
+  assert.equal(byId.get('nova.runMain')?.title, 'Nova: Run Main…');
+  assert.equal(byId.get('nova.debugMain')?.title, 'Nova: Debug Main…');
+
+  assert.ok(activationEvents.includes('onCommand:nova.runTest'));
+  assert.ok(activationEvents.includes('onCommand:nova.debugTest'));
+  assert.ok(activationEvents.includes('onCommand:nova.runMain'));
+  assert.ok(activationEvents.includes('onCommand:nova.debugMain'));
+});
+
 test('package.json contributes Nova Frameworks view context-menu commands', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
