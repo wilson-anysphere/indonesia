@@ -9,13 +9,13 @@ on:
         default: ""
   push:
     branches: [main]
-      paths:
-        - ".github/workflows/real-projects.yml"
-        - "crates/nova-project/tests/cases/real_projects.rs"
-        - "crates/nova-cli/tests/real_projects.rs"
-        - "scripts/run-real-project-tests.sh"
-        - "scripts/clone-test-projects.sh"
-        - "scripts/javac-validate.sh"
+    paths:
+      - ".github/workflows/real-projects.yml"
+      - "crates/nova-project/tests/cases/real_projects.rs"
+      - "crates/nova-cli/tests/real_projects.rs"
+      - "scripts/run-real-project-tests.sh"
+      - "scripts/clone-test-projects.sh"
+      - "scripts/javac-validate.sh"
       - "test-projects/pins.toml"
   schedule:
     # Offset from other nightly workflows (e.g. fuzz.yml) to avoid running all heavy jobs at once.
