@@ -62,6 +62,8 @@ after a project reload. For example:
 
 - Maven/Gradle discovery may refine `source_roots`.
 - Generated source roots may appear/disappear depending on build configuration and APT output.
+- If the resolved Nova config file lives outside the workspace root, the workspace will watch it
+  **non-recursively** to avoid accidentally watching huge trees (e.g. `$HOME`).
 
 To handle this, the workspace reconciles its desired watch paths (directory roots + their
 `WatchMode`) against the active watcher and updates them dynamically. Paths that do not exist yet
