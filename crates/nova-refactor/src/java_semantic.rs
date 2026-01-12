@@ -12,7 +12,7 @@ use nova_hir::queries::HirDatabase;
 use nova_hir::{item_tree, item_tree::ItemTree};
 use nova_resolve::{
     BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
-    ScopeKind, StaticMemberResolution, TypeResolution, WorkspaceDefMap,
+    ScopeKind, StaticMemberResolution, TypeKind, TypeResolution, WorkspaceDefMap,
 };
 use nova_syntax::java as java_syntax;
 use nova_syntax::{ast, AstNode};
@@ -2068,7 +2068,7 @@ fn record_body_references(
                 let range = TextRange::new(name_range.start, name_range.end);
                 record(file, symbol, range, references, spans);
             }
-            hir::Expr::Call { callee, .. } => match &body.exprs[*callee] {
+            hir::Expr::Call { callee, args, .. } => match &body.exprs[*callee] {
                 hir::Expr::Name { name, range } => {
                     let Some(&callee_scope) = scope_result.expr_scopes.get(&(owner, *callee))
                     else {
@@ -2096,6 +2096,35 @@ fn record_body_references(
                                 return;
                             };
                             let Some(methods) = def.methods.get(&name) else {
+                                // Record component accessors are synthesized by Java, but Nova does
+                                // not currently model them as methods. Treat `x()` inside a record
+                                // as a reference to the record component field `x`.
+                                if !args.is_empty() {
+                                    return;
+                                }
+                                if !matches!(def.kind, TypeKind::Record) {
+                                    return;
+                                }
+                                let Some(field) = def.fields.get(&name).map(|f| f.id) else {
+                                    return;
+                                };
+                                let field_tree = item_trees
+                                    .get(&field.file)
+                                    .map(|t| t.as_ref())
+                                    .unwrap_or(tree);
+                                if !matches!(
+                                    field_tree.field(field).kind,
+                                    nova_hir::item_tree::FieldKind::RecordComponent
+                                ) {
+                                    return;
+                                }
+                                let Some(&symbol) =
+                                    resolution_to_symbol.get(&ResolutionKey::Field(field))
+                                else {
+                                    return;
+                                };
+                                let range = TextRange::new(range.start, range.end);
+                                record(file, symbol, range, references, spans);
                                 return;
                             };
                             methods.first().map(|m| m.id)
@@ -2165,13 +2194,42 @@ fn record_body_references(
                         return;
                     };
 
-                    let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
+                    let method_name = Name::from(name.as_str());
+                    if let Some(methods) = def.methods.get(&method_name) {
+                        if let Some(method) = methods.first().map(|method| method.id) {
+                            if let Some(&symbol) =
+                                resolution_to_symbol.get(&ResolutionKey::Method(method))
+                            {
+                                let range = TextRange::new(name_range.start, name_range.end);
+                                record(file, symbol, range, references, spans);
+                            }
+                        }
+                        return;
+                    }
+
+                    // Record component accessors are synthesized by Java, but Nova does not
+                    // currently model them as methods. Treat `p.x()` as a reference to the record
+                    // component field `x`.
+                    if !args.is_empty() {
+                        return;
+                    }
+                    if !matches!(def.kind, TypeKind::Record) {
+                        return;
+                    }
+                    let Some(field) = def.fields.get(&method_name).map(|f| f.id) else {
                         return;
                     };
-                    let Some(method) = methods.first().map(|method| method.id) else {
+                    let field_tree = item_trees
+                        .get(&field.file)
+                        .map(|t| t.as_ref())
+                        .unwrap_or(tree);
+                    if !matches!(
+                        field_tree.field(field).kind,
+                        nova_hir::item_tree::FieldKind::RecordComponent
+                    ) {
                         return;
-                    };
-                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
+                    }
+                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field))
                     else {
                         return;
                     };
@@ -2232,13 +2290,37 @@ fn record_body_references(
                 let Some(def) = workspace_def_map.type_def(item) else {
                     return;
                 };
-                let Some(methods) = def.methods.get(&Name::from(name.as_str())) else {
+                let method_name = Name::from(name.as_str());
+                if let Some(methods) = def.methods.get(&method_name) {
+                    if let Some(method) = methods.first().map(|method| method.id) {
+                        if let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
+                        {
+                            let range = TextRange::new(name_range.start, name_range.end);
+                            record(file, symbol, range, references, spans);
+                        }
+                    }
+                    return;
+                }
+
+                // Same record-component accessor fallback as method calls: `P::x` should be treated
+                // as a reference to the record component `x`.
+                if !matches!(def.kind, TypeKind::Record) {
+                    return;
+                }
+                let Some(field) = def.fields.get(&method_name).map(|f| f.id) else {
                     return;
                 };
-                let Some(method) = methods.first().map(|method| method.id) else {
+                let field_tree = item_trees
+                    .get(&field.file)
+                    .map(|t| t.as_ref())
+                    .unwrap_or(tree);
+                if !matches!(
+                    field_tree.field(field).kind,
+                    nova_hir::item_tree::FieldKind::RecordComponent
+                ) {
                     return;
-                };
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {
+                }
+                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);

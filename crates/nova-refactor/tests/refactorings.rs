@@ -2623,6 +2623,61 @@ fn rename_parameter_updates_body_references() {
 }
 
 #[test]
+fn rename_record_component_updates_header_and_references() {
+    let file = FileId::new("Test.java");
+    let src = r#"record P(int x) {
+  int f() { return x; }
+  int g() { return x(); }
+  int h() { return this.x(); }
+ }
+
+class Use {
+  void m() {
+    P p = null;
+    p.x();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("record P(int x").unwrap() + "record P(int ".len();
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at record component x");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("record P(int y)"),
+        "record header component should be renamed: {after}"
+    );
+    assert!(
+        after.contains("return y;"),
+        "record body references should be renamed: {after}"
+    );
+    assert!(
+        after.contains("return y();"),
+        "record body accessor calls should be renamed: {after}"
+    );
+    assert!(
+        after.contains("return this.y();"),
+        "record body qualified accessor calls should be renamed: {after}"
+    );
+    assert!(
+        after.contains("p.y();"),
+        "external accessor calls should be renamed: {after}"
+    );
+}
+
+#[test]
 fn rename_local_variable_does_not_touch_type_arguments_or_annotations() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

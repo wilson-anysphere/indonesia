@@ -192,6 +192,8 @@ pub mod ast {
         pub name_range: Span,
         pub modifiers: Modifiers,
         pub annotations: Vec<AnnotationUse>,
+        /// Record header components declared in `record Foo(<components>)`.
+        pub components: Vec<ParamDecl>,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -996,6 +998,16 @@ impl Lowerer {
             .map(|tok| self.spans.map_token(tok))
             .unwrap_or_else(|| Span::new(range.start, range.start));
 
+        let components = match node.kind() {
+            SyntaxKind::RecordDeclaration => node
+                .children()
+                .find(|child| child.kind() == SyntaxKind::ParameterList)
+                .as_ref()
+                .map(|list| self.lower_param_list(list))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
         let (constants, members) = match (node.kind(), body.as_ref()) {
             (SyntaxKind::EnumDeclaration, Some(body)) => self.lower_enum_body(body, &name),
             (_, Some(body)) => (Vec::new(), self.lower_members(body, &name)),
@@ -1030,12 +1042,13 @@ impl Lowerer {
                 range,
                 body_range,
                 members,
-            }),
+             }),
             SyntaxKind::RecordDeclaration => ast::TypeDecl::Record(ast::RecordDecl {
                 name,
                 name_range,
                 modifiers,
                 annotations,
+                components,
                 range,
                 body_range,
                 members,
