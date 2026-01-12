@@ -299,20 +299,33 @@ mod tests {
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
         let vfs_a = VfsPath::local(file_a);
-        let file_id = engine.vfs().get_id(&vfs_a).expect("file id for A");
+        let vfs_b = VfsPath::local(file_b);
+        let file_id_a = engine.vfs().get_id(&vfs_a).expect("file id for A");
+        let file_id_b = engine.vfs().get_id(&vfs_b).expect("file id for B");
 
-        let from_salsa = engine
+        let from_salsa_a = engine
             .query_db
-            .with_snapshot(|snap| snap.file_content(file_id));
+            .with_snapshot(|snap| snap.file_content(file_id_a));
+        let from_salsa_b = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id_b));
 
         let snapshot = workspace.snapshot();
-        let from_snapshot = snapshot
+        let from_snapshot_a = snapshot
             .file_contents
-            .get(&file_id)
+            .get(&file_id_a)
             .expect("snapshot contents for A");
+        let from_snapshot_b = snapshot
+            .file_contents
+            .get(&file_id_b)
+            .expect("snapshot contents for B");
 
         assert!(
-            Arc::ptr_eq(from_snapshot, &from_salsa),
+            Arc::ptr_eq(from_snapshot_a, &from_salsa_a),
+            "expected snapshot to reuse the existing Salsa Arc<String> without re-reading from disk"
+        );
+        assert!(
+            Arc::ptr_eq(from_snapshot_b, &from_salsa_b),
             "expected snapshot to reuse the existing Salsa Arc<String> without re-reading from disk"
         );
     }
@@ -349,8 +362,23 @@ mod tests {
         let vfs_path = VfsPath::local(file);
         let file_id = workspace.open_document(vfs_path, "class Main { overlay }".to_string(), 1);
 
+        let engine = workspace.engine_for_tests();
+        let from_salsa = engine
+            .query_db
+            .with_snapshot(|snap| snap.file_content(file_id));
+
         let snapshot = workspace.snapshot();
         assert_eq!(snapshot.file_content(file_id), "class Main { overlay }");
+        assert!(
+            Arc::ptr_eq(
+                snapshot
+                    .file_contents
+                    .get(&file_id)
+                    .expect("snapshot contents for overlay"),
+                &from_salsa
+            ),
+            "expected snapshot to reuse the existing Salsa Arc<String> for overlay contents"
+        );
     }
 
     #[test]
