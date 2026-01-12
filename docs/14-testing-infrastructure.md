@@ -122,15 +122,15 @@ actionlint
 git diff --exit-code
 (cd editors/vscode && npm ci && npm test && npm run package)
 
-# javac.yml (requires `javac` on PATH; JDK 17+ recommended)
-cargo test --locked -p nova-syntax --test harness suite::javac_corpus
-cargo test --locked -p nova-types --test javac_differential -- --ignored
-cargo test --locked -p nova-refactor --test javac_refactors -- --ignored
-
-# agent/multi-runner:
-bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::javac_corpus
-bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
-bash scripts/cargo_agent.sh test --locked -p nova-refactor --test javac_refactors -- --ignored
+ # javac.yml (requires `javac` on PATH; JDK 17+ recommended)
+ cargo test --locked -p nova-syntax --test harness suite::javac_corpus
+ cargo test --locked -p nova-types --test javac_differential -- --ignored
+ cargo test --locked -p nova-refactor --test tests suite::javac_refactors -- --ignored
+ 
+ # agent/multi-runner:
+ bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::javac_corpus
+ bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
+ bash scripts/cargo_agent.sh test --locked -p nova-refactor --test tests suite::javac_refactors -- --ignored
 
 # Note: the differential harness runs `javac` with `-XDrawDiagnostics` so tests can
 # assert stable diagnostic *keys* instead of brittle human-readable strings.

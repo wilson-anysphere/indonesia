@@ -26,7 +26,7 @@ head_sha="$(git rev-parse HEAD)"
 pinned_harnesses=(
   "nova-syntax:harness"
   "nova-types:javac_differential"
-  "nova-refactor:javac_refactors"
+  "nova-refactor:tests"
   "nova-project:harness"
 )
 

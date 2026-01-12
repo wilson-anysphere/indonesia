@@ -106,11 +106,11 @@ name).
 ```bash
 # Agent / multi-runner (required) — also works fine on workstations.
 # (Workstation equivalent: replace `bash scripts/cargo_agent.sh` with `cargo`.)
-bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
-bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test refactorings
-```
+ bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
+ bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test tests
+ ```
 
 #### Formatter snapshots (`INSTA_UPDATE=always`)
 

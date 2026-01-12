@@ -45,7 +45,7 @@ jobs:
         run: cargo test --locked -p nova-types --test javac_differential -- --ignored
 
       - name: Run javac refactor tests
-        run: cargo test --locked -p nova-refactor --test javac_refactors -- --ignored
+        run: cargo test --locked -p nova-refactor --test tests suite::javac_refactors -- --ignored
 
       - name: Cargo.lock unchanged
         if: always()
