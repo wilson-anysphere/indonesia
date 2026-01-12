@@ -561,6 +561,68 @@ class C {}
 }
 
 #[test]
+fn java_lang_ambiguous_with_type_import_on_demand() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import q.Outer.*;
+class C {}
+"#,
+    );
+
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("q", "Outer");
+    index.add_type("q", "Outer$String");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    assert_eq!(
+        resolver.resolve_name_detailed(&scopes.scopes, scopes.file_scope, &Name::from("String")),
+        NameResolution::Ambiguous(vec![
+            Resolution::Type(TypeResolution::External(TypeName::from("q.Outer$String"))),
+            Resolution::Type(TypeResolution::External(TypeName::from("java.lang.String"))),
+        ])
+    );
+}
+
+#[test]
+fn type_import_on_demand_from_nested_type_resolves_member_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import p.Outer.Inner.*;
+class C { Deep d; }
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("p", "Outer");
+    index.add_type("p", "Outer$Inner");
+    let deep = index.add_type("p", "Outer$Inner$Deep");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("Deep")),
+        Some(TypeResolution::External(deep.clone()))
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+    let diags = resolver.diagnose_imports(&imports);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
+            && d.message.contains("p.Outer.Inner.*")),
+        "expected no unresolved-import for `p.Outer.Inner.*`, got {diags:#?}"
+    );
+}
+
+#[test]
 fn java_lang_is_implicit() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
