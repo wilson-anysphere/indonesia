@@ -446,6 +446,7 @@ struct ResolvedAnnotationType {
 
 fn annotation_attribute_completions(
     db: &dyn Database,
+    file: FileId,
     text: &str,
     offset: usize,
     prefix_start: usize,
@@ -469,57 +470,131 @@ fn annotation_attribute_completions(
         return None;
     }
 
-    let workspace_index = WorkspaceTypeIndex::build(db);
-    let package = parse_java_package_name(text).unwrap_or_default();
     let imports = parse_java_imports(text);
-
-    let mut types = TypeStore::with_minimal_jdk();
-    let resolved = resolve_annotation_type(
-        &mut types,
-        &workspace_index,
-        &package,
-        &imports,
-        ctx.annotation_name.as_str(),
-    )?;
-
-    match resolved.source {
-        ResolvedAnnotationSource::Workspace(type_file) => {
-            let path = db.file_path(type_file)?;
-            let source = db.file_content(type_file);
-            let mut source_provider = SourceTypeProvider::new();
-            source_provider.update_file(&mut types, path.to_path_buf(), source);
-        }
-        ResolvedAnnotationSource::Jdk => {
-            // `ensure_class_id` was already called as part of resolution; still load method stubs.
-        }
-    }
-
-    let class_id = types.class_id(&resolved.binary_name)?;
-    ensure_type_methods_loaded(&mut types, &Type::Named(resolved.binary_name.clone()));
-
     let used = parse_used_annotation_attributes(text, ctx.open_paren + 1, offset);
 
     let mut seen = HashSet::new();
     let mut items = Vec::new();
-    let class_def = types.class(class_id)?;
-    for method in &class_def.methods {
-        if !method.params.is_empty() {
-            continue;
-        }
-        if !seen.insert(method.name.as_str()) {
-            continue;
-        }
-        if used.contains(method.name.as_str()) {
-            continue;
+
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        let candidates = resolve_annotation_binary_name_candidates(
+            env.workspace_index(),
+            &imports,
+            ctx.annotation_name.as_str(),
+        );
+        if candidates.is_empty() {
+            return None;
         }
 
-        items.push(CompletionItem {
-            label: method.name.clone(),
-            kind: Some(CompletionItemKind::PROPERTY),
-            insert_text: Some(format!("{} = $0", method.name)),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),
-            ..Default::default()
-        });
+        // 1) Workspace (completion env) types: use the cached `TypeStore` read-only.
+        for binary in &candidates {
+            let Some(class_id) = env.types().class_id(binary) else {
+                continue;
+            };
+            let class_def = env.types().class(class_id)?;
+            for method in &class_def.methods {
+                if !method.params.is_empty() {
+                    continue;
+                }
+                if !seen.insert(method.name.as_str()) {
+                    continue;
+                }
+                if used.contains(method.name.as_str()) {
+                    continue;
+                }
+
+                items.push(CompletionItem {
+                    label: method.name.clone(),
+                    kind: Some(CompletionItemKind::PROPERTY),
+                    insert_text: Some(format!("{} = $0", method.name)),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    ..Default::default()
+                });
+            }
+            break;
+        }
+
+        // 2) JDK types: fall back to on-demand stub loading.
+        if items.is_empty() {
+            let mut types = TypeStore::with_minimal_jdk();
+            for binary in &candidates {
+                let Some(class_id) = ensure_class_id(&mut types, binary) else {
+                    continue;
+                };
+                ensure_type_methods_loaded(&mut types, &Type::Named(binary.clone()));
+                let class_def = types.class(class_id)?;
+                for method in &class_def.methods {
+                    if !method.params.is_empty() {
+                        continue;
+                    }
+                    if !seen.insert(method.name.as_str()) {
+                        continue;
+                    }
+                    if used.contains(method.name.as_str()) {
+                        continue;
+                    }
+
+                    items.push(CompletionItem {
+                        label: method.name.clone(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        insert_text: Some(format!("{} = $0", method.name)),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        ..Default::default()
+                    });
+                }
+                break;
+            }
+        }
+    } else {
+        // Fallback for virtual buffers / unknown roots: scan the workspace and load the annotation
+        // definition on demand.
+        let workspace_index = WorkspaceTypeIndex::build(db);
+        let package = imports.current_package.clone();
+
+        let mut types = TypeStore::with_minimal_jdk();
+        let resolved = resolve_annotation_type(
+            &mut types,
+            &workspace_index,
+            &package,
+            &imports,
+            ctx.annotation_name.as_str(),
+        )?;
+
+        match resolved.source {
+            ResolvedAnnotationSource::Workspace(type_file) => {
+                let path = db.file_path(type_file)?;
+                let source = db.file_content(type_file);
+                let mut source_provider = SourceTypeProvider::new();
+                source_provider.update_file(&mut types, path.to_path_buf(), source);
+            }
+            ResolvedAnnotationSource::Jdk => {
+                // `ensure_class_id` was already called as part of resolution; still load method stubs.
+            }
+        }
+
+        let class_id = types.class_id(&resolved.binary_name)?;
+        ensure_type_methods_loaded(&mut types, &Type::Named(resolved.binary_name.clone()));
+
+        let class_def = types.class(class_id)?;
+        for method in &class_def.methods {
+            if !method.params.is_empty() {
+                continue;
+            }
+            if !seen.insert(method.name.as_str()) {
+                continue;
+            }
+            if used.contains(method.name.as_str()) {
+                continue;
+            }
+
+            items.push(CompletionItem {
+                label: method.name.clone(),
+                kind: Some(CompletionItemKind::PROPERTY),
+                insert_text: Some(format!("{} = $0", method.name)),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            });
+        }
     }
 
     let ranking_ctx = CompletionRankingContext::default();
@@ -1043,6 +1118,110 @@ fn resolve_annotation_type(
     }
 
     None
+}
+
+fn resolve_annotation_binary_name_candidates(
+    workspace_index: &completion_cache::WorkspaceTypeIndex,
+    imports: &JavaImportInfo,
+    annotation_name: &str,
+) -> Vec<String> {
+    let ann = annotation_name.trim();
+    if ann.is_empty() {
+        return Vec::new();
+    }
+
+    fn binary_candidates_for_source_name(name: &str) -> Vec<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        out.push(name.to_string());
+
+        // Best-effort nested type support: try rewriting `Outer.Inner` into binary `$` form.
+        //
+        // This is primarily intended for fully-qualified names (e.g. `java.util.Map.Entry`), but
+        // is also useful when fixtures use dotted syntax for nested types.
+        if name.contains('.') && !name.contains('$') {
+            let segments: Vec<&str> = name.split('.').collect();
+            if segments.len() >= 2 {
+                for outer_idx in (0..segments.len() - 1).rev() {
+                    let (pkg, rest) = segments.split_at(outer_idx);
+                    let Some((outer, nested)) = rest.split_first() else {
+                        continue;
+                    };
+                    if nested.is_empty() {
+                        continue;
+                    }
+
+                    let mut candidate = String::new();
+                    if !pkg.is_empty() {
+                        candidate.push_str(&pkg.join("."));
+                        candidate.push('.');
+                    }
+                    candidate.push_str(outer);
+                    for seg in nested {
+                        candidate.push('$');
+                        candidate.push_str(seg);
+                    }
+                    out.push(candidate);
+                }
+            }
+        }
+
+        out
+    }
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_candidates = |source: &str| {
+        for binary in binary_candidates_for_source_name(source) {
+            if seen.insert(binary.clone()) {
+                out.push(binary);
+            }
+        }
+    };
+
+    // 1) Fully-qualified: treat as binary name first.
+    if ann.contains('.') {
+        push_candidates(ann);
+        return out;
+    }
+
+    // 2) Explicit imports (`import p.Foo;`).
+    if let Some(imported) = imports
+        .explicit_types
+        .iter()
+        .find(|ty| ty.rsplit('.').next().unwrap_or(ty.as_str()) == ann)
+    {
+        push_candidates(imported);
+    }
+
+    // 3) Same-package (`package q; @Foo(...)` => `q.Foo`).
+    if !imports.current_package.is_empty() {
+        push_candidates(&format!("{}.{}", imports.current_package, ann));
+    } else {
+        push_candidates(ann);
+    }
+
+    // 4) Star imports (`import p.*;`).
+    for star in &imports.star_packages {
+        if star.is_empty() {
+            continue;
+        }
+        push_candidates(&format!("{star}.{ann}"));
+    }
+
+    // 5) Implicit `java.lang.*`.
+    push_candidates(&format!("java.lang.{ann}"));
+
+    // 6) Fallback: unique type in the workspace index.
+    if let Some(fqn) = workspace_index.unique_fqn_for_simple_name(ann) {
+        push_candidates(fqn);
+    }
+
+    out
 }
 
 // -----------------------------------------------------------------------------
@@ -2974,44 +3153,111 @@ struct JavaImportInfo {
 fn parse_java_imports(text: &str) -> JavaImportInfo {
     let mut out = JavaImportInfo::default();
     out.current_package = parse_package_name(text).unwrap_or_default();
-    for line in text.lines() {
-        let line = line.trim_start();
-        if !line.starts_with("import ") {
+
+    // Best-effort parse of `import ...;` declarations.
+    //
+    // The previous line-based parser missed minified fixtures that put `package`, `import`, and the
+    // first type declaration on the same line (e.g. `package q; import p.Foo; class Main {}`).
+    // Re-lexing here is still cheap (file-scoped) and avoids false positives in comments/strings.
+    let tokens = nova_syntax::lex(text);
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i].kind != nova_syntax::SyntaxKind::ImportKw {
+            i += 1;
             continue;
         }
+        i += 1;
 
-        // Ignore `import static ...` for now; those introduce members, not types.
-        if line.starts_with("import static ") {
-            continue;
-        }
-
-        let mut rest = line["import ".len()..].trim();
-        // Import statements may have trailing comments (`import foo.Bar; // ...`) or be mid-edit
-        // without a trailing semicolon. Take only the segment up to the first `;`/comment marker.
-        let mut end = rest.len();
-        if let Some(idx) = rest.find(';') {
-            end = end.min(idx);
-        }
-        if let Some(idx) = rest.find("//") {
-            end = end.min(idx);
-        }
-        if let Some(idx) = rest.find("/*") {
-            end = end.min(idx);
-        }
-        rest = rest.get(..end).unwrap_or(rest).trim();
-        if rest.is_empty() {
-            continue;
+        // Skip trivia after `import`.
+        while i < tokens.len() && tokens[i].kind.is_trivia() {
+            i += 1;
         }
 
-        if let Some(pkg) = rest.strip_suffix(".*") {
-            let pkg = pkg.trim();
-            if !pkg.is_empty() {
-                out.star_packages.push(pkg.to_string());
+        // Ignore `import static ...;` declarations (those introduce members, not types).
+        if i < tokens.len() && tokens[i].kind == nova_syntax::SyntaxKind::StaticKw {
+            while i < tokens.len()
+                && !matches!(
+                    tokens[i].kind,
+                    nova_syntax::SyntaxKind::Semicolon | nova_syntax::SyntaxKind::Eof
+                )
+            {
+                i += 1;
+            }
+            if i < tokens.len() && tokens[i].kind == nova_syntax::SyntaxKind::Semicolon {
+                i += 1;
             }
             continue;
         }
 
-        out.explicit_types.push(rest.to_string());
+        let mut segments: Vec<String> = Vec::new();
+        let mut is_star = false;
+
+        // Parse `a.b.C` or `a.b.*` up to the terminating `;`.
+        while i < tokens.len() {
+            let kind = tokens[i].kind;
+            if kind.is_trivia() {
+                match kind {
+                    nova_syntax::SyntaxKind::Whitespace => {
+                        // If an import is missing its trailing `;`, avoid consuming the rest of the
+                        // file by treating the first newline as a terminator.
+                        let ws = tokens[i].text(text);
+                        if !segments.is_empty() && (ws.contains('\n') || ws.contains('\r')) {
+                            break;
+                        }
+                    }
+                    nova_syntax::SyntaxKind::LineComment | nova_syntax::SyntaxKind::DocComment => {
+                        // Line comments terminate a line; treat them as the end of an import
+                        // declaration when a semicolon is missing.
+                        if !segments.is_empty() {
+                            break;
+                        }
+                    }
+                    // Block comments can legally appear between tokens; skip them.
+                    _ => {}
+                }
+
+                i += 1;
+                continue;
+            }
+
+            match kind {
+                nova_syntax::SyntaxKind::Identifier => {
+                    segments.push(tokens[i].text(text).to_string());
+                    i += 1;
+                }
+                nova_syntax::SyntaxKind::Dot => {
+                    i += 1;
+                }
+                nova_syntax::SyntaxKind::Star => {
+                    is_star = true;
+                    i += 1;
+                }
+                nova_syntax::SyntaxKind::Semicolon => {
+                    i += 1;
+                    break;
+                }
+                nova_syntax::SyntaxKind::Eof => break,
+                // Unexpected token while parsing the import path: treat it as the end of the
+                // declaration and let the outer loop continue scanning.
+                _ => break,
+            }
+        }
+
+        if segments.is_empty() {
+            continue;
+        }
+
+        if is_star {
+            let pkg = segments.join(".");
+            if !pkg.is_empty() {
+                out.star_packages.push(pkg);
+            }
+        } else {
+            let path = segments.join(".");
+            if !path.is_empty() {
+                out.explicit_types.push(path);
+            }
+        }
     }
 
     out
@@ -6001,7 +6247,9 @@ pub(crate) fn core_completions(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-    if let Some(items) = annotation_attribute_completions(db, text, offset, prefix_start, &prefix) {
+    if let Some(items) =
+        annotation_attribute_completions(db, file, text, offset, prefix_start, &prefix)
+    {
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -6703,7 +6951,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
         if let Some(items) =
-            annotation_attribute_completions(db, text, offset, prefix_start, &prefix)
+            annotation_attribute_completions(db, file, text, offset, prefix_start, &prefix)
         {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }

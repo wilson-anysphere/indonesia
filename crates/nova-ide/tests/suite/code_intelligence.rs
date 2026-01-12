@@ -2361,6 +2361,72 @@ fn annotation_attribute_completion_filters_already_present_elements() {
 }
 
 #[test]
+fn annotation_attribute_completion_resolves_annotation_via_explicit_import() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let anno_text = "package p; public @interface MyAnno { int count(); }";
+    let java_text = "package q; import p.MyAnno; @MyAnno(co<|>) class Main {}";
+
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "count"),
+        "expected completion list to include MyAnno.count; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn annotation_attribute_completion_resolves_annotation_via_star_import() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let anno_text = "package p; public @interface MyAnno { int count(); }";
+    let java_text = "package q; import p.*; @MyAnno(<|>) class Main {}";
+
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "count"),
+        "expected completion list to include MyAnno.count; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn annotation_attribute_completion_resolves_annotation_via_fully_qualified_name() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
+
+    let anno_text = "package p; public @interface MyAnno { int count(); }";
+    let java_text = "package q; @p.MyAnno(co<|>) class Main {}";
+
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(anno_path, anno_text.to_string())],
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "count"),
+        "expected completion list to include MyAnno.count; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn completion_instance_members_exclude_static() {
     let (db, file, pos) = fixture(
         r#"
