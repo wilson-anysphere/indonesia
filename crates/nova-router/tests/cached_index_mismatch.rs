@@ -12,6 +12,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 mod remote_rpc_util;
+mod suite;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cached_index_notification_for_wrong_shard_disconnects_worker() -> Result<()> {

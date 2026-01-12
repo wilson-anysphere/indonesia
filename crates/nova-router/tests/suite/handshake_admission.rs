@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::remote_rpc_util;
 use nova_router::{
     DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
 };
@@ -8,8 +9,6 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Instant};
-
-mod remote_rpc_util;
 
 async fn complete_handshake(addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let conn = remote_rpc_util::connect_and_handshake_worker(

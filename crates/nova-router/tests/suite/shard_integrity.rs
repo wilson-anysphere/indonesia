@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use crate::remote_rpc_util;
 use nova_remote_proto::v3::{Notification, Request, Response};
 use nova_remote_proto::ShardIndex;
 use nova_remote_proto::{RpcMessage, ShardId, ShardIndexInfo, WorkerStats};
@@ -12,8 +13,6 @@ use tokio::sync::oneshot;
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
-
-mod remote_rpc_util;
 
 async fn write_rpc(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
     let payload = nova_remote_proto::encode_message(message)?;

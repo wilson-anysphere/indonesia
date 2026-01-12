@@ -4,12 +4,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use crate::remote_rpc_util;
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-
-mod remote_rpc_util;
 
 async fn connect_with_retry(path: &Path) -> Result<UnixStream> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);

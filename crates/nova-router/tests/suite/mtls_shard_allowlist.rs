@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
+use crate::remote_rpc_util;
 use nova_remote_proto::ShardId;
 use nova_router::{
     tls::TlsServerConfig, DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot,
@@ -19,8 +20,6 @@ use rcgen::{
 use sha2::Digest;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-
-mod remote_rpc_util;
 
 struct GeneratedCert {
     cert: Certificate,

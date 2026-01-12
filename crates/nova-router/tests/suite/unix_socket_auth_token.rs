@@ -3,9 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::remote_rpc_util;
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
-
-mod remote_rpc_util;
 
 #[tokio::test]
 async fn unix_socket_enforces_auth_token_when_configured() -> anyhow::Result<()> {

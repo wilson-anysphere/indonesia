@@ -2,12 +2,11 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use crate::remote_rpc_util;
 use nova_router::{
     DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
 };
 use tokio::net::TcpStream;
-
-mod remote_rpc_util;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_worker_connections_for_same_shard_are_rejected() -> Result<()> {
