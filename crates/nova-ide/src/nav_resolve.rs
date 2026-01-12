@@ -1484,6 +1484,7 @@ fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Op
     // - `expr.field::method`
     // - `expr.call()::method` (only empty-arg calls, mirroring `receiver_before_dot`)
     // - `new Foo()::method` / `new pkg.Foo()::method` (treated as receiver type `Foo`)
+    // - `Foo[]::new` / `pkg.Foo[]::new` (best-effort: strip the array suffix, resolve `Foo`)
     //
     // We normalize whitespace by joining segments with `.` and representing empty-arg calls as
     // `name()`. We intentionally do *not* attempt to parse arbitrary expressions or calls with
@@ -1537,6 +1538,37 @@ fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Op
             (name_start, format!("{name}()"))
         } else {
             let mut seg_end = end;
+            while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
+                seg_end -= 1;
+            }
+            if seg_end == 0 {
+                return None;
+            }
+
+            // Strip array suffixes like `Foo[]::new` or `Foo<T>[]::new`.
+            //
+            // This intentionally only supports empty brackets (with optional whitespace inside),
+            // so we don't misinterpret `arr[0]::method` (array access) as a type.
+            loop {
+                while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
+                    seg_end -= 1;
+                }
+                if seg_end == 0 || bytes.get(seg_end - 1) != Some(&b']') {
+                    break;
+                }
+
+                // Allow whitespace inside the brackets: `[ ]`.
+                let close_bracket_idx = seg_end - 1;
+                let mut open_search = close_bracket_idx;
+                while open_search > 0 && (bytes[open_search - 1] as char).is_ascii_whitespace() {
+                    open_search -= 1;
+                }
+                if open_search == 0 || bytes.get(open_search - 1) != Some(&b'[') {
+                    return None;
+                }
+                seg_end = open_search - 1;
+            }
+
             while seg_end > 0 && (bytes[seg_end - 1] as char).is_ascii_whitespace() {
                 seg_end -= 1;
             }
