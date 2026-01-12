@@ -1,6 +1,4 @@
-mod harness;
-
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;
 
@@ -44,4 +42,3 @@ async fn dap_stack_trace_supports_paging_and_total_frames() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-
