@@ -1,0 +1,264 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Base"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      ConstructorDeclaration
+        Modifiers
+        Identifier "Base"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n  "
+      ConstructorDeclaration
+        Modifiers
+        TypeParameters
+          Less "<"
+          TypeParameter
+            Identifier "T"
+          Greater ">"
+        Whitespace " "
+        Identifier "Base"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "T"
+                Whitespace " "
+            Identifier "t"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n\n"
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ExtendsClause
+      ExtendsKw "extends"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "Base"
+          Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      ConstructorDeclaration
+        Modifiers
+        TypeParameters
+          Less "<"
+          TypeParameter
+            Identifier "T"
+          Greater ">"
+        Whitespace " "
+        Identifier "Foo"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "T"
+                Whitespace " "
+            Identifier "t"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ExplicitConstructorInvocation
+            MethodCallExpression
+              SuperExpression
+                SuperKw "super"
+              ArgumentList
+                LParen "("
+                NameExpression
+                  Identifier "t"
+                RParen ")"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n\n  "
+      ConstructorDeclaration
+        Modifiers
+        Identifier "Foo"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ExplicitConstructorInvocation
+            MethodCallExpression
+              ThisExpression
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+                ThisKw "this"
+              ArgumentList
+                LParen "("
+                LiteralExpression
+                  StringLiteral "\"x\""
+                RParen ")"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n\n  "
+      ConstructorDeclaration
+        Modifiers
+        Identifier "Foo"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                LongKw "long"
+              Whitespace " "
+            Identifier "x"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ExplicitConstructorInvocation
+            MethodCallExpression
+              ThisExpression
+                ThisKw "this"
+              ArgumentList
+                LParen "("
+                RParen ")"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n\n  "
+      ConstructorDeclaration
+        Modifiers
+        Identifier "Foo"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                DoubleKw "double"
+              Whitespace " "
+            Identifier "d"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ExplicitConstructorInvocation
+            MethodCallExpression
+              SuperExpression
+                TypeArguments
+                  Less "<"
+                  TypeArgument
+                    Type
+                      NamedType
+                        Identifier "String"
+                  Greater ">"
+                SuperKw "super"
+              ArgumentList
+                LParen "("
+                NameExpression
+                  Identifier "d"
+                RParen ")"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n\n  "
+      ClassDeclaration
+        Modifiers
+        ClassKw "class"
+        Whitespace " "
+        Identifier "Inner"
+        Whitespace " "
+        ExtendsClause
+          ExtendsKw "extends"
+          Whitespace " "
+          Type
+            NamedType
+              Identifier "Base"
+              Whitespace " "
+        ClassBody
+          LBrace "{"
+          Whitespace "\n    "
+          ConstructorDeclaration
+            Modifiers
+            Identifier "Inner"
+            ParameterList
+              LParen "("
+              Parameter
+                Modifiers
+                Type
+                  NamedType
+                    Identifier "Foo"
+                    Whitespace " "
+                Identifier "f"
+              Comma ","
+              Whitespace " "
+              Parameter
+                Modifiers
+                Type
+                  NamedType
+                    Identifier "String"
+                    Whitespace " "
+                Identifier "s"
+              RParen ")"
+            Whitespace " "
+            Block
+              LBrace "{"
+              Whitespace " "
+              ExplicitConstructorInvocation
+                MethodCallExpression
+                  SuperExpression
+                    NameExpression
+                      Identifier "f"
+                    Dot "."
+                    TypeArguments
+                      Less "<"
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "String"
+                      Greater ">"
+                    SuperKw "super"
+                  ArgumentList
+                    LParen "("
+                    NameExpression
+                      Identifier "s"
+                    RParen ")"
+                Semicolon ";"
+              Whitespace " "
+              RBrace "}"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

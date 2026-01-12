@@ -1831,6 +1831,32 @@ impl ContinueStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplicitConstructorInvocation {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ExplicitConstructorInvocation {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExplicitConstructorInvocation
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ExplicitConstructorInvocation {
+    pub fn call(&self) -> Option<MethodCallExpression> {
+        support::child::<MethodCallExpression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTypeDeclarationStatement {
     syntax: SyntaxNode,
 }
@@ -2244,6 +2270,10 @@ impl ThisExpression {
         support::child::<Expression>(&self.syntax)
     }
 
+    pub fn type_arguments(&self) -> Option<TypeArguments> {
+        support::child::<TypeArguments>(&self.syntax)
+    }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2268,6 +2298,10 @@ impl AstNode for SuperExpression {
 impl SuperExpression {
     pub fn qualifier(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn type_arguments(&self) -> Option<TypeArguments> {
+        support::child::<TypeArguments>(&self.syntax)
     }
 
 }
@@ -3785,6 +3819,7 @@ pub enum Statement {
     ThrowStatement(ThrowStatement),
     BreakStatement(BreakStatement),
     ContinueStatement(ContinueStatement),
+    ExplicitConstructorInvocation(ExplicitConstructorInvocation),
     LocalTypeDeclarationStatement(LocalTypeDeclarationStatement),
     LocalVariableDeclarationStatement(LocalVariableDeclarationStatement),
     ExpressionStatement(ExpressionStatement),
@@ -3808,6 +3843,7 @@ impl AstNode for Statement {
             || ThrowStatement::can_cast(kind)
             || BreakStatement::can_cast(kind)
             || ContinueStatement::can_cast(kind)
+            || ExplicitConstructorInvocation::can_cast(kind)
             || LocalTypeDeclarationStatement::can_cast(kind)
             || LocalVariableDeclarationStatement::can_cast(kind)
             || ExpressionStatement::can_cast(kind)
@@ -3835,6 +3871,7 @@ impl AstNode for Statement {
         if let Some(it) = ThrowStatement::cast(syntax.clone()) { return Some(Self::ThrowStatement(it)); }
         if let Some(it) = BreakStatement::cast(syntax.clone()) { return Some(Self::BreakStatement(it)); }
         if let Some(it) = ContinueStatement::cast(syntax.clone()) { return Some(Self::ContinueStatement(it)); }
+        if let Some(it) = ExplicitConstructorInvocation::cast(syntax.clone()) { return Some(Self::ExplicitConstructorInvocation(it)); }
         if let Some(it) = LocalTypeDeclarationStatement::cast(syntax.clone()) { return Some(Self::LocalTypeDeclarationStatement(it)); }
         if let Some(it) = LocalVariableDeclarationStatement::cast(syntax.clone()) { return Some(Self::LocalVariableDeclarationStatement(it)); }
         if let Some(it) = ExpressionStatement::cast(syntax.clone()) { return Some(Self::ExpressionStatement(it)); }
@@ -3860,6 +3897,7 @@ impl AstNode for Statement {
             Self::ThrowStatement(it) => it.syntax(),
             Self::BreakStatement(it) => it.syntax(),
             Self::ContinueStatement(it) => it.syntax(),
+            Self::ExplicitConstructorInvocation(it) => it.syntax(),
             Self::LocalTypeDeclarationStatement(it) => it.syntax(),
             Self::LocalVariableDeclarationStatement(it) => it.syntax(),
             Self::ExpressionStatement(it) => it.syntax(),

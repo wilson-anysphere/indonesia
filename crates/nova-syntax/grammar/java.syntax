@@ -37,7 +37,7 @@ ClassMember =
   | AnnotationTypeDeclaration
 
 Statement =
-      Block
+       Block
   | LabeledStatement
   | IfStatement
   | SwitchStatement
@@ -52,6 +52,7 @@ Statement =
   | ThrowStatement
   | BreakStatement
   | ContinueStatement
+  | ExplicitConstructorInvocation
   | LocalTypeDeclarationStatement
   | LocalVariableDeclarationStatement
   | ExpressionStatement
@@ -397,6 +398,10 @@ ContinueStatement {
   label_token: Ident?
 }
 
+ExplicitConstructorInvocation {
+  call: MethodCallExpression?
+}
+
 LocalTypeDeclarationStatement {
   declaration: TypeDeclaration?
 }
@@ -456,9 +461,11 @@ LiteralExpression {}
 NameExpression {}
 ThisExpression {
   qualifier: Expression?
+  type_arguments: TypeArguments?
 }
 SuperExpression {
   qualifier: Expression?
+  type_arguments: TypeArguments?
 }
 
 ParenthesizedExpression {

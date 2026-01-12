@@ -1848,6 +1848,20 @@ impl<'a> Parser<'a> {
             self.builder.finish_node();
             return;
         }
+
+        if self.at_explicit_constructor_invocation_start() {
+            self.builder.start_node_at(
+                checkpoint,
+                SyntaxKind::ExplicitConstructorInvocation.into(),
+            );
+            self.parse_expression(0);
+            self.expect(
+                SyntaxKind::Semicolon,
+                "expected `;` after constructor invocation",
+            );
+            self.builder.finish_node();
+            return;
+        }
         match self.current() {
             SyntaxKind::LBrace => self.parse_block(stmt_ctx),
             SyntaxKind::YieldKw if stmt_ctx == StatementContext::SwitchExpression => {
@@ -3015,6 +3029,27 @@ impl<'a> Parser<'a> {
                 self.expect_ident_like("expected name after type arguments");
                 self.builder.finish_node();
             }
+            SyntaxKind::Less if self.type_arguments_followed_by_this_or_super().is_some() => {
+                // Explicit type arguments for constructor invocation: `<T>this(...)`,
+                // `<T>super(...)`.
+                let keyword = self
+                    .type_arguments_followed_by_this_or_super()
+                    .expect("guard ensures this is Some");
+                let kind = match keyword {
+                    SyntaxKind::ThisKw => SyntaxKind::ThisExpression,
+                    SyntaxKind::SuperKw => SyntaxKind::SuperExpression,
+                    _ => unreachable!("expected `this` or `super`, got {keyword:?}"),
+                };
+
+                self.builder.start_node_at(checkpoint, kind.into());
+                self.parse_type_arguments();
+                if self.at(keyword) {
+                    self.bump();
+                } else {
+                    self.error_here("expected `this` or `super` after type arguments");
+                }
+                self.builder.finish_node();
+            }
             kind if (is_primitive_type(kind) && self.at_primitive_type_suffix_start())
                 || (kind == SyntaxKind::VoidKw && self.at_primitive_class_literal_start()) =>
             {
@@ -3088,10 +3123,21 @@ impl<'a> Parser<'a> {
                         self.builder.finish_node();
                         continue;
                     }
-                    if self.nth(1) == Some(SyntaxKind::SuperKw) {
+                    let mut super_lookahead = skip_trivia(&self.tokens, 1);
+                    if self.tokens.get(super_lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
+                        super_lookahead =
+                            skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, super_lookahead));
+                    }
+                    if self.tokens.get(super_lookahead).map(|t| t.kind) == Some(SyntaxKind::SuperKw)
+                    {
+                        // Qualified `super`: `TypeName.super` and qualified explicit constructor
+                        // invocation: `Primary.<T>super(...)`.
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::SuperExpression.into());
                         self.bump(); // .
+                        if self.nth(0) == Some(SyntaxKind::Less) {
+                            self.parse_type_arguments();
+                        }
                         self.bump(); // super
                         self.builder.finish_node();
                         continue;
@@ -3269,6 +3315,87 @@ impl<'a> Parser<'a> {
         self.tokens
             .get(lookahead)
             .is_some_and(|t| t.kind.is_identifier_like())
+    }
+
+    fn type_arguments_followed_by_this_or_super(&mut self) -> Option<SyntaxKind> {
+        if self.nth(0) != Some(SyntaxKind::Less) {
+            return None;
+        }
+
+        let lookahead = skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, 0));
+        self.tokens.get(lookahead).map(|t| t.kind).and_then(|kind| {
+            matches!(kind, SyntaxKind::ThisKw | SyntaxKind::SuperKw).then_some(kind)
+        })
+    }
+
+    fn at_explicit_constructor_invocation_start(&mut self) -> bool {
+        // Supports:
+        // - `this(...) ;`
+        // - `super(...) ;`
+        // - `<T>this(...) ;`
+        // - `<T>super(...) ;`
+        // - `Primary.super(...) ;`
+        // - `Primary.<T>super(...) ;`
+        let start = skip_trivia(&self.tokens, 0);
+        let Some(tok) = self.tokens.get(start) else {
+            return false;
+        };
+
+        match tok.kind {
+            SyntaxKind::ThisKw | SyntaxKind::SuperKw => {
+                let next = skip_trivia(&self.tokens, start + 1);
+                return self.tokens.get(next).map(|t| t.kind) == Some(SyntaxKind::LParen);
+            }
+            SyntaxKind::Less => {
+                let after_args = skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, start));
+                match self.tokens.get(after_args).map(|t| t.kind) {
+                    Some(SyntaxKind::ThisKw) | Some(SyntaxKind::SuperKw) => {
+                        let after_kw = skip_trivia(&self.tokens, after_args + 1);
+                        return self.tokens.get(after_kw).map(|t| t.kind) == Some(SyntaxKind::LParen);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
+        let mut i = start;
+        let mut depth = DelimiterDepth::default();
+        while let Some(tok) = self.tokens.get(i) {
+            let kind = tok.kind;
+            if kind.is_trivia() {
+                i += 1;
+                continue;
+            }
+
+            if depth.is_zero(false) {
+                // Don't scan beyond the end of the current statement.
+                if kind == SyntaxKind::Semicolon {
+                    break;
+                }
+
+                if kind == SyntaxKind::Dot {
+                    let mut lookahead = skip_trivia(&self.tokens, i + 1);
+                    if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
+                        lookahead = skip_trivia(
+                            &self.tokens,
+                            skip_type_arguments(&self.tokens, lookahead),
+                        );
+                    }
+                    if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::SuperKw) {
+                        let after_super = skip_trivia(&self.tokens, lookahead + 1);
+                        if self.tokens.get(after_super).map(|t| t.kind) == Some(SyntaxKind::LParen) {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            depth.update(kind, false);
+            i += 1;
+        }
+
+        false
     }
 
     fn at_primitive_class_literal_start(&mut self) -> bool {

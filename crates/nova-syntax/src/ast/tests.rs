@@ -816,6 +816,74 @@ fn enum_constant_class_body_is_accessible() {
 }
 
 #[test]
+fn explicit_constructor_invocations_are_distinct_statements() {
+    let src = r#"
+        class Base {
+          Base() {}
+          <T> Base(T t) {}
+        }
+
+        class Foo extends Base {
+          <T> Foo(T t) { super(t); }
+
+          Foo() { <String>this("x"); }
+
+          Foo(long x) { this(); }
+
+          Foo(double d) { <String>super(d); }
+
+          class Inner extends Base {
+            Inner(Foo f, String s) { f.<String>super(s); }
+          }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let mut saw_generic_this = false;
+    let mut saw_this = false;
+    let mut saw_generic_super = false;
+    let mut saw_qualified_generic_super = false;
+
+    for stmt in parse.syntax().descendants().filter_map(Statement::cast) {
+        let Statement::ExplicitConstructorInvocation(inv) = stmt else {
+            continue;
+        };
+
+        let Some(call) = inv.call() else {
+            continue;
+        };
+        let Some(callee) = call.callee() else {
+            continue;
+        };
+
+        match callee {
+            Expression::ThisExpression(expr) => {
+                if expr.type_arguments().is_some() {
+                    saw_generic_this = true;
+                } else {
+                    saw_this = true;
+                }
+            }
+            Expression::SuperExpression(expr) => {
+                if expr.qualifier().is_some() && expr.type_arguments().is_some() {
+                    saw_qualified_generic_super = true;
+                } else if expr.type_arguments().is_some() {
+                    saw_generic_super = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_generic_this);
+    assert!(saw_this);
+    assert!(saw_generic_super);
+    assert!(saw_qualified_generic_super);
+}
+
+#[test]
 fn annotation_element_value_pairs() {
     let src = r#"
         @Anno(x = 1)
