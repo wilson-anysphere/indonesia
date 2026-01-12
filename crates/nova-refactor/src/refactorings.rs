@@ -1179,7 +1179,8 @@ pub fn extract_variable(
     //
     // When extracting to `var`, be conservative and reject side-effectful initializers to avoid
     // producing surprising code (and to avoid `void`-typed method invocations that `var` cannot
-    // represent).
+    // represent). For explicit-typed extraction we allow side effects and rely on the downstream
+    // evaluation-order guards to preserve correctness.
     if params.use_var && has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractSideEffects);
     }
@@ -1310,23 +1311,19 @@ pub fn extract_variable(
 
         // For explicit-typed extraction we must be confident about the type. If we don't have
         // type-checker type information and our parser-only inference fell back to the generic
-        // "Object" type, we may be unable to distinguish between a value-returning expression and a
-        // `void`-typed method invocation, or determine a required target type for lambdas/method
-        // references. In those cases, reject the refactoring rather than guessing.
+        // "Object" type, we generally want to avoid guessing.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
+        //
+        // However, if the extracted expression is in a value-required context (e.g. inside another
+        // expression), it cannot be `void`, and `Object` is a safe explicit type fallback (via
+        // boxing where needed). The main case we must still reject is extracting the *entire*
+        // expression of an expression statement (`foo();`), since the expression could be `void`.
+        //
+        // Also reject expressions that require a target type (lambdas/method references/array
+        // initializers), since `Object` is not a valid fallback type for those constructs.
         if typeck_ty.is_none() && parser_ty == "Object" {
-            fn expr_might_be_void(expr: &ast::Expression) -> bool {
-                match expr {
-                    ast::Expression::MethodCallExpression(_) => true,
-                    ast::Expression::ParenthesizedExpression(p) => {
-                        p.expression().is_some_and(|e| expr_might_be_void(&e))
-                    }
-                    _ => false,
-                }
-            }
-
             fn requires_target_type(expr: &ast::Expression) -> bool {
                 match expr {
                     ast::Expression::ParenthesizedExpression(p) => {
@@ -1340,8 +1337,21 @@ pub fn extract_variable(
                 }
             }
 
-            if expr_might_be_void(&expr) || requires_target_type(&expr) {
+            if requires_target_type(&expr) {
                 return Err(RefactorError::TypeInferenceFailed);
+            }
+            if let ast::Statement::ExpressionStatement(expr_stmt) = &stmt {
+                if let Some(stmt_expr) = expr_stmt.expression() {
+                    let stmt_expr_range = trimmed_syntax_range(stmt_expr.syntax());
+                    let stmt_expr_range_ws = trim_range(text, syntax_range(stmt_expr.syntax()));
+                    if (stmt_expr_range.start == selection.start
+                        && stmt_expr_range.end == selection.end)
+                        || (stmt_expr_range_ws.start == selection.start
+                            && stmt_expr_range_ws.end == selection.end)
+                    {
+                        return Err(RefactorError::TypeInferenceFailed);
+                    }
+                }
             }
         }
 

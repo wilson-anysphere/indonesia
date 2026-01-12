@@ -98,15 +98,19 @@ fn infer_type_at_offsets(
 ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(ty) =
-            type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
+        let Some(ty) = type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
         else {
             continue;
         };
-        // Strip leading `java.lang.` for readability. Java implicitly imports `java.lang`, and our
-        // tests expect unqualified names for simple `java.lang` types.
-        let mut ty = if ty.starts_with("java.lang.") {
-            ty["java.lang.".len()..].to_string()
+        // `type_at_offset_fully_qualified` returns fully-qualified names (e.g.
+        // `java.lang.RuntimeException`). Since `java.lang` is implicitly imported in Java, avoid
+        // emitting the redundant qualifier when it is the *top-level* type.
+        //
+        // Note: we intentionally keep nested `java.lang.*` segments inside generic type arguments
+        // (e.g. `java.util.List<java.lang.String>`) so the type remains fully qualified when the
+        // outer type already requires qualification.
+        let ty = if let Some(rest) = ty.strip_prefix("java.lang.") {
+            rest.to_string()
         } else {
             ty
         };
