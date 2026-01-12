@@ -5123,41 +5123,12 @@ fn instantiate_as(
     start_args: Vec<Type>,
     target_def: ClassId,
 ) -> Option<Vec<Type>> {
-    let mut queue = VecDeque::new();
-    let mut seen = HashSet::new();
-    queue.push_back(Type::class(start_def, start_args));
-
-    while let Some(current) = queue.pop_front() {
-        let Type::Class(ClassType { def, args }) = current.clone() else {
-            continue;
-        };
-        if !seen.insert((def, args.clone())) {
-            continue;
-        }
-
-        if def == target_def {
-            return Some(args);
-        }
-
-        let Some(class_def) = env.class(def) else {
-            continue;
-        };
-        let subst = class_def
-            .type_params
-            .iter()
-            .copied()
-            .zip(args.into_iter())
-            .collect::<HashMap<_, _>>();
-
-        if let Some(sc) = &class_def.super_class {
-            queue.push_back(substitute(sc, &subst));
-        }
-        for iface in &class_def.interfaces {
-            queue.push_back(substitute(iface, &subst));
-        }
+    let ty = Type::class(start_def, start_args);
+    let ty = instantiate_as_supertype(env, &ty, target_def)?;
+    match ty {
+        Type::Class(ClassType { args, .. }) => Some(args),
+        _ => None,
     }
-
-    None
 }
 
 fn infer_class_type_arguments_from_target(
