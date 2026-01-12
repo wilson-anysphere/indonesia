@@ -37,11 +37,17 @@ struct SymbolEntry {
 }
 
 impl SymbolEntry {
-    fn new(symbol: Symbol) -> Self {
+    fn new(mut symbol: Symbol) -> Self {
         // `workspace/symbol` commonly sets `qualified_name == name`. Store this as
         // a per-entry flag so candidate scoring doesn't need to compare strings
         // on every query.
         let qualified_name_differs = symbol.qualified_name != symbol.name;
+        if !qualified_name_differs {
+            // Drop the duplicate allocation to reduce memory footprint for the common
+            // `qualified_name == name` case. Callers often construct `qualified_name`
+            // as `name.clone()`, which would otherwise double identifier storage.
+            symbol.qualified_name = String::new();
+        }
         Self {
             symbol,
             qualified_name_differs,
@@ -62,6 +68,7 @@ struct CandidateKey<'a> {
     score: MatchScore,
     rank_key: RankKey,
     sym: &'a Symbol,
+    qualified_name: &'a str,
 }
 
 impl PartialEq for CandidateKey<'_> {
@@ -95,7 +102,7 @@ impl Ord for CandidateKey<'_> {
         if ord != Ordering::Equal {
             return ord;
         }
-        ord = other.sym.qualified_name.cmp(&self.sym.qualified_name);
+        ord = other.qualified_name.cmp(self.qualified_name);
         if ord != Ordering::Equal {
             return ord;
         }
@@ -286,6 +293,7 @@ impl SymbolSearchIndex {
             fn build_candidate_key<'a>(
                 id: SymbolId,
                 sym: &'a Symbol,
+                qualified_name: &'a str,
                 score: MatchScore,
                 score_key: RankKey,
             ) -> CandidateKey<'a> {
@@ -294,6 +302,7 @@ impl SymbolSearchIndex {
                     score,
                     rank_key: score_key,
                     sym,
+                    qualified_name,
                 }
             }
 
@@ -303,13 +312,20 @@ impl SymbolSearchIndex {
                 limit: usize,
                 id: SymbolId,
                 sym: &'a Symbol,
+                qualified_name: &'a str,
                 score: MatchScore,
             ) {
                 let score_key = score.rank_key();
 
                 // Until the heap is full we can push unconditionally.
                 if scored.len() < limit {
-                    scored.push(Reverse(build_candidate_key(id, sym, score, score_key)));
+                    scored.push(Reverse(build_candidate_key(
+                        id,
+                        sym,
+                        qualified_name,
+                        score,
+                        score_key,
+                    )));
                     return;
                 }
 
@@ -328,7 +344,13 @@ impl SymbolSearchIndex {
                         let mut worst_mut = scored
                             .peek_mut()
                             .expect("peek_mut should succeed when peek succeeds");
-                        *worst_mut = Reverse(build_candidate_key(id, sym, score, score_key));
+                        *worst_mut = Reverse(build_candidate_key(
+                            id,
+                            sym,
+                            qualified_name,
+                            score,
+                            score_key,
+                        ));
                         return;
                     }
                     Ordering::Equal => {
@@ -336,7 +358,7 @@ impl SymbolSearchIndex {
                     }
                 }
 
-                let key = build_candidate_key(id, sym, score, score_key);
+                let key = build_candidate_key(id, sym, qualified_name, score, score_key);
 
                 if key > worst {
                     // Replace the current worst candidate with this better one.
@@ -352,7 +374,19 @@ impl SymbolSearchIndex {
                     for &id in ids {
                         let entry = &self.symbols[id as usize];
                         if let Some(score) = self.score_candidate(entry, q_bytes, &mut matcher) {
-                            push_scored(&mut scored, limit, id, &entry.symbol, score);
+                            let qualified_name = if entry.qualified_name_differs {
+                                entry.symbol.qualified_name.as_str()
+                            } else {
+                                entry.symbol.name.as_str()
+                            };
+                            push_scored(
+                                &mut scored,
+                                limit,
+                                id,
+                                &entry.symbol,
+                                qualified_name,
+                                score,
+                            );
                         }
                     }
                 }
@@ -361,7 +395,19 @@ impl SymbolSearchIndex {
                         let id = id as SymbolId;
                         let entry = &self.symbols[id as usize];
                         if let Some(score) = self.score_candidate(entry, q_bytes, &mut matcher) {
-                            push_scored(&mut scored, limit, id, &entry.symbol, score);
+                            let qualified_name = if entry.qualified_name_differs {
+                                entry.symbol.qualified_name.as_str()
+                            } else {
+                                entry.symbol.name.as_str()
+                            };
+                            push_scored(
+                                &mut scored,
+                                limit,
+                                id,
+                                &entry.symbol,
+                                qualified_name,
+                                score,
+                            );
                         }
                     }
                 }
@@ -372,10 +418,17 @@ impl SymbolSearchIndex {
                 // `CandidateKey` ⇒ best-first.
                 .into_sorted_vec()
                 .into_iter()
-                .map(|Reverse(res)| SearchResult {
-                    id: res.id,
-                    symbol: res.sym.clone(),
-                    score: res.score,
+                .map(|Reverse(res)| {
+                    let entry = &self.symbols[res.id as usize];
+                    let mut symbol = entry.symbol.clone();
+                    if !entry.qualified_name_differs {
+                        symbol.qualified_name = symbol.name.clone();
+                    }
+                    SearchResult {
+                        id: res.id,
+                        symbol,
+                        score: res.score,
+                    }
                 })
                 .collect();
 
@@ -775,12 +828,19 @@ mod tests {
         let mut scored: Vec<CandidateKey<'_>> = Vec::new();
 
         let mut push_scored = |id: SymbolId, score: MatchScore| {
-            let sym = &index.symbols[id as usize].symbol;
+            let entry = &index.symbols[id as usize];
+            let sym = &entry.symbol;
+            let qualified_name = if entry.qualified_name_differs {
+                sym.qualified_name.as_str()
+            } else {
+                sym.name.as_str()
+            };
             scored.push(CandidateKey {
                 id,
                 score,
                 rank_key: score.rank_key(),
                 sym,
+                qualified_name,
             });
         };
 
@@ -812,10 +872,17 @@ mod tests {
 
         let results: Vec<SearchResult> = scored
             .into_iter()
-            .map(|res| SearchResult {
-                id: res.id,
-                symbol: res.sym.clone(),
-                score: res.score,
+            .map(|res| {
+                let entry = &index.symbols[res.id as usize];
+                let mut symbol = entry.symbol.clone();
+                if !entry.qualified_name_differs {
+                    symbol.qualified_name = symbol.name.clone();
+                }
+                SearchResult {
+                    id: res.id,
+                    symbol,
+                    score: res.score,
+                }
             })
             .collect();
 
@@ -849,6 +916,7 @@ mod tests {
         let index = SymbolSearchIndex::build(vec![symbol.clone()]);
         let results = index.search("fb", 10);
         assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.qualified_name, "FooBar");
 
         // Baseline: always score both fields and pick the best. When the
         // strings are equal, this should match the optimized path.
