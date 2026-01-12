@@ -6171,16 +6171,23 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             // Compound assignments: infer the operator result type, then validate the
                             // implicit cast back to the LHS type (JLS 15.26.2/15.26.3).
                             if !lhs_ty.is_errorish() && !rhs_ty.is_errorish() {
+                                let env_ro: &dyn TypeEnv = &*loader.store;
                                 let string_ty =
                                     Type::class(loader.store.well_known().string, vec![]);
+                                let lhs_prim = primitive_like(env_ro, &lhs_ty);
+                                let rhs_prim = primitive_like(env_ro, &rhs_ty);
                                 let result_ty = match op {
                                     AssignOp::AddAssign => {
-                                        if is_java_lang_string(loader.store, &lhs_ty) {
-                                            Some(string_ty)
-                                        } else if let (Type::Primitive(a), Type::Primitive(b)) =
-                                            (&lhs_ty, &rhs_ty)
+                                        if is_java_lang_string(loader.store, &lhs_ty)
+                                            || is_java_lang_string(loader.store, &rhs_ty)
                                         {
-                                            binary_numeric_promotion(*a, *b).map(Type::Primitive)
+                                            Some(string_ty)
+                                        } else if let (Some(a), Some(b)) = (lhs_prim, rhs_prim) {
+                                            if a.is_numeric() && b.is_numeric() {
+                                                binary_numeric_promotion(a, b).map(Type::Primitive)
+                                            } else {
+                                                None
+                                            }
                                         } else {
                                             None
                                         }
@@ -6188,44 +6195,40 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     AssignOp::SubAssign
                                     | AssignOp::MulAssign
                                     | AssignOp::DivAssign
-                                    | AssignOp::RemAssign => match (&lhs_ty, &rhs_ty) {
-                                        (Type::Primitive(a), Type::Primitive(b))
-                                            if a.is_numeric() && b.is_numeric() =>
-                                        {
-                                            binary_numeric_promotion(*a, *b).map(Type::Primitive)
+                                    | AssignOp::RemAssign => match (lhs_prim, rhs_prim) {
+                                        (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
+                                            binary_numeric_promotion(a, b).map(Type::Primitive)
                                         }
                                         _ => None,
                                     },
                                     AssignOp::AndAssign
                                     | AssignOp::OrAssign
-                                    | AssignOp::XorAssign => match (&lhs_ty, &rhs_ty) {
+                                    | AssignOp::XorAssign => match (lhs_prim, rhs_prim) {
                                         (
-                                            Type::Primitive(PrimitiveType::Boolean),
-                                            Type::Primitive(PrimitiveType::Boolean),
+                                            Some(PrimitiveType::Boolean),
+                                            Some(PrimitiveType::Boolean),
                                         ) => Some(Type::Primitive(PrimitiveType::Boolean)),
-                                        (Type::Primitive(a), Type::Primitive(b))
-                                            if is_integral_primitive(*a)
-                                                && is_integral_primitive(*b) =>
+                                        (Some(a), Some(b))
+                                            if is_integral_primitive(a) && is_integral_primitive(b) =>
                                         {
-                                            binary_numeric_promotion(*a, *b).map(Type::Primitive)
+                                            binary_numeric_promotion(a, b).map(Type::Primitive)
                                         }
                                         _ => None,
                                     },
                                     AssignOp::ShlAssign
                                     | AssignOp::ShrAssign
-                                    | AssignOp::UShrAssign => match (&lhs_ty, &rhs_ty) {
-                                        (Type::Primitive(lhs_p), Type::Primitive(rhs_p))
-                                            if is_integral_primitive(*lhs_p)
-                                                && is_integral_primitive(*rhs_p) =>
+                                    | AssignOp::UShrAssign => match (lhs_prim, rhs_prim) {
+                                        (Some(lhs_p), Some(rhs_p))
+                                            if is_integral_primitive(lhs_p)
+                                                && is_integral_primitive(rhs_p) =>
                                         {
-                                            Some(Type::Primitive(unary_numeric_promotion(*lhs_p)))
+                                            Some(Type::Primitive(unary_numeric_promotion(lhs_p)))
                                         }
                                         _ => None,
                                     },
                                     AssignOp::Assign => None,
                                 };
 
-                                let env_ro: &dyn TypeEnv = &*loader.store;
                                 match result_ty {
                                     Some(result_ty) => {
                                         if cast_conversion(env_ro, &result_ty, &lhs_ty).is_none() {

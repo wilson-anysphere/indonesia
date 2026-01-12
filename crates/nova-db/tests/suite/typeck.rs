@@ -1371,6 +1371,25 @@ class C {
 }
 
 #[test]
+fn compound_assign_add_string_concat_rhs_is_allowed() {
+    let src = r#"
+class C {
+    void m() {
+        Object o = "a";
+        o += "b";
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `o += \"b\"` to type-check via string concatenation; got {diags:?}"
+    );
+}
+
+#[test]
 fn compound_assign_rejects_non_numeric() {
     let src = r#"
 class C {
