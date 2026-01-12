@@ -119,11 +119,13 @@ impl BuildSystemBackend for GradleBuildSystem {
                 // Gradle script plugins can influence the build and classpath.
                 PathPattern::Glob("**/*.gradle"),
                 PathPattern::Glob("**/*.gradle.kts"),
-                // Version catalogs can influence dependency versions.
-                PathPattern::ExactFileName("libs.versions.toml"),
-                // Additional version catalogs can be custom-named but must be direct children of a
-                // `gradle/` directory (e.g. `gradle/deps.versions.toml`).
-                PathPattern::Glob("**/gradle/*.versions.toml"),
+            // Version catalogs can influence dependency versions.
+            PathPattern::ExactFileName("libs.versions.toml"),
+            // Version catalogs can also be custom-named (e.g. `foo.versions.toml`).
+            PathPattern::Glob("**/*.versions.toml"),
+            // Additional version catalogs can be custom-named but must be direct children of a
+            // `gradle/` directory (e.g. `gradle/deps.versions.toml`).
+            PathPattern::Glob("**/gradle/*.versions.toml"),
                 PathPattern::ExactFileName("gradle.properties"),
                 PathPattern::ExactFileName("gradlew"),
                 PathPattern::ExactFileName("gradlew.bat"),
@@ -221,7 +223,28 @@ impl BuildSystemBackend for SimpleBuildSystem {
     }
 
     fn watch_files(&self) -> Vec<PathPattern> {
-        common_watch_files()
+        // Simple projects can "upgrade" to another build system as soon as a marker file appears
+        // (e.g. creating a new `pom.xml`). Watch for the common build markers so callers can
+        // re-detect the workspace model.
+        dedup_patterns(
+            vec![
+                PathPattern::ExactFileName("pom.xml"),
+                PathPattern::ExactFileName("build.gradle"),
+                PathPattern::ExactFileName("build.gradle.kts"),
+                PathPattern::ExactFileName("settings.gradle"),
+                PathPattern::ExactFileName("settings.gradle.kts"),
+                PathPattern::ExactFileName("gradle.properties"),
+                PathPattern::ExactFileName("WORKSPACE"),
+                PathPattern::ExactFileName("WORKSPACE.bazel"),
+                PathPattern::ExactFileName("MODULE.bazel"),
+                PathPattern::ExactFileName("BUILD"),
+                PathPattern::ExactFileName("BUILD.bazel"),
+                PathPattern::Glob("**/*.bzl"),
+            ]
+            .into_iter()
+            .chain(common_watch_files())
+            .collect(),
+        )
     }
 }
 
