@@ -1703,6 +1703,176 @@ excluded_paths = ["secret/**"]
 }
 
 #[test]
+fn stdio_server_ai_excluded_paths_blocks_patch_based_generate_tests_without_model_call() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let secret_dir = root.join("secret");
+    std::fs::create_dir_all(&secret_dir).expect("create secret dir");
+    let file_path = secret_dir.join("Example.java");
+    let file_uri = uri_for_path(&file_path);
+    let source =
+        "class Example {\n    int add(int a, int b) {\n        return a + b;\n    }\n}\n";
+    std::fs::write(&file_path, source).expect("write Example.java");
+
+    // If the server accidentally reaches the model, return a patch that would edit the excluded
+    // file so the failure is obvious.
+    let patch = json!({
+        "edits": [{
+            "file": "secret/Example.java",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "text": "// should not be used\n"
+        }]
+    });
+    let completion = serde_json::to_string(&patch).expect("patch json");
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": completion }));
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+excluded_paths = ["secret/**"]
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri.clone(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // Execute the command directly (AI code actions are suppressed, but executeCommand should still
+    // fail closed and must not call the model).
+    let selection = "add";
+    let start_offset = source.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(source);
+    let range_start = pos.lsp_position(start_offset).expect("range start");
+    let range_end = pos.lsp_position(end_offset).expect("range end");
+
+    let args = json!([{
+        "target": "add",
+        "context": null,
+        "uri": file_uri,
+        "range": { "start": range_start, "end": range_end }
+    }]);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/executeCommand",
+            "params": { "command": nova_ide::COMMAND_GENERATE_TESTS, "arguments": args }
+        }),
+    );
+
+    let resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": false }
+                }),
+            );
+            continue;
+        }
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            break msg;
+        }
+    };
+
+    assert!(
+        resp.get("error").is_some(),
+        "expected executeCommand error, got: {resp:#?}"
+    );
+    assert_eq!(
+        ai_server.hits(),
+        0,
+        "expected excluded_paths to prevent model calls"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_hides_ai_code_actions_for_excluded_paths() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
