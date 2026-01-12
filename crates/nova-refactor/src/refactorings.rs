@@ -330,19 +330,37 @@ pub fn extract_variable(
     }
 
     let stmt_range = syntax_range(stmt.syntax());
-    // Reject inserting into single-statement control structure bodies without braces. In those
-    // contexts we'd have to introduce a `{ ... }` block to preserve control flow.
-    if !matches!(stmt, ast::Statement::Block(_)) {
-        if let Some(parent) = stmt.syntax().parent() {
-            if ast::IfStatement::cast(parent.clone()).is_some()
+    if let Some(parent) = stmt.syntax().parent() {
+        // Reject labeled statements (`label:\n  stmt;`) where inserting at the start of the line
+        // would "steal" the label and change control flow.
+        if ast::LabeledStatement::cast(parent.clone()).is_some() {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract into a labeled statement body",
+            });
+        }
+
+        // Reject switch arrow rules with a single statement body:
+        // `case 1 -> stmt;`
+        // Inserting a new statement would require rewriting the body to a `{ ... }` block.
+        if ast::SwitchRule::cast(parent.clone()).is_some()
+            && !matches!(stmt, ast::Statement::Block(_))
+        {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract into a single-statement switch rule body without braces",
+            });
+        }
+
+        // Reject inserting into single-statement control structure bodies without braces. In those
+        // contexts we'd have to introduce a `{ ... }` block to preserve control flow.
+        if !matches!(stmt, ast::Statement::Block(_))
+            && (ast::IfStatement::cast(parent.clone()).is_some()
                 || ast::WhileStatement::cast(parent.clone()).is_some()
                 || ast::DoWhileStatement::cast(parent.clone()).is_some()
-                || ast::ForStatement::cast(parent).is_some()
-            {
-                return Err(RefactorError::ExtractNotSupported {
-                    reason: "cannot extract into a single-statement control structure body without braces",
-                });
-            }
+                || ast::ForStatement::cast(parent).is_some())
+        {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract into a single-statement control structure body without braces",
+            });
         }
     }
 
@@ -356,22 +374,6 @@ pub fn extract_variable(
     {
         return Err(RefactorError::ExtractNotSupported {
             reason: "cannot extract when the enclosing statement starts mid-line",
-        });
-    }
-
-    // Extract Variable inserts a *new statement* (a local declaration). If the selected expression
-    // is inside a statement that is not directly in a `{ ... }` block statement list (for example
-    // the body of `if/while/for/do` without braces), inserting a declaration would either be
-    // syntactically invalid or change control flow. Be conservative until block-wrapping is
-    // implemented.
-    let Some(parent) = stmt.syntax().parent() else {
-        return Err(RefactorError::ExtractNotSupported {
-            reason: "cannot extract when the enclosing statement has no parent",
-        });
-    };
-    if ast::Block::cast(parent).is_none() {
-        return Err(RefactorError::ExtractNotSupported {
-            reason: "cannot extract when the enclosing statement is not directly inside a block",
         });
     }
 
@@ -1086,18 +1088,19 @@ fn check_extract_variable_name_conflicts(
     insert_pos: usize,
     name: &str,
 ) -> Result<(), RefactorError> {
-    let Some(insertion_scope) = stmt
-        .syntax()
-        .parent()
-        .and_then(ast::Block::cast)
-        .map(|b| syntax_range(b.syntax()))
-        .or_else(|| {
-            stmt.syntax()
-                .parent()
-                .and_then(ast::SwitchBlock::cast)
-                .map(|b| syntax_range(b.syntax()))
-        })
-    else {
+    // The extracted variable's declaration is inserted at `insert_pos` before `stmt`. We need a
+    // conservative scope range for name collision checks.
+    //
+    // Prefer the *nearest* statement-list container:
+    // - a `{ ... }` block (local variable scope is the block)
+    // - otherwise the surrounding switch block (traditional `case:` groups share switch scope)
+    let Some(insertion_scope) = stmt.syntax().ancestors().find_map(|node| {
+        if let Some(block) = ast::Block::cast(node.clone()) {
+            Some(syntax_range(block.syntax()))
+        } else {
+            ast::SwitchBlock::cast(node).map(|b| syntax_range(b.syntax()))
+        }
+    }) else {
         return Err(RefactorError::ExtractNotSupported {
             reason: "cannot determine scope for extracted variable",
         });

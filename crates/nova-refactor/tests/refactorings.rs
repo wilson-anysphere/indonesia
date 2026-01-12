@@ -1596,6 +1596,120 @@ fn extract_variable_rejects_oneline_switch_case_statement() {
 }
 
 #[test]
+fn extract_variable_allows_switch_case_group() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        System.out.println(/*select*/1 + 2/*end*/);
+        break;
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1:
+        var sum = 1 + 2;
+        System.out.println(sum);
+        break;
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_rejects_switch_arrow_single_statement_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1 -> System.out.println(/*select*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement switch rule body without braces"
+        ),
+        "expected switch arrow rule rejection, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_labeled_statement_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    label:
+      System.out.println(/*select*/1 + 2/*end*/);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a labeled statement body"
+        ),
+        "expected labeled statement rejection, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_allows_extraction_inside_braced_if_block() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
