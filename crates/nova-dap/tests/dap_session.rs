@@ -581,12 +581,107 @@ async fn dap_can_hot_swap_a_class() {
             .and_then(|v| v.as_str()),
         Some("Main.java")
     );
+    assert_eq!(
+        hot_swap_resp
+            .pointer("/body/results/0/classes/0/className")
+            .and_then(|v| v.as_str()),
+        Some("Main")
+    );
+    assert_eq!(
+        hot_swap_resp
+            .pointer("/body/results/0/classes/0/status")
+            .and_then(|v| v.as_str()),
+        Some("success")
+    );
 
     let calls = jdwp.redefine_classes_calls().await;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].class_count, 1);
     assert_eq!(calls[0].classes.len(), 1);
     assert_eq!(calls[0].classes[0].1, bytecode);
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_can_hot_swap_multiple_classes_per_file() {
+    let mut caps = vec![false; 32];
+    caps[7] = true; // canRedefineClasses
+    let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
+
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let bytecode_main = vec![0xCA, 0xFE];
+    let bytecode_foo = vec![0xBE, 0xEF];
+
+    let hot_swap_resp = client
+        .request(
+            "nova/hotSwap",
+            json!({
+                "classes": [
+                    {
+                        "className": "Main",
+                        "bytecodeBase64": general_purpose::STANDARD.encode(&bytecode_main),
+                        "file": "Main.java",
+                    },
+                    {
+                        "className": "com.example.Foo",
+                        "bytecodeBase64": general_purpose::STANDARD.encode(&bytecode_foo),
+                        "file": "Main.java",
+                    }
+                ]
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        hot_swap_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let results = hot_swap_resp
+        .pointer("/body/results")
+        .and_then(|v| v.as_array())
+        .expect("expected hot swap results");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("file").and_then(|v| v.as_str()),
+        Some("Main.java")
+    );
+    assert_eq!(
+        results[0].get("status").and_then(|v| v.as_str()),
+        Some("success")
+    );
+
+    let classes = results[0]
+        .get("classes")
+        .and_then(|v| v.as_array())
+        .expect("expected classes array");
+    assert_eq!(classes.len(), 2);
+    assert!(classes.iter().all(|entry| entry
+        .get("status")
+        .and_then(|v| v.as_str())
+        == Some("success")));
+
+    let names: std::collections::BTreeSet<_> = classes
+        .iter()
+        .filter_map(|entry| entry.get("className").and_then(|v| v.as_str()))
+        .collect();
+    assert!(names.contains("Main"));
+    assert!(names.contains("com.example.Foo"));
+
+    let calls = jdwp.redefine_classes_calls().await;
+    let all_bytecodes: Vec<Vec<u8>> = calls
+        .iter()
+        .flat_map(|call| call.classes.iter().map(|(_, bytes)| bytes.clone()))
+        .collect();
+    assert_eq!(all_bytecodes.len(), 2);
+    assert!(all_bytecodes.contains(&bytecode_main));
+    assert!(all_bytecodes.contains(&bytecode_foo));
 
     client.disconnect().await;
     server_task.await.unwrap().unwrap();

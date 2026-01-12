@@ -31,7 +31,10 @@ use nova_config::NovaConfig;
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
     eval_context::EvalOptions,
-    hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine},
+    hot_swap::{
+        BuildSystemMulti, CompileError, CompileOutputMulti, CompiledClass, HotSwapClassResult,
+        HotSwapEngine, HotSwapStatus,
+    },
     wire_debugger::{
         AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError,
         FunctionBreakpointSpec, StepDepth, VmStoppedValue,
@@ -2368,22 +2371,24 @@ async fn handle_request_inner(
             struct HotSwapClassArg {
                 class_name: String,
                 bytecode_base64: String,
+                #[serde(default)]
+                file: Option<PathBuf>,
             }
 
             #[derive(Debug)]
-            struct PrecompiledBuild {
-                outputs: HashMap<PathBuf, CompileOutput>,
+            struct PrecompiledBuildMulti {
+                outputs: HashMap<PathBuf, CompileOutputMulti>,
             }
 
-            impl BuildSystem for PrecompiledBuild {
-                fn compile_files(&mut self, files: &[PathBuf]) -> Vec<CompileOutput> {
+            impl BuildSystemMulti for PrecompiledBuildMulti {
+                fn compile_files_multi(&mut self, files: &[PathBuf]) -> Vec<CompileOutputMulti> {
                     files
                         .iter()
                         .map(|file| {
                             self.outputs
                                 .get(file)
                                 .cloned()
-                                .unwrap_or_else(|| CompileOutput {
+                                .unwrap_or_else(|| CompileOutputMulti {
                                     file: file.clone(),
                                     result: Err(CompileError::new("no bytecode provided")),
                                 })
@@ -2395,6 +2400,61 @@ async fn handle_request_inner(
             fn derive_source_path(class_name: &str) -> PathBuf {
                 let outer = class_name.split('$').next().unwrap_or(class_name);
                 PathBuf::from(format!("{}.java", outer.replace('.', "/")))
+            }
+
+            fn resolve_file_path(file: PathBuf, project_root: Option<&PathBuf>) -> PathBuf {
+                if file.is_absolute() {
+                    return file;
+                }
+
+                match project_root {
+                    Some(root) => root.join(file),
+                    None => file,
+                }
+            }
+
+            fn summarize_file_class_results(
+                classes: &[HotSwapClassResult],
+            ) -> (HotSwapStatus, Option<String>) {
+                // Deterministic precedence order:
+                // 1) RedefinitionError: any non-schema redefine error.
+                // 2) SchemaChange: redefine rejected due to unsupported change (restart required).
+                // 3) CompileError: failed to decode bytecode, compile, etc.
+                // 4) Success: all classes successfully redefined.
+                if classes
+                    .iter()
+                    .any(|class| class.status == HotSwapStatus::RedefinitionError)
+                {
+                    let message = classes
+                        .iter()
+                        .find(|class| class.status == HotSwapStatus::RedefinitionError)
+                        .and_then(|class| class.message.clone());
+                    return (HotSwapStatus::RedefinitionError, message);
+                }
+
+                if classes
+                    .iter()
+                    .any(|class| class.status == HotSwapStatus::SchemaChange)
+                {
+                    let message = classes
+                        .iter()
+                        .find(|class| class.status == HotSwapStatus::SchemaChange)
+                        .and_then(|class| class.message.clone());
+                    return (HotSwapStatus::SchemaChange, message);
+                }
+
+                if classes
+                    .iter()
+                    .any(|class| class.status == HotSwapStatus::CompileError)
+                {
+                    let message = classes
+                        .iter()
+                        .find(|class| class.status == HotSwapStatus::CompileError)
+                        .and_then(|class| class.message.clone());
+                    return (HotSwapStatus::CompileError, message);
+                }
+
+                (HotSwapStatus::Success, None)
             }
 
             if cancel.is_cancelled() {
@@ -2484,43 +2544,58 @@ async fn handle_request_inner(
                 .unwrap_or_else(|| PathBuf::from("."));
 
             let mut changed_files = Vec::new();
-            let mut outputs = HashMap::<PathBuf, CompileOutput>::new();
+            let mut outputs = HashMap::<PathBuf, CompileOutputMulti>::new();
+            let mut class_errors = HashMap::<PathBuf, Vec<HotSwapClassResult>>::new();
 
             if !args.classes.is_empty() {
                 let use_changed_files = !args.changed_files.is_empty()
                     && args.changed_files.len() == args.classes.len();
                 for (idx, class) in args.classes.into_iter().enumerate() {
-                    let file = if use_changed_files {
-                        args.changed_files[idx].clone()
-                    } else {
-                        derive_source_path(&class.class_name)
+                    let file = match class.file {
+                        Some(file) => resolve_file_path(file, project_root.as_ref()),
+                        None if use_changed_files => args.changed_files[idx].clone(),
+                        None => derive_source_path(&class.class_name),
                     };
                     if !changed_files.iter().any(|existing| existing == &file) {
                         changed_files.push(file.clone());
                     }
 
-                    let result = match general_purpose::STANDARD.decode(class.bytecode_base64) {
-                        Ok(bytecode) => Ok(CompiledClass {
-                            class_name: class.class_name,
-                            bytecode,
-                        }),
-                        Err(err) => Err(CompileError::new(format!(
-                            "invalid bytecodeBase64 for {}: {err}",
-                            class.class_name
-                        ))),
-                    };
+                    let HotSwapClassArg {
+                        class_name,
+                        bytecode_base64,
+                        file: _,
+                    } = class;
 
-                    outputs
-                        .entry(file.clone())
-                        .and_modify(|existing| match (&mut existing.result, &result) {
-                            (Ok(classes), Ok(compiled)) => classes.push(compiled.clone()),
-                            (Ok(_), Err(err)) => existing.result = Err(err.clone()),
-                            (Err(_), _) => {}
-                        })
-                        .or_insert_with(|| CompileOutput {
-                            file,
-                            result: result.map(|compiled| vec![compiled]),
-                        });
+                    match general_purpose::STANDARD.decode(bytecode_base64) {
+                        Ok(bytecode) => {
+                            let compiled = CompiledClass { class_name, bytecode };
+                            outputs
+                                .entry(file.clone())
+                                .and_modify(|existing| {
+                                    if let Ok(classes) = &mut existing.result {
+                                        classes.push(compiled.clone());
+                                    }
+                                })
+                                .or_insert_with(|| CompileOutputMulti {
+                                    file,
+                                    result: Ok(vec![compiled]),
+                                });
+                        }
+                        Err(err) => {
+                            class_errors.entry(file.clone()).or_default().push(
+                                HotSwapClassResult {
+                                    class_name,
+                                    status: HotSwapStatus::CompileError,
+                                    message: Some(format!("invalid bytecodeBase64: {err}")),
+                                },
+                            );
+
+                            outputs.entry(file.clone()).or_insert_with(|| CompileOutputMulti {
+                                file,
+                                result: Ok(Vec::new()),
+                            });
+                        }
+                    }
                 }
             } else if !args.changed_files.is_empty() {
                 let javac =
@@ -2561,7 +2636,7 @@ async fn handle_request_inner(
                         );
                         return;
                     }
-                    outputs.insert(file.clone(), CompileOutput { file, result });
+                    outputs.insert(file.clone(), CompileOutputMulti { file, result });
                 }
             } else {
                 send_response(
@@ -2575,15 +2650,27 @@ async fn handle_request_inner(
                 return;
             }
 
-            let build = PrecompiledBuild { outputs };
+            let build = PrecompiledBuildMulti { outputs };
             let mut engine = HotSwapEngine::new(build, jdwp);
-            let result = tokio::select! {
+            let mut result = tokio::select! {
                 _ = cancel.cancelled() => {
                     send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
                     return;
                 }
-                result = engine.hot_swap_async(&changed_files) => result,
+                result = engine.hot_swap_multi_async(&changed_files) => result,
             };
+
+            if !class_errors.is_empty() {
+                for file_result in result.results.iter_mut() {
+                    let Some(errors) = class_errors.get(&file_result.file) else {
+                        continue;
+                    };
+                    file_result.classes.extend(errors.iter().cloned());
+                    let (status, message) = summarize_file_class_results(&file_result.classes);
+                    file_result.status = status;
+                    file_result.message = message;
+                }
+            }
 
             send_response(
                 out_tx,
