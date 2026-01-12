@@ -60,20 +60,35 @@ pub fn analyze_with(
         ));
     }
 
-    diagnostics.extend(definite_assignment_diagnostics(
-        body,
-        &cfg,
-        &reachable,
-        check_cancelled,
-    ));
+    // Dataflow analysis state is O(blocks * locals). In IDE contexts we want to be robust on
+    // pathological methods (generated code, huge switch tables, etc), so we cap the amount of
+    // state we are willing to allocate and simply skip these analyses when they would be too
+    // expensive.
+    //
+    // NOTE: Reachability remains available because it only needs O(blocks) state.
+    const MAX_DATAFLOW_STATE_CELLS: usize = 5_000_000;
+    let dataflow_state_cells = cfg
+        .blocks
+        .len()
+        .checked_mul(body.locals().len())
+        .unwrap_or(usize::MAX);
 
-    if config.report_possible_null_deref {
-        diagnostics.extend(null_deref_diagnostics(
+    if dataflow_state_cells <= MAX_DATAFLOW_STATE_CELLS {
+        diagnostics.extend(definite_assignment_diagnostics(
             body,
             &cfg,
             &reachable,
             check_cancelled,
         ));
+
+        if config.report_possible_null_deref {
+            diagnostics.extend(null_deref_diagnostics(
+                body,
+                &cfg,
+                &reachable,
+                check_cancelled,
+            ));
+        }
     }
 
     // Best-effort: avoid duplicate reports when the same statement is reached
