@@ -123,6 +123,7 @@ test('package.json contributes Nova Frameworks view context-menu commands', asyn
   );
 
   const expectedCommands = [
+    'nova.frameworks.open',
     'nova.frameworks.copyEndpointPath',
     'nova.frameworks.copyEndpointMethodAndPath',
     'nova.frameworks.copyBeanId',
