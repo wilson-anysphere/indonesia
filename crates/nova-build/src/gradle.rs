@@ -169,19 +169,6 @@ impl GradleBuild {
         let mut projects = parsed.projects;
         projects.sort_by(|a, b| a.path.cmp(&b.path));
 
-        // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project`
-        // can reuse resolved classpaths/source roots without invoking Gradle during discovery.
-        //
-        // We update both the project path -> directory mapping and the per-project compile config.
-        let snapshot_projects: Vec<GradleProjectInfo> = projects
-            .iter()
-            .map(|p| GradleProjectInfo {
-                path: p.path.clone(),
-                dir: PathBuf::from(p.project_dir.clone()),
-            })
-            .collect();
-        let _ = update_gradle_snapshot_projects(project_root, &fingerprint, &snapshot_projects);
-
         // Batch update the cache in a single write.
         let mut data = cache
             .load(project_root, BuildSystemKind::Gradle, &fingerprint)?
@@ -245,14 +232,6 @@ impl GradleBuild {
             augment_java_compile_config_with_conventional_gradle_source_roots(
                 &project_dir,
                 &mut config,
-            );
-
-            let _ = update_gradle_snapshot_java_compile_config(
-                project_root,
-                &fingerprint,
-                &project.path,
-                &project_dir,
-                &config,
             );
 
             if is_root {
