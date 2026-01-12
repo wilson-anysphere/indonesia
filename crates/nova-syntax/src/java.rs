@@ -2200,7 +2200,11 @@ impl Lowerer {
             ast::SwitchArmBody::Missing(range)
         };
 
-        ast::SwitchArm { labels, body, range }
+        ast::SwitchArm {
+            labels,
+            body,
+            range,
+        }
     }
 
     fn lower_switch_group_arm(&self, node: &SyntaxNode) -> ast::SwitchArm {
@@ -2235,7 +2239,10 @@ impl Lowerer {
         }
 
         let mut values = Vec::new();
-        for element in node.descendants().filter(|n| n.kind() == SyntaxKind::CaseLabelElement) {
+        for element in node
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::CaseLabelElement)
+        {
             if let Some(expr_node) = element.children().find(|c| is_expression_kind(c.kind())) {
                 values.push(self.lower_expr(&expr_node));
             }

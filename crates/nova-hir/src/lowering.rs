@@ -1519,9 +1519,9 @@ impl<'a> BodyLower<'a> {
                                     range: *range,
                                 }
                             }
-                            syntax::SwitchLabel::Default { range } => SwitchLabel::Default {
-                                range: *range,
-                            },
+                            syntax::SwitchLabel::Default { range } => {
+                                SwitchLabel::Default { range: *range }
+                            }
                         });
                     }
 
@@ -1536,9 +1536,9 @@ impl<'a> BodyLower<'a> {
                             .lower_stmt(stmt.as_ref())
                             .map(SwitchArmBody::Stmt)
                             .unwrap_or_else(|| {
-                                SwitchArmBody::Stmt(self.alloc_stmt(Stmt::Empty {
-                                    range: arm.range,
-                                }))
+                                SwitchArmBody::Stmt(
+                                    self.alloc_stmt(Stmt::Empty { range: arm.range }),
+                                )
                             }),
                         syntax::SwitchArmBody::Missing(range) => {
                             let missing = self.alloc_expr(Expr::Missing { range: *range });

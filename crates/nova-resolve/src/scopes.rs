@@ -808,9 +808,7 @@ impl<'a> ScopeBuilder<'a> {
                 self.record_expr_scopes(scope, owner, body, *then_expr);
                 self.record_expr_scopes(scope, owner, body, *else_expr);
             }
-            hir::Expr::Switch {
-                selector, arms, ..
-            } => {
+            hir::Expr::Switch { selector, arms, .. } => {
                 self.record_expr_scopes(scope, owner, body, *selector);
                 for arm in arms {
                     for label in &arm.labels {

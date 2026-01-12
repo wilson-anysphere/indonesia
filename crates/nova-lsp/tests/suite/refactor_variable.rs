@@ -844,7 +844,9 @@ class C {
     let mut var_action = actions
         .drain(..)
         .find_map(|action| match action {
-            lsp_types::CodeActionOrCommand::CodeAction(action) if action.title == "Extract variable…" => {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Extract variable…" =>
+            {
                 Some(action)
             }
             _ => None,

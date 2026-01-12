@@ -189,4 +189,3 @@ fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String
 
     nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
 }
-

@@ -8995,9 +8995,10 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             // Match conservatively: treat patterns as matching either paths relative to the
             // workspace root or absolute paths resolved against the root.
             let test_file_is_excluded = ai.is_excluded_path(Path::new(&test_file))
-                || state.project_root.as_deref().is_some_and(|root_path| {
-                    ai.is_excluded_path(&root_path.join(&test_file))
-                });
+                || state
+                    .project_root
+                    .as_deref()
+                    .is_some_and(|root_path| ai.is_excluded_path(&root_path.join(&test_file)));
 
             if test_file_is_excluded {
                 // Fallback: insert tests into the current file at the selection range.
@@ -9032,10 +9033,7 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
 
                 (
                     test_file,
-                    LspTypesRange::new(
-                        LspTypesPosition::new(0, 0),
-                        LspTypesPosition::new(0, 0),
-                    ),
+                    LspTypesRange::new(LspTypesPosition::new(0, 0), LspTypesPosition::new(0, 0)),
                     workspace,
                 )
             }

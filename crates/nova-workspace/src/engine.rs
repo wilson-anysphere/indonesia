@@ -27,7 +27,9 @@ use nova_project::{
 };
 #[cfg(test)]
 use nova_scheduler::SchedulerConfig;
-use nova_scheduler::{Cancelled, CancellationToken, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
+use nova_scheduler::{
+    CancellationToken, Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler,
+};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
@@ -1836,8 +1838,7 @@ impl WorkspaceEngine {
             delay,
             move |token| {
                 let cancellation = token.clone();
-                let _ctx =
-                    scheduler.request_context_with_token("workspace/reload_project", token);
+                let _ctx = scheduler.request_context_with_token("workspace/reload_project", token);
 
                 let changed = {
                     let mut state = project_state
@@ -3821,7 +3822,9 @@ fn reload_project_and_sync(
                                 Arc::new(DeadlineCommandRunner {
                                     deadline,
                                     cancellation: cancellation.clone(),
-                                    inner: DeadlineCommandRunnerInner::Custom(Arc::clone(build_runner)),
+                                    inner: DeadlineCommandRunnerInner::Custom(Arc::clone(
+                                        build_runner,
+                                    )),
                                 })
                             }
                         } else {

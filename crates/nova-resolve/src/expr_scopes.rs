@@ -458,9 +458,7 @@ impl Builder {
                 self.visit_expr(body, *then_expr, scope);
                 self.visit_expr(body, *else_expr, scope);
             }
-            Expr::Switch {
-                selector, arms, ..
-            } => {
+            Expr::Switch { selector, arms, .. } => {
                 self.visit_expr(body, *selector, scope);
                 for arm in arms {
                     for label in &arm.labels {

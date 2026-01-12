@@ -4181,10 +4181,11 @@ mod tests {
     use super::{
         append_included_build_module_refs, default_gradle_user_home, extract_named_brace_blocks,
         gradle_dependency_jar_paths, parse_gradle_dependencies_from_text,
-        parse_gradle_local_classpath_entries_from_text, parse_gradle_project_dependencies_from_text,
-        parse_gradle_settings_included_builds, parse_gradle_settings_projects,
-        parse_gradle_version_catalog_from_toml, sort_dedup_dependencies, strip_gradle_comments,
-        ClasspathEntryKind, Dependency, GradleModuleRef, GradleProperties,
+        parse_gradle_local_classpath_entries_from_text,
+        parse_gradle_project_dependencies_from_text, parse_gradle_settings_included_builds,
+        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
+        sort_dedup_dependencies, strip_gradle_comments, ClasspathEntryKind, Dependency,
+        GradleModuleRef, GradleProperties,
     };
     use crate::test_support::{env_lock, EnvVarGuard};
     use tempfile::tempdir;
@@ -5149,4 +5150,4 @@ dependencies {
             "expected {jar_path:?} to be present; got: {entries:?}"
         );
     }
-} 
+}

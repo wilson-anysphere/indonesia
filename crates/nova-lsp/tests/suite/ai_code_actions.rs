@@ -3326,7 +3326,9 @@ excluded_paths = ["src/test/java/**"]
                     }
                     for edit in &doc_edit.edits {
                         match edit {
-                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Left(edit) => {
+                                all_new_texts.push(edit.new_text.clone())
+                            }
                             lsp_types::OneOf::Right(edit) => {
                                 all_new_texts.push(edit.text_edit.new_text.clone())
                             }

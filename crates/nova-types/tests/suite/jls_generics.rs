@@ -74,10 +74,10 @@ fn instantiate_supertype_is_order_independent_for_type_var_and_intersection_boun
     // A and B provide conflicting instantiations of `I` (String vs Integer). During best-effort
     // recovery, Nova prefers a deterministic class-derived instantiation (real Java bounds contain
     // at most one class component), so this should remain stable across bound order.
-    let args1 =
-        instantiate_supertype(&env, &Type::TypeVar(t1), iface).expect("should instantiate supertype");
-    let args2 =
-        instantiate_supertype(&env, &Type::TypeVar(t2), iface).expect("should instantiate supertype");
+    let args1 = instantiate_supertype(&env, &Type::TypeVar(t1), iface)
+        .expect("should instantiate supertype");
+    let args2 = instantiate_supertype(&env, &Type::TypeVar(t2), iface)
+        .expect("should instantiate supertype");
     assert_eq!(args1, args2);
     assert_eq!(args1, vec![Type::class(string, vec![])]);
 

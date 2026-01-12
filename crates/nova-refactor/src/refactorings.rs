@@ -4687,18 +4687,18 @@ fn infer_method_return_type(node: &nova_syntax::SyntaxNode, name: &str) -> Optio
     // Walk outward through nested type bodies to approximate Java's implicit `Outer.this` member
     // access rules for unqualified method calls inside inner classes.
     for ancestor in node.ancestors() {
-        let members: Vec<ast::ClassMember> = if let Some(body) = ast::ClassBody::cast(ancestor.clone())
-        {
-            body.members().collect()
-        } else if let Some(body) = ast::InterfaceBody::cast(ancestor.clone()) {
-            body.members().collect()
-        } else if let Some(body) = ast::EnumBody::cast(ancestor.clone()) {
-            body.members().collect()
-        } else if let Some(body) = ast::RecordBody::cast(ancestor.clone()) {
-            body.members().collect()
-        } else {
-            continue;
-        };
+        let members: Vec<ast::ClassMember> =
+            if let Some(body) = ast::ClassBody::cast(ancestor.clone()) {
+                body.members().collect()
+            } else if let Some(body) = ast::InterfaceBody::cast(ancestor.clone()) {
+                body.members().collect()
+            } else if let Some(body) = ast::EnumBody::cast(ancestor.clone()) {
+                body.members().collect()
+            } else if let Some(body) = ast::RecordBody::cast(ancestor.clone()) {
+                body.members().collect()
+            } else {
+                continue;
+            };
 
         let mut inferred: Option<String> = None;
         let mut saw_candidate = false;

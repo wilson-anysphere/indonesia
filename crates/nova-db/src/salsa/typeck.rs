@@ -1085,8 +1085,7 @@ fn type_of_expr_demand_result(
                             let stmt_range = body.exprs[*stmt_expr].range();
                             let may_contain = stmt_range.start <= target_range.start
                                 && target_range.end <= stmt_range.end;
-                            if may_contain
-                                && contains_expr_in_expr(&body, *stmt_expr, target_expr)
+                            if may_contain && contains_expr_in_expr(&body, *stmt_expr, target_expr)
                             {
                                 update_inference_root(*stmt_expr, None);
                             }
@@ -1208,9 +1207,7 @@ fn type_of_expr_demand_result(
                             update_inference_root(*expr, None);
                         }
                     }
-                    HirStmt::Break { .. }
-                    | HirStmt::Continue { .. }
-                    | HirStmt::Empty { .. } => {}
+                    HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
                 }
             }
         }
@@ -1778,9 +1775,7 @@ fn resolve_method_call_demand(
                     visit_expr(body, *then_expr, parent_expr, visited_expr);
                     visit_expr(body, *else_expr, parent_expr, visited_expr);
                 }
-                HirExpr::Switch {
-                    selector, arms, ..
-                } => {
+                HirExpr::Switch { selector, arms, .. } => {
                     set_parent(parent_expr, *selector);
                     visit_expr(body, *selector, parent_expr, visited_expr);
 
@@ -11216,9 +11211,7 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
                 || contains_expr_in_expr(body, *then_expr, target)
                 || contains_expr_in_expr(body, *else_expr, target)
         }
-        HirExpr::Switch {
-            selector, arms, ..
-        } => {
+        HirExpr::Switch { selector, arms, .. } => {
             contains_expr_in_expr(body, *selector, target)
                 || arms.iter().any(|arm| {
                     arm.labels.iter().any(|label| match label {
@@ -11507,7 +11500,13 @@ fn find_enclosing_target_typed_expr_in_expr(
             ..
         } => {
             for dim_expr in dim_exprs {
-                find_enclosing_target_typed_expr_in_expr(body, *dim_expr, target, target_range, best);
+                find_enclosing_target_typed_expr_in_expr(
+                    body,
+                    *dim_expr,
+                    target,
+                    target_range,
+                    best,
+                );
             }
             if let Some(init_expr) = initializer {
                 find_enclosing_target_typed_expr_in_expr(
@@ -11544,9 +11543,7 @@ fn find_enclosing_target_typed_expr_in_expr(
             find_enclosing_target_typed_expr_in_expr(body, *then_expr, target, target_range, best);
             find_enclosing_target_typed_expr_in_expr(body, *else_expr, target, target_range, best);
         }
-        HirExpr::Switch {
-            selector, arms, ..
-        } => {
+        HirExpr::Switch { selector, arms, .. } => {
             find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
             for arm in arms {
                 for label in &arm.labels {
@@ -11902,9 +11899,7 @@ fn find_enclosing_call_with_arg_in_expr(
             find_enclosing_call_with_arg_in_expr(body, *then_expr, target, target_range, best);
             find_enclosing_call_with_arg_in_expr(body, *else_expr, target, target_range, best);
         }
-        HirExpr::Switch {
-            selector, arms, ..
-        } => {
+        HirExpr::Switch { selector, arms, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *selector, target, target_range, best);
             for arm in arms {
                 for label in &arm.labels {
@@ -11923,7 +11918,13 @@ fn find_enclosing_call_with_arg_in_expr(
 
                 match &arm.body {
                     SwitchArmBody::Expr(expr) => {
-                        find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+                        find_enclosing_call_with_arg_in_expr(
+                            body,
+                            *expr,
+                            target,
+                            target_range,
+                            best,
+                        );
                     }
                     SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
                         find_enclosing_call_with_arg_in_stmt_inner(
@@ -12060,9 +12061,7 @@ fn find_best_expr_in_expr(
             find_best_expr_in_expr(body, *then_expr, offset, owner, best);
             find_best_expr_in_expr(body, *else_expr, offset, owner, best);
         }
-        HirExpr::Switch {
-            selector, arms, ..
-        } => {
+        HirExpr::Switch { selector, arms, .. } => {
             find_best_expr_in_expr(body, *selector, offset, owner, best);
             for arm in arms {
                 for label in &arm.labels {
@@ -12074,7 +12073,9 @@ fn find_best_expr_in_expr(
                 }
 
                 match &arm.body {
-                    SwitchArmBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
+                    SwitchArmBody::Expr(expr) => {
+                        find_best_expr_in_expr(body, *expr, offset, owner, best)
+                    }
                     SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
                         find_best_expr_in_stmt(body, *stmt, offset, owner, best)
                     }

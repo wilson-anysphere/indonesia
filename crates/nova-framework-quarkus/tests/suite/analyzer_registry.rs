@@ -941,11 +941,7 @@ fn registry_completes_config_property_names_when_some_config_file_text_is_unavai
     let java_file = inner.add_file_with_path_and_text(project, java_path, src);
     let base_config_id =
         inner.add_file_with_path_and_text(project, base_config_path, "server.port=8080\n");
-    inner.add_file_with_path_and_text(
-        project,
-        dev_config_path,
-        "server.ssl.enabled=true\n",
-    );
+    inner.add_file_with_path_and_text(project, dev_config_path, "server.ssl.enabled=true\n");
 
     let cursor_base = src
         .find("name=\"")

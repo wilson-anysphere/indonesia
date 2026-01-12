@@ -8242,9 +8242,10 @@ fn prev_type_position_token<'a>(tokens: &'a [Token], idx: usize) -> Option<(usiz
 
 fn token_can_start_expression(tok: &Token) -> bool {
     match tok.kind {
-        TokenKind::Ident | TokenKind::StringLiteral | TokenKind::CharLiteral | TokenKind::Number => {
-            true
-        }
+        TokenKind::Ident
+        | TokenKind::StringLiteral
+        | TokenKind::CharLiteral
+        | TokenKind::Number => true,
         TokenKind::Symbol(ch) => matches!(ch, '(' | '!' | '~' | '+' | '-'),
     }
 }
@@ -9094,11 +9095,7 @@ impl CompletionResolveCtx {
         // A leading lowercase segment is typically a package name, so treat the whole string as a
         // canonical qualified name and convert nested types to binary form (`java.util.Map.Entry`
         // -> `java.util.Map$Entry`).
-        if first
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase())
-        {
+        if first.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
             let mut out = vec![raw.to_string()];
             let binary = canonical_to_binary_name(raw);
             if binary != raw {
@@ -15667,7 +15664,9 @@ pub fn call_hierarchy_outgoing_calls_for_item(
 ) -> Vec<CallHierarchyOutgoingCall> {
     let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
     let parsed = index.file(file);
-    let text = parsed.map(|p| p.text.as_str()).unwrap_or_else(|| db.file_content(file));
+    let text = parsed
+        .map(|p| p.text.as_str())
+        .unwrap_or_else(|| db.file_content(file));
     let start = parsed
         .and_then(|p| {
             crate::text::position_to_offset_with_index(
@@ -15702,7 +15701,9 @@ fn call_hierarchy_outgoing_calls_impl(
 ) -> Vec<CallHierarchyOutgoingCall> {
     let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
     let parsed = index.file(file);
-    let text = parsed.map(|p| p.text.as_str()).unwrap_or_else(|| db.file_content(file));
+    let text = parsed
+        .map(|p| p.text.as_str())
+        .unwrap_or_else(|| db.file_content(file));
     let owned_line_index = parsed.is_none().then(|| nova_core::LineIndex::new(text));
     let line_index: &nova_core::LineIndex = match parsed {
         Some(parsed) => &parsed.line_index,
@@ -15921,7 +15922,9 @@ pub fn call_hierarchy_incoming_calls_for_item(
 ) -> Vec<CallHierarchyIncomingCall> {
     let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
     let parsed = index.file(file);
-    let text = parsed.map(|p| p.text.as_str()).unwrap_or_else(|| db.file_content(file));
+    let text = parsed
+        .map(|p| p.text.as_str())
+        .unwrap_or_else(|| db.file_content(file));
     let start = parsed
         .and_then(|p| {
             crate::text::position_to_offset_with_index(
@@ -19495,7 +19498,8 @@ mod tests {
         let text = "import com.\nclass Test {}".to_string();
         db.set_file_text(test_file, text.clone());
         let offset = text.find("com.").expect("expected `com.` in fixture") + "com.".len();
-        let items = import_path_completions(&db, test_file, &text, offset, "").expect("completions");
+        let items =
+            import_path_completions(&db, test_file, &text, offset, "").expect("completions");
 
         let foo = items
             .iter()
