@@ -6895,6 +6895,7 @@ import java.util.List;
 
 class C {
     List<@Missing String> xs;
+    List<@ Missing String> ys;
 }
 "#;
 

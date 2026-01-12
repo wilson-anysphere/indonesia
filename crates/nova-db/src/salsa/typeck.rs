@@ -2493,8 +2493,34 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
 }
 
 fn extend_type_ref_diagnostics(out: &mut Vec<Diagnostic>, file_text: &str, diags: Vec<Diagnostic>) {
-    let _ = file_text;
-    out.extend(diags);
+    // Type-use annotations are currently ignored by Nova's type checker. The type-ref parser is
+    // resilient to annotations (and can optionally diagnose them when anchored), but we
+    // intentionally suppress diagnostics for annotation *type names* in type-use positions when
+    // reporting type-check diagnostics.
+    //
+    // Example: `List<@Missing String>` should not surface an `unresolved-type` diagnostic for the
+    // annotation name `Missing` in `db.type_diagnostics`.
+    out.extend(diags.into_iter().filter(|d| {
+        let Some(span) = d.span else {
+            return true;
+        };
+        if span.start == 0 || span.start > file_text.len() || !file_text.is_char_boundary(span.start)
+        {
+            return true;
+        }
+
+        // Type-use annotations can be written as `@A` or `@ A`, so scan backwards over whitespace
+        // to find the nearest preceding non-whitespace byte.
+        let bytes = file_text.as_bytes();
+        let mut i = span.start;
+        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return true;
+        }
+        bytes.get(i - 1) != Some(&b'@')
+    }));
 }
 
 fn collect_annotation_use_diagnostics<'idx>(
