@@ -366,6 +366,80 @@ class Use {
 }
 
 #[test]
+fn rename_annotation_value_element_skips_other_qualified_annotation_types() {
+    let (index, mut files) = build_index(vec![
+        (
+            "file:///p/A.java",
+            r#"package p;
+
+@interface A {
+    int value();
+}
+"#,
+        ),
+        (
+            "file:///q/A.java",
+            r#"package q;
+
+@interface A {
+    int value();
+}
+"#,
+        ),
+        (
+            "file:///Use.java",
+            r#"import p.A;
+
+@A(1)
+@q.A(2)
+class Use {}
+"#,
+        ),
+    ]);
+
+    let target = method_id(&index, "A", "value", &[]);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("v".to_string()),
+        parameters: vec![],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::None,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///p/A.java").unwrap(),
+        r#"package p;
+
+@interface A {
+    int v();
+}
+"#
+    );
+    assert_eq!(
+        files.get("file:///q/A.java").unwrap(),
+        r#"package q;
+
+@interface A {
+    int value();
+}
+"#
+    );
+    assert_eq!(
+        files.get("file:///Use.java").unwrap(),
+        r#"import p.A;
+
+@A(v = 1)
+@q.A(2)
+class Use {}
+"#
+    );
+}
+
+#[test]
 fn conflict_removed_param_still_used_in_body() {
     let (index, _files) = build_index(vec![(
         "file:///A.java",

@@ -147,6 +147,7 @@ struct ParsedMethod {
 #[derive(Debug, Clone)]
 struct AnnotationValueRename {
     annotation_name: String,
+    annotation_qualified_name: String,
     new_element_name: String,
 }
 
@@ -863,6 +864,7 @@ fn collect_call_site_updates(
         updates.extend(collect_annotation_value_rename_updates(
             index,
             &rename.annotation_name,
+            &rename.annotation_qualified_name,
             &rename.new_element_name,
         ));
     }
@@ -919,8 +921,60 @@ fn annotation_value_rename_context(
         };
         let annotation_name = annotation_ty.name_token()?.text().to_string();
 
+        // Best-effort disambiguation: track the fully qualified annotation type name so we can
+        // avoid rewriting unrelated qualified usages like `@other.A(...)`.
+        //
+        // This is still heuristic (the `Index` is not a full resolver), but it prevents common
+        // false-positives when multiple packages contain the same simple annotation name.
+        let mut type_parts: Vec<String> = Vec::new();
+        for ancestor in annotation_ty.syntax().ancestors() {
+            if let Some(ty) = ast::AnnotationTypeDeclaration::cast(ancestor.clone()) {
+                if let Some(tok) = ty.name_token() {
+                    type_parts.push(tok.text().to_string());
+                }
+                continue;
+            }
+            if let Some(ty) = ast::ClassDeclaration::cast(ancestor.clone()) {
+                if let Some(tok) = ty.name_token() {
+                    type_parts.push(tok.text().to_string());
+                }
+                continue;
+            }
+            if let Some(ty) = ast::InterfaceDeclaration::cast(ancestor.clone()) {
+                if let Some(tok) = ty.name_token() {
+                    type_parts.push(tok.text().to_string());
+                }
+                continue;
+            }
+            if let Some(ty) = ast::EnumDeclaration::cast(ancestor.clone()) {
+                if let Some(tok) = ty.name_token() {
+                    type_parts.push(tok.text().to_string());
+                }
+                continue;
+            }
+            if let Some(ty) = ast::RecordDeclaration::cast(ancestor) {
+                if let Some(tok) = ty.name_token() {
+                    type_parts.push(tok.text().to_string());
+                }
+            }
+        }
+        type_parts.reverse();
+        let type_name = type_parts.join(".");
+
+        let pkg = ast::CompilationUnit::cast(root.clone())
+            .and_then(|unit| unit.package())
+            .and_then(|pkg| pkg.name())
+            .map(|name| name.text().trim().to_string())
+            .filter(|pkg| !pkg.is_empty());
+        let annotation_qualified_name = if let Some(pkg) = pkg {
+            format!("{pkg}.{type_name}")
+        } else {
+            type_name
+        };
+
         return Some(AnnotationValueRename {
             annotation_name,
+            annotation_qualified_name,
             new_element_name: new_name.to_string(),
         });
     }
@@ -931,6 +985,7 @@ fn annotation_value_rename_context(
 fn collect_annotation_value_rename_updates(
     index: &Index,
     annotation_name: &str,
+    annotation_qualified_name: &str,
     new_element_name: &str,
 ) -> Vec<(String, TextRange, String)> {
     let mut updates = Vec::new();
@@ -944,8 +999,13 @@ fn collect_annotation_value_rename_updates(
                 continue;
             };
             let name_text = name.text();
-            let simple = name_text.rsplit('.').next().unwrap_or(name_text.as_str());
-            if simple != annotation_name {
+            let matches_annotation = if name_text.contains('.') {
+                name_text == annotation_qualified_name
+                    || annotation_qualified_name.ends_with(&format!(".{name_text}"))
+            } else {
+                name_text == annotation_name
+            };
+            if !matches_annotation {
                 continue;
             }
 

@@ -229,6 +229,69 @@ class Use {
 }
 
 #[test]
+fn rename_annotation_value_element_skips_other_annotation_types_with_same_simple_name() {
+    let a_p = FileId::new("p/A.java");
+    let a_q = FileId::new("q/A.java");
+    let use_file = FileId::new("Use.java");
+
+    let src_p = r#"package p;
+public @interface A {
+    int value();
+}
+"#;
+    let src_q = r#"package q;
+public @interface A {
+    int value();
+}
+"#;
+    let src_use = r#"package use;
+import p.A;
+
+@A(1)
+@q.A(2)
+class Use {}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (a_p.clone(), src_p.to_string()),
+        (a_q.clone(), src_q.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_p.find("int value").unwrap() + "int ".len() + 1;
+    let symbol = db
+        .symbol_at(&a_p, offset)
+        .expect("symbol at p.A annotation element value()");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "v".into(),
+        },
+    )
+    .unwrap();
+
+    let mut files = BTreeMap::new();
+    files.insert(a_p.clone(), src_p.to_string());
+    files.insert(a_q.clone(), src_q.to_string());
+    files.insert(use_file.clone(), src_use.to_string());
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+
+    let after_p = out.get(&a_p).unwrap();
+    let after_q = out.get(&a_q).unwrap();
+    let after_use = out.get(&use_file).unwrap();
+
+    assert!(after_p.contains("int v();"), "{after_p}");
+    assert!(after_q.contains("int value();"), "{after_q}");
+
+    assert!(after_use.contains("@A(v = 1)"), "{after_use}");
+    assert!(after_use.contains("@q.A(2)"), "{after_use}");
+    assert!(!after_use.contains("@q.A(v = 2)"), "{after_use}");
+    assert!(!after_use.contains("@q.A(value = 2)"), "{after_use}");
+}
+
+#[test]
 fn rename_type_updates_declaration_constructor_and_cross_file_new() {
     let a = FileId::new("A.java");
     let b = FileId::new("B.java");

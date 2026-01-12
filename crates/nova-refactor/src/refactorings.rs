@@ -283,6 +283,7 @@ fn annotation_value_shorthand_updates(
     // `@interface`. This ensures we only apply the rewrite when renaming the special annotation
     // element, not arbitrary methods named `value`.
     let mut annotation_name = None;
+    let mut annotation_type_symbol = None;
     for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
         let Some(name_tok) = method.name_token() else {
             continue;
@@ -306,7 +307,23 @@ fn annotation_value_shorthand_updates(
         else {
             return Vec::new();
         };
-        annotation_name = annotation_ty.name_token().map(|tok| tok.text().to_string());
+        let Some(annotation_name_tok) = annotation_ty.name_token() else {
+            return Vec::new();
+        };
+        annotation_name = Some(annotation_name_tok.text().to_string());
+
+        // Best-effort: disambiguate `@A(...)` occurrences by confirming the annotation *type*
+        // reference matches the `@interface` we're renaming. Without this, workspaces containing
+        // multiple annotation types with the same simple name (e.g. `p.A` and `q.A`) could be
+        // rewritten incorrectly.
+        //
+        // If the database can't resolve symbols-at-offset (e.g. a parser-only implementation), we
+        // fall back to matching on the simple name only.
+        let type_name_range = syntax_token_range(&annotation_name_tok);
+        if type_name_range.start < type_name_range.end {
+            let offset = type_name_range.start + (type_name_range.end - type_name_range.start) / 2;
+            annotation_type_symbol = db.symbol_at(&def.file, offset);
+        }
         break;
     }
 
@@ -315,6 +332,14 @@ fn annotation_value_shorthand_updates(
     };
 
     let existing_refs = db.find_references(symbol);
+    let annotation_type_refs_by_file: Option<HashMap<FileId, Vec<TextRange>>> =
+        annotation_type_symbol.map(|sym| {
+            let mut out: HashMap<FileId, Vec<TextRange>> = HashMap::new();
+            for r in db.find_references(sym) {
+                out.entry(r.file).or_default().push(r.range);
+            }
+            out
+        });
 
     fn annotation_args_inner_range(
         source: &str,
@@ -334,6 +359,17 @@ fn annotation_value_shorthand_updates(
         }
 
         Some(TextRange::new(range.start + 1, range.end - 1))
+    }
+
+    fn annotation_name_token_range(name: &ast::Name) -> Option<TextRange> {
+        let mut non_trivia_tokens = name
+            .syntax()
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|tok| !tok.kind().is_trivia());
+        let first = non_trivia_tokens.next()?;
+        let last = non_trivia_tokens.last().unwrap_or_else(|| first.clone());
+        Some(syntax_token_range(&last))
     }
 
     let mut out = Vec::new();
@@ -357,6 +393,17 @@ fn annotation_value_shorthand_updates(
                 .unwrap_or_else(|| name_text.as_str());
             if simple != annotation_name {
                 continue;
+            }
+            if let Some(refs_by_file) = &annotation_type_refs_by_file {
+                let Some(name_range) = annotation_name_token_range(&name) else {
+                    continue;
+                };
+                let Some(ranges) = refs_by_file.get(&file) else {
+                    continue;
+                };
+                if !ranges.iter().any(|r| ranges_overlap(*r, name_range)) {
+                    continue;
+                }
             }
 
             let Some(args) = ann.arguments() else {
