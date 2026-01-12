@@ -2250,13 +2250,15 @@ mod tests {
             Ok(_client) => panic!("expected connect to fail"),
             Err(err) => err,
         };
-        assert!(
-            matches!(
-                err,
-                JdwpError::Cancelled | JdwpError::ConnectionClosed | JdwpError::Protocol(_)
-            ),
-            "unexpected connect error: {err:?}"
+        let expected = format!(
+            "JDWP packet length {} exceeds maximum allowed ({} bytes); refusing to allocate",
+            crate::MAX_JDWP_PACKET_BYTES + 1,
+            crate::MAX_JDWP_PACKET_BYTES
         );
+        match err {
+            JdwpError::Protocol(msg) => assert_eq!(msg, expected),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
     }
 
     #[tokio::test]
