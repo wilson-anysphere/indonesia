@@ -65,10 +65,15 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
         "expected at least one jar entry, got: {:?}",
         config.classpath
     );
+    let repo_path_canon = fs::canonicalize(&repo_path).unwrap_or_else(|_| repo_path.clone());
     assert!(
-        jar_entries.iter().all(|jar| jar.starts_with(&repo_path)),
-        "expected jar paths to start with {:?}, got: {:?}",
+        jar_entries.iter().all(|jar| {
+            let jar_canon = fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
+            jar_canon.starts_with(&repo_path_canon)
+        }),
+        "expected jar paths to start with {:?} (canonicalized to {:?}), got: {:?}",
         repo_path,
+        repo_path_canon,
         jar_entries
     );
 
@@ -95,12 +100,17 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
         "expected override to still produce jar entries, got: {:?}",
         config_override.classpath
     );
+    let override_repo_canon = fs::canonicalize(&override_repo).unwrap_or_else(|_| override_repo.clone());
     assert!(
         override_jar_entries
             .iter()
-            .all(|jar| jar.starts_with(&override_repo)),
-        "expected jar paths to start with override repo {:?}, got: {:?}",
+            .all(|jar| {
+                let jar_canon = fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
+                jar_canon.starts_with(&override_repo_canon)
+            }),
+        "expected jar paths to start with override repo {:?} (canonicalized to {:?}), got: {:?}",
         override_repo,
+        override_repo_canon,
         override_jar_entries
     );
 }

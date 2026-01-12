@@ -272,14 +272,23 @@ fn maven_config_repo_local_overrides_settings_xml() {
             .collect::<Vec<_>>();
 
         let expected = expected_guava_jar(&repo_from_config);
+        let expected_canon = std::fs::canonicalize(&expected).unwrap_or(expected.clone());
         assert!(
-            jar_entries.contains(&expected),
-            "expected jar path {expected:?} in classpath entries: {jar_entries:?}"
+            jar_entries.iter().any(|jar| {
+                let jar_canon = std::fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
+                jar_canon == expected_canon
+            }),
+            "expected jar path {expected:?} (canonicalized to {expected_canon:?}) in classpath entries: {jar_entries:?}"
         );
 
+        let repo_from_settings_canon =
+            std::fs::canonicalize(&repo_from_settings).unwrap_or(repo_from_settings.clone());
         assert!(
-            jar_entries.iter().all(|p| !p.starts_with(&repo_from_settings)),
-            "expected maven.config override (no jars under settings.xml repo). Got: {jar_entries:?}"
+            jar_entries.iter().all(|p| {
+                let p_canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+                !p_canon.starts_with(&repo_from_settings_canon)
+            }),
+            "expected maven.config override (no jars under settings.xml repo). settings repo={repo_from_settings:?} (canonicalized to {repo_from_settings_canon:?}). Got: {jar_entries:?}"
         );
     });
 }
