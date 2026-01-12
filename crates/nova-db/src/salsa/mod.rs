@@ -611,7 +611,7 @@ impl SalsaInputFootprint {
         // manager is responsible for compensating across categories when
         // non-evictable inputs dominate.
         let registration =
-            manager.register_tracker("salsa_inputs".to_string(), MemoryCategory::QueryCache);
+            manager.register_tracker("salsa_inputs".to_string(), MemoryCategory::Other);
         self.bind_tracker(registration.tracker());
         let _ = self.registration.set(registration);
     }
