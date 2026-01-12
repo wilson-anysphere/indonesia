@@ -8,6 +8,36 @@ cargo_agent() {
   bash "${ROOT_DIR}/scripts/cargo_agent.sh" "$@"
 }
 
+# Fast TOML parse check for all tracked Cargo manifests.
+#
+# This catches duplicate keys / invalid TOML early with a clear error message,
+# before invoking Cargo (which would otherwise fail during manifest parsing).
+#
+# Optional: only runs when `python3` + `tomllib` are available.
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' >/dev/null 2>&1; then
+  python3 - <<'PY'
+import subprocess
+import sys
+import tomllib
+
+paths = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+paths = [p for p in paths if p.endswith("Cargo.toml")]
+
+errors = []
+for path in paths:
+    try:
+        with open(path, "rb") as f:
+            tomllib.load(f)
+    except Exception as e:
+        errors.append((path, e))
+
+if errors:
+    for path, err in errors:
+        print(f"repo invariant failed: invalid TOML in {path}: {err}", file=sys.stderr)
+    sys.exit(1)
+PY
+fi
+
 # Run Nova repository invariants enforced by `nova-devtools`.
 #
 # This is the local/dev convenience equivalent of the CI "repo invariants" step.
