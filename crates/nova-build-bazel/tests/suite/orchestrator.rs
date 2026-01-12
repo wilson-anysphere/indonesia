@@ -133,7 +133,7 @@ impl BazelBuildExecutor for RecordingExecutor {
 
 #[test]
 fn orchestrator_discovers_dot_bsp_config_when_request_missing() {
-    let _lock = nova_build_bazel::test_support::ENV_LOCK.lock().unwrap();
+    let _lock = nova_build_bazel::test_support::env_lock();
     let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
     let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");
 

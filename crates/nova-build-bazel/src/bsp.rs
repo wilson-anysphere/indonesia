@@ -44,6 +44,41 @@ fn bsp_max_message_bytes() -> usize {
     value.clamp(BSP_MAX_MESSAGE_BYTES_FLOOR, BSP_MAX_MESSAGE_BYTES_CEILING)
 }
 
+const ENV_BSP_CONNECT_TIMEOUT_MS: &str = "NOVA_BSP_CONNECT_TIMEOUT_MS";
+const DEFAULT_BSP_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
+const ENV_BSP_REQUEST_TIMEOUT_MS: &str = "NOVA_BSP_REQUEST_TIMEOUT_MS";
+// Requests like `buildTarget/javacOptions` can be quite slow on cold caches for large workspaces.
+const DEFAULT_BSP_REQUEST_TIMEOUT: Duration = Duration::from_millis(300_000);
+
+fn parse_timeout_ms(key: &str, default: Duration) -> Duration {
+    let raw = std::env::var(key).unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return default;
+    }
+
+    let ms: i64 = match raw.parse() {
+        Ok(ms) => ms,
+        Err(_) => return default,
+    };
+
+    // Treat <= 0 values as unset so callers can't accidentally disable timeouts and hang forever.
+    if ms <= 0 {
+        return default;
+    }
+
+    Duration::from_millis(ms as u64)
+}
+
+fn bsp_connect_timeout() -> Duration {
+    parse_timeout_ms(ENV_BSP_CONNECT_TIMEOUT_MS, DEFAULT_BSP_CONNECT_TIMEOUT)
+}
+
+fn bsp_request_timeout() -> Duration {
+    parse_timeout_ms(ENV_BSP_REQUEST_TIMEOUT_MS, DEFAULT_BSP_REQUEST_TIMEOUT)
+}
+
 /// JSON-RPC error payload returned by BSP servers.
 ///
 /// This is intentionally `pub(crate)` so the Bazel workspace integration can detect when a server
@@ -531,6 +566,42 @@ impl BspClient {
     }
 
     fn request<P: Serialize, R: DeserializeOwned>(&mut self, method: &str, params: P) -> Result<R> {
+        let request_timeout = bsp_request_timeout();
+
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+        let request_timed_out = Arc::new(AtomicBool::new(false));
+        let watchdog_handle = self.child_pid().map(|pid| {
+            let request_timed_out_for_thread = Arc::clone(&request_timed_out);
+            thread::spawn(move || match cancel_rx.recv_timeout(request_timeout) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    request_timed_out_for_thread.store(true, Ordering::SeqCst);
+                    crate::command::kill_process_tree_by_pid(pid);
+                }
+            })
+        });
+
+        struct RequestWatchdog {
+            cancel: Option<mpsc::Sender<()>>,
+            handle: Option<thread::JoinHandle<()>>,
+        }
+
+        impl Drop for RequestWatchdog {
+            fn drop(&mut self) {
+                if let Some(cancel) = self.cancel.take() {
+                    let _ = cancel.send(());
+                }
+                if let Some(handle) = self.handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+
+        let watchdog = RequestWatchdog {
+            cancel: Some(cancel_tx),
+            handle: watchdog_handle,
+        };
+
         let id = self.next_id;
         self.next_id += 1;
 
@@ -540,65 +611,78 @@ impl BspClient {
             "method": method,
             "params": params,
         });
-        self.send_message(&msg)?;
+        let response: Result<R> = (|| {
+            self.send_message(&msg)?;
 
-        loop {
-            let incoming = self.read_message()?;
-            if let Some(method) = incoming.get("method").and_then(Value::as_str) {
-                if method == "build/publishDiagnostics" {
-                    if let Some(params) = incoming.get("params") {
-                        if let Ok(parsed) =
-                            serde_json::from_value::<PublishDiagnosticsParams>(params.clone())
-                        {
-                            let uri = parsed.text_document.uri.clone();
-                            if parsed.reset == Some(false) {
-                                if let Some(existing) = self.diagnostics.get_mut(&uri) {
-                                    existing.diagnostics.extend(parsed.diagnostics);
+            loop {
+                let incoming = self.read_message()?;
+                if let Some(method) = incoming.get("method").and_then(Value::as_str) {
+                    if method == "build/publishDiagnostics" {
+                        if let Some(params) = incoming.get("params") {
+                            if let Ok(parsed) =
+                                serde_json::from_value::<PublishDiagnosticsParams>(params.clone())
+                            {
+                                let uri = parsed.text_document.uri.clone();
+                                if parsed.reset == Some(false) {
+                                    if let Some(existing) = self.diagnostics.get_mut(&uri) {
+                                        existing.diagnostics.extend(parsed.diagnostics);
+                                    } else {
+                                        self.diagnostics.insert(uri, parsed);
+                                    }
                                 } else {
                                     self.diagnostics.insert(uri, parsed);
                                 }
-                            } else {
-                                self.diagnostics.insert(uri, parsed);
                             }
                         }
+                        continue;
+                    }
+
+                    // Some BSP servers can send JSON-RPC requests to the client while we are waiting
+                    // for a response. We don't currently implement any server -> client request
+                    // surface, but we should still respond so the server doesn't block indefinitely.
+                    if let Some(request_id) = incoming.get("id").cloned() {
+                        let _ = self.send_message(&serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32601,
+                                "message": format!("method not supported: {method}"),
+                            }
+                        }));
                     }
                     continue;
                 }
 
-                // Some BSP servers can send JSON-RPC requests to the client while we are waiting
-                // for a response. We don't currently implement any server -> client request
-                // surface, but we should still respond so the server doesn't block indefinitely.
-                if let Some(request_id) = incoming.get("id").cloned() {
-                    let _ = self.send_message(&serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": -32601,
-                            "message": format!("method not supported: {method}"),
-                        }
-                    }));
+                if incoming.get("id").and_then(Value::as_i64) != Some(id) {
+                    // Not the response we are waiting for (could be a request from the server).
+                    continue;
                 }
-                continue;
-            }
 
-            if incoming.get("id").and_then(Value::as_i64) != Some(id) {
-                // Not the response we are waiting for (could be a request from the server).
-                continue;
-            }
-
-            if let Some(error) = incoming.get("error") {
-                let error = error.clone();
-                if let Ok(parsed) = serde_json::from_value::<BspRpcError>(error.clone()) {
-                    return Err(anyhow::Error::new(parsed));
+                if let Some(error) = incoming.get("error") {
+                    let error = error.clone();
+                    if let Ok(parsed) = serde_json::from_value::<BspRpcError>(error.clone()) {
+                        return Err(anyhow::Error::new(parsed));
+                    }
+                    return Err(anyhow!("BSP error response: {error}"));
                 }
-                return Err(anyhow!("BSP error response: {error}"));
-            }
 
-            let result = incoming
-                .get("result")
-                .with_context(|| "missing `result` in BSP response")?;
-            return Ok(serde_json::from_value(result.clone())?);
+                let result = incoming
+                    .get("result")
+                    .with_context(|| "missing `result` in BSP response")?;
+                return Ok(serde_json::from_value(result.clone())?);
+            }
+        })();
+
+        // Ensure the watchdog cannot fire after we return from this request.
+        drop(watchdog);
+
+        if request_timed_out.load(Ordering::SeqCst) {
+            return Err(anyhow!(
+                "BSP request `{method}` timed out after {request_timeout:?} (set {ENV_BSP_REQUEST_TIMEOUT_MS} to override)"
+            ));
         }
+
+        response
     }
 
     fn notify<P: Serialize>(&mut self, method: &str, params: P) -> Result<()> {
@@ -732,7 +816,37 @@ impl BspWorkspace {
 
         let args: Vec<&str> = config.args.iter().map(String::as_str).collect();
         let client = BspClient::spawn_in_dir(&config.program, &args, &root)?;
-        Self::from_client(root, client)
+
+        let connect_timeout = bsp_connect_timeout();
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+        let connect_timed_out = Arc::new(AtomicBool::new(false));
+
+        let watchdog_handle = client.child_pid().map(|pid| {
+            let connect_timed_out_for_thread = Arc::clone(&connect_timed_out);
+            thread::spawn(move || match cancel_rx.recv_timeout(connect_timeout) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    connect_timed_out_for_thread.store(true, Ordering::SeqCst);
+                    crate::command::kill_process_tree_by_pid(pid);
+                }
+            })
+        });
+
+        let result = Self::from_client(root, client);
+
+        // Ensure the watchdog cannot fire after we return from `connect`, even in error cases.
+        let _ = cancel_tx.send(());
+        if let Some(handle) = watchdog_handle {
+            let _ = handle.join();
+        }
+
+        if connect_timed_out.load(Ordering::SeqCst) {
+            return Err(anyhow!(
+                "BSP initialization handshake timed out after {connect_timeout:?} (set {ENV_BSP_CONNECT_TIMEOUT_MS} to override)"
+            ));
+        }
+
+        result
     }
 
     pub fn from_client(root: PathBuf, mut client: BspClient) -> Result<Self> {
@@ -1460,7 +1574,7 @@ mod tests {
     #[cfg(feature = "bsp")]
     #[test]
     fn bazel_bsp_config_discover_applies_env_overrides() {
-        let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_lock();
 
         let root = tempdir().unwrap();
         let bsp_dir = root.path().join(".bsp");

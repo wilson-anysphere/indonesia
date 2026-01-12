@@ -12,6 +12,8 @@ mod workspace_java_targets_universe;
 #[cfg(feature = "bsp")]
 mod bsp;
 #[cfg(feature = "bsp")]
+mod bsp_timeout;
+#[cfg(feature = "bsp")]
 mod orchestrator;
 #[cfg(feature = "bsp")]
 mod workspace_bsp;

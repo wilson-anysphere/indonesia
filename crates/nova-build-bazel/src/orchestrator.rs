@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn run_build_discovers_bsp_config_when_missing() {
-        let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_lock();
         let _program_guard = EnvVarGuard::set("NOVA_BSP_PROGRAM", None);
         let _args_guard = EnvVarGuard::set("NOVA_BSP_ARGS", None);
 

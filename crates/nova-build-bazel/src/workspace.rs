@@ -1808,7 +1808,7 @@ mod bsp_config_tests {
 
     #[test]
     fn env_overrides_win_over_dot_bsp_discovery() {
-        let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_lock();
 
         let _program_guard = EnvVarGuard::remove("NOVA_BSP_PROGRAM");
         let _args_guard = EnvVarGuard::remove("NOVA_BSP_ARGS");

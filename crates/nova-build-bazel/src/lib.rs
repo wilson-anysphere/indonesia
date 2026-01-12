@@ -66,5 +66,11 @@ pub use crate::bsp::target_compile_info_via_bsp;
 #[cfg(any(test, feature = "bsp"))]
 #[doc(hidden)]
 pub mod test_support {
-    pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    pub fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 }

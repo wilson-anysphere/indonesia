@@ -339,9 +339,7 @@ mod tests {
     use std::time::Duration;
 
     fn with_query_timeout_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = crate::test_support::ENV_LOCK
-            .lock()
-            .expect("env lock poisoned");
+        let _guard = crate::test_support::env_lock();
 
         let prior = std::env::var_os(super::ENV_BAZEL_QUERY_TIMEOUT_SECS);
         match value {
