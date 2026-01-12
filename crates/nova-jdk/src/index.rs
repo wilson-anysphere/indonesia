@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use crate::discovery::{JdkDiscoveryError, JdkInstallation};
 use crate::ct_sym;
+use crate::ct_sym_index::CtSymReleaseIndex;
 use crate::jar;
 use crate::jmod;
 use crate::persist;
@@ -86,6 +87,7 @@ struct JdkContainer {
 #[derive(Debug)]
 pub(crate) enum JdkSymbolIndex {
     Jmods(JmodSymbolIndex),
+    CtSym(CtSymReleaseIndex),
 }
 
 impl JdkSymbolIndex {
@@ -94,9 +96,35 @@ impl JdkSymbolIndex {
         cache_dir: Option<&Path>,
         allow_write: bool,
         stats: Option<&IndexingStats>,
+        api_release: Option<u16>,
     ) -> Result<Self, JdkIndexError> {
-        Ok(Self::Jmods(JmodSymbolIndex::from_jdk_root_with_cache(
-            root,
+        let install = JdkInstallation::from_root(root)?;
+
+        // When a caller requests a specific API release (e.g. `--release 8`) but
+        // the discovered JDK is newer (9+), we must use `lib/ct.sym` to provide
+        // the correct standard-library view for that release.
+        if let Some(requested) = api_release {
+            if install.jmods_dir().is_some() {
+                if let Some(spec_release) = install.spec_release() {
+                    if spec_release != requested {
+                        let ct_sym_path = install.root().join("lib").join("ct.sym");
+                        if !ct_sym_path.is_file() {
+                            return Err(JdkIndexError::MissingCtSym {
+                                path: ct_sym_path,
+                                release: requested,
+                            });
+                        }
+                        return Ok(Self::CtSym(CtSymReleaseIndex::from_ct_sym_path(
+                            &ct_sym_path,
+                            u32::from(requested),
+                        )?));
+                    }
+                }
+            }
+        }
+
+        Ok(Self::Jmods(JmodSymbolIndex::from_installation_with_cache(
+            install,
             cache_dir,
             allow_write,
             stats,
@@ -106,12 +134,14 @@ impl JdkSymbolIndex {
     pub fn module_graph(&self) -> Option<&ModuleGraph> {
         match self {
             Self::Jmods(index) => index.module_graph(),
+            Self::CtSym(index) => index.module_graph(),
         }
     }
 
     pub fn module_info(&self, name: &ModuleName) -> Option<&ModuleInfo> {
         match self {
             Self::Jmods(index) => index.module_info(name),
+            Self::CtSym(index) => index.module_info(name),
         }
     }
 
@@ -121,42 +151,49 @@ impl JdkSymbolIndex {
     ) -> Result<Option<ModuleName>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.module_of_type(binary_or_internal),
+            Self::CtSym(index) => index.module_of_type(binary_or_internal),
         }
     }
 
     pub fn lookup_type(&self, name: &str) -> Result<Option<Arc<JdkClassStub>>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.lookup_type(name),
+            Self::CtSym(index) => index.lookup_type(name),
         }
     }
 
     pub fn read_class_bytes(&self, internal_name: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.read_class_bytes(internal_name),
+            Self::CtSym(index) => index.read_class_bytes(internal_name),
         }
     }
 
     pub fn java_lang_symbols(&self) -> Result<Vec<Arc<JdkClassStub>>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.java_lang_symbols(),
+            Self::CtSym(index) => index.java_lang_symbols(),
         }
     }
 
     pub fn packages(&self) -> Result<Vec<String>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.packages(),
+            Self::CtSym(index) => index.packages(),
         }
     }
 
     pub fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.packages_with_prefix(prefix),
+            Self::CtSym(index) => index.packages_with_prefix(prefix),
         }
     }
 
     pub fn class_names_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
         match self {
             Self::Jmods(index) => index.class_names_with_prefix(prefix),
+            Self::CtSym(index) => index.class_names_with_prefix(prefix),
         }
     }
 }
@@ -178,6 +215,7 @@ pub(crate) struct JmodSymbolIndex {
 }
 
 impl JmodSymbolIndex {
+    #[allow(dead_code)]
     pub fn from_jdk_root_with_cache(
         root: impl AsRef<Path>,
         cache_dir: Option<&Path>,
@@ -998,6 +1036,9 @@ pub enum JdkIndexError {
 
     #[error(transparent)]
     CtSym(#[from] ct_sym::CtSymError),
+
+    #[error("ct.sym not found at `{path}` (required for --release {release})")]
+    MissingCtSym { path: PathBuf, release: u16 },
 
     #[error("ct.sym does not contain release {release}; available releases: {available:?}")]
     CtSymReleaseNotFound { release: u32, available: Vec<u32> },

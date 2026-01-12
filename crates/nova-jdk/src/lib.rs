@@ -197,14 +197,13 @@ impl JdkIndex {
         });
 
         let install = JdkInstallation::discover_for_release(config, requested_release)?;
-        let mut index = Self::from_jdk_root_with_cache_and_stats_policy(
-            install.root(),
+        Self::from_installation_with_cache_and_stats_policy(
+            install,
             cache_dir,
             allow_write,
             None,
-        )?;
-        index.info.api_release = effective_api_release;
-        Ok(index)
+            effective_api_release,
+        )
     }
 
     /// Build an index backed by a JDK installation's platform containers and an optional persisted cache.
@@ -342,23 +341,23 @@ impl JdkIndex {
         }
     }
 
-    /// Module graph for the underlying JDK, if this index is backed by JMODs.
+    /// Module graph for the underlying JDK, if this index is backed by JMODs or `ct.sym`.
     pub fn module_graph(&self) -> Option<&ModuleGraph> {
         self.symbols
             .as_ref()
             .and_then(|symbols| symbols.module_graph())
     }
 
-    /// Retrieve the parsed JPMS module descriptor for `name` (JMOD-backed only).
+    /// Retrieve the parsed JPMS module descriptor for `name` (JMOD / `ct.sym`-backed only).
     pub fn module_info(&self, name: &ModuleName) -> Option<&ModuleInfo> {
         self.symbols.as_ref()?.module_info(name)
     }
 
     /// Best-effort lookup of the JPMS module that defines `binary_or_internal`.
     ///
-    /// Accepts binary names (`java.lang.String`) or internal names
-    /// (`java/lang/String`). Returns `None` when this index is not backed by
-    /// JMODs or the type cannot be found.
+    /// Accepts binary names (`java.lang.String`) or internal names (`java/lang/String`).
+    /// Returns `None` when this index is not backed by JPMS modules (`jmods/` or `ct.sym`)
+    /// or the type cannot be found.
     pub fn module_of_type(&self, binary_or_internal: &str) -> Option<ModuleName> {
         let symbols = self.symbols.as_ref()?;
         symbols.module_of_type(binary_or_internal).ok().flatten()
@@ -370,28 +369,14 @@ impl JdkIndex {
         allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
-        let mut this = Self::new();
-        let root = root.as_ref().to_path_buf();
-        let install = JdkInstallation::from_root(&root)?;
-        let root = canonicalize_best_effort(install.root());
-        this.info = JdkIndexInfo {
-            root: root.clone(),
-            backing: if install.jmods_dir().is_some() {
-                JdkIndexBacking::Jmods
-            } else {
-                JdkIndexBacking::BootJars
-            },
-            api_release: None,
-            src_zip: discovery::src_zip_from_root(&root),
-        };
-
-        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
-            install.root(),
+        let install = JdkInstallation::from_root(root)?;
+        Self::from_installation_with_cache_and_stats_policy(
+            install,
             cache_dir,
             allow_write,
             stats,
-        )?);
-        Ok(this)
+            None,
+        )
     }
 
     fn discover_with_cache_and_stats_policy(
@@ -400,28 +385,57 @@ impl JdkIndex {
         allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
-        let mut this = Self::new();
         let install = JdkInstallation::discover(config)?;
-        let root = canonicalize_best_effort(install.root());
-        this.info = JdkIndexInfo {
-            root: root.clone(),
-            backing: if install.jmods_dir().is_some() {
-                JdkIndexBacking::Jmods
-            } else {
-                JdkIndexBacking::BootJars
-            },
-            api_release: config
-                .and_then(|cfg| cfg.release)
-                .filter(|release| *release >= 1),
-            src_zip: discovery::src_zip_from_root(&root),
-        };
+        let api_release = config
+            .and_then(|cfg| cfg.release)
+            .filter(|release| *release >= 1);
+        Self::from_installation_with_cache_and_stats_policy(
+            install,
+            cache_dir,
+            allow_write,
+            stats,
+            api_release,
+        )
+    }
 
-        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
+    fn from_installation_with_cache_and_stats_policy(
+        install: JdkInstallation,
+        cache_dir: Option<&Path>,
+        allow_write: bool,
+        stats: Option<&IndexingStats>,
+        api_release: Option<u16>,
+    ) -> Result<Self, JdkIndexError> {
+        let mut this = Self::new();
+
+        let root = canonicalize_best_effort(install.root());
+
+        let symbols = index::JdkSymbolIndex::from_jdk_root_with_cache(
             install.root(),
             cache_dir,
             allow_write,
             stats,
-        )?);
+            api_release,
+        )?;
+
+        let backing = match &symbols {
+            index::JdkSymbolIndex::CtSym(_) => JdkIndexBacking::CtSym,
+            index::JdkSymbolIndex::Jmods(_) => {
+                if install.jmods_dir().is_some() {
+                    JdkIndexBacking::Jmods
+                } else {
+                    JdkIndexBacking::BootJars
+                }
+            }
+        };
+
+        this.info = JdkIndexInfo {
+            root: root.clone(),
+            backing,
+            api_release,
+            src_zip: discovery::src_zip_from_root(&root),
+        };
+
+        this.symbols = Some(symbols);
         Ok(this)
     }
 

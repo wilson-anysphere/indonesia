@@ -54,6 +54,16 @@ impl JdkInstallation {
         src_zip_from_root(&self.root)
     }
 
+    /// Best-effort Java feature/spec release for this installation (e.g. `8`, `17`).
+    ///
+    /// For JPMS JDKs (9+) this is read from the `$JDK/release` properties-style file.
+    ///
+    /// The parser prefers `JAVA_SPEC_VERSION` and falls back to `JAVA_VERSION`.
+    /// It supports both legacy (`"1.8"`) and modern (`"17"`, `"17.0.10"`) formats.
+    pub fn spec_release(&self) -> Option<u16> {
+        spec_release_from_root(&self.root)
+    }
+
     pub fn from_root(root: impl AsRef<Path>) -> Result<Self, JdkDiscoveryError> {
         let root = root.as_ref().to_path_buf();
         let jmods_dir = root.join("jmods");
@@ -135,6 +145,62 @@ pub(crate) fn src_zip_from_root(root: &Path) -> Option<PathBuf> {
     }
 
     None
+}
+
+pub(crate) fn spec_release_from_root(root: &Path) -> Option<u16> {
+    let release_path = root.join("release");
+    let contents = std::fs::read_to_string(release_path).ok()?;
+
+    let spec = parse_release_property(&contents, "JAVA_SPEC_VERSION")
+        .and_then(|v| parse_java_release(&v))
+        .or_else(|| {
+            parse_release_property(&contents, "JAVA_VERSION").and_then(|v| parse_java_release(&v))
+        })?;
+
+    Some(spec)
+}
+
+fn parse_release_property(contents: &str, key: &str) -> Option<String> {
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let (k, v) = line.split_once('=')?;
+        if k.trim() != key {
+            continue;
+        }
+
+        let mut v = v.trim();
+        if let Some(stripped) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            v = stripped;
+        }
+        if let Some(stripped) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+            v = stripped;
+        }
+
+        return Some(v.to_owned());
+    }
+
+    None
+}
+
+fn parse_java_release(raw: &str) -> Option<u16> {
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+
+    // Legacy `JAVA_VERSION` / `JAVA_SPEC_VERSION` values use the "1.x" format.
+    if let Some(rest) = raw.strip_prefix("1.") {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        return digits.parse::<u16>().ok();
+    }
+
+    let digits: String = raw.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u16>().ok()
 }
 
 #[derive(Debug, Error)]

@@ -7,7 +7,8 @@ use std::time::Duration;
 use nova_classfile::ClassFile;
 use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
 use nova_jdk::{
-    internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkIndexBacking, JdkInstallation,
+    internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkIndexBacking, JdkIndexError,
+    JdkInstallation,
 };
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
@@ -130,6 +131,20 @@ fn write_jar(
 
     zip.finish()?;
     Ok(())
+}
+
+fn read_zip_entry_bytes(
+    zip_path: &Path,
+    entry_path: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut entry = archive.by_name(entry_path)?;
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 struct EnvVarGuard {
@@ -615,6 +630,132 @@ fn jdk_index_discover_sets_api_release_from_config() -> Result<(), Box<dyn std::
     let index = JdkIndex::discover(Some(&cfg))?;
     assert_eq!(index.info().api_release, Some(8));
     assert!(index.lookup_type("java.lang.String")?.is_some());
+
+    Ok(())
+}
+
+#[test]
+fn jdk_index_discover_for_release_uses_ct_sym_when_release_differs(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    // Fake a JDK9+ layout with a single `java.base.jmod`.
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    // Provide a release file so we can detect the discovered JDK's spec version (11).
+    std::fs::write(
+        root.join("release"),
+        "JAVA_SPEC_VERSION=\"11\"\nJAVA_VERSION=\"11.0.2\"\n",
+    )?;
+
+    // Create a minimal ct.sym containing release 8 stubs for `java.base`.
+    let lib_dir = root.join("lib");
+    std::fs::create_dir_all(&lib_dir)?;
+    let ct_sym_path = lib_dir.join("ct.sym");
+
+    let java_base_jmod = jmods_dir.join("java.base.jmod");
+    let string_bytes = read_zip_entry_bytes(&java_base_jmod, "classes/java/lang/String.class")?;
+    let module_info_bytes = read_zip_entry_bytes(&java_base_jmod, "classes/module-info.class")?;
+
+    let file = std::fs::File::create(&ct_sym_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+
+    zip.start_file("META-INF/sym/8/java.base/java/lang/String.sig", opts)?;
+    zip.write_all(&string_bytes)?;
+    zip.start_file("META-INF/sym/8/java.base/module-info.sig", opts)?;
+    zip.write_all(&module_info_bytes)?;
+    zip.finish()?;
+
+    let cfg = JdkConfig {
+        home: Some(root.to_path_buf()),
+        ..Default::default()
+    };
+    let index = JdkIndex::discover_for_release(Some(&cfg), Some(8))?;
+
+    assert_eq!(index.info().backing, JdkIndexBacking::CtSym);
+    assert_eq!(index.info().api_release, Some(8));
+
+    let graph = index
+        .module_graph()
+        .expect("ct.sym index should provide a module graph when module-info.sig is present");
+    assert!(
+        graph.get(&ModuleName::new("java.base")).is_some(),
+        "module graph should include java.base"
+    );
+
+    let module = index
+        .module_of_type("java.lang.String")
+        .expect("module lookup should succeed for java.lang.String");
+    assert_eq!(module.as_str(), "java.base");
+
+    assert!(index.lookup_type("java.lang.String")?.is_some());
+
+    Ok(())
+}
+
+#[test]
+fn jdk_index_discover_for_release_errors_when_ct_sym_release_missing(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    std::fs::write(
+        root.join("release"),
+        "JAVA_SPEC_VERSION=\"11\"\nJAVA_VERSION=\"11.0.2\"\n",
+    )?;
+
+    let lib_dir = root.join("lib");
+    std::fs::create_dir_all(&lib_dir)?;
+    let ct_sym_path = lib_dir.join("ct.sym");
+
+    let java_base_jmod = jmods_dir.join("java.base.jmod");
+    let string_bytes = read_zip_entry_bytes(&java_base_jmod, "classes/java/lang/String.class")?;
+    let module_info_bytes = read_zip_entry_bytes(&java_base_jmod, "classes/module-info.class")?;
+
+    let file = std::fs::File::create(&ct_sym_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+
+    // ct.sym contains only release 11 stubs; request 8 should fail.
+    zip.start_file("META-INF/sym/11/java.base/java/lang/String.sig", opts)?;
+    zip.write_all(&string_bytes)?;
+    zip.start_file("META-INF/sym/11/java.base/module-info.sig", opts)?;
+    zip.write_all(&module_info_bytes)?;
+    zip.finish()?;
+
+    let cfg = JdkConfig {
+        home: Some(root.to_path_buf()),
+        ..Default::default()
+    };
+
+    let err = JdkIndex::discover_for_release(Some(&cfg), Some(8)).unwrap_err();
+    match err {
+        JdkIndexError::CtSymReleaseNotFound { release, available } => {
+            assert_eq!(release, 8);
+            assert_eq!(available, vec![11]);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 
     Ok(())
 }
