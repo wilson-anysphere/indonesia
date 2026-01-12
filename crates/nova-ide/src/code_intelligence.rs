@@ -912,7 +912,8 @@ pub(crate) fn core_completions(
                 offset,
             ));
             // Re-rank once postfix templates are present so they compete fairly with member items.
-            rank_completions(&prefix, &mut items);
+            let ranking_ctx = CompletionRankingContext::default();
+            rank_completions(&prefix, &mut items, &ranking_ctx);
         }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
@@ -1121,7 +1122,8 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 offset,
             ));
             // Re-rank once postfix templates are present so they compete fairly with member items.
-            rank_completions(&prefix, &mut items);
+            let ranking_ctx = CompletionRankingContext::default();
+            rank_completions(&prefix, &mut items, &ranking_ctx);
         }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
