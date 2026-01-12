@@ -1985,13 +1985,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
         if recv_info.is_type_ref {
             // Static access: field or nested type.
-            let env_ro: &dyn TypeEnv = &*loader.store;
-            let mut ctx = TyContext::new(env_ro);
-            if let Some(field) = ctx.resolve_field(&recv_ty, name, CallKind::Static) {
-                return ExprInfo {
-                    ty: field.ty,
-                    is_type_ref: false,
-                };
+            {
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let mut ctx = TyContext::new(env_ro);
+                if let Some(field) = ctx.resolve_field(&recv_ty, name, CallKind::Static) {
+                    return ExprInfo {
+                        ty: field.ty,
+                        is_type_ref: false,
+                    };
+                }
             }
 
             // Nested class (binary `$` form).
@@ -2004,6 +2006,29 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     return ExprInfo {
                         ty: Type::class(id, vec![]),
                         is_type_ref: true,
+                    };
+                }
+            }
+
+            // Best-effort: if this field *would* resolve in an instance context, emit a more
+            // precise diagnostic instead of `unresolved-field`.
+            {
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let mut ctx = TyContext::new(env_ro);
+                if ctx
+                    .resolve_field(&recv_ty, name, CallKind::Instance)
+                    .is_some()
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "static-context",
+                        format!(
+                            "cannot reference instance field `{name}` from a static context"
+                        ),
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    return ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
                     };
                 }
             }
@@ -2046,6 +2071,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 } else {
                     CallKind::Instance
                 };
+                let is_static_receiver = recv_info.is_type_ref;
                 let recv_ty = recv_info.ty.clone();
                 self.ensure_type_loaded(loader, &recv_ty);
 
@@ -2094,6 +2120,37 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     MethodResolution::NotFound(not_found) => {
+                        if is_static_receiver {
+                            // Best-effort: if this call *would* resolve in an instance context, emit
+                            // a more precise static-context diagnostic instead of `unresolved-method`.
+                            let instance_call = MethodCall {
+                                receiver: call.receiver.clone(),
+                                call_kind: CallKind::Instance,
+                                name: call.name,
+                                args: call.args.clone(),
+                                expected_return: call.expected_return.clone(),
+                                explicit_type_args: call.explicit_type_args.clone(),
+                            };
+                            let mut ctx = TyContext::new(env_ro);
+                            match nova_types::resolve_method_call(&mut ctx, &instance_call) {
+                                MethodResolution::Found(_) | MethodResolution::Ambiguous(_) => {
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "static-context",
+                                        format!(
+                                            "cannot call instance method `{}` from a static context",
+                                            name.as_str()
+                                        ),
+                                        Some(self.body.exprs[expr].range()),
+                                    ));
+                                    return ExprInfo {
+                                        ty: Type::Error,
+                                        is_type_ref: false,
+                                    };
+                                }
+                                MethodResolution::NotFound(_) => {}
+                            }
+                        }
+
                         self.diagnostics.push(self.unresolved_method_diag(
                             env_ro,
                             &not_found,

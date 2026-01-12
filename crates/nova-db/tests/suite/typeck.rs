@@ -384,6 +384,44 @@ class C {
 }
 
 #[test]
+fn static_type_receiver_calling_instance_method_emits_static_context_diag() {
+    let src = r#"
+class C {
+    void foo() {}
+    static void m() {
+        C.foo();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "static-context"),
+        "expected a static-context diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn static_type_receiver_accessing_instance_field_emits_static_context_diag() {
+    let src = r#"
+class C {
+    int x;
+    static int m() {
+        return C.x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "static-context"),
+        "expected a static-context diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
 fn foreach_var_infers_element_type_for_array() {
     let src = r#"
 class C {
